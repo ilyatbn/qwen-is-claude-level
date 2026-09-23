@@ -1660,6 +1660,20 @@ pub fn constants_json() -> String {
         SKY_BODY_PARALLAX => c::SKY_BODY_PARALLAX,
         STAR_COUNT => c::STAR_COUNT,
         STAR_FADE_START => c::STAR_FADE_START,
+        // T22.06: the space backdrop.
+        SPACE_EARTH_RADIUS => c::SPACE_EARTH_RADIUS,
+        SPACE_MOON_RADIUS => c::SPACE_MOON_RADIUS,
+        SPACE_SUN_RADIUS => c::SPACE_SUN_RADIUS,
+        SPACE_SUN_GLOW => c::SPACE_SUN_GLOW,
+        SPACE_SUN_PERIOD => c::SPACE_SUN_PERIOD,
+        SPACE_EARTH_PERIOD => c::SPACE_EARTH_PERIOD,
+        SPACE_MOON_PERIOD => c::SPACE_MOON_PERIOD,
+        SPACE_MOON_ORBIT => c::SPACE_MOON_ORBIT,
+        SPACE_MOON_TILT => c::SPACE_MOON_TILT,
+        SPACE_STAR_DRIFT => c::SPACE_STAR_DRIFT,
+        SPACE_STAR_COUNT => c::SPACE_STAR_COUNT,
+        SPACE_BODY_PARALLAX => c::SPACE_BODY_PARALLAX,
+        SPACE_STAR_PARALLAX => c::SPACE_STAR_PARALLAX,
         // §C14's living background. The arrays cross as JSON arrays — `json!`
         // handles `[f32; N]` — so the client reads one definition of the scroll
         // factors rather than keeping a second copy beside them.

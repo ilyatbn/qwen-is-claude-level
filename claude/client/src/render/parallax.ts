@@ -188,6 +188,15 @@ export class ParallaxLayer {
   private lastRidgeTint: number[] = []
   /** Set by `setVisible(false)`; `update` must not undo it on the next frame. */
   private hidden = false
+  /**
+   * T22.06: the mode has no sky band at all — space has no mountains on the horizon
+   * and no clouds (the owner: *"there are no clouds or fog or anything like that"*).
+   *
+   * **A latch of its own, not `hidden`**: `hidden` is a check's control frame and
+   * `setVisible(true)` lifts it, which would put a ridge back in orbit. And it empties
+   * `rainClouds()`, because the ambient rain falls from those and nowhere else.
+   */
+  private suppressed = false
   /** Reused by `view()`, so the per-frame maths does not allocate a literal. */
   private readonly rect = { left: 0, top: 0, w: 0, h: 0 }
   /**
@@ -370,7 +379,7 @@ export class ParallaxLayer {
    * **Zoom applies to camera-space objects too.** At zoom Z a pinned object only
    * shows the middle `1/Z` of the viewport.
    */
-  private view(): { left: number; top: number; w: number; h: number } {
+  view(): { left: number; top: number; w: number; h: number } {
     const c = C()
     const z = this.scene.cameras.main.zoom || 1
     const v = this.rect
@@ -386,7 +395,7 @@ export class ParallaxLayer {
    * to the same place. `skyBottom` is the gradient's own bottom colour.
    */
   update(clock: number, skyBottom: number, scrollX: number, u: number): void {
-    if (this.hidden) return
+    if (this.hidden || this.suppressed) return
     const c = C()
     const view = this.view()
     const z = this.scene.cameras.main.zoom || 1
@@ -468,11 +477,12 @@ export class ParallaxLayer {
     const wv = this.scene.cameras.main.worldView
     // **The rain's clouds are placed whether or not the clouds are shown**: hiding
     // them for a control frame must not stop the rain it is being compared against.
-    for (let i = 0; i < this.clouds.length; i++) {
+    // A suppressed band (T22.06, space) has no clouds at all, so none to rain from.
+    for (let i = 0; i < (this.suppressed ? 0 : this.clouds.length); i++) {
       const b = placeCloud(this.clouds[i]!, i, t, this.wind, this.mapW, this.floor, c)
       if (b.visible && b.left <= wv.right && b.left + b.w >= wv.x && b.top <= wv.bottom) this.overhead.push(b)
     }
-    const on = !this.hidden && !this.cloudsHidden
+    const on = !this.hidden && !this.cloudsHidden && !this.suppressed
     g.setVisible(on)
     if (!on) return
     const rings = isHighQuality() ? c.CLOUD_RINGS_HQ : c.CLOUD_RINGS
@@ -544,10 +554,21 @@ export class ParallaxLayer {
    * is a ridge and not the gradient behind it is to take the ridge away.
    */
   setVisible(on: boolean): void {
-    for (const r of this.ridges) r.setVisible(on)
+    for (const r of this.ridges) r.setVisible(on && !this.suppressed)
     if (!on) this.skirt?.setVisible(false)
     // **The latch is set before the clouds are repainted**, which reads it.
     this.hidden = !on
+    this.drawClouds(this.lastT, this.lastU)
+  }
+
+  /** T22.06: switch the whole band off for a mode that has none, or back on. */
+  setSuppressed(on: boolean): void {
+    if (on === this.suppressed) return
+    this.suppressed = on
+    for (const r of this.ridges) r.setVisible(!on && !this.hidden)
+    if (on) this.skirt?.setVisible(false)
+    // Repainting reads the latch: with it set this empties the clouds, the drawn list
+    // and the rain's `overhead`, all in one place.
     this.drawClouds(this.lastT, this.lastU)
   }
 
@@ -622,6 +643,9 @@ export class ParallaxLayer {
     ridge: RidgeLayout & { spriteY: number; spriteH: number }
     /** Whether `setVisible(false)` has hidden the band (a check's control frame). */
     hidden: boolean
+    /** T22.06: whether the mode has switched the band off (space). */
+    suppressed: boolean
+    ridgeVisible: boolean
     /**
      * T21.20's foot under the near ridge, camera space: `null` if never built. `y` is where the
      * fade starts (the base); the strip also reaches one opaque texel above it (T21.33).
@@ -677,6 +701,9 @@ export class ParallaxLayer {
         spriteH: this.ridges[this.ridges.length - 1]?.height ?? 0,
       },
       hidden: this.hidden,
+      suppressed: this.suppressed,
+      // The near ridge as Phaser holds it — the absence a space check reads beside pixels.
+      ridgeVisible: this.ridges.some((r) => r.visible),
       skirt: this.skirt
         ? { y: this.skirtY, h: this.skirtH, visible: this.skirt.visible }
         : null,

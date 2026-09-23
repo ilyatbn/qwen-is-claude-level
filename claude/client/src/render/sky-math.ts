@@ -124,6 +124,30 @@ export function darknessAt(u: number, nightDarkness: number): number {
   return nightDarkness * (1 - smooth((t - 0.9) / 0.1))
 }
 
+/**
+ * The darkness a scene draws and computes vision with — **one spelling for every
+ * call site** (T22.06).
+ *
+ * - **In space it is 0: there is no night in orbit.** `World::darkness` sends the same
+ *   0, and this cannot rely on that byte, because of the next point.
+ * - Otherwise the server's byte, falling back to the local clock. **The fallback is a
+ *   falsy `||` on purpose and it is the trap this exists to fence off**: a server `0`
+ *   reads as "no byte yet" and the client's own 120-second cycle is substituted. That
+ *   is harmless on the ground, where the server says 0 only in daylight and the local
+ *   clock agrees; it would have been a night falling over every space round.
+ *
+ * `darkness` also feeds `fovRadius`, so this is a vision rule, not only a tint.
+ */
+export function sceneDarkness(
+  space: boolean,
+  serverDarkness: number,
+  roundTime: number,
+  nightDarkness: number,
+): number {
+  if (space) return 0
+  return serverDarkness || darknessAt(cycleU(roundTime), nightDarkness)
+}
+
 export interface Body {
   x: number
   y: number

@@ -6787,3 +6787,10 @@ Full `./scripts/check.sh` on `5251ee2`, idle box (pgrep empty at launch, no suba
 browser **66/66**, vitest 989/989, Rust 1571 passed / 0 failed / 25 ignored (summed over every `test result` line), M5 checkpoint green. Covers the batch
 T22.04, T22.04B (+ 3b5e547, 98e20db), T22.09A (+ 55e6d51), T22.09B, T22.09C. Four checks that `--changed` had been silently
 dropping on scripts-only edits (radiation, thrusters, thrusters-canvas, clouds — T22.09C F4) all ran here and passed.
+
+## T22.06 — the space backdrop (2026-09-23)
+Space draws its own sky: black gradient, seeded drifting stars, a sun, an earth (seeded continents, terminator facing the sun) and a moon orbiting it, all on the **round** clock (`render/spaceSky*.ts`, `SPACE_*` in `constants.rs`). Ridge/clouds suppressed by their own latch (not `hidden`), ambient rain 0 even forced, cave backdrop locked off, **darkness 0 in space** at `World::darkness` and `sky-math.ts::sceneDarkness` (the falsy `||` would have put night over every space round). Fog left to T22.08 (R43) — not masked client-side.
+Checks: `space-sky`/`-canvas` (sandbox: each body located by its own hidden-body control frame, moved over 60 s with camera + asteroid patch held, stars drift vs a same-moment control, seeded, absences beside standard presences) and `space-sky-match` (sky seed = welcome's, byte and drawn darkness 0 at the ground's night; standard stack the control).
+Plants, each red: bodies frozen; `sceneDarkness` space arm; `setSuppressed` no-op; stars ignore seed; drift 0; `GameScene` sky seed from `core.meta.seed` (*"seeded 1, the wire seed is 4242"* — the 2026-09-16 finding still holds); `GameScene` `sceneDarkness(false…)`; Rust arm removed (unit test + match).
+Done-when: vitest 1005/1005; `e2e space-sky` 3/3; `--changed HEAD --fast` all passed (game-core 1092/0/10); clippy 0; mapped e2e 22/22. `rooms.rs::a_room_with_a_human_in_it_is_never_reaped` went red once (`AlreadyClosed`, R40 family), green alone 4.2 s; recorded in `flaky-test.md`.
+Stale task-file claims and five decisions are in the task file. Size: ~540 lines of non-test code, past the ~400 guide; all of it one coherent change.

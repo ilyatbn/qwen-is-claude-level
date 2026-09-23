@@ -4132,7 +4132,19 @@ impl World {
         self.events.push(e);
     }
 
+    /// The snapshot's darkness byte, and through it every client's lightmap and
+    /// field of view.
+    ///
+    /// **T22.06: zero in space — there is no night in orbit.** Chosen, not left: the
+    /// alternatives were a permanent night (a vision penalty the owner never asked
+    /// for, on a map whose backdrop is already black) or the ground cycle carrying
+    /// on under a sky that no longer shows it. The client derives the same zero at
+    /// `sky-math.ts::sceneDarkness`, because its fallback reads a server `0` as
+    /// "no byte yet" and substitutes its own clock.
     pub fn darkness(&self) -> f32 {
+        if self.gravity == GravityMode::Space {
+            return 0.0;
+        }
         darkness_at(cycle_u(self.round_time))
     }
 
@@ -11948,6 +11960,24 @@ mod start_clock_at_tests {
             day.darkness()
         );
         assert!((night.darkness() - crate::constants::NIGHT_DARKNESS).abs() < 1e-3);
+    }
+
+    /// T22.06: no night in orbit. The standard world at the same moment is the
+    /// control — it is dark — so this cannot pass for a clock that never reached
+    /// night.
+    #[test]
+    fn space_has_no_night() {
+        let mut space = World::for_test(4242, MapScale::Small);
+        space.gravity = GravityMode::Space;
+        space.start_clock_at(NIGHT_START * CYCLE_LENGTH);
+        let mut ground = World::for_test(4242, MapScale::Small);
+        ground.start_clock_at(NIGHT_START * CYCLE_LENGTH);
+        assert!(
+            ground.darkness() > 0.5 * crate::constants::NIGHT_DARKNESS,
+            "control: {}",
+            ground.darkness()
+        );
+        assert_eq!(space.darkness(), 0.0);
     }
 }
 

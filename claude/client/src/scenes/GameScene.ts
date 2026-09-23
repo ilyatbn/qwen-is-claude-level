@@ -76,7 +76,7 @@ import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
-import { cycleU, darknessAt } from '../render/sky-math'
+import { sceneDarkness } from '../render/sky-math'
 import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
 import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
@@ -492,6 +492,8 @@ export class GameScene extends Phaser.Scene {
   private ready = false
   private lastServerTick = 0
   private serverDarkness = 0
+  /** T22.06: the darkness the last frame was drawn with — `sceneDarkness`'s answer, not the byte. */
+  private drawnDarkness = 0
 
   private observed = freshObserved()
 
@@ -573,6 +575,7 @@ export class GameScene extends Phaser.Scene {
     this.phaseEndsAt = 0
     this.lastServerTick = 0
     this.serverDarkness = 0
+    this.drawnDarkness = 0
     this.vision = 1
     this.pendingSnapshot = null
     this.observed = freshObserved()
@@ -1393,7 +1396,7 @@ export class GameScene extends Phaser.Scene {
     // neither on a networked client — `loadMask` clones the startup map's meta —
     // so `WorldView` was building every round's rock from seed 1 and theme 0.
     // `this.mapSeed` is the same value the sky already uses, two lines below.
-    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme)
+    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, this.gravity === SPACE_GRAVITY)
 
     // The **same** theme the terrain resolves, not a second opinion: both now
     // read `map_init`'s theme, so a distant ridge stays the colour of the ground
@@ -1910,11 +1913,13 @@ export class GameScene extends Phaser.Scene {
     this.renderRemotes(performance.now())
 
     // Darkness from round time locally, corrected by the server's byte so the
-    // two never drift apart (`docs/14` §1).
-    const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
+    // two never drift apart (`docs/14` §1) — and none at all in space (T22.06).
+    const space = this.gravity === SPACE_GRAVITY
+    const darkness = sceneDarkness(space, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
+    this.drawnDarkness = darkness
     // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
     this.sky.parallax.setWeatherShade(this.world?.weather.ambientIntensity ?? 0, this.world?.weather.toxicIntensity ?? 0)
-    this.sky.update(this.roundTime, darkness)
+    this.sky.update(this.roundTime, darkness, C().NIGHT_DARKNESS, space)
 
     this.death.update(
       !this.meAlive,
@@ -1972,7 +1977,8 @@ export class GameScene extends Phaser.Scene {
         // T21.26: the harmless rain — the same pure function of the full map seed and
         // the round clock that every client evaluates, so nothing about it is on the
         // wire and two clients cannot disagree.
-        ambient: ambientRain(this.roundSeedBig, this.roundTime),
+        // T22.06: and none in space, where there is no weather to rain.
+        ambient: this.gravity === SPACE_GRAVITY ? 0 : ambientRain(this.roundSeedBig, this.roundTime),
         // T21.31: rain falls from these clouds and nowhere else.
         clouds: this.sky.parallax.rainClouds(),
       })
@@ -2208,7 +2214,7 @@ export class GameScene extends Phaser.Scene {
   private renderRemotes(now: number): void {
     const sampled = this.interp.sample(now)
     const localPos = this.predictor?.renderPos ?? { x: 0, y: 0 }
-    const darkness = this.serverDarkness || darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
+    const darkness = sceneDarkness(this.gravity === SPACE_GRAVITY, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
     const fov = fovRadius({
       darkness,
       fogMult: this.vision,
@@ -3343,6 +3349,13 @@ export class GameScene extends Phaser.Scene {
             effects: self.topHud?.effects() ?? [],
           },
           darkness: self.serverDarkness,
+          // T22.06: what was drawn and lit with, and the sky that drew it. The byte
+          // above can be 0 while the frame is dark — that `||` is why both exist.
+          drawnDarkness: self.drawnDarkness,
+          sky: {
+            space: self.sky?.spaceDebug ?? null,
+            parallax: self.sky?.parallax.debug() ?? null,
+          },
           // T19.24. **World coordinates, so a check can find what it is
           // photographing.** The client learns vent positions only by deriving
           // them from the effect seed, so without this a pixel check would have

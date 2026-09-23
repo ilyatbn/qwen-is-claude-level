@@ -27,11 +27,12 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
+import type { SpaceBodyName } from '../render/spaceSky'
 import type { SkyGround } from '../render/parallax'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
-import { cycleU, darknessAt, skyPhase } from '../render/sky-math'
+import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { loadIdentity } from '../ui/skins'
@@ -365,7 +366,7 @@ export class SandboxScene extends Phaser.Scene {
     const { width: mapW, height: mapH } = this.core
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
-    this.world = new WorldView(this, this.core)
+    this.world = new WorldView(this, this.core, undefined, undefined, undefined, this.gravity === SPACE_GRAVITY)
     this.timings.buildAllMs = this.world.timings.buildAllMs
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
@@ -410,11 +411,19 @@ export class SandboxScene extends Phaser.Scene {
    * the map on screen unchanged and reads as a dead button.
    */
   private setCaveBackdrop(on: boolean): boolean {
-    setCaveBackdropDefault(on)
     this.world.terrain.setCaveBackdrop(on)
+    // What the renderer did, not what was asked: a space map refuses (T22.06), and a
+    // refusal must not become the default the next, non-space map is built with.
+    const now = this.world.terrain.backdropEnabled
+    if (now === on) setCaveBackdropDefault(on)
     this.world.flush(this.cameras.main.midPoint)
     this.refreshReadout()
-    return on
+    return now
+  }
+
+  /** The doc's darkness at this clock — `sceneDarkness`, so none in space (T22.06). */
+  private darkness(): number {
+    return sceneDarkness(this.gravity === SPACE_GRAVITY, 0, this.roundTime, C().NIGHT_DARKNESS)
   }
 
   private carveAt(x: number, y: number): void {
@@ -745,7 +754,9 @@ export class SandboxScene extends Phaser.Scene {
           // from "this frame drew some", which is the distinction §A15 keeps being
           // about (T21.31).
           parallax: self.sky?.parallax.debug() ?? null,
-          darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
+          // T22.06: the space sky's bodies and stars, or null while the ground's sky is up.
+          spaceSky: self.sky?.spaceDebug ?? null,
+          darkness: self.darkness(),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           // §F9, counted at both ends (§A39): the strength the scene believes,
           // and the alpha the layer actually filled with. A veil that is
@@ -1030,7 +1041,7 @@ export class SandboxScene extends Phaser.Scene {
           fog: w?.fog ?? 0,
           solid: self.core.countSolid(),
           fov: fovRadius({
-            darkness: darknessAt(cycleU(self.roundTime), C().NIGHT_DARKNESS),
+            darkness: self.darkness(),
             fogMult: self.fogActive
               ? C().FOV_FOG_MULT
               : 1 - (1 - C().FOV_FOG_MULT) * (w?.fog ?? 0),
@@ -1098,6 +1109,11 @@ export class SandboxScene extends Phaser.Scene {
        */
       setParallaxVisible(on: boolean) {
         self.sky?.parallax.setVisible(on)
+      },
+      /** T22.06: hide the space sky's bodies, one or all — `space-sky`'s control frames. */
+      setSpaceBodiesVisible(on: boolean, which: SpaceBodyName | 'all' = 'all') {
+        self.sky?.space.setBodiesVisible(on, which)
+        return self.sky?.spaceDebug ?? null
       },
       /**
        * Re-seed the **skyline only**, leaving the map alone.
@@ -1448,7 +1464,7 @@ export class SandboxScene extends Phaser.Scene {
     this.world.rig.update(dt)
     // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
     this.sky.parallax.setWeatherShade(this.world.weather.ambientIntensity, this.world.weather.toxicIntensity)
-    this.sky.update(this.roundTime, darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS), C().NIGHT_DARKNESS)
+    this.sky.update(this.roundTime, this.darkness(), C().NIGHT_DARKNESS, this.gravity === SPACE_GRAVITY)
 
     if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
     // T22.09B. The same Rust predicate snapshot bit 7 is encoded from. The sandbox
@@ -1494,7 +1510,11 @@ export class SandboxScene extends Phaser.Scene {
     this.fogStrength = this.fogActive ? 1 : weather.fog
     // T21.26: the same pure ambient schedule the game scene evaluates, from this map's seed.
     // `forceAmbient` (e2e, T21.31) overrides the schedule so a check need not wait for a shower.
-    this.world.weather.setAmbient(this.ambientOverride ?? ambientRain(this.seed, this.roundTime))
+    // T22.06: no weather to rain in space — ahead of the override too, which exists to
+    // make a *standard* check's shower arrive on time, not to rain in orbit.
+    this.world.weather.setAmbient(
+      this.gravity === SPACE_GRAVITY ? 0 : (this.ambientOverride ?? ambientRain(this.seed, this.roundTime)),
+    )
     this.world.weather.update(
       dt,
       weather.vents,
@@ -1510,7 +1530,7 @@ export class SandboxScene extends Phaser.Scene {
       ? C().FOV_FOG_MULT
       : 1 - (1 - C().FOV_FOG_MULT) * weather.fog
 
-    const darkness = darknessAt(cycleU(this.roundTime), C().NIGHT_DARKNESS)
+    const darkness = this.darkness()
     const lights: LightSource[] = []
     if (body) {
       const fov =

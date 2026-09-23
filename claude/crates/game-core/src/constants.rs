@@ -1553,6 +1553,42 @@ pub const STAR_COUNT: u32 = 220;
 /// `u` at which stars begin to appear.
 pub const STAR_FADE_START: f32 = 0.58;
 
+// --- T22.06: the space backdrop ---
+//
+// Presentation only: nothing here reaches the simulation or the state hash. Sizes
+// are **camera px** — the space the sky is laid out in, which `CAMERA_ZOOM` then
+// doubles on screen. Every body moves on the **round's** clock, so two players in
+// one round see one sky.
+
+/// The earth, camera px. 128 screen px across at `CAMERA_ZOOM` 2: the largest thing
+/// in the sky by far, which is what makes it read as the planet you are above.
+pub const SPACE_EARTH_RADIUS: f32 = 64.0;
+pub const SPACE_MOON_RADIUS: f32 = 15.0;
+/// The sun's disc; its glow is `SPACE_SUN_GLOW` times this.
+pub const SPACE_SUN_RADIUS: f32 = 12.0;
+pub const SPACE_SUN_GLOW: f32 = 9.0;
+/// Seconds per lap of each body's path. **The owner asked that they move**, so each
+/// is sized against a round (`ROUND_SECONDS` 240): the moon laps the earth twice,
+/// the earth crosses a good third of its path — ~3 camera px/s, ~6 on screen, which
+/// is slow enough to be scenery and fast enough that a player sees it has moved.
+pub const SPACE_SUN_PERIOD: f32 = 900.0;
+pub const SPACE_EARTH_PERIOD: f32 = 420.0;
+pub const SPACE_MOON_PERIOD: f32 = 120.0;
+/// The moon's orbit about the earth's centre, camera px. Squashed vertically by
+/// `SPACE_MOON_TILT` so the orbit reads as a ring seen edge-on and the moon passes
+/// in front of the earth and behind it.
+pub const SPACE_MOON_ORBIT: f32 = 118.0;
+pub const SPACE_MOON_TILT: f32 = 0.32;
+/// The star field's sideways drift, camera px/s — the whole sky turning slowly.
+pub const SPACE_STAR_DRIFT: f32 = 2.0;
+pub const SPACE_STAR_COUNT: u32 = 320;
+/// Scroll factors: far things barely move with the camera, and the stars are
+/// farther than the bodies. Both are well under `SKY_BODY_PARALLAX`'s 0.08, because
+/// a space map is flown in every direction and a larger factor walks the earth off
+/// the screen before you reach a rim.
+pub const SPACE_BODY_PARALLAX: f32 = 0.04;
+pub const SPACE_STAR_PARALLAX: f32 = 0.015;
+
 // --- A5: bots ---
 
 /// Five, so a lone human sits in a full six-player room — T11.16, §B27.

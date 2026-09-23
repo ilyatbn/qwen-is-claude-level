@@ -98,6 +98,17 @@ export const CHECKS = [
   // the space entry as its presence control.
   { name: 'radiation', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
   { name: 'radiation-standard', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
+  // T22.06: the space backdrop — sun, earth, moon and stars each located on the frame
+  // against its own hidden-body control frame, moving across a round with the camera and
+  // an asteroid patch held still, seeded, and the ground sky's ridge, clouds, rain and
+  // night absent in space beside their presence after a regenerate to standard. Both paths.
+  { name: 'space-sky', file: 'scripts/checks/space-sky.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  {
+    name: 'space-sky-canvas',
+    file: 'scripts/checks/space-sky.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
+    serial: true,
+  },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.
@@ -321,6 +332,11 @@ export const CHECKS = [
   // (`DEV_START_BATTERY=0`) irradiated in a real space match, a full one sealed, and
   // neither drawn in warmup. Standalone: two servers, one client each.
   { name: 'radiation-match', file: 'scripts/checks/radiation-match.mjs', standalone: true },
+  // T22.06: the space backdrop in GameScene — the sky seeded off `welcome`'s seed (a
+  // networked client's `core.meta.seed` is the startup map's), darkness 0 at the
+  // ground's night on the wire *and* on the frame, the ridge and clouds off, the bodies
+  // moving on the round's clock; a standard stack at the same clock is the control.
+  { name: 'space-sky-match', file: 'scripts/checks/space-sky-match.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

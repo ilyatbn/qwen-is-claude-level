@@ -134,6 +134,12 @@ export class WorldView {
     weaponKeys: string[] = WEAPON_KEYS,
     mapSeed: number = Number(core.meta.seed),
     themeId: number = core.meta.theme,
+    /**
+     * T22.06 (`R33`): a space map is never painted as a cave. Its rim is closed, so
+     * no interior air is reachable from the sky and the backdrop classifier would
+     * call the whole arena a cavern; behind an asteroid there is space, not rock.
+     */
+    space = false,
   ) {
     const { width: mapW, height: mapH } = core
     this.core = core
@@ -163,6 +169,7 @@ export class WorldView {
       makeBackTexture(256, theme, mapSeed),
     )
 
+    if (space) this.terrain.lockCaveBackdropOff()
     this.tileSeed = mapSeed
     const t0 = performance.now()
     this.terrain.buildAll()

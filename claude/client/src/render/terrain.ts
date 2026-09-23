@@ -105,6 +105,8 @@ export class TerrainRenderer {
    * an 8 Mpx chamfer whose result is thrown away.
    */
   private caveBackdrop: boolean
+  /** T22.06: set for a space map — the backdrop stays off whatever a toggle asks. */
+  private caveLocked = false
 
   /** §D6's chunk → objects index. Null until `map_init` arrives. */
   private objects: ObjectIndex | null = null
@@ -293,6 +295,15 @@ export class TerrainRenderer {
     return this.objects
   }
 
+  /**
+   * T22.06: never paint the cave backdrop on this map. Called before `buildAll`, so
+   * the silhouette is never computed; `setCaveBackdrop(true)` is refused afterwards.
+   */
+  lockCaveBackdropOff(): void {
+    this.setCaveBackdrop(false)
+    this.caveLocked = true
+  }
+
   /** Whether interior air is being painted with dark rock right now. */
   get backdropEnabled(): boolean {
     return this.caveBackdrop
@@ -312,6 +323,7 @@ export class TerrainRenderer {
    * flip it before you start digging, or regenerate after.
    */
   setCaveBackdrop(on: boolean): void {
+    if (this.caveLocked) on = false
     if (on === this.caveBackdrop) return
     this.caveBackdrop = on
     if (on && !this.snapshot) {

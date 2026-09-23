@@ -19,6 +19,8 @@ import {
 } from './sky-math'
 import { DEPTH } from './backdrop'
 import { ParallaxLayer, type SkyGround } from './parallax'
+import { SpaceSky, type SpaceSkyDebug } from './spaceSky'
+import { SPACE_SKY_BOTTOM, SPACE_SKY_TOP } from './spaceSky-math'
 
 const GRAD_KEY = '__sky_gradient'
 const GRAD_H = 256
@@ -41,6 +43,14 @@ export class SkyLayer {
    * background one of them would not have.
    */
   readonly parallax: ParallaxLayer
+  /**
+   * T22.06: the space backdrop, shown **instead of** the day — the gradient's
+   * keyframes, the sun and moon arcs, the night stars and the parallax band all go,
+   * and this draws its own black, stars, sun, earth and moon on the round's clock.
+   */
+  readonly space: SpaceSky
+  /** Which sky the last `update` drew. Derived per frame from the caller's mode. */
+  private inSpace = false
 
   /** Last colours baked, so the gradient is not redrawn every frame. */
   private lastTop = -1
@@ -76,6 +86,10 @@ export class SkyLayer {
       .setDepth(DEPTH.sky)
 
     this.parallax = new ParallaxLayer(scene, seed, themeId)
+    this.space = new SpaceSky(scene)
+    // Seeded here as well as in `setSeed`: the sandbox builds its sky after its first
+    // map and passes that map's seed only to this constructor.
+    this.space.setSeed(seed)
 
     this.stars = starField(c.STAR_COUNT ?? 220, w, h * 0.75)
     this.starGfx = scene.add
@@ -115,8 +129,26 @@ export class SkyLayer {
       .setDepth(DEPTH.sky + 2)
   }
 
-  /** `darkness` is the server's scalar; the sky only uses it to fade the stars. */
-  update(roundTime: number, darkness: number, nightDarkness = 0.82): void {
+  /**
+   * `darkness` is the server's scalar; the sky only uses it to fade the stars.
+   *
+   * `space` is the match's mode, passed every frame by the scene that knows it (the
+   * gravity off `lobby_state`, or the sandbox's `?gravity=`) — a flag, not a stored
+   * setting, so a sky can never be left showing the other mode's picture.
+   */
+  update(roundTime: number, darkness: number, nightDarkness = 0.82, space = false): void {
+    if (space !== this.inSpace) this.setMode(space)
+    if (space) {
+      if (this.lastTop !== SPACE_SKY_TOP || this.lastBottom !== SPACE_SKY_BOTTOM) {
+        this.lastTop = SPACE_SKY_TOP
+        this.lastBottom = SPACE_SKY_BOTTOM
+        this.bakeGradient(SPACE_SKY_TOP, SPACE_SKY_BOTTOM)
+      }
+      // The camera's live scroll: the rig moved it before this call (rig-before-sky).
+      const cam = this.scene.cameras.main
+      this.space.update(roundTime, this.parallax.view(), cam.scrollX, cam.scrollY)
+      return
+    }
     const c = C()
     const u = cycleU(roundTime)
     this.phase = skyPhase(u)
@@ -176,6 +208,26 @@ export class SkyLayer {
    */
   setSeed(seed: number, themeId: number, ground: SkyGround): void {
     this.parallax.setSeed(seed, themeId, ground)
+    this.space.setSeed(seed)
+  }
+
+  /** Swap the whole picture between the ground's sky and space's. */
+  private setMode(space: boolean): void {
+    this.inSpace = space
+    // Re-bake on the next frame whichever way this went.
+    this.lastTop = -1
+    this.parallax.setSuppressed(space)
+    this.space.setShown(space && !this.hidden)
+    if (space) {
+      for (const o of [this.sun, this.sunGlow, this.moon, this.moonGlow]) o.setVisible(false)
+      this.starGfx.clear()
+      this.starGfx.setVisible(false)
+    }
+  }
+
+  /** T22.06: what the space sky drew, or null while the ground's sky is up. */
+  get spaceDebug(): SpaceSkyDebug | null {
+    return this.inSpace ? this.space.debug() : null
   }
 
   get currentPhase(): SkyPhase {
@@ -228,9 +280,12 @@ export class SkyLayer {
     this.moon.setVisible(on)
     this.moonGlow.setVisible(on)
     this.parallax.setVisible(on)
+    this.space.setShown(on && this.inSpace)
+    if (this.inSpace) for (const o of [this.sun, this.sunGlow, this.moon, this.moonGlow, this.starGfx]) o.setVisible(false)
   }
 
   destroy(): void {
+    this.space.destroy()
     this.parallax.destroy()
     this.gradient.destroy()
     this.starGfx.destroy()

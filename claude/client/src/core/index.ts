@@ -369,6 +369,20 @@ export interface Constants {
   SKY_BODY_PARALLAX: number
   STAR_COUNT: number
   STAR_FADE_START: number
+  // T22.06: the space backdrop (`constants.rs` has the bases).
+  SPACE_EARTH_RADIUS: number
+  SPACE_MOON_RADIUS: number
+  SPACE_SUN_RADIUS: number
+  SPACE_SUN_GLOW: number
+  SPACE_SUN_PERIOD: number
+  SPACE_EARTH_PERIOD: number
+  SPACE_MOON_PERIOD: number
+  SPACE_MOON_ORBIT: number
+  SPACE_MOON_TILT: number
+  SPACE_STAR_DRIFT: number
+  SPACE_STAR_COUNT: number
+  SPACE_BODY_PARALLAX: number
+  SPACE_STAR_PARALLAX: number
   NIGHT_DARKNESS: number
   DAY_DURATION: number
   NIGHT_DURATION: number
