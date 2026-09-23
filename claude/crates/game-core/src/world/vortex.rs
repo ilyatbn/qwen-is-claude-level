@@ -18,7 +18,7 @@
 //! - **the rules here**: which breach is a new vortex, the cap of three, who is
 //!   caught. Pure functions over the list, so they are testable without a world.
 
-use crate::constants::{MAX_ACTIVE_VORTICES, VORTEX_CAPTURE_R};
+use crate::constants::{MAX_ACTIVE_VORTICES, VORTEX_CAPTURE_R, VORTEX_REACH};
 use crate::math::Vec2;
 
 /// One live vortex. The list is kept in opening order, which is the order both
@@ -30,14 +30,16 @@ pub struct Vortex {
 }
 
 /// What a breach did to the list.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Opened {
     /// The breach is inside an existing vortex's capture radius: the same hole,
     /// widened. Nothing changes.
     SameHole,
     /// A new vortex `id`, and the oldest one it displaced past the cap, if any
     /// (R9, point 2: a fourth breach replaces the oldest, which stops pulling).
-    New { id: u32, replaced: Option<u32> },
+    /// **Returned whole, not as an id**: the caller keeps it catching (R88), so
+    /// it needs the position the list just forgot.
+    New { id: u32, replaced: Option<Vortex> },
 }
 
 /// A breach at `at`. **Many holes, at most three vortices** (R9): a breach within
@@ -54,20 +56,40 @@ pub fn open(vortices: &mut Vec<Vortex>, seq: &mut u32, at: Vec2) -> Opened {
     let id = *seq;
     *seq = seq.wrapping_add(1);
     vortices.push(Vortex { id, pos: at });
-    let replaced = (vortices.len() > MAX_ACTIVE_VORTICES).then(|| vortices.remove(0).id);
+    let replaced = (vortices.len() > MAX_ACTIVE_VORTICES).then(|| vortices.remove(0));
     Opened::New { id, replaced }
 }
 
-/// The vortex that catches a body centred at `pos`, if any: the first in opening
-/// order within `VORTEX_CAPTURE_R`. **Everyone** — wings included (R9, point 1).
-/// Wings refuse pads and gun platforms because those are things you *choose to
-/// use*; a vortex is a thing that happens to you. `World::fire_pads` carries the
-/// other half of that sentence.
-pub fn captor(vortices: &[Vortex], pos: Vec2) -> Option<u32> {
+/// The vortex that catches a body centred at `pos`, if any: the first within
+/// `VORTEX_CAPTURE_R`, the pulling ones in opening order and then the spent ones.
+/// **Everyone** — wings included (R9, point 1). Wings refuse pads and gun
+/// platforms because those are things you *choose to use*; a vortex is a thing
+/// that happens to you. `World::fire_pads` carries the other half of that sentence.
+///
+/// **`spent` catches too** (`M22-RULINGS` R88): a vortex the cap displaced stops
+/// pulling, but its hole is still open — a hole never heals (R9, point 3) — and a
+/// hole in the rim never kills. Only the *pull* is capped at three.
+pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2) -> Option<u32> {
     vortices
         .iter()
+        .chain(spent)
         .find(|v| (v.pos - pos).len() <= VORTEX_CAPTURE_R)
         .map(|v| v.id)
+}
+
+/// How far `centre` is outside the no-escape disc of every hole, px — negative
+/// inside one. The clearance `World::step_vortices` hands the shared picker
+/// (`Map::random_body_site_where`, `M22-RULINGS` R86): **a caught player is put
+/// down beyond `VORTEX_REACH / 2` of every hole**, where thrust beats the pull
+/// (`VORTEX_ACCEL_MAX`'s basis), so the trip cannot deliver them into a second
+/// vortex's mouth. Spent holes are held to the same distance although they no
+/// longer pull: one number, and the stricter one.
+pub fn clearance(vortices: &[Vortex], spent: &[Vortex], centre: Vec2) -> f32 {
+    vortices
+        .iter()
+        .chain(spent)
+        .map(|v| (v.pos - centre).len() - VORTEX_REACH * 0.5)
+        .fold(f32::INFINITY, f32::min)
 }
 
 /// The live centres as a fixed array, for `attractors::env_at` — no allocation in
@@ -124,12 +146,16 @@ mod tests {
             fourth,
             Opened::New {
                 id: MAX_ACTIVE_VORTICES as u32,
-                replaced: Some(0)
+                replaced: Some(Vortex {
+                    id: 0,
+                    pos: Vec2::new(0.0, 0.0)
+                })
             }
         );
         assert_eq!(vs.len(), MAX_ACTIVE_VORTICES);
         assert_eq!(vs.iter().map(|v| v.id).collect::<Vec<_>>(), vec![1, 2, 3]);
-        // The replaced one's hole is open again: a breach there is a new vortex.
+        // A breach at the replaced one's hole pulls again as a new vortex (the
+        // merge asks only the pulling list); the spent one keeps catching (R88).
         assert!(matches!(
             open(&mut vs, &mut seq, Vec2::new(0.0, 0.0)),
             Opened::New { .. }
@@ -148,9 +174,25 @@ mod tests {
                 pos: Vec2::new(10.0, 0.0),
             },
         ];
-        assert_eq!(captor(&vs, Vec2::new(5.0, 0.0)), Some(7));
-        assert_eq!(captor(&vs, Vec2::new(0.0, VORTEX_CAPTURE_R - 0.5)), Some(7));
-        assert_eq!(captor(&vs, Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0)), None);
+        assert_eq!(captor(&vs, &[], Vec2::new(5.0, 0.0)), Some(7));
+        assert_eq!(
+            captor(&vs, &[], Vec2::new(0.0, VORTEX_CAPTURE_R - 0.5)),
+            Some(7)
+        );
+        assert_eq!(
+            captor(&vs, &[], Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0)),
+            None
+        );
+        // R88: a spent vortex catches, after every pulling one.
+        let spent = [Vortex {
+            id: 3,
+            pos: Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0),
+        }];
+        assert_eq!(
+            captor(&vs, &spent, Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0)),
+            Some(3)
+        );
+        assert_eq!(captor(&vs, &spent, Vec2::new(5.0, 0.0)), Some(7));
         let (c, n) = centres(&vs);
         assert_eq!(&c[..n], &[Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)]);
     }
@@ -317,6 +359,184 @@ mod world_tests {
         }
     }
 
+    /// Breach the top, left and right arcs, one step each, so three vortices pull.
+    fn three_vortices(w: &mut World) {
+        let geo = w.map.space_geometry().expect("space");
+        breach_top(w);
+        for (x, y) in [(geo.cx - geo.rx, geo.cy), (geo.cx + geo.rx, geo.cy)] {
+            let _ = w
+                .map
+                .carve_circle(x.round() as i32, y.round() as i32, METEOR_CARVE_R as i32);
+            step(w);
+        }
+        assert_eq!(
+            w.vortices.len(),
+            3,
+            "control: three breaches, three vortices"
+        );
+        let _ = w.drain_events();
+    }
+
+    /// **An idle player caught by a vortex never dies in the void** (T22.10C F1,
+    /// R86) — the review's shape: at rest 1.5 capture radii inside a live vortex,
+    /// with three of them pulling, over twelve maps, for ten seconds; once fresh and
+    /// once with a pad's cooldown still running. Before R86 a running cooldown let
+    /// the vortex decline, and the picker could put a caught player straight into
+    /// another vortex's pull: 2–5 of 12 seeds died. The trips are counted too, so
+    /// this cannot pass for a world where nobody was ever taken.
+    #[test]
+    fn an_idle_player_a_vortex_takes_never_dies_in_the_void() {
+        use crate::constants::{TELEPORT_COOLDOWN, VORTEX_CAPTURE_R};
+        for cooldown in [false, true] {
+            let (mut died, mut taken) = (Vec::new(), 0);
+            for seed in 0..12u64 {
+                let mut trips = 0;
+                let mut w = space_world(seed);
+                three_vortices(&mut w);
+                let v = w.vortices[0].pos;
+                w.players[0].body = Body::new(v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R));
+                if cooldown {
+                    w.players[0].teleport.ready_at = w.round_time + TELEPORT_COOLDOWN;
+                }
+                for _ in 0..600 {
+                    step(&mut w);
+                    for e in w.drain_events() {
+                        match e {
+                            GameEvent::VortexTrip { id: 0, .. } => trips += 1,
+                            GameEvent::Death {
+                                victim: 0,
+                                cause: DeathCause::Void,
+                                ..
+                            } => died.push(seed),
+                            _ => {}
+                        }
+                    }
+                }
+                taken += usize::from(trips > 0);
+            }
+            // The control. Measured: 8 of 12 maps take the player; on the other
+            // four they come to rest on an asteroid lip first, a well outweighing
+            // the pull there — so this is a claim about captures, not about
+            // players who never reached one.
+            assert!(
+                taken >= 6,
+                "cooldown {cooldown}: control — only {taken} of 12 maps took the player"
+            );
+            assert!(
+                died.is_empty(),
+                "cooldown {cooldown}: the void took an idle player on seeds {died:?}"
+            );
+        }
+    }
+
+    /// **A trip lands clear of every hole's pull** (R86): the destination is past
+    /// `VORTEX_REACH / 2` of every vortex — where thrust beats the pull — over twelve
+    /// maps with three vortices. The ten-second test above passes without this
+    /// half (measured: the capture ignoring the cooldown is enough to keep an idle
+    /// player alive there), so this is the test that holds the destination rule.
+    #[test]
+    fn a_trip_lands_clear_of_every_holes_pull() {
+        use crate::constants::VORTEX_REACH;
+        for seed in 0..12u64 {
+            let mut w = space_world(seed);
+            three_vortices(&mut w);
+            for k in 0..3 {
+                let v = w.vortices[k].pos;
+                w.players[0].body = Body::new(v);
+                step(&mut w);
+                let dest = w
+                    .drain_events()
+                    .into_iter()
+                    .find_map(|e| match e {
+                        GameEvent::VortexTrip { id: 0, x, y, .. } => Some(Vec2::new(x, y)),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("seed {seed}: vortex {k} took nobody"));
+                for u in &w.vortices {
+                    let d = (u.pos - dest).len();
+                    assert!(
+                        d >= VORTEX_REACH * 0.5,
+                        "seed {seed}: put down {d} px from vortex {}, inside its pull",
+                        u.id
+                    );
+                }
+            }
+        }
+    }
+
+    /// **R88: a vortex the cap displaced stops pulling and keeps catching.** Four
+    /// breaches; the first is spent. A player at rest beside its hole is not pulled
+    /// (the control: the same spot beside a pulling one is), and a player on it is
+    /// still taken — its hole never becomes an exit.
+    #[test]
+    fn a_spent_vortex_pulls_nothing_and_still_catches() {
+        use crate::constants::VORTEX_CAPTURE_R;
+        let four = || {
+            let mut w = space_world(4242);
+            three_vortices(&mut w);
+            let geo = w.map.space_geometry().expect("space");
+            let _ = w.map.carve_circle(
+                geo.cx.round() as i32,
+                (geo.cy + geo.ry).round() as i32,
+                METEOR_CARVE_R as i32,
+            );
+            step(&mut w);
+            w
+        };
+        let mut w = four();
+        let geo = w.map.space_geometry().expect("space");
+        assert_eq!(w.vortices.len(), 3, "the pull is capped at three");
+        assert_eq!(w.spent_vortices.len(), 1, "the fourth displaced one");
+        let spent = w.spent_vortices[0];
+        assert!(
+            w.drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::VortexClose { id, .. } if *id == spent.id)),
+            "the displaced one was not announced as closed"
+        );
+
+        // Through the world's own step, not `env_at` by hand: a player at rest
+        // 1.5 capture radii inward of a hole, for a quarter second, against the
+        // same world with that hole's vortex removed. Spent: no difference.
+        // Pulling (the control): a difference.
+        let drift = |forget: &dyn Fn(&mut World), hole: Vec2| {
+            let mut w = four();
+            forget(&mut w);
+            let inward = (Vec2::new(geo.cx, geo.cy) - hole).normalized();
+            w.players[0].body = Body::new(hole + inward * 1.5 * VORTEX_CAPTURE_R);
+            for _ in 0..15 {
+                step(&mut w);
+            }
+            w.players[0].body.vel
+        };
+        let keep = |_: &mut World| {};
+        assert_eq!(
+            drift(&keep, spent.pos),
+            drift(&|w: &mut World| w.spent_vortices.clear(), spent.pos),
+            "a spent vortex still pulls"
+        );
+        let live = w.vortices[0].pos;
+        assert_ne!(
+            drift(&keep, live),
+            drift(
+                &|w: &mut World| {
+                    w.vortices.remove(0);
+                },
+                live
+            ),
+            "control: a pulling vortex adds nothing either, so the absence proves nothing"
+        );
+
+        w.players[0].body = Body::new(spent.pos);
+        step(&mut w);
+        assert!(
+            w.drain_events().iter().any(
+                |e| matches!(e, GameEvent::VortexTrip { id: 0, vortex, .. } if *vortex == spent.id)
+            ),
+            "a spent vortex's hole let a player through"
+        );
+    }
+
     /// **R9, point 1: it catches a player wearing wings.** Wings refuse pads because
     /// a pad is something you choose; a vortex happens to you.
     #[test]
@@ -361,8 +581,16 @@ mod world_tests {
             * 15.0
             * SIM_DT;
         let got = pulled[0] - pulled[1];
+        // The band, with its basis (T22.10C F8): `want` is the pull at the start
+        // point, but the body closes on the vortex through the window — at most
+        // `½·a·t²` at the start point's pull — and the linear falloff raises the
+        // pull by that distance over what is left of the reach. That fraction
+        // (≈ 11 % here) bounds the error both ways; measured: 0.991.
+        let t = 15.0 * SIM_DT;
+        let a = crate::constants::VORTEX_ACCEL_MAX * (1.0 - d / crate::constants::VORTEX_REACH);
+        let band = 0.5 * a * t * t / (crate::constants::VORTEX_REACH - d);
         assert!(
-            (0.8 * want..1.3 * want).contains(&got),
+            ((1.0 - band) * want..(1.0 + band) * want).contains(&got),
             "the vortex added {got} px/s toward itself, its shape says {want}: {pulled:?}"
         );
     }

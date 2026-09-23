@@ -751,9 +751,11 @@ pub const SPACE_MAX_SPEED: f32 = 1350.0;
 /// thing R16 forbids.
 pub const SPACE_VOID_GRACE: f32 = 2.0 * SPACE_MAX_SPEED * SIM_DT;
 
-/// At most this many vortices pull at once (`M22-RULINGS` R9, point 2). A fourth
-/// breach replaces the **oldest**, which stops pulling. The hole it guarded stays
-/// open — a hole never heals (R9, point 3) — and is then an exit to the void.
+/// At most this many vortices **pull** at once (`M22-RULINGS` R9, point 2). A
+/// fourth breach replaces the **oldest**, which stops pulling and fades — **but
+/// keeps catching** for as long as its hole is open, which is the round (R88,
+/// T22.10C): a hole never heals (R9, point 3), and a hole in the rim never kills.
+/// Only the pull is capped; `World::spent_vortices` holds the rest.
 pub const MAX_ACTIVE_VORTICES: usize = 3;
 
 /// A player whose centre comes within this of a vortex is taken, px — and a breach

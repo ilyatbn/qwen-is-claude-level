@@ -3820,6 +3820,69 @@ mod tests {
         );
     }
 
+    /// **T22.10C F4: prediction's real call site pulls as the server does.** The
+    /// test above reads `field_accel_at`, which is a readback — planting
+    /// `env_at(map, gravity, &[], …)` in `apply_input`, the call prediction
+    /// actually makes, left it green. This steps `GameCore::apply_input` and
+    /// `World::step` side by side, idle, from 1.5 capture radii inside a live
+    /// vortex until the server takes the player, and compares positions
+    /// **exactly** every tick. The control: the body really was pulled a long
+    /// way, so equal answers are not two copies of the start.
+    #[test]
+    fn apply_input_near_a_vortex_steps_exactly_as_the_server_does() {
+        use game_core::constants::{METEOR_CARVE_R, VORTEX_CAPTURE_R};
+        use game_core::player::input::Input;
+        use game_core::world::GameEvent;
+        let (mut w, mut core) = space_world_and_mirror(true);
+        let geo = w.map.space_geometry().expect("space");
+        let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+        // Both sides carve the hole: the server's map, and the mirror's from the
+        // `carve` event.
+        let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+        core.carve(tx, ty, METEOR_CARVE_R as i32);
+        w.step(SIM_DT);
+        assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
+        let v = w.vortices[0].pos;
+        core.set_vortices(&[v.x], &[v.y]);
+
+        let start = v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R);
+        w.add_player(1, 0, String::new());
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body = game_core::physics::body::Body::new(start);
+        }
+        core.add_player(1, start.x, start.y);
+        let _ = w.drain_events();
+
+        let (mut seq, mut last) = (1000u32, start);
+        for tick in 0..240 {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, 0, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, 0, 0, SIM_DT);
+            if w.drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::VortexTrip { id: 1, .. }))
+            {
+                break;
+            }
+            let server = w.player(1).expect("seated").body.pos;
+            let c = core.player_state(1);
+            assert_eq!(
+                (c[0], c[1]),
+                (server.x, server.y),
+                "tick {tick}: the prediction left the server near a vortex"
+            );
+            last = server;
+        }
+        assert!(
+            (last - start).len() > 0.5 * VORTEX_CAPTURE_R,
+            "control: the body barely moved ({:?} -> {:?}), so agreement proves nothing",
+            start,
+            last
+        );
+    }
+
     /// **T22.10: the mirror sums the vortex the server sums**, once told. A breach is
     /// opened on the server world through its own carve and step; the mirror is
     /// handed the list through `set_vortices` and must then report the server's

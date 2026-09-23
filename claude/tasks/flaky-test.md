@@ -39,6 +39,11 @@ tree's Done-when `cargo test -p game-server` minutes earlier, and **4/4 alone** 
 One sighting, so recorded rather than `#[ignore]`d — the coordinator's call. No causal path from T22.08E (a
 `Damage` field, the flare clock, the catch-up list); what it shares with R40's family is a wall-clock wait on a
 room task under the three-crate `cargo test`'s load, though this one is not a socket handshake.
+**Follow-up (T22.10C F6, 2026-09-24):** its `config` built on `..Config::default()` and so inherited
+`fixed_seed: None` — an unpinned map re-rolled every run, deciding where both bots are seated, which is the
+shared cause CLAUDE.md records for the last "moving" family. Pinned to `Some(4242)`; 4/4 green after
+(`cargo test -p game-server --test bots`). Not proven to be *this* sighting's cause — one sighting cannot
+say — so the entry stays, and a red on a pinned seed now reproduces.
 
 **Not parked, noted (T21.18, 2026-09-15):** `client/src/render/backdrop-real.test.ts` takes **216 s alone** (42/42 green). In one `--changed` gate at load the vitest worker lost its RPC (`Timeout calling "onTaskUpdate"`, 872/914 reported) and the stage went red; the gate before and after it were 914/914. There is no parking mechanism for a vitest file, so it is recorded here — one slow file sits near the runner timeout, and the owner should decide whether it moves out of the default run. **Red again in the coordinator's full gate at `bf76714` on an idle box (load 1.35):** `873 passed (915)`, two `onTaskUpdate` errors, then **915/915 in 217 s alone**. **Split per map on 2026-09-15** into six `backdrop-real-*.test.ts` files over `backdrop-real.suite.ts` (assertions unchanged), so the six run in parallel workers; `backdrop-real-cases.test.ts` asserts every case is still run once.
 

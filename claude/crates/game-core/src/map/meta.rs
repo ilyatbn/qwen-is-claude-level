@@ -390,18 +390,51 @@ impl Map {
     /// re-validated against the damaged mask call `body_fits_at` on the result,
     /// which is what `resample_surface` and `choose_respawn` do.
     pub fn random_body_site(&self, rng: &mut ChaCha8Rng) -> Option<Point> {
+        self.random_body_site_where(rng, |_| 0.0)
+    }
+
+    /// [`Map::random_body_site`] with the caller's filter: a site is taken when
+    /// `clearance(site) >= 0`, and when none drawn is, the site with the greatest
+    /// clearance (T22.10C, `M22-RULINGS` R86 — the breach vortex puts a caught
+    /// player down clear of every hole's pull).
+    ///
+    /// **The same picker, not a copy of it**: a second *"somewhere valid on this
+    /// map"* is a second answer that can disagree, and the failure is a body in
+    /// rock. `random_body_site` is this with a clearance that accepts everything,
+    /// which draws exactly what it always drew.
+    pub fn random_body_site_where(
+        &self,
+        rng: &mut ChaCha8Rng,
+        clearance: impl Fn(Point) -> f32,
+    ) -> Option<Point> {
         match self.space_geometry() {
             Some(geo) => crate::map::gen::space::random_open_space(
                 &self.mask,
                 &geo,
                 &self.meta.asteroids,
                 rng,
+                clearance,
             ),
             None if self.meta.surface_points.is_empty() => None,
-            None => Some(
-                self.meta.surface_points
-                    [range_i32(rng, 0, self.meta.surface_points.len() as i32 - 1) as usize],
-            ),
+            None => {
+                // One draw, as the landscape always drew; a site that is not
+                // clear falls back to the clearest listed point. No landscape
+                // caller filters today — the vortex is space-only — so this arm
+                // exists to keep the contract whole, not for a live case.
+                let pts = &self.meta.surface_points;
+                let p = pts[range_i32(rng, 0, pts.len() as i32 - 1) as usize];
+                if clearance(p) >= 0.0 {
+                    return Some(p);
+                }
+                pts.iter()
+                    .copied()
+                    .map(|q| (clearance(q), q))
+                    .fold(None::<(f32, Point)>, |b, n| match b {
+                        Some(b) if b.0 >= n.0 => Some(b),
+                        _ => Some(n),
+                    })
+                    .map(|(_, q)| q)
+            }
         }
     }
 }

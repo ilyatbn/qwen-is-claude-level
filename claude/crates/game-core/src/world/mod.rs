@@ -926,6 +926,10 @@ pub struct World {
     /// T22.10: the live breach vortices, in opening order — the order the pull is
     /// summed in, on both sides. Hashed.
     pub vortices: Vec<vortex::Vortex>,
+    /// T22.10C: vortices the cap displaced — **no pull, still catching** for as
+    /// long as their hole is open, which is for the round (`M22-RULINGS` R88: a
+    /// hole in the rim never kills; only the pull is capped at three). Hashed.
+    pub spent_vortices: Vec<vortex::Vortex>,
     /// The next vortex id. Hashed: it names the next one.
     vortex_seq: u32,
     /// Where a vortex puts people: its own stream, so a capture does not move any
@@ -1121,6 +1125,7 @@ impl World {
             flare: None,
             irradiated_this_tick: Vec::new(),
             vortices: Vec::new(),
+            spent_vortices: Vec::new(),
             vortex_seq: 0,
             vortex_rng: substream(seed, "vortex"),
         }
@@ -3420,8 +3425,10 @@ impl World {
     /// breach the left, right or top arc and `clamp_to_world` would otherwise hold a
     /// living player outside the arena for the rest of the round. Past the outer edge
     /// by `SPACE_VOID_GRACE`, measured at the body's centre — the band a vortex has
-    /// to catch you in first. One predicate, so `step_void` and `resolve_deaths`
-    /// still cannot disagree about who fell.
+    /// to catch you in first. **Every hole has one** (R88, T22.10C): a vortex the
+    /// cap displaced stops pulling but keeps catching, so no hole in the rim is an
+    /// exit to this. One predicate, so `step_void` and `resolve_deaths` still
+    /// cannot disagree about who fell.
     fn is_in_the_void(&self, p: &PlayerState) -> bool {
         if p.body.head_y() > self.map.mask.h as f32 {
             return true;
@@ -3438,10 +3445,20 @@ impl World {
     /// (`fire_pads`): a fresh `Body`, the jump and jetpack reset with **fuel
     /// surviving the trip** (R9's addendum — a reset tank turned every pad into a
     /// refuelling station, and in a mode where fuel is the economy that is worse
-    /// here), and `teleport::arrive`, whose cooldown is also the vortex's: a player
-    /// who drifts straight back is not taken again inside `TELEPORT_COOLDOWN`. The
-    /// destination is T22.05B's picker, `Map::random_body_site` — the one answer to
-    /// *"somewhere valid on this map"*, so a vortex cannot pop you inside rock.
+    /// here), and `teleport::arrive` so a pad's arming rule sees the arrival. The
+    /// destination is T22.05B's picker — the one answer to *"somewhere valid on this
+    /// map"*, so a vortex cannot pop you inside rock.
+    ///
+    /// **T22.10C (`M22-RULINGS` R86): the capture ignores the teleport cooldown**,
+    /// and the destination is chosen **clear of every hole's pull**
+    /// (`vortex::clearance`, through `Map::random_body_site_where`). Reading the
+    /// cooldown here let a vortex *decline* a player who had just used a pad or
+    /// just been taken — and a declined player is pulled through the hole into the
+    /// void, which is the one thing this feature exists to stop. The far
+    /// destination is what prevents the loop the cooldown was guarding against.
+    /// **A caught player is always taken**: the picker falls back to the site
+    /// farthest from every hole, and only a map with no open space at all — which
+    /// generation refuses (R17) and carving cannot make — returns nothing.
     fn step_vortices(&mut self, now: f32) {
         let tick = self.tick;
         for (x, y) in self.map.take_breaches() {
@@ -3450,7 +3467,10 @@ impl World {
                 vortex::open(&mut self.vortices, &mut self.vortex_seq, at)
             {
                 if let Some(old) = replaced {
-                    self.events.push(GameEvent::VortexClose { tick, id: old });
+                    // R88: it stops pulling and fades; its hole still catches.
+                    self.events
+                        .push(GameEvent::VortexClose { tick, id: old.id });
+                    self.spent_vortices.push(old);
                 }
                 self.events.push(GameEvent::VortexOpen {
                     tick,
@@ -3460,18 +3480,23 @@ impl World {
                 });
             }
         }
-        if self.vortices.is_empty() {
+        if self.vortices.is_empty() && self.spent_vortices.is_empty() {
             return;
         }
         for i in 0..self.players.len() {
             let p = &self.players[i];
-            if !p.alive || now < p.teleport.ready_at {
+            if !p.alive {
                 continue;
             }
-            let Some(vid) = vortex::captor(&self.vortices, p.body.pos) else {
+            let Some(vid) = vortex::captor(&self.vortices, &self.spent_vortices, p.body.pos) else {
                 continue;
             };
-            let Some(site) = self.map.random_body_site(&mut self.vortex_rng) else {
+            let (pulling, spent) = (&self.vortices, &self.spent_vortices);
+            let clear = |site: crate::math::Point| {
+                let centre = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
+                vortex::clearance(pulling, spent, centre)
+            };
+            let Some(site) = self.map.random_body_site_where(&mut self.vortex_rng, clear) else {
                 continue;
             };
             let dest = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
@@ -4698,6 +4723,12 @@ impl World {
             h.update(&v.pos.x.to_le_bytes());
             h.update(&v.pos.y.to_le_bytes());
         }
+        h.update(&(self.spent_vortices.len() as u32).to_le_bytes());
+        for v in &self.spent_vortices {
+            h.update(&v.id.to_le_bytes());
+            h.update(&v.pos.x.to_le_bytes());
+            h.update(&v.pos.y.to_le_bytes());
+        }
         h.update(&self.vortex_seq.to_le_bytes());
         let mut probe = self.vortex_rng.clone();
         h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
@@ -5021,6 +5052,12 @@ mod state_hash_tests {
         });
         changed.push(("vortices", w.state_hash()));
         let mut w = world();
+        w.spent_vortices.push(super::vortex::Vortex {
+            id: 0,
+            pos: Vec2::new(300.0, 200.0),
+        });
+        changed.push(("spent vortices", w.state_hash()));
+        let mut w = world();
         w.vortex_seq = 5;
         changed.push(("vortex seq", w.state_hash()));
 
@@ -5156,6 +5193,7 @@ mod state_hash_coverage {
             flare: _,
             // T22.10: the live vortices, the next id and the destination stream.
             vortices: _,
+            spent_vortices: _,
             vortex_seq: _,
             vortex_rng: _,
 

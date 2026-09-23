@@ -32,10 +32,19 @@ pub struct CarveResult {
     pub breach: Option<(i32, i32)>,
 }
 
+/// What [`Map::breach_probe`] saw before a carve: the rim, the padded box the
+/// flood runs over, the carve's centre, and whether air already crossed the rim
+/// inside that box.
+struct BreachProbe {
+    geo: crate::map::gen::space::SpaceGeometry,
+    bbox: (i32, i32, i32, i32),
+    at: (i32, i32),
+    was_open: bool,
+}
+
 impl Map {
     /// Clear a filled circle. Bedrock and the side walls are never touched.
     pub fn carve_circle(&mut self, cx: i32, cy: i32, r: i32) -> CarveResult {
-        let mut out = self.circle(cx, cy, r, false);
         // Saturating: `circle` rejects centres near `i32::MAX` before any arithmetic
         // on them, and this box must not be the first place that overflows.
         let bbox = (
@@ -44,7 +53,9 @@ impl Map {
             cx.saturating_add(r),
             cy.saturating_add(r),
         );
-        self.note_breach(bbox, (cx, cy), &mut out);
+        let probe = self.breach_probe(bbox, (cx, cy));
+        let mut out = self.circle(cx, cy, r, false);
+        self.note_breach(probe, &mut out);
         out
     }
 
@@ -79,6 +90,18 @@ impl Map {
         // invariant (§A24).
         let (x0, y0, x1, y1) = shape::clamp_capsule(self.mask.w, self.mask.h, r, x0, y0, x1, y1);
 
+        // Before the sweep: the rim's state in this box *before* the carve is half
+        // of what a breach is (R87).
+        let probe = self.breach_probe(
+            (
+                x0.min(x1).saturating_sub(r),
+                y0.min(y1).saturating_sub(r),
+                x0.max(x1).saturating_add(r),
+                y0.max(y1).saturating_add(r),
+            ),
+            ((x0 + x1) / 2, (y0 + y1) / 2),
+        );
+
         // Collected first because `walk_capsule` borrows its closure mutably and
         // `self.circle` needs `&mut self`.
         let mut centres = Vec::new();
@@ -97,18 +120,12 @@ impl Map {
         // **Once for the whole sweep** (`M22-RULINGS` R19): `circle` is stamped once
         // per Bresenham centre, so a detector per stamp would open a vortex per pixel
         // of one shovel swing or one lava channel.
-        let bbox = (
-            x0.min(x1).saturating_sub(r),
-            y0.min(y1).saturating_sub(r),
-            x0.max(x1).saturating_add(r),
-            y0.max(y1).saturating_add(r),
-        );
-        self.note_breach(bbox, ((x0 + x1) / 2, (y0 + y1) / 2), &mut acc);
+        self.note_breach(probe, &mut acc);
         acc
     }
 
-    /// **T22.10: did this carve open the space rim?** Recorded on the result and
-    /// queued for `World::step_vortices`.
+    /// **T22.10: could this carve open the space rim, and was it open here
+    /// already?** Taken **before** the carve; [`Map::note_breach`] finishes it.
     ///
     /// **Here, at the two public carves, and nowhere else** (R19): every production
     /// carve — the seven sites R19 lists — goes through `carve_circle` or
@@ -116,21 +133,20 @@ impl Map {
     /// inside `circle` itself, which also serves `fill_circle` and is stamped per
     /// pixel by the capsule.
     ///
-    /// Cheap for almost every carve: nothing on a map with no rim, nothing that
-    /// removed no rock, nothing whose bounding circle cannot reach the rim band. What
-    /// is left is a flood over the carve's box (`space::breach_in`).
-    fn note_breach(
-        &mut self,
+    /// Cheap for almost every carve: nothing on a map with no rim, nothing whose
+    /// bounding circle cannot reach the rim band. What is left is a flood over the
+    /// carve's box padded by a rim thickness (`space::breach_in`) — **run twice,
+    /// before and after** (T22.10C, `M22-RULINGS` R87). The padded box can reach an
+    /// *existing* hole, and asking only "does air cross the rim in here?" after
+    /// the carve answered yes for a nick 128 px from a hole that never went through
+    /// the rim — a phantom vortex over solid rock, which with three live evicts a
+    /// real one. **A breach is the change closed → open, not the state open.**
+    fn breach_probe(
+        &self,
         (x0, y0, x1, y1): (i32, i32, i32, i32),
         (cx, cy): (i32, i32),
-        out: &mut CarveResult,
-    ) {
-        if out.pixels_removed == 0 {
-            return;
-        }
-        let Some(geo) = self.space_geometry() else {
-            return;
-        };
+    ) -> Option<BreachProbe> {
+        let geo = self.space_geometry()?;
         // Onto the map first: a carve that removed rock touched it, but its box may
         // be `i32`-wide (a radius of `i32::MAX` is legal and means "all of it").
         let (w, h) = (self.mask.w as i32, self.mask.h as i32);
@@ -143,17 +159,32 @@ impl Map {
         let half = geo.thickness * 0.5;
         let reach = ((x1 - x0).max(y1 - y0) as f32) * std::f32::consts::FRAC_1_SQRT_2;
         if geo.distance_to_rim(cx as f32, cy as f32) > reach + half + 1.0 {
-            return;
+            return None;
         }
         let pad = geo.thickness as i32 + 2;
-        if !crate::map::gen::space::breach_in(
-            &self.mask,
-            &geo,
-            (x0 - pad, y0 - pad, x1 + pad, y1 + pad),
-        ) {
+        let bbox = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
+        Some(BreachProbe {
+            was_open: crate::map::gen::space::breach_in(&self.mask, &geo, bbox),
+            geo,
+            bbox,
+            at: (cx, cy),
+        })
+    }
+
+    /// The second half of [`Map::breach_probe`], after the carve: a carve that
+    /// removed rock, in a box where the rim was closed and now is not, is a breach
+    /// — recorded on the result and queued for `World::step_vortices`.
+    fn note_breach(&mut self, probe: Option<BreachProbe>, out: &mut CarveResult) {
+        let Some(p) = probe else {
+            return;
+        };
+        if out.pixels_removed == 0
+            || p.was_open
+            || !crate::map::gen::space::breach_in(&self.mask, &p.geo, p.bbox)
+        {
             return;
         }
-        let at = geo.onto_rim(cx as f32, cy as f32);
+        let at = p.geo.onto_rim(p.at.0 as f32, p.at.1 as f32);
         out.breach = Some(at);
         if self.breaches.len() >= MAX_PENDING_BREACHES {
             self.breaches.remove(0);
@@ -1027,6 +1058,47 @@ mod tests {
         assert!(map.take_breaches().is_empty(), "drained");
     }
 
+    /// **A breach is closed → open, not "open somewhere in the box"** (T22.10C F2,
+    /// `M22-RULINGS` R87). A meteor-sized carve biting half-way into the rim's
+    /// outer face — never through it — at 60, 100, 128 and 135 px along the rim
+    /// from an existing hole. The padded box reaches that hole at the first four
+    /// of those in the old detector, which reported every one as a breach; at
+    /// 128 that is past `VORTEX_CAPTURE_R`, so it was a **new vortex over solid
+    /// rock**, and with three live it evicted a real one. The control is the same
+    /// carve going straight through the rim well clear of the hole: a breach.
+    #[test]
+    fn a_nick_beside_an_existing_hole_is_not_a_breach_and_a_new_hole_is() {
+        let r = crate::constants::METEOR_CARVE_R as i32;
+        for d in [60, 100, 128, 135] {
+            let (mut map, _, (tx, ty)) = space();
+            assert!(
+                map.carve_circle(tx, ty, r).breach.is_some(),
+                "control: the hole"
+            );
+            let _ = map.take_breaches();
+            // Centred outside the rim so the disc bites half the rim's thickness
+            // into the outer face: the inner half is untouched, nothing new crosses.
+            // Its lowest point is the rim centreline.
+            let nick = map.carve_circle(tx + d, ty - r, r);
+            assert!(
+                nick.pixels_removed > 0,
+                "{d} px: control — the nick removed nothing"
+            );
+            assert_eq!(
+                nick.breach, None,
+                "{d} px from a hole: a nick that never went through the rim is a breach"
+            );
+            assert!(map.take_breaches().is_empty());
+        }
+        let (mut map, _, (tx, ty)) = space();
+        let _ = map.carve_circle(tx, ty, r);
+        let _ = map.take_breaches();
+        assert!(
+            map.carve_circle(tx + 300, ty, r).breach.is_some(),
+            "control: a second hole clear of the first is a breach"
+        );
+    }
+
     /// **One capsule, one breach** (`M22-RULINGS` R19). A shovel swing or a lava
     /// channel stamps `circle` once per Bresenham centre — here about eighty — so a
     /// detector per stamp would queue a breach per pixel of one swing.
@@ -1049,9 +1121,15 @@ mod tests {
     fn no_carve_on_a_landscape_map_is_a_breach() {
         let mut map = generate(4242, MapScale::Small);
         assert!(map.space_geometry().is_none());
+        let mut removed = 0;
         for (x, y) in [(200, 150), (1024, 100), (1800, 900)] {
-            assert_eq!(map.carve_circle(x, y, 60).breach, None);
+            let out = map.carve_circle(x, y, 60);
+            assert_eq!(out.breach, None);
+            removed += out.pixels_removed;
         }
+        // T22.10C F8: a carve into empty sky is not a breach on any map, so this
+        // is only a claim about landscape *rock* if some of it went.
+        assert!(removed > 0, "control: none of the carves removed rock");
         assert!(map.take_breaches().is_empty());
     }
 }

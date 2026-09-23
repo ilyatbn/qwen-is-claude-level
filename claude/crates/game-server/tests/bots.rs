@@ -16,6 +16,11 @@ fn config(bots: usize) -> Config {
     Config {
         map_scale: MapScale::Small,
         bot_count: bots,
+        // T22.10C F6: pinned. `..Config::default()` inherits `fixed_seed: None`,
+        // an unpinned map re-rolled every run deciding where each bot is seated —
+        // the shared cause CLAUDE.md records for a family of "moving" failures.
+        // `bots_actually_move`'s one red sighting had both bots at their seats.
+        fixed_seed: Some(4242),
         ..Config::default()
     }
 }

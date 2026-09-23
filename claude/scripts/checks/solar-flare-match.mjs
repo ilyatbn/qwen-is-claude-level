@@ -26,6 +26,7 @@
  *    frozen instant with the flare hidden, and a control point clear of the ribbon does not
  *    change. High Quality off (flat) and on (the shader), each asserted by `flare.shader`.
  */
+import { readFileSync } from 'node:fs'
 import { startStack, freePort, tally, shotsDir } from './harness.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
@@ -46,8 +47,17 @@ const MONO_FRAMES = 120
 const PROBES = 12
 /** Probes whose bracket must be under the tolerance for the clock to count as measured (T22.08E F4). */
 const NARROW_MIN = 4
-/** Half the crosshair mark's arm (`Crosshair`: 9 px rectangles), plus a pixel of antialias. */
-const CROSSHAIR_HALF = 6
+/**
+ * Half the crosshair mark's arm plus a pixel of antialias. The arm is read from
+ * `localInput.ts`'s `CROSSHAIR_ARM_PX` line, not copied (T22.10C F8): a hand copy
+ * stays green while the mark it masks grows.
+ */
+const CROSSHAIR_HALF = (() => {
+  const src = readFileSync(new URL('../../client/src/input/localInput.ts', import.meta.url), 'utf8')
+  const m = /export const CROSSHAIR_ARM_PX = (\d+)/.exec(src)
+  if (!m) throw new Error('solar-flare-match: CROSSHAIR_ARM_PX not found in localInput.ts')
+  return Math.ceil(Number(m[1]) / 2) + 1
+})()
 
 const dbg = (page) => page.evaluate(() => window.__game.debug())
 const frames = (page, n) =>

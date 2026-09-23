@@ -99,6 +99,13 @@ export class LocalInput {
   }
 }
 
+/**
+ * The crosshair mark's arm length, px: two rectangles this long, crossed. Exported
+ * because `scripts/checks/solar-flare-match.mjs` masks the mark out of its pixel
+ * probes and reads this line rather than a hand copy (T22.10C F8).
+ */
+export const CROSSHAIR_ARM_PX = 9
+
 /** The aim ring and the crosshair riding it. */
 export class Crosshair {
   private readonly ring: Phaser.GameObjects.Arc
@@ -117,8 +124,8 @@ export class Crosshair {
       .setDepth(depth)
       .setVisible(false)
 
-    const h = scene.add.rectangle(0, 0, 9, 1, 0xffffff, 0.9)
-    const v = scene.add.rectangle(0, 0, 1, 9, 0xffffff, 0.9)
+    const h = scene.add.rectangle(0, 0, CROSSHAIR_ARM_PX, 1, 0xffffff, 0.9)
+    const v = scene.add.rectangle(0, 0, 1, CROSSHAIR_ARM_PX, 0xffffff, 0.9)
     this.mark = scene.add.container(0, 0, [h, v]).setDepth(depth)
   }
 

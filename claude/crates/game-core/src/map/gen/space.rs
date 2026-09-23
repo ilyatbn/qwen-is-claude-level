@@ -783,24 +783,53 @@ pub fn choose_space_spawns(
 ///
 /// Draws from `rng` exactly once per attempt, so the caller's stream position
 /// stays a function of the map and the number of attempts — both deterministic.
+///
+/// **`clearance` is the caller's own filter** (T22.10C, `M22-RULINGS` R86): a
+/// drawn open point is taken when `clearance(p) >= 0`. Every caller but the
+/// vortex passes `|_| 0.0`, which accepts the first open point — the draws, and
+/// so the `"items"` and `"crates"` streams, are exactly what they were. When no
+/// draw is both open and clear, the answer is **the open point with the greatest
+/// clearance** among the draws and the whole [`open_space_grid`] — never `None`
+/// for a picky caller while the map has open space at all, because a caller that
+/// skips on `None` (a vortex that declines to take you) is the bug R86 fixed.
+/// The grid costs its 2048 probes only on that path.
 pub fn random_open_space(
     mask: &Mask,
     geo: &SpaceGeometry,
     asteroids: &[Asteroid],
     rng: &mut ChaCha8Rng,
+    clearance: impl Fn(Point) -> f32,
 ) -> Option<Point> {
     let half_w = (PLAYER_W as i32) / 2;
     let body_h = PLAYER_H as i32;
+    let mut best: Option<(f32, Point)> = None;
     for _ in 0..SPACE_OPEN_SPACE_TRIES {
         let p = Point::new(
             range_i32(rng, (geo.cx - geo.rx) as i32, (geo.cx + geo.rx) as i32),
             range_i32(rng, (geo.cy - geo.ry) as i32, (geo.cy + geo.ry) as i32),
         );
         if is_open_space(mask, geo, asteroids, p, half_w, body_h) {
-            return Some(p);
+            let c = clearance(p);
+            if c >= 0.0 {
+                return Some(p);
+            }
+            best = farther(best, (c, p));
         }
     }
-    None
+    open_space_grid(mask, geo, asteroids)
+        .into_iter()
+        .map(|p| (clearance(p), p))
+        .fold(best, farther)
+        .map(|(_, p)| p)
+}
+
+/// The greater clearance, the earlier one on a tie — so the fallback is a
+/// function of the draws and the grid's scan order, both deterministic.
+fn farther(best: Option<(f32, Point)>, next: (f32, Point)) -> Option<(f32, Point)> {
+    match best {
+        Some(b) if b.0 >= next.0 => Some(b),
+        _ => Some(next),
+    }
 }
 
 /// Does a player body fit at `p` — **the space answer to
@@ -1741,6 +1770,44 @@ mod tests {
         }
     }
 
+    /// **A picky caller nothing satisfies still gets a point** (T22.10C, R86): the
+    /// open point with the greatest clearance, over the draws and the whole grid —
+    /// never `None` while the map has open space, because the vortex that received
+    /// `None` declined to take a player and the void took them instead. The
+    /// clearance here is "further right is better, nothing is enough", so the
+    /// answer must be open and no grid point may lie further right.
+    #[test]
+    fn a_clearance_nothing_meets_gets_the_clearest_open_point_not_none() {
+        let half_w = (PLAYER_W as i32) / 2;
+        let body_h = PLAYER_H as i32;
+        let geo = SpaceGeometry::for_scale(MapScale::Small);
+        for seed in seeds(4) {
+            let o = generate_terrain(seed, MapScale::Small);
+            let mut rng = substream(seed, "vortex");
+            let p = random_open_space(&o.mask, &geo, &o.asteroids, &mut rng, |q| {
+                q.x as f32 - 1.0e6
+            })
+            .unwrap_or_else(|| panic!("seed {seed}: a picky caller was told nowhere"));
+            assert!(is_open_space(
+                &o.mask,
+                &geo,
+                &o.asteroids,
+                p,
+                half_w,
+                body_h
+            ));
+            let grid_max = open_space_grid(&o.mask, &geo, &o.asteroids)
+                .iter()
+                .map(|q| q.x)
+                .max()
+                .expect("control: the grid has open space");
+            assert!(
+                p.x >= grid_max,
+                "seed {seed}: {p:?} is not the clearest (grid has x {grid_max})"
+            );
+        }
+    }
+
     /// Every point `random_open_space` returns really is open space inside the
     /// rim — the thing crates and periodic items are placed on.
     ///
@@ -1755,7 +1822,7 @@ mod tests {
                 let o = generate_terrain(seed, scale);
                 let mut rng = substream(seed, "crates");
                 for _ in 0..50 {
-                    let p = random_open_space(&o.mask, &geo, &o.asteroids, &mut rng)
+                    let p = random_open_space(&o.mask, &geo, &o.asteroids, &mut rng, |_| 0.0)
                         .unwrap_or_else(|| panic!("{scale:?} seed {seed}: nowhere open"));
                     assert!(
                         is_open_space(&o.mask, &geo, &o.asteroids, p, half_w, body_h),
