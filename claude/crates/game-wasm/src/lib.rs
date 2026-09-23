@@ -20,11 +20,12 @@
 //! no caller has to remember.
 
 use game_core::constants::{GravityMode, MapScale, SIM_DT};
+use game_core::effects::flare::SolarFlare;
 use game_core::effects::fog::HeavyFog;
 use game_core::effects::lava::LavaBurst;
 use game_core::effects::meteor::MeteorShower;
 use game_core::effects::toxic::ToxicRain;
-use game_core::effects::{EffectKind, EffectPhase, EffectScheduler};
+use game_core::effects::{EffectKind, EffectPhase, EffectScheduler, WeatherTable};
 use game_core::items::registry::{self, ItemId, ItemKind, WeaponId};
 use game_core::map::{generate, rle, CoarseGrid, Map};
 use game_core::math::Vec2;
@@ -99,6 +100,11 @@ struct Weather {
     /// server announces a different burst (T19.24).
     lava_seed: Option<u64>,
     fog: Option<HeavyFog>,
+    /// T22.08A: the sandbox's flare and the clock it started at.
+    flare: Option<(f32, SolarFlare)>,
+    /// Which seed `flare_cache` was built from, and the flare — `flare_points`
+    /// is called every frame and the seed alone decides the shape.
+    flare_cache: Option<(u64, SolarFlare)>,
     forced: Option<(EffectKind, f32)>,
 }
 
@@ -1288,11 +1294,13 @@ impl GameCore {
     // --- weather (M5) ---------------------------------------------------
 
     /// Force an effect to begin its telegraph now: 0 toxic, 1 meteor, 2 lava,
-    /// 3 fog. The sandbox control for the M5 checkpoint.
+    /// 3 fog, 4 solar flare. The sandbox control for the M5 checkpoint.
     ///
     /// **A switched-off kind does nothing** (`0` toxic since T21.39, `2` lava since
     /// 2026-09-16): the sandbox is
-    /// not a way round the owner's ruling.
+    /// not a way round the owner's ruling. **Nor does a flare off a space map**
+    /// (R83, the roll's own key, `WeatherTable::of`), **nor an unknown number** —
+    /// this used to read `_ => HeavyFog`, so any typo forced fog.
     pub fn force_effect(&mut self, kind: u8, now: f32) {
         if kind == 0 && !game_core::constants::TOXIC_RAIN_ENABLED {
             return;
@@ -1304,7 +1312,9 @@ impl GameCore {
             0 => EffectKind::ToxicRain,
             1 => EffectKind::MeteorShower,
             2 => EffectKind::LavaBurst,
-            _ => EffectKind::HeavyFog,
+            3 => EffectKind::HeavyFog,
+            4 if WeatherTable::of(&self.map) == WeatherTable::Space => EffectKind::SolarFlare,
+            _ => return,
         };
         let seed = self.map.meta.seed;
         let sched = self
@@ -1318,6 +1328,10 @@ impl GameCore {
             EffectKind::MeteorShower => self.weather.meteor = Some(MeteorShower::new(seed, now)),
             EffectKind::LavaBurst => self.weather.lava = Some(LavaBurst::new(seed, &self.map, now)),
             EffectKind::HeavyFog => self.weather.fog = Some(HeavyFog::new(now)),
+            EffectKind::SolarFlare => {
+                let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
+                self.weather.flare = Some((now, SolarFlare::new(seed, w, h)));
+            }
         }
     }
 
@@ -1327,12 +1341,13 @@ impl GameCore {
         let Some(sched) = self.weather.scheduler.as_mut() else {
             return "{\"active\":[],\"vents\":[],\"fog\":0.0}".to_string();
         };
-        sched.tick(now, f32::MAX);
+        sched.tick(now, f32::MAX, WeatherTable::of(&self.map));
 
         let toxic_on = sched.is_active(EffectKind::ToxicRain);
         let meteor_on = sched.is_active(EffectKind::MeteorShower);
         let lava_on = sched.is_active(EffectKind::LavaBurst);
         let fog_on = sched.is_active(EffectKind::HeavyFog);
+        let flare_on = sched.is_active(EffectKind::SolarFlare);
 
         let active: Vec<serde_json::Value> = sched
             .active()
@@ -1345,6 +1360,7 @@ impl GameCore {
                         EffectKind::MeteorShower => "meteor",
                         EffectKind::LavaBurst => "lava",
                         EffectKind::HeavyFog => "fog",
+                        EffectKind::SolarFlare => "flare",
                     },
                     "phase": match e.phase {
                         EffectPhase::Telegraph => "telegraph",
@@ -1399,6 +1415,32 @@ impl GameCore {
 
         if let Some(m) = self.weather.meteor.as_mut() {
             m.tick(&mut self.projectiles, &self.map, meteor_on, now);
+        }
+
+        // T22.08A: the flare, through the **same** `PlayerState` methods the
+        // server's `World::step` uses — the touch writes the deadline, and the
+        // burn logs once a second through `apply_damage` like the poison above.
+        if let Some((start, f)) = self.weather.flare.as_ref() {
+            if flare_on {
+                for p in self.players.iter_mut().filter(|p| p.stats.alive) {
+                    if f.touches(now - start, p.body.pos, p.body.size.x, p.body.size.y) {
+                        p.stats.burn(now);
+                    }
+                }
+            }
+        }
+        for p in self.players.iter_mut() {
+            if !p.stats.alive {
+                continue;
+            }
+            if let Some(amount) = p.stats.burn_tick(now, dt) {
+                p.stats.apply_damage(
+                    amount,
+                    DamageSource::Weather(EffectKind::SolarFlare),
+                    now,
+                    self.gravity.wears_suit(),
+                );
+            }
         }
 
         let mut vents = Vec::new();
@@ -1458,6 +1500,26 @@ impl GameCore {
 /// and this is called every frame; the same seed rebuilds nothing.
 #[wasm_bindgen]
 impl GameCore {
+    /// T22.08A (`R80`): a server-announced flare's ribbon, `elapsed` seconds after
+    /// its `effect_start`, as `[x0, y0, x1, y1, …]` world px — **the points the
+    /// server damages with**, `SolarFlare::points_at` on this client's map size.
+    /// Cached on the seed: called every frame, and the seed alone decides the
+    /// shape. Empty before a map is loaded is not a case: the core always has one.
+    pub fn flare_points(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> Vec<f32> {
+        let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
+        if self.weather.flare_cache.as_ref().map(|(s, _)| *s) != Some(seed) {
+            let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
+            self.weather.flare_cache = Some((seed, SolarFlare::new(seed, w, h)));
+        }
+        let Some((_, f)) = self.weather.flare_cache.as_ref() else {
+            return Vec::new();
+        };
+        f.points_at(elapsed)
+            .iter()
+            .flat_map(|p| [p.x, p.y])
+            .collect()
+    }
+
     pub fn lava_vents(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> String {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         if self.weather.lava_seed != Some(seed) {
@@ -2061,6 +2123,100 @@ mod tests {
         assert!(
             weapons_seen > 0 && others_seen > 0,
             "the sweep saw no weapons or no non-weapons"
+        );
+    }
+
+    /// T22.08A (`R80`, `R83`): **the sandbox forces a flare only on a space map**
+    /// and refuses a kind number it does not know (it used to force fog), and
+    /// **`flare_points` is the server's ribbon**, `SolarFlare::points_at` on this
+    /// core's map — the points the client draws are the points that damage.
+    #[test]
+    fn a_flare_is_forced_only_on_a_space_map_and_draws_the_servers_points() {
+        use game_core::effects::flare::SolarFlare;
+        let mut ground = GameCore::new();
+        ground.generate(4242, 0, 0);
+        ground.force_effect(4, 0.0);
+        assert!(
+            ground.weather.flare.is_none(),
+            "a standard map forced a flare"
+        );
+        ground.force_effect(200, 0.0);
+        assert!(
+            ground.weather.forced.is_none(),
+            "an unknown kind forced {:?}",
+            ground.weather.forced
+        );
+
+        let mut space = GameCore::new();
+        assert!(space.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
+        space.force_effect(4, 0.0);
+        assert!(
+            space.weather.flare.is_some(),
+            "control: a space map refused the flare"
+        );
+
+        let seed: u64 = 0x0123_4567_89ab_cdef;
+        let (w, h) = (space.map.mask.w as f32, space.map.mask.h as f32);
+        let want: Vec<f32> = SolarFlare::new(seed, w, h)
+            .points_at(5.25)
+            .iter()
+            .flat_map(|p| [p.x, p.y])
+            .collect();
+        let got = space.flare_points(seed as u32, (seed >> 32) as u32, 5.25);
+        assert_eq!(got.len(), want.len());
+        assert_eq!(got, want, "flare_points is not the server's ribbon");
+        assert_ne!(
+            space.flare_points(seed as u32 ^ 1, (seed >> 32) as u32, 5.25),
+            want,
+            "control: another seed drew the same ribbon"
+        );
+    }
+
+    /// **The sandbox's flare burns through the server's rule**: a player held on
+    /// the ribbon through the flare's first active second loses health to it; one
+    /// held far away, the control, does not.
+    #[test]
+    fn the_sandbox_flare_burns_whoever_stands_in_it() {
+        use game_core::constants::{EFFECT_TELEGRAPH, SOLAR_FLARE_BURN_SECONDS};
+        let mut core = GameCore::new();
+        // Standard gravity for the players, a space map for the flare: the
+        // sandbox forces by the map (R83), and no suit means no softening here.
+        assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
+        core.gravity = GravityMode::Standard;
+        core.add_player(0, 0.0, 0.0);
+        core.add_player(1, 0.0, 0.0);
+        core.force_effect(4, 0.0);
+        let (start, f) = core.weather.flare.clone().expect("forced");
+        let before: Vec<f32> = core.players.iter().map(|p| p.stats.health).collect();
+        let dt = 1.0 / 60.0;
+        let end = EFFECT_TELEGRAPH + SOLAR_FLARE_BURN_SECONDS + 1.0;
+        let mut t = 0.0f32;
+        while t < end {
+            let on = f.points_at(t - start)[f.points_at(0.0).len() / 2];
+            let (w, h) = (core.map.mask.w as f32, core.map.mask.h as f32);
+            for (i, at) in [(0usize, on), (1usize, Vec2::new(w - on.x, h - on.y))] {
+                let p = &mut core.players[i];
+                p.body.pos = at;
+                p.body.vel = Vec2::ZERO;
+                p.stats.iframes_until = 0.0;
+            }
+            core.weather_step(t, dt);
+            t += dt;
+        }
+        let lost: Vec<f32> = core
+            .players
+            .iter()
+            .zip(&before)
+            .map(|(p, b)| b - p.stats.health)
+            .collect();
+        assert!(
+            lost[0] > 0.0,
+            "the player on the ribbon lost nothing: {lost:?}"
+        );
+        assert_eq!(
+            lost[1], 0.0,
+            "control: the player across the map lost {}",
+            lost[1]
         );
     }
 

@@ -223,6 +223,10 @@ fn parse_weather(v: &str) -> Option<WeatherMode> {
         }
         "meteor" => WeatherMode::Always(EffectKind::MeteorShower),
         "lava" if game_core::constants::LAVA_ENABLED => WeatherMode::Always(EffectKind::LavaBurst),
+        // T22.08A (R83). Accepted whatever the map: the parser cannot see it, and
+        // `World::step_weather` refuses the force on a non-space map with the
+        // same key the roll uses.
+        "flare" => WeatherMode::Always(EffectKind::SolarFlare),
         _ => return None,
     })
 }
@@ -234,7 +238,7 @@ fn parse_weather(v: &str) -> Option<WeatherMode> {
 /// this replaced named lava as still accepted while the parser had just stopped
 /// accepting it.
 fn weather_spellings() -> String {
-    let mut out = vec!["auto", "off", "fog", "meteor"];
+    let mut out = vec!["auto", "off", "fog", "meteor", "flare"];
     if game_core::constants::TOXIC_RAIN_ENABLED {
         out.push("toxic");
     }
@@ -821,6 +825,7 @@ mod tests {
             ("none", WeatherMode::Off),
             ("fog", WeatherMode::Always(EffectKind::HeavyFog)),
             ("meteor", WeatherMode::Always(EffectKind::MeteorShower)),
+            ("flare", WeatherMode::Always(EffectKind::SolarFlare)),
         ] {
             assert_eq!(
                 from(&[("WEATHER", v)]).expect("ok").weather_mode,

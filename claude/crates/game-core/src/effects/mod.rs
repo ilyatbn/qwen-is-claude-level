@@ -1,4 +1,4 @@
-//! Weather: the scheduler and the four effects.
+//! Weather: the scheduler and the five effects.
 //!
 //! Every 30–45 seconds the map turns on the players. Effects are seeded,
 //! telegraphed and short — they exist to break stalemates and to make cover
@@ -9,13 +9,16 @@
 //! disagreed about where the lava is would put someone in fire they cannot see
 //! (`docs/13-weather-effects.md` §7).
 
+pub mod flare;
 pub mod fog;
 pub mod lava;
 pub mod meteor;
 pub mod scheduler;
 pub mod toxic;
 
-pub use scheduler::{active_duration, ActiveEffect, EffectEvent, EffectPhase, EffectScheduler};
+pub use scheduler::{
+    active_duration, ActiveEffect, EffectEvent, EffectPhase, EffectScheduler, WeatherTable,
+};
 
 // `EffectKind` lives in `weapons::explode` because `DamageSource` needs it and
 // `explode` is the lower layer. Re-exported here so effect code reads naturally.

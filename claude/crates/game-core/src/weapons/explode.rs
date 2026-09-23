@@ -23,6 +23,9 @@ pub enum EffectKind {
     MeteorShower,
     LavaBurst,
     HeavyFog,
+    /// T22.08A: space only (`M22-RULINGS` R43). **Appended**, so every earlier
+    /// kind keeps its `as u8` — the scheduler hashes `kind as u8`.
+    SolarFlare,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

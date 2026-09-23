@@ -232,7 +232,18 @@ pub const HEADER_BYTES: usize = 46;
 ///    a unit a second, radiation lands on the unsealed, and the battery pack
 ///    spawns twice as often, so a v15 space recording diverges at its first
 ///    initial item roll.
-pub const REPLAY_VERSION: u16 = 16;
+///
+/// **17 (T22.08A, solar flares — `R85`)**: the silent-divergence shape again. No
+/// new tag, no layout change.
+///
+///  - **The scheduler's hash grew**: `enabled` folds five switches, not four, so
+///    every checkpoint hash moves in every mode.
+///  - **`World::state_hash` gained `PlayerState::burning_until` and
+///    `burn_exposure`** (R79).
+///  - **A space round rolls different weather**: meteor and flare alternate where
+///    it used to roll fog (R43, R78). A standard round's *schedule* is unchanged —
+///    `the_flare_does_not_move_the_grounds_schedule` — but its hashes still move.
+pub const REPLAY_VERSION: u16 = 17;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

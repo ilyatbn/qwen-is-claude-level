@@ -221,9 +221,19 @@ pub fn tick(
 ///
 /// `t.w`/`t.h`, not `PLAYER_W`/`PLAYER_H`: the slice holds birds too since §C16.
 fn touching(at: Vec2, t: &HitTarget) -> bool {
-    let dx = ((at.x - t.pos.x).abs() - t.w * 0.5).max(0.0);
-    let dy = ((at.y - t.pos.y).abs() - t.h * 0.5).max(0.0);
-    dx * dx + dy * dy <= FLAME_RADIUS * FLAME_RADIUS
+    circle_touches_box(at, FLAME_RADIUS, t.pos, t.w, t.h)
+}
+
+/// A circle of `radius` at `at` against a `w × h` box centred on `centre` — the
+/// test `touching` states, with the radius a parameter (T22.08A). The solar
+/// flare's ribbon is a line of these circles (`effects::flare`), and it is thin
+/// for the same reason a flame is small: `BurnField`'s centre-plus-half-width
+/// test would miss a body standing in it. *Share the function*, so the two
+/// cannot drift.
+pub(crate) fn circle_touches_box(at: Vec2, radius: f32, centre: Vec2, w: f32, h: f32) -> bool {
+    let dx = ((at.x - centre.x).abs() - w * 0.5).max(0.0);
+    let dy = ((at.y - centre.y).abs() - h * 0.5).max(0.0);
+    dx * dx + dy * dy <= radius * radius
 }
 
 /// Drop the oldest flames past `FLAME_MAX_LIVE`. **Returns the ids it dropped**,

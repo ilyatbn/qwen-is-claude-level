@@ -7,8 +7,8 @@ use crate::constants::{
     DEATH_POINTS, FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, HEALTH_CAP, HEALTH_SPEED_MIN,
     KILL_POINTS, LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY,
     RADIATION_DPS, RADIATION_LOG_INTERVAL, RADIATION_SHIELD_COST, RESPAWN_DELAY,
-    SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
-    TOXIC_POISON_DURATION, WINGS_SPEED_MULT,
+    SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SOLAR_FLARE_BURN_SECONDS, SOLAR_FLARE_DPS, SPAWN_IFRAMES,
+    SPAWN_MIN_ENEMY_DIST, TOXIC_POISON_DURATION, WINGS_SPEED_MULT,
 };
 use crate::items::inventory::{Inventory, Stack};
 use crate::items::registry::{def, ItemId, ItemKind, UtilityId, WeaponId};
@@ -152,6 +152,19 @@ pub struct PlayerState {
     /// `respawn`. **Kept across a seal**, so a suit flickering on and off at the
     /// edge of an empty battery cannot dodge the tick by resetting it.
     pub radiation_exposure: f32,
+    /// Until when a solar flare is still burning them (T22.08A, `R79`).
+    ///
+    /// `poisoned_until`'s shape and rule — a deadline, rewritten by a touch, never
+    /// added to — and **not** `poisoned_until` itself, which would light the
+    /// snapshot's poison bit (6) and put a toxic-rain status on the HUD for a
+    /// flare. Hashed; cleared by `die` and `respawn`.
+    pub burning_until: f32,
+    /// Seconds of burn not yet logged as damage — radiation's accumulator, for
+    /// the flare (`R81` = `R25`'s cadence: one `Damage` a second, never one a
+    /// tick). A second field beside `burning_until` because the deadline alone
+    /// cannot say how far into the current second the burn is: a body standing in
+    /// the ribbon rewrites its deadline every tick. Hashed; cleared with it.
+    pub burn_exposure: f32,
     /// Until when this player counts as **thrown** rather than walking (§C20).
     ///
     /// Stamped wherever an impulse is applied to them — `explode` and
@@ -202,6 +215,8 @@ impl PlayerState {
             iframes_until: 0.0,
             poisoned_until: 0.0,
             radiation_exposure: 0.0,
+            burning_until: 0.0,
+            burn_exposure: 0.0,
             knocked_until: 0.0,
             tombstone_skin_id: 0,
             hat_id: 0,
@@ -743,6 +758,44 @@ impl PlayerState {
         self.poisoned_until = now + TOXIC_POISON_DURATION;
     }
 
+    /// Is a solar flare still burning them (T22.08A)? The plain deadline — the
+    /// question a HUD would ask. `burn_tick` asks it at the tick's middle.
+    pub fn burning(&self, now: f32) -> bool {
+        now < self.burning_until
+    }
+
+    /// Start — or **restart** — the flare's burn: `poison()`'s rule, the deadline
+    /// written, never added to (R79).
+    pub fn burn(&mut self, now: f32) {
+        self.burning_until = now + SOLAR_FLARE_BURN_SECONDS;
+    }
+
+    /// One tick of the flare's burn (R81). Returns the damage to **log** this tick
+    /// — `Some` once per whole `RADIATION_LOG_INTERVAL` of burning, `None`
+    /// otherwise — for `World::step` to put through `apply_damage_log`, where the
+    /// warmup gate, the suit and the death attribution live.
+    ///
+    /// **Burning is judged at the tick's middle**, `now + dt/2 < deadline`: a burn
+    /// written at tick `k` then covers exactly `SOLAR_FLARE_BURN_SECONDS / dt`
+    /// ticks however the `f32` clock rounds, where a strict `now <` can land on
+    /// one tick fewer and lose the last second's log.
+    ///
+    /// `radiation_tick`'s arithmetic, for the same reason: compare at the tick
+    /// nearest the whole interval and subtract exactly one, so a full burn logs
+    /// exactly `SOLAR_FLARE_BURN_SECONDS` entries. The interval is radiation's
+    /// constant because it is one rule — *one `Damage` a second* — not two.
+    pub fn burn_tick(&mut self, now: f32, dt: f32) -> Option<f32> {
+        if now + 0.5 * dt >= self.burning_until {
+            return None;
+        }
+        self.burn_exposure += dt;
+        if self.burn_exposure + 0.5 * dt >= RADIATION_LOG_INTERVAL {
+            self.burn_exposure -= RADIATION_LOG_INTERVAL;
+            return Some(SOLAR_FLARE_DPS * RADIATION_LOG_INTERVAL);
+        }
+        None
+    }
+
     /// Overheal decay and shield expiry.
     ///
     /// **Poison is not here.** It deals damage, and every source of damage in the
@@ -937,6 +990,9 @@ impl PlayerState {
         // status that survived into the next life would tick down against a
         // player who was never rained on.
         self.poisoned_until = 0.0;
+        // The flare's burn, for the same reason (R79).
+        self.burning_until = 0.0;
+        self.burn_exposure = 0.0;
         // **Heals and batteries are dropped too, and deliberately.**
         //
         // §C9 asks for the decision to be made and written down. They are not
@@ -1010,6 +1066,8 @@ impl PlayerState {
         self.poisoned_until = 0.0;
         // Per life, like the poison: a new body has had no exposure yet.
         self.radiation_exposure = 0.0;
+        self.burning_until = 0.0;
+        self.burn_exposure = 0.0;
         self.last_damaged_by = None;
         // Nothing to clear for the flashlight or the shield: both are *items* now,
         // and `clear()` above took them with the rest of the inventory
@@ -1660,6 +1718,30 @@ mod battery_tests {
         // (T20.08) — one fact, not two.
         assert!(!p.shield_active(0.0, false), "the shield survived death");
         assert!(!p.holds_shield_generator());
+    }
+
+    /// T22.08A, R79: **a flare's burn dies with you**, at `die` and again at
+    /// `respawn` — each checked separately, since either alone would leave a
+    /// burn ticking against a body that was never touched. The control is the
+    /// burn being live before each.
+    #[test]
+    fn death_and_respawn_each_put_out_the_flares_burn() {
+        let lit = |p: &mut PlayerState| {
+            p.burn(0.0);
+            p.burn_exposure = 0.5;
+            assert!(p.burning(0.0), "control: the burn did not take");
+        };
+        let mut p = player();
+        lit(&mut p);
+        let _ = p.die(DeathCause::Weather, 0.0);
+        assert!(!p.burning(0.0), "a corpse is still burning");
+        assert_eq!(p.burn_exposure, 0.0, "a corpse kept its burn exposure");
+
+        let mut p = player();
+        lit(&mut p);
+        p.respawn(Vec2::new(10.0, 10.0), 0.0);
+        assert!(!p.burning(0.0), "the burn survived the respawn");
+        assert_eq!(p.burn_exposure, 0.0, "the exposure survived the respawn");
     }
 }
 

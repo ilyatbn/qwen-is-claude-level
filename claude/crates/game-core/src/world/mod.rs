@@ -45,10 +45,11 @@ use crate::weapons::explode::{
 use crate::weapons::projectile::{ProjectileId, ProjectileOutcome, Projectiles};
 use crate::weapons::smoke::SmokeField;
 
+use crate::effects::flare::SolarFlare;
 use crate::effects::fog::HeavyFog;
 use crate::effects::lava::LavaBurst;
 use crate::effects::meteor::MeteorShower;
-use crate::effects::scheduler::{EffectEvent, EffectPhase, EffectScheduler};
+use crate::effects::scheduler::{EffectEvent, EffectPhase, EffectScheduler, WeatherTable};
 use crate::effects::toxic::ToxicRain;
 
 pub use cycle::{cycle_at, cycle_u, darkness_at, fov_radius, CycleState, DayPhase};
@@ -874,6 +875,9 @@ pub struct World {
     meteor: Option<(u32, MeteorShower)>,
     lava: Option<(u32, LavaBurst)>,
     fog: Option<(u32, HeavyFog)>,
+    /// T22.08A: the flare, and the round time it was installed at — its clock
+    /// starts at the telegraph, as the client's does at `effect_start`.
+    flare: Option<(u32, f32, SolarFlare)>,
     /// Who radiation's log entry actually landed on **this tick** (T22.09A,
     /// `M22-RULINGS` R75) — the channel that carries the cause into
     /// `resolve_deaths`, which `R20` found does not otherwise exist.
@@ -1071,6 +1075,7 @@ impl World {
             meteor: None,
             lava: None,
             fog: None,
+            flare: None,
             irradiated_this_tick: Vec::new(),
         }
     }
@@ -1443,6 +1448,26 @@ impl World {
                             crate::constants::TOXIC_POISON_DPS * dt,
                             DamageSource::Weather(EffectKind::ToxicRain),
                         ));
+                    }
+                }
+            }
+            let bird_log: BirdLog = Default::default();
+            let animal_log: AnimalLog = Default::default();
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
+        }
+
+        // 8a2. the solar flare's burn (T22.08A, R81). 8a's shape, one entry per
+        // player per whole second. **Before 8c**, so a flare death on the
+        // radiation tick is a `Weather` death and R75's list never names it —
+        // `a_hazard_death_on_the_radiation_tick_is_not_named_radiation`'s flare
+        // arm. Not the dying, for 8c's reason.
+        {
+            let log: DamageLog = Default::default();
+            {
+                let mut entries = log.borrow_mut();
+                for p in self.players.iter_mut().filter(|p| p.alive && !p.is_dying()) {
+                    if let Some(amount) = p.burn_tick(now, dt) {
+                        entries.push((p.id, amount, DamageSource::Weather(EffectKind::SolarFlare)));
                     }
                 }
             }
@@ -2860,6 +2885,10 @@ impl World {
             // ground at exactly the points that will open.
             EffectKind::LavaBurst => self.lava = Some((id, LavaBurst::new(seed, &self.map, now))),
             EffectKind::HeavyFog => self.fog = Some((id, HeavyFog::new(now))),
+            EffectKind::SolarFlare => {
+                let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
+                self.flare = Some((id, now, SolarFlare::new(seed, w, h)));
+            }
         }
     }
 
@@ -2918,7 +2947,17 @@ impl World {
         // learns that fog exists from `effect_start` alone. Forcing without the
         // event is the "correct simulation, nothing on the screen" shape twice
         // over.
-        if let WeatherMode::Always(kind) = self.weather_mode {
+        // R83: a forced flare needs a space map — the same key the roll uses
+        // (R78). Refused here rather than at the parser, which cannot see the
+        // map: `WEATHER=flare` on a standard round forces nothing and leaves the
+        // scheduler alone.
+        let table = WeatherTable::of(&self.map);
+        let forced = match self.weather_mode {
+            WeatherMode::Always(EffectKind::SolarFlare) if table != WeatherTable::Space => None,
+            WeatherMode::Always(kind) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = forced {
             // Keep the scheduler's own roll out of the way, or `Always(fog)` is
             // "fog, plus whatever else the weather felt like" — which is exactly
             // what a check using the switch is trying not to have.
@@ -2942,7 +2981,7 @@ impl World {
         // have started, so there is no phase to advance and no end to deliver.
         let scheduled = match self.weather_mode {
             WeatherMode::Off => Vec::new(),
-            _ => self.effects.tick(now, ends),
+            _ => self.effects.tick(now, ends, table),
         };
         for ev in scheduled {
             let tick = self.tick;
@@ -2980,6 +3019,9 @@ impl World {
                     if self.fog.as_ref().is_some_and(|(i, _)| *i == id) {
                         self.fog = None;
                     }
+                    if self.flare.as_ref().is_some_and(|(i, ..)| *i == id) {
+                        self.flare = None;
+                    }
                 }
             }
         }
@@ -3008,6 +3050,20 @@ impl World {
             let ids = m.tick(&mut self.projectiles, &self.map, meteor_on, now);
             self.meteor = Some((eid, m));
             self.announce_projectiles(&ids);
+        }
+
+        // T22.08A: the flare **touches** here and burns in stage 8a2 (R81). A
+        // touch writes the deadline (R79); only `Active` touches — a telegraph is
+        // a warning. The living and not-yet-dying only, as 8c asks.
+        if let Some((_, start, f)) = self.flare.as_ref() {
+            if self.effects.is_active(EffectKind::SolarFlare) {
+                let elapsed = now - start;
+                for p in self.players.iter_mut().filter(|p| p.alive && !p.is_dying()) {
+                    if f.touches(elapsed, p.body.pos, p.body.size.x, p.body.size.y) {
+                        p.burn(now);
+                    }
+                }
+            }
         }
 
         if let Some((eid, mut l)) = self.lava.take() {
@@ -4299,6 +4355,11 @@ impl World {
             // T22.09A, `R74`. The radiation accumulator decides the tick a
             // radiation entry lands on, and so when someone dies of it.
             h.update(&p.radiation_exposure.to_le_bytes());
+            // T22.08A, R79: the flare's burn and its accumulator, for the two
+            // reasons above — a timer that deals damage, and the counter that
+            // decides the tick it lands on.
+            h.update(&p.burning_until.to_le_bytes());
+            h.update(&p.burn_exposure.to_le_bytes());
             h.update(&p.fire_ready_at.to_le_bytes());
             // §A34, and it is load-bearing: this timer decides whether a
             // projectile spawns (§C20's knockback exemption). Leaving a
@@ -4681,6 +4742,14 @@ mod state_hash_tests {
         w.players[0].radiation_exposure += 0.5;
         changed.push(("radiation_exposure", w.state_hash()));
 
+        // T22.08A, R79: the flare's burn and its accumulator.
+        let mut w = world();
+        w.players[0].burning_until += 0.5;
+        changed.push(("burning_until", w.state_hash()));
+        let mut w = world();
+        w.players[0].burn_exposure += 0.5;
+        changed.push(("burn_exposure", w.state_hash()));
+
         let mut w = world();
         w.players[0].jetpack.fuel -= 0.5;
         changed.push(("jetpack fuel", w.state_hash()));
@@ -4836,6 +4905,9 @@ mod state_hash_coverage {
             meteor: _,
             lava: _,
             fog: _,
+            // T22.08A: seed and start only, both the scheduler's (hashed) — the
+            // ribbon is a pure function of them (`effects/flare.rs`).
+            flare: _,
 
             // Deliberately NOT hashed, each for a stated reason:
             // `seed` is an input, fixed for the round and carried in the replay
@@ -6223,6 +6295,12 @@ mod toxic_rain_falls {
     /// it is ~40 % loose there, which is the whole quantity this guard exists to
     /// bound. Both modes are run, each against its own derived ceiling, and the
     /// printed bill is per mode.
+    ///
+    /// **Space is not in the loop, and that is not the blind spot R43 feared**
+    /// (R84): toxic rain is not in space's weather table at all
+    /// (`WeatherTable::Space`), and at gravity scale 0 this formula divides by
+    /// zero. The load space *does* carry — meteors at constant speed — is
+    /// `solar_flare_tests::a_meteor_shower_in_space_keeps_a_bounded_number_in_the_air`.
     #[test]
     fn a_shower_keeps_a_bounded_number_of_drops_in_the_air() {
         use crate::constants::{GRAVITY, SIM_DT, SKY_MARGIN, TOXIC_DROP_EVERY, TOXIC_DROP_SPEED};
@@ -12338,17 +12416,32 @@ mod radiation_tests {
     /// **The control** is the same tick with no poison: radiation does fire on
     /// it, so the absence below is the filter's and not the clock's.
     #[test]
+    ///
+    /// **And the flare's arm** (T22.08A, R81): a flare burn that kills on the
+    /// radiation tick is a `Weather` death too, because stage 8a2 logs before 8c.
     fn a_hazard_death_on_the_radiation_tick_is_not_named_radiation() {
         use crate::constants::TOXIC_POISON_DPS;
-        let one_tick = |poison: bool| {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Hazard {
+            None,
+            Poison,
+            Flare,
+        }
+        let one_tick = |hazard: Hazard| {
             let mut w = world(GravityMode::Space);
             let now = w.round_time;
             if let Some(p) = w.player_mut(ANA) {
                 // One tick short of a whole interval: the next step logs.
                 p.radiation_exposure = RADIATION_LOG_INTERVAL - SIM_DT;
-                if poison {
+                if hazard == Hazard::Poison {
                     p.health = TOXIC_POISON_DPS * SIM_DT * 0.5;
                     p.poisoned_until = now + 1.0;
+                }
+                if hazard == Hazard::Flare {
+                    // Burning, one tick short of its next whole second too.
+                    p.health = 1.0;
+                    p.burn(now);
+                    p.burn_exposure = RADIATION_LOG_INTERVAL - SIM_DT;
                 }
             }
             sweep(&mut w);
@@ -12370,14 +12463,19 @@ mod radiation_tests {
             (rad, deaths)
         };
         assert_eq!(
-            one_tick(false),
+            one_tick(Hazard::None),
             (1, vec![]),
             "control: radiation did not land on the tick under test"
         );
         assert_eq!(
-            one_tick(true),
+            one_tick(Hazard::Poison),
             (0, vec![DeathCause::Weather]),
             "poisoned dead on the radiation tick: (radiation Damage events, death causes)"
+        );
+        assert_eq!(
+            one_tick(Hazard::Flare),
+            (0, vec![DeathCause::Weather]),
+            "burned dead on the radiation tick: (radiation Damage events, death causes)"
         );
     }
 
@@ -12501,5 +12599,282 @@ mod radiation_tests {
             assert!(respawned, "{g:?}: ana never respawned");
             assert_eq!(battery(&w, ANA), want, "{g:?}: at respawn");
         }
+    }
+}
+
+/// T22.08A — solar flares, end to end through `World`: the roll on the map's
+/// table, the touch, the burn and what it costs, forcing, and the meteor load in
+/// space (`R84`).
+#[cfg(test)]
+mod solar_flare_tests {
+    use super::*;
+    use crate::constants::{
+        MapScale, BASE_HEALTH, DEFAULT_MAP_GENERATOR, EFFECT_TELEGRAPH, METEOR_DURATION,
+        METEOR_EVERY, METEOR_FRAGMENTS, METEOR_FRAG_SPEED_MIN, METEOR_SPEED,
+        PROJECTILE_MAX_LIFETIME, RADIATION_SHIELD_COST, SHIELD_DAMAGE_MULT, SHIELD_HIT_COST,
+        SIM_DT, SOLAR_FLARE_BURN_SECONDS, SOLAR_FLARE_DPS,
+    };
+
+    const ANA: PlayerId = 0;
+    const BO: PlayerId = 1;
+
+    /// A real map of `gravity`'s generator — `with_gravity`, so a space world has
+    /// asteroids and `WeatherTable::of` reads `Space` off it.
+    fn world_on(gravity: GravityMode) -> World {
+        let mut w = World::with_gravity(4242, MapScale::Medium, 0, DEFAULT_MAP_GENERATOR, gravity);
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w
+    }
+
+    /// Which effect kinds start over `seconds` of a real round.
+    fn kinds_started(w: &mut World, seconds: f32) -> Vec<EffectKind> {
+        let mut out = Vec::new();
+        for _ in 0..(seconds / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::EffectStart { kind, .. } = e {
+                    out.push(kind);
+                }
+            }
+        }
+        out
+    }
+
+    /// **The production roll reads the map** (R78): a space round rolls flares,
+    /// a standard round on the same seed never does and rolls its own weather —
+    /// the presence beside each absence. `WeatherTable::of` is only this test's
+    /// subject through `World::step`, which is its one production caller.
+    #[test]
+    fn a_space_round_rolls_flares_and_a_standard_round_never_does() {
+        let space = kinds_started(&mut world_on(GravityMode::Space), 400.0);
+        let ground = kinds_started(&mut world_on(GravityMode::Standard), 400.0);
+        assert!(
+            space.contains(&EffectKind::SolarFlare),
+            "a space round rolled no flare in 400 s: {space:?}"
+        );
+        assert!(
+            space
+                .iter()
+                .all(|k| matches!(k, EffectKind::SolarFlare | EffectKind::MeteorShower)),
+            "space rolled ground weather: {space:?}"
+        );
+        assert!(
+            !ground.is_empty(),
+            "control: the standard round rolled nothing"
+        );
+        assert!(
+            !ground.contains(&EffectKind::SolarFlare),
+            "a standard round rolled a flare: {ground:?}"
+        );
+    }
+
+    /// Two players in a space round, past their i-frames; the flare forced and
+    /// stepped to its first `Active` tick. Returns the world and the flare's start.
+    fn flaring() -> (World, f32) {
+        let mut w = world_on(GravityMode::Space);
+        // Not `WeatherMode::Off`, which skips the scheduler and would leave the
+        // forced flare telegraphing forever: the natural roll pushed out instead.
+        w.effects.postpone_until(1.0e9);
+        w.add_player(ANA, 0, "ana".into());
+        w.add_player(BO, 0, "bo".into());
+        for p in w.players.iter_mut() {
+            p.iframes_until = 0.0;
+        }
+        let start = w.round_time;
+        w.force_effect(EffectKind::SolarFlare, start);
+        while !w.effects.is_active(EffectKind::SolarFlare) {
+            w.step(SIM_DT);
+        }
+        let _ = w.drain_events();
+        (w, start)
+    }
+
+    /// **Touching burns; standing clear does not.** ana is put on the ribbon —
+    /// where `SolarFlare::points_at` says it is on the next tick — and bo on the
+    /// far side of the map from it, the control. A touch writes the deadline
+    /// `SOLAR_FLARE_BURN_SECONDS` out (R79).
+    #[test]
+    fn a_player_on_the_ribbon_burns_and_one_clear_of_it_does_not() {
+        let (mut w, start) = flaring();
+        // **Two ticks on the ribbon, not one**, so the deadline is asserted after
+        // a re-touch: rewritten, it is still `now + N`; added to — a stacking
+        // bleed, which R79 forbids — it would be twice that.
+        for _ in 0..2 {
+            let next = w.round_time + SIM_DT;
+            let pts = w
+                .flare
+                .as_ref()
+                .expect("installed")
+                .2
+                .points_at(next - start);
+            let on = pts[pts.len() / 2];
+            let far = Vec2::new(w.map.mask.w as f32 - on.x, w.map.mask.h as f32 - on.y);
+            assert!(
+                (far - on).len() > 600.0,
+                "the control is not clear of the ribbon"
+            );
+            for (id, at) in [(ANA, on), (BO, far)] {
+                let p = w.player_mut(id).expect("seated");
+                p.body.pos = at;
+                p.body.vel = Vec2::ZERO;
+            }
+            w.step(SIM_DT);
+        }
+        let ana = w.player(ANA).expect("seated");
+        let bo = w.player(BO).expect("seated");
+        assert!(
+            ana.burning(w.round_time),
+            "ana stood on the ribbon and is not burning"
+        );
+        assert!(
+            (ana.burning_until - (w.round_time + SOLAR_FLARE_BURN_SECONDS)).abs() < 1e-3,
+            "the deadline is {} — not now + {SOLAR_FLARE_BURN_SECONDS}",
+            ana.burning_until
+        );
+        assert!(!bo.burning(w.round_time), "bo, across the map, is burning");
+    }
+
+    /// Flare `Damage` per victim over `seconds`, as (events, total).
+    fn flare_damage(w: &mut World, seconds: f32) -> [(u32, f32); 2] {
+        let mut out = [(0u32, 0.0f32); 2];
+        for _ in 0..(seconds / SIM_DT).round() as u32 {
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::Damage {
+                    victim,
+                    amount,
+                    cause: DeathCause::Weather,
+                    ..
+                } = e
+                {
+                    let i = victim as usize;
+                    out[i].0 += 1;
+                    out[i].1 += amount;
+                }
+            }
+        }
+        out
+    }
+
+    /// **A full burn costs what `SOLAR_FLARE_DPS`'s basis says** (R81, R82): one
+    /// touch, then nothing — exactly `SOLAR_FLARE_BURN_SECONDS` `Damage` events,
+    /// one a second, `DPS × N` unsealed; sealed, `× SHIELD_DAMAGE_MULT` in health
+    /// and `SHIELD_HIT_COST` a hit in energy on top of the seal's own drain.
+    /// Measured on a space round, where the suit is live: ana's is flat, bo's full.
+    #[test]
+    fn a_full_burn_costs_what_the_basis_says() {
+        let (mut w, _) = flaring();
+        // Nothing else may touch them: the flare's own ribbon is ended here, so
+        // the one burn below is the only one.
+        w.flare = None;
+        w.player_mut(ANA).expect("seated").battery = 0.0;
+        // Written at the **next** tick's clock: in a match the touch (stage 5)
+        // and the first burn tick (8a2) share one `now`, and a burn stamped at the
+        // previous tick's clock covers one tick fewer — measured, 3 logs not 4.
+        let now = w.round_time + SIM_DT;
+        for id in [ANA, BO] {
+            w.player_mut(id).expect("seated").burn(now);
+        }
+        let b0 = w.player(BO).expect("seated").battery;
+        let h0 = w.player(BO).expect("seated").health;
+        let got = flare_damage(&mut w, SOLAR_FLARE_BURN_SECONDS + 2.0);
+        let full = SOLAR_FLARE_DPS * SOLAR_FLARE_BURN_SECONDS;
+        let n = SOLAR_FLARE_BURN_SECONDS as u32;
+        assert_eq!(got[ANA as usize].0, n, "unsealed: {got:?}");
+        assert!(
+            (got[ANA as usize].1 - full).abs() < 1e-3,
+            "unsealed lost {got:?}, want {full}"
+        );
+        assert_eq!(got[BO as usize].0, n, "sealed: {got:?}");
+        // The `Damage` event carries what was *rolled*; what the suit let through
+        // is read off health — bo is sealed, so radiation takes none of it.
+        let lost = h0 - w.player(BO).expect("seated").health;
+        let sealed = full * SHIELD_DAMAGE_MULT;
+        assert!(
+            (lost - sealed).abs() < 1e-3,
+            "sealed lost {lost} health, want {sealed}"
+        );
+        // The energy: the seal's drain for the whole run, plus one hit's cost per burn.
+        let spent = b0 - w.player(BO).expect("seated").battery;
+        let drain = RADIATION_SHIELD_COST * (SOLAR_FLARE_BURN_SECONDS + 2.0);
+        let hits = SHIELD_HIT_COST * n as f32;
+        assert!(
+            (spent - (drain + hits)).abs() < 0.05,
+            "the sealed suit spent {spent}: want the drain {drain} + the hits {hits}"
+        );
+    }
+
+    /// `SOLAR_FLARE_DPS`'s doc claims a full unsealed burn is about a third of a
+    /// health bar (`R27` §5). A claim about the value, pinned against its basis,
+    /// so a retune that makes the flare a one-touch kill or a tickle is a red
+    /// here and not only a changed number everywhere else.
+    #[test]
+    fn flare_basis_is_a_third_of_a_health_bar() {
+        let share = SOLAR_FLARE_DPS * SOLAR_FLARE_BURN_SECONDS / BASE_HEALTH;
+        assert!(
+            (0.25..=0.40).contains(&share),
+            "a full burn is {share} of a health bar"
+        );
+    }
+
+    /// **R83: `WEATHER=flare` needs a space map.** The same `Always` on a
+    /// standard round forces nothing; on a space round it starts a flare — the
+    /// presence that makes the absence mean something.
+    #[test]
+    fn a_forced_flare_is_refused_off_a_space_map() {
+        let forced = |gravity| {
+            let mut w = world_on(gravity);
+            w.weather_mode = WeatherMode::Always(EffectKind::SolarFlare);
+            kinds_started(&mut w, 2.0)
+        };
+        assert_eq!(
+            forced(GravityMode::Space),
+            vec![EffectKind::SolarFlare],
+            "control"
+        );
+        assert_eq!(
+            forced(GravityMode::Standard),
+            vec![],
+            "a standard round forced a flare"
+        );
+    }
+
+    /// **R84 — the meteor load in space, the guard `R43` owed.** In space a
+    /// meteor has no gravity to fall under: it crosses the map at a constant
+    /// `METEOR_SPEED`, one every `METEOR_EVERY`, and every impact throws
+    /// `METEOR_FRAGMENTS` at no less than `METEOR_FRAG_SPEED_MIN`. So the most
+    /// that can be airborne at once is the meteors in one crossing plus the
+    /// fragments of every impact inside one fragment flight — the longest of which
+    /// is the map's diagonal at the slowest speed, or the lifetime cap if sooner.
+    /// Asserted, with the control that the shower airborne anything at all.
+    #[test]
+    fn a_meteor_shower_in_space_keeps_a_bounded_number_in_the_air() {
+        let mut w = world_on(GravityMode::Space);
+        w.effects.postpone_until(1.0e9);
+        w.force_effect(EffectKind::MeteorShower, w.round_time);
+        let mut peak = 0usize;
+        let window = EFFECT_TELEGRAPH + METEOR_DURATION + PROJECTILE_MAX_LIFETIME;
+        for _ in 0..(window / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            peak = peak.max(w.projectiles.len());
+        }
+        let (mw, mh) = (w.map.mask.w as f32, w.map.mask.h as f32);
+        let flight = ((mh + 32.0) / METEOR_SPEED).min(PROJECTILE_MAX_LIFETIME);
+        let frag_flight = (mw.hypot(mh) / METEOR_FRAG_SPEED_MIN).min(PROJECTILE_MAX_LIFETIME);
+        let per = |t: f32| (t / METEOR_EVERY).ceil() as usize + 1;
+        let ceiling = per(flight) + per(frag_flight) * METEOR_FRAGMENTS as usize;
+        println!(
+            "meteors in space: peak {peak} airborne (ceiling {ceiling}); {} ProjectileMove/s",
+            peak * (crate::constants::SIM_HZ as usize) / 3
+        );
+        assert!(
+            peak <= ceiling,
+            "{peak} airborne against a ceiling of {ceiling}"
+        );
+        assert!(
+            peak >= 2,
+            "control: only {peak} meteor(s) ever airborne — this measures nothing"
+        );
     }
 }

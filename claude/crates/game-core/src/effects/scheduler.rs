@@ -4,8 +4,9 @@
 
 use crate::constants::{
     EFFECT_INTERVAL_MAX, EFFECT_INTERVAL_MIN, EFFECT_TELEGRAPH, FOG_DURATION, LAVA_ENABLED,
-    METEOR_DURATION, TOXIC_DURATION, TOXIC_RAIN_ENABLED,
+    METEOR_DURATION, SOLAR_FLARE_DURATION, SOLAR_FLARE_WEIGHT, TOXIC_DURATION, TOXIC_RAIN_ENABLED,
 };
+use crate::map::Map;
 use crate::rng::{pick_weighted, range_f32, substream, ChaCha8Rng};
 use crate::weapons::explode::EffectKind;
 use rand::Rng;
@@ -15,14 +16,50 @@ use rand::Rng;
 /// most likely error in the whole milestone (`docs/13-weather-effects.md` §5).
 const LAVA_ACTIVE: f32 = crate::constants::LAVA_JET_DURATION + crate::constants::LAVA_BURN_DURATION;
 
-/// Weights from `docs/13-weather-effects.md` §1, in `KINDS` order.
-const WEIGHTS: [u16; 4] = [3, 3, 2, 2];
-const KINDS: [EffectKind; 4] = [
+/// Weights from `docs/13-weather-effects.md` §1, in `KINDS` order, and the solar
+/// flare's (T22.08A) appended.
+const WEIGHTS: [u16; 5] = [3, 3, 2, 2, SOLAR_FLARE_WEIGHT];
+const KINDS: [EffectKind; 5] = [
     EffectKind::ToxicRain,
     EffectKind::MeteorShower,
     EffectKind::LavaBurst,
     EffectKind::HeavyFog,
+    EffectKind::SolarFlare,
 ];
+
+/// Which sky a map has, and so which weather it can roll (`M22-RULINGS` R43; R78).
+///
+/// **Derived at roll time from the map**, never stored and never read off
+/// `World::gravity` — R58's rule, the one `World::wildlife_allowed` follows: the
+/// map is written once, the gravity field is reassigned after construction by
+/// eighteen sites. It is a second axis beside `enabled`, not a change to it:
+/// `enabled` stays the build's switches, and this says what the *place* allows.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WeatherTable {
+    /// Every kind but the flare.
+    Ground,
+    /// Solar flares and meteor showers only (R43): no ground to open, no air to fog.
+    Space,
+}
+
+impl WeatherTable {
+    /// The table for `map`: `Space` exactly when it is a space map.
+    pub fn of(map: &Map) -> Self {
+        if map.space_geometry().is_some() {
+            Self::Space
+        } else {
+            Self::Ground
+        }
+    }
+
+    /// May this table roll `kind` at all? Switches aside — that is `enabled`.
+    pub fn allows(self, kind: EffectKind) -> bool {
+        match self {
+            Self::Space => matches!(kind, EffectKind::MeteorShower | EffectKind::SolarFlare),
+            Self::Ground => kind != EffectKind::SolarFlare,
+        }
+    }
+}
 
 /// Which kinds this build may roll, in `KINDS` order.
 ///
@@ -84,6 +121,7 @@ pub fn active_duration(kind: EffectKind) -> f32 {
         EffectKind::MeteorShower => METEOR_DURATION,
         EffectKind::LavaBurst => LAVA_ACTIVE,
         EffectKind::HeavyFog => FOG_DURATION,
+        EffectKind::SolarFlare => SOLAR_FLARE_DURATION,
     }
 }
 
@@ -165,8 +203,9 @@ impl EffectScheduler {
     }
 
     /// Advance phases, then maybe start one. Call once per tick during `Playing`;
-    /// the caller is responsible for not calling it during `Warmup`.
-    pub fn tick(&mut self, now: f32, round_ends_at: f32) -> Vec<EffectEvent> {
+    /// the caller is responsible for not calling it during `Warmup`. `table` is
+    /// the map's (`WeatherTable::of`), read at the roll (R78).
+    pub fn tick(&mut self, now: f32, round_ends_at: f32, table: WeatherTable) -> Vec<EffectEvent> {
         let mut events = Vec::new();
         if self.last_now == Some(now) {
             return events;
@@ -200,7 +239,7 @@ impl EffectScheduler {
         self.active.retain(|e| e.phase != EffectPhase::Done);
 
         if now >= self.next_at {
-            let kind = self.roll_kind();
+            let kind = self.roll_kind(table);
             // An effect that outlives the round would kill someone after the
             // scoreboard is up.
             if now + EFFECT_TELEGRAPH + active_duration(kind) <= round_ends_at {
@@ -265,10 +304,16 @@ impl EffectScheduler {
     ///
     /// Never an empty table — three of four weights can now be zero at once, which
     /// is what `a_draw_is_always_possible` guards.
-    fn roll_kind(&mut self) -> EffectKind {
+    ///
+    /// **And a kind the map's table does not allow is zeroed the same way** (R78):
+    /// on the ground the flare's weight is zero, and a zero at the end of the
+    /// table leaves `pick_weighted`'s draw exactly where it was, so the ground's
+    /// schedule is the schedule it always was. In space only meteor and flare
+    /// remain, which is `R43`'s two-live-kinds answer to `R28`.
+    fn roll_kind(&mut self, table: WeatherTable) -> EffectKind {
         let mut weights = WEIGHTS;
         for (i, on) in self.enabled.iter().enumerate() {
-            if !on {
+            if !on || !table.allows(KINDS[i]) {
                 weights[i] = 0;
             }
         }
@@ -361,7 +406,7 @@ mod tests {
         let ticks = (sim_seconds / DT) as u32;
         for i in 0..ticks {
             let now = i as f32 * DT;
-            for ev in s.tick(now, round_ends_at) {
+            for ev in s.tick(now, round_ends_at, WeatherTable::Ground) {
                 if let EffectEvent::Started { kind, .. } = ev {
                     out.push((now, kind));
                 }
@@ -377,7 +422,7 @@ mod tests {
         let ticks = (sim_seconds / dt) as u32;
         for i in 0..ticks {
             let now = i as f32 * dt;
-            for ev in s.tick(now, 1.0e9) {
+            for ev in s.tick(now, 1.0e9, WeatherTable::Ground) {
                 if let EffectEvent::Started { .. } = ev {
                     out.push(now);
                 }
@@ -463,7 +508,7 @@ mod tests {
         let ticks = (60_000.0 / DT) as u32; // ~1600 effects
         for i in 0..ticks {
             let now = i as f32 * DT;
-            for ev in s.tick(now, 1.0e9) {
+            for ev in s.tick(now, 1.0e9, WeatherTable::Ground) {
                 if let EffectEvent::Started { kind, .. } = ev {
                     kinds.push(kind);
                 }
@@ -475,13 +520,22 @@ mod tests {
         }
     }
 
-    /// Every kind started over `sim_seconds`, counted in `KINDS` order.
-    fn kind_counts(mut s: EffectScheduler, sim_seconds: f32) -> [usize; 4] {
-        let mut counts = [0usize; 4];
+    /// Every kind started over `sim_seconds` on the ground, counted in `KINDS` order.
+    fn kind_counts(s: EffectScheduler, sim_seconds: f32) -> [usize; KINDS.len()] {
+        kind_counts_on(s, sim_seconds, WeatherTable::Ground)
+    }
+
+    /// The same, under `table`.
+    fn kind_counts_on(
+        mut s: EffectScheduler,
+        sim_seconds: f32,
+        table: WeatherTable,
+    ) -> [usize; KINDS.len()] {
+        let mut counts = [0usize; KINDS.len()];
         let ticks = (sim_seconds / DT) as u32;
         for i in 0..ticks {
             let now = i as f32 * DT;
-            for ev in s.tick(now, 1.0e9) {
+            for ev in s.tick(now, 1.0e9, table) {
                 if let EffectEvent::Started { kind, .. } = ev {
                     let idx = KINDS.iter().position(|k| *k == kind).unwrap();
                     counts[idx] += 1;
@@ -547,23 +601,28 @@ mod tests {
     /// would be 1.0, two alternate at 0.5 each, three or more get the Markov
     /// solve back. `two_live_kinds_alternate` pins the alternation itself, which
     /// is the part a share of 0.5 cannot distinguish from a fair coin.
+    ///
+    /// **Per table** (T22.08A, `R28`'s space arm): the live set is the switches
+    /// *and* the map's table, so space is measured as its own run.
     #[test]
     fn the_live_distribution_matches_the_live_switches() {
-        let live: Vec<usize> = enabled_from_constants()
-            .iter()
-            .enumerate()
-            .filter(|(_, on)| **on)
-            .map(|(i, _)| i)
-            .collect();
-        let counts = kind_counts(EffectScheduler::new(31337, 0.0), 400_000.0);
-        let total: usize = counts.iter().sum();
-        assert!(total > 10_000, "only {total} effects");
+        for table in [WeatherTable::Ground, WeatherTable::Space] {
+            live_distribution_on(table);
+        }
+    }
 
-        // Nothing switched off ever runs. This is the half that would catch a
-        // disabled kind leaking back in, and it does not depend on the shares.
-        for (i, on) in enabled_from_constants().iter().enumerate() {
-            if !on {
-                assert_eq!(counts[i], 0, "{:?} ran while switched off", KINDS[i]);
+    fn live_distribution_on(table: WeatherTable) {
+        let live = live_on(table);
+        let counts = kind_counts_on(EffectScheduler::new(31337, 0.0), 400_000.0, table);
+        let total: usize = counts.iter().sum();
+        assert!(total > 10_000, "{table:?}: only {total} effects");
+
+        // Nothing switched off — or not allowed here — ever runs. This is the half
+        // that would catch a disabled kind leaking back in, and it does not depend
+        // on the shares.
+        for i in 0..KINDS.len() {
+            if !live.contains(&i) {
+                assert_eq!(counts[i], 0, "{table:?}: {:?} ran while not live", KINDS[i]);
             }
         }
 
@@ -572,7 +631,7 @@ mod tests {
                 let share = counts[i] as f32 / total as f32;
                 assert!(
                     (share - 0.5).abs() < 0.012,
-                    "{:?}: {share:.4} vs 0.5000 — with two live kinds and \
+                    "{table:?} {:?}: {share:.4} vs 0.5000 — with two live kinds and \
                      never-repeat the run must alternate",
                     KINDS[i]
                 );
@@ -582,9 +641,100 @@ mod tests {
             // shares are no longer forced. Assert only that every live kind runs,
             // and leave the solved table to the switch-on test below.
             for &i in &live {
-                assert!(counts[i] > 0, "{:?} never ran: {counts:?}", KINDS[i]);
+                assert!(
+                    counts[i] > 0,
+                    "{table:?}: {:?} never ran: {counts:?}",
+                    KINDS[i]
+                );
             }
         }
+    }
+
+    /// Indices of the kinds `table` can roll with the switches as built.
+    fn live_on(table: WeatherTable) -> Vec<usize> {
+        enabled_from_constants()
+            .iter()
+            .enumerate()
+            .filter(|(i, on)| **on && table.allows(KINDS[*i]))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// **The flare is space's and only space's, and space has none of the
+    /// ground's weather** (R43, R78) — each absence beside its presence, on the
+    /// same seeds and clock: space does roll flares and meteors, the ground does
+    /// roll fog, so neither "never" is a scheduler that rolls nothing.
+    #[test]
+    fn space_rolls_flares_and_meteors_and_the_ground_never_rolls_a_flare() {
+        let at = |k: EffectKind| KINDS.iter().position(|x| *x == k).unwrap();
+        for seed in [1u64, 7, 4242, 31337] {
+            let space = kind_counts_on(
+                EffectScheduler::new(seed, 0.0),
+                6_000.0,
+                WeatherTable::Space,
+            );
+            let ground = kind_counts_on(
+                EffectScheduler::new(seed, 0.0),
+                6_000.0,
+                WeatherTable::Ground,
+            );
+            for k in [
+                EffectKind::HeavyFog,
+                EffectKind::ToxicRain,
+                EffectKind::LavaBurst,
+            ] {
+                assert_eq!(
+                    space[at(k)],
+                    0,
+                    "seed {seed}: space rolled {k:?}: {space:?}"
+                );
+            }
+            assert_eq!(
+                ground[at(EffectKind::SolarFlare)],
+                0,
+                "seed {seed}: the ground rolled a solar flare: {ground:?}"
+            );
+            assert!(
+                space[at(EffectKind::SolarFlare)] > 0,
+                "seed {seed}: no flare in space: {space:?}"
+            );
+            assert!(
+                space[at(EffectKind::MeteorShower)] > 0,
+                "seed {seed}: no meteors in space: {space:?}"
+            );
+            assert!(
+                ground[at(EffectKind::HeavyFog)] > 0,
+                "control, seed {seed}: no fog on the ground: {ground:?}"
+            );
+        }
+    }
+
+    /// **The ground's schedule did not move when the flare joined the table**
+    /// (R78): a zero weight at the end of the table draws identically. Pinned by
+    /// the same scheduler with the flare's switch off — a table that never
+    /// contained it — against the shipped one, kind by kind and time by time.
+    #[test]
+    fn the_flare_does_not_move_the_grounds_schedule() {
+        let run = |mut s: EffectScheduler| {
+            let mut out = Vec::new();
+            for i in 0..(3_000.0 / DT) as u32 {
+                let now = i as f32 * DT;
+                for ev in s.tick(now, 1.0e9, WeatherTable::Ground) {
+                    if let EffectEvent::Started { kind, seed, .. } = ev {
+                        out.push((now, kind, seed));
+                    }
+                }
+            }
+            out
+        };
+        let mut without = enabled_from_constants();
+        without[KINDS.len() - 1] = false;
+        let shipped = run(EffectScheduler::new(4242, 0.0));
+        assert!(shipped.len() > 50, "only {} effects", shipped.len());
+        assert_eq!(
+            shipped,
+            run(EffectScheduler::with_enabled(4242, 0.0, without))
+        );
     }
 
     /// The 3:3:2:2 table, pinned with the switch **on** — what the rewrite (T21.41)
@@ -603,8 +753,10 @@ mod tests {
         // stationary distribution is 0.284/0.284/0.216/0.216 for weights 3:3:2:2.
         // Asserting the raw 0.30/0.20 would be asserting the rule does not exist.
         // Still within the task file's 3 % of the nominal weights either way.
-        let expected = [0.2838, 0.2838, 0.2162, 0.2162];
-        for i in 0..4 {
+        // The flare's share is 0 on the ground table (R78), which is the only
+        // table a switch-on ground run can use.
+        let expected = [0.2838, 0.2838, 0.2162, 0.2162, 0.0];
+        for i in 0..KINDS.len() {
             let share = counts[i] as f32 / total as f32;
             assert!(
                 (share - expected[i]).abs() < 0.012,
@@ -639,7 +791,7 @@ mod tests {
             let ticks = (total / DT) as u32;
             for i in 1..ticks {
                 let now = i as f32 * DT;
-                for ev in s.tick(now, 1.0e9) {
+                for ev in s.tick(now, 1.0e9, WeatherTable::Ground) {
                     match ev {
                         EffectEvent::PhaseChanged {
                             id: eid,
@@ -673,7 +825,7 @@ mod tests {
         let mut ends = 0;
         let ticks = ((EFFECT_TELEGRAPH + FOG_DURATION + 5.0) / DT) as u32;
         for i in 1..ticks {
-            for ev in s.tick(i as f32 * DT, 1.0e9) {
+            for ev in s.tick(i as f32 * DT, 1.0e9, WeatherTable::Ground) {
                 match ev {
                     EffectEvent::PhaseChanged { id: e, .. } if e == id => actives += 1,
                     EffectEvent::Ended { id: e } if e == id => ends += 1,
@@ -693,7 +845,7 @@ mod tests {
             let ticks = (240.0 / DT) as u32;
             for i in 0..ticks {
                 let now = i as f32 * DT;
-                for ev in s.tick(now, 240.0) {
+                for ev in s.tick(now, 240.0, WeatherTable::Ground) {
                     if let EffectEvent::Started { kind, .. } = ev {
                         let ends = now + EFFECT_TELEGRAPH + active_duration(kind);
                         assert!(ends <= 240.0, "seed {seed}: {kind:?} ends at {ends}");
@@ -716,7 +868,7 @@ mod tests {
         let ticks = ((t0 + 1.0) / DT) as u32;
         let mut started = 0;
         for i in 0..ticks {
-            for ev in s.tick(i as f32 * DT, ends_at) {
+            for ev in s.tick(i as f32 * DT, ends_at, WeatherTable::Ground) {
                 if let EffectEvent::Started { .. } = ev {
                     started += 1;
                 }
@@ -732,7 +884,7 @@ mod tests {
         let mut s = EffectScheduler::new(4242, 0.0);
         let mut started = 0;
         for i in 0..ticks {
-            for ev in s.tick(i as f32 * DT, 1.0e9) {
+            for ev in s.tick(i as f32 * DT, 1.0e9, WeatherTable::Ground) {
                 if let EffectEvent::Started { .. } = ev {
                     started += 1;
                 }
@@ -745,13 +897,13 @@ mod tests {
     fn is_active_is_false_during_telegraph() {
         let mut s = EffectScheduler::new(5, 0.0);
         s.force(EffectKind::ToxicRain, 0.0);
-        s.tick(DT, 1.0e9);
+        s.tick(DT, 1.0e9, WeatherTable::Ground);
         assert!(!s.is_active(EffectKind::ToxicRain));
         assert_eq!(s.active()[0].phase, EffectPhase::Telegraph);
 
         let ticks = ((EFFECT_TELEGRAPH + 0.5) / DT) as u32;
         for i in 2..ticks {
-            s.tick(i as f32 * DT, 1.0e9);
+            s.tick(i as f32 * DT, 1.0e9, WeatherTable::Ground);
         }
         assert!(s.is_active(EffectKind::ToxicRain));
     }
@@ -761,11 +913,11 @@ mod tests {
         let mut s = EffectScheduler::new(5, 0.0);
         s.force(EffectKind::ToxicRain, 0.0);
         s.force(EffectKind::HeavyFog, 0.0);
-        s.tick(DT, 1.0e9);
+        s.tick(DT, 1.0e9, WeatherTable::Ground);
         assert_eq!(s.active().len(), 2);
         let ticks = ((EFFECT_TELEGRAPH + 0.5) / DT) as u32;
         for i in 2..ticks {
-            s.tick(i as f32 * DT, 1.0e9);
+            s.tick(i as f32 * DT, 1.0e9, WeatherTable::Ground);
         }
         assert!(s.is_active(EffectKind::ToxicRain));
         assert!(s.is_active(EffectKind::HeavyFog));
@@ -776,8 +928,8 @@ mod tests {
         let mut s = EffectScheduler::new(5, 0.0);
         s.force(EffectKind::HeavyFog, 0.0);
         let t = EFFECT_TELEGRAPH + DT;
-        let first = s.tick(t, 1.0e9);
-        let second = s.tick(t, 1.0e9);
+        let first = s.tick(t, 1.0e9, WeatherTable::Ground);
+        let second = s.tick(t, 1.0e9, WeatherTable::Ground);
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
     }
@@ -788,7 +940,7 @@ mod tests {
         s.force(EffectKind::HeavyFog, 0.0);
         let ticks = ((EFFECT_TELEGRAPH + FOG_DURATION + 1.0) / DT) as u32;
         for i in 1..ticks {
-            s.tick(i as f32 * DT, 1.0e9);
+            s.tick(i as f32 * DT, 1.0e9, WeatherTable::Ground);
         }
         assert!(s.active().is_empty());
         assert!(!s.is_active(EffectKind::HeavyFog));
@@ -801,21 +953,35 @@ mod tests {
     /// Falsified by hand: zeroing the fourth (setting `enabled` all-false) makes
     /// `pick_weighted` face an empty table, which is the panic this rules out.
     #[test]
+    ///
+    /// **Per table** (`R28`'s space arm). And the doc's "panic" is not what an
+    /// empty table does: `pick_weighted` returns index 0 on all-zero weights —
+    /// `ToxicRain`, a switched-off kind — which is why the second half checks
+    /// that everything rolled is live rather than trusting a panic to say so.
     fn a_draw_is_always_possible() {
-        let live = enabled_from_constants().iter().filter(|on| **on).count();
-        assert!(
-            live >= 2,
-            "only {live} weather kind(s) are switched on — with never-repeat \
-             zeroing one more, a draw has nothing left to pick from"
-        );
-        // Not a proof by reasoning: roll a real scheduler a long way and let it
-        // panic if the table ever empties.
-        for seed in [1u64, 7, 4242, 31337] {
-            let counts = kind_counts(EffectScheduler::new(seed, 0.0), 6_000.0);
+        for table in [WeatherTable::Ground, WeatherTable::Space] {
+            let live = live_on(table);
             assert!(
-                counts.iter().sum::<usize>() > 0,
-                "seed {seed} started no effects at all in 6000 s: {counts:?}"
+                live.len() >= 2,
+                "{table:?}: only {} weather kind(s) are live — with never-repeat \
+                 zeroing one more, a draw has nothing left to pick from",
+                live.len()
             );
+            // Not a proof by reasoning: roll a real scheduler a long way.
+            for seed in [1u64, 7, 4242, 31337] {
+                let counts = kind_counts_on(EffectScheduler::new(seed, 0.0), 6_000.0, table);
+                assert!(
+                    counts.iter().sum::<usize>() > 0,
+                    "{table:?} seed {seed} started no effects at all in 6000 s: {counts:?}"
+                );
+                for (i, n) in counts.iter().enumerate() {
+                    assert!(
+                        *n == 0 || live.contains(&i),
+                        "{table:?} seed {seed}: {:?} ran {n} times and is not live",
+                        KINDS[i]
+                    );
+                }
+            }
         }
     }
 
@@ -827,32 +993,52 @@ mod tests {
     /// Falsified by re-enabling a third kind in `enabled`: the run stops
     /// alternating and the assertion reds.
     #[test]
+    ///
+    /// **Per table, and no longer silently blind** (`R28`). The ground arm still
+    /// skips itself if a third kind comes back on — the property is not claimed
+    /// then — but space's table is two kinds by ruling (R43), so its arm must run,
+    /// and the last assertion says so if it did not.
     fn two_live_kinds_alternate() {
-        let live: Vec<EffectKind> = KINDS
-            .iter()
-            .zip(enabled_from_constants())
-            .filter(|(_, on)| *on)
-            .map(|(k, _)| *k)
-            .collect();
-        if live.len() != 2 {
-            return; // a third kind came back on; this property is not claimed then
-        }
-        let mut s = EffectScheduler::new(2026, 0.0);
-        let mut seen: Vec<EffectKind> = Vec::new();
-        let ticks = (6_000.0 / DT) as u32;
-        for i in 0..ticks {
-            for ev in s.tick(i as f32 * DT, 1.0e9) {
-                if let EffectEvent::Started { kind, .. } = ev {
-                    seen.push(kind);
+        let mut checked = Vec::new();
+        for table in [WeatherTable::Ground, WeatherTable::Space] {
+            let live: Vec<EffectKind> = live_on(table).into_iter().map(|i| KINDS[i]).collect();
+            if live.len() != 2 {
+                continue; // a third kind came back on here; not claimed then
+            }
+            let mut s = EffectScheduler::new(2026, 0.0);
+            let mut seen: Vec<EffectKind> = Vec::new();
+            let ticks = (6_000.0 / DT) as u32;
+            for i in 0..ticks {
+                for ev in s.tick(i as f32 * DT, 1.0e9, table) {
+                    if let EffectEvent::Started { kind, .. } = ev {
+                        seen.push(kind);
+                    }
                 }
             }
+            assert!(
+                seen.len() >= 6,
+                "{table:?}: only {} effects started",
+                seen.len()
+            );
+            for w in seen.windows(2) {
+                assert_ne!(
+                    w[0], w[1],
+                    "{table:?}: the same kind ran twice running: {seen:?}"
+                );
+            }
+            for k in &seen {
+                assert!(
+                    live.contains(k),
+                    "{table:?}: {k:?} ran while not live: {seen:?}"
+                );
+            }
+            checked.push(table);
         }
-        assert!(seen.len() >= 6, "only {} effects started", seen.len());
-        for w in seen.windows(2) {
-            assert_ne!(w[0], w[1], "the same kind ran twice running: {seen:?}");
-        }
-        for k in &seen {
-            assert!(live.contains(k), "{k:?} ran while switched off: {seen:?}");
-        }
+        assert!(
+            checked.contains(&WeatherTable::Space),
+            "space's table is not two kinds any more ({:?}), so R43's alternation \
+             went unchecked — R28's blind spot",
+            live_on(WeatherTable::Space)
+        );
     }
 }

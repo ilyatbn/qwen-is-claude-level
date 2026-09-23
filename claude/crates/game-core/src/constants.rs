@@ -1214,6 +1214,59 @@ pub const FOG_SCREEN_ALPHA: f32 = 0.8;
 /// own layer.
 pub const FOG_SCREEN_COLOUR: u32 = 0x009A_A0A6;
 
+// --- T22.08A: solar flares (`M22-RULINGS` R12, R27, R43; T22.08's R78–R85) ---
+//
+// A space-only weather kind: a prominence loop — a fiery ribbon arched between two
+// footpoints — that wanders the map and **burns whoever it touches for
+// `SOLAR_FLARE_BURN_SECONDS`**, the owner's "burns players touching it for N seconds
+// (default to 4)". Its shape is a pure function of (effect seed, elapsed, map size)
+// in `effects/flare.rs`, so the client re-derives it through wasm (`R80`).
+
+/// The owner's `N`: how long a touch keeps burning you after you leave the ribbon.
+/// Re-touching **rewrites** the deadline, `poison()`'s rule (`R79`) — a status you
+/// can wait out, never a stacking bleed.
+pub const SOLAR_FLARE_BURN_SECONDS: f32 = 4.0;
+/// Burn damage per second (`R27` §5). **A full burn is `8 × 4` = 32 unsealed** —
+/// about a third of `BASE_HEALTH`, dodgeable and survivable beside radiation.
+/// **Sealed** (`R82`, the suit's softening per `R2`): each logged second is one hit
+/// through `apply_damage`, so 32 × `SHIELD_DAMAGE_MULT` = **24 health**, and the
+/// four hits cost `SHIELD_HIT_COST` each = **4 energy** — plus the 4 the seal drains
+/// over those same 4 s anyway (`RADIATION_SHIELD_COST`), which is where `R82`'s
+/// "24 + 8 energy" comes from. `world::solar_flare_tests::a_full_burn_costs_what_the_basis_says`
+/// measures both totals, and `…::flare_basis_is_a_third_of_a_health_bar` pins the claim.
+pub const SOLAR_FLARE_DPS: f32 = 8.0;
+/// Seconds a flare stays `Active` after its telegraph — a little longer than a
+/// meteor shower (10 s), because a flare you can see coming is a flare you can
+/// leave: its danger is where it wanders, not how fast it hits.
+pub const SOLAR_FLARE_DURATION: f32 = 12.0;
+/// The flare's weight in the scheduler's table. With two live kinds in space and
+/// never-repeat, the table alternates meteor and flare whatever this is
+/// (`two_live_kinds_alternate`); it is meteor's 3 so a third live kind would start
+/// from an even draw.
+pub const SOLAR_FLARE_WEIGHT: u16 = 3;
+/// The ribbon's half-width, world px: a body whose box comes within this of the
+/// sampled centre line is touching it.
+pub const SOLAR_FLARE_RIBBON_R: f32 = 14.0;
+/// Distance between the loop's two footpoints, and how high it arches, world px.
+pub const SOLAR_FLARE_SPAN: f32 = 300.0;
+pub const SOLAR_FLARE_HEIGHT: f32 = 170.0;
+/// Points the centre line is sampled at, footpoint to footpoint. Enough that two
+/// neighbours are never farther apart than `SOLAR_FLARE_RIBBON_R`, so no body slips
+/// between samples — `flare::tests::no_gap_between_samples_is_wider_than_the_ribbon`.
+pub const SOLAR_FLARE_SAMPLES: u32 = 48;
+/// The loop's centre wanders the map at this speed, world px/s — under
+/// `WALK_SPEED` (150), so a player on foot can outpace it and the danger is being
+/// caught by the sweep, not by the chase.
+pub const SOLAR_FLARE_SPEED: f32 = 90.0;
+/// The radius of the arc the loop's centre rides at `SOLAR_FLARE_SPEED`, world px,
+/// or less where the map is too small for it (`effects/flare.rs`). At 90 px/s a
+/// 360 px arc turns a quarter-radian a second: a 12 s flare sweeps most of a circle
+/// the width of a screen, which reads as a wander rather than a lap.
+pub const SOLAR_FLARE_ORBIT: f32 = 360.0;
+/// How fast the loop's axis turns, radians/s: a slow roll, so the arch sweeps the
+/// space around it rather than sliding past like a bar.
+pub const SOLAR_FLARE_TURN: f32 = 0.35;
+
 // ---------------------------------------------------------------------------
 // Networking
 // ---------------------------------------------------------------------------

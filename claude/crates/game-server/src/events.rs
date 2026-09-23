@@ -1097,4 +1097,30 @@ mod tests {
         assert_eq!(effect_phase_name(EffectPhase::Telegraph), "telegraph");
         assert_eq!(effect_phase_name(EffectPhase::Done), "cleanup");
     }
+
+    /// T22.08A: the flare goes out as `"SolarFlare"` with its seed as a decimal
+    /// string — the spelling `hud.ts::effectLabel` and the client's flare clock
+    /// key on, and the full `u64` the client needs to build the same ribbon
+    /// (`GameCore::flare_points` takes it as two halves).
+    #[test]
+    fn a_solar_flare_starts_on_the_wire_by_name_with_its_whole_seed() {
+        let w = world();
+        let seed = u64::MAX - 5;
+        let start = payload_of(
+            &GameEvent::EffectStart {
+                tick: 1,
+                id: 9,
+                kind: game_core::weapons::explode::EffectKind::SolarFlare,
+                seed,
+                duration: game_core::constants::SOLAR_FLARE_DURATION,
+            },
+            &w,
+        );
+        assert_eq!(start["kind"], "SolarFlare");
+        assert_eq!(start["seed"], seed.to_string());
+        assert_eq!(
+            start["duration"],
+            game_core::constants::SOLAR_FLARE_DURATION as f64
+        );
+    }
 }
