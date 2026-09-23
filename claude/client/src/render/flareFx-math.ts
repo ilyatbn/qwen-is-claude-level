@@ -9,7 +9,7 @@
  */
 
 /** A ribbon as the core returns it: `[x0, y0, x1, y1, …]`, world px. */
-export type FlarePoints = ArrayLike<number>
+type FlarePoints = ArrayLike<number>
 
 /** An axis-aligned world rectangle. */
 export interface Box {
@@ -128,7 +128,7 @@ export function ribbonLength(pts: FlarePoints): number {
  * thread. The corona bands are filled outlines (`ribbonOutline`), never strokes. The Canvas path is the fallback (T21.33/T21.36): the same event in the
  * same place at the same width, not the shader's look.
  */
-export interface StrokePass {
+interface StrokePass {
   width: number
   color: number
   alpha: number
@@ -172,34 +172,72 @@ export function strand(pts: FlarePoints, amp: number, phase: number, t: number, 
 /**
  * Who is burning, as the client can know it (`R80`: not on the wire).
  *
- * The core's contact test — the server's rule, `flare_touches` — is asked about
- * each drawn body every frame; a touch writes `now + burn`, **rewritten, never
- * added to** (`R79`'s rule, `poison()`'s). A death clears it, as `die()` does on
- * the server. Keyed by player id.
+ * **Contact proposes, the server confirms** (T22.08D F3). The core's contact test —
+ * the server's rule, `flare_touches` — is asked about each drawn body every lit
+ * frame, but on the client's copy of the positions: predicted for you, interpolated
+ * for everyone else. Those can disagree with the server's for a whole burn, so a
+ * touch is **provisional**: it writes `now + burn` (rewritten, never added to — `R79`,
+ * `poison()`'s rule) and a deadline `confirmWithin` out. **Evidence** — a `weather`
+ * `damage` to you, a health drop in the snapshot for anyone else — confirms it and
+ * keeps the flames lit `confirmWithin` past each word. Unconfirmed by the deadline,
+ * the flames go out, and contact alone does not relight them for one `burn`: a body
+ * the client wrongly thinks is in the ribbon would otherwise flicker on and off for
+ * as long as it stood there. Evidence with **no** touch lights them only when the
+ * caller says the evidence cannot be anything else's (`start`): yours, not a
+ * remote's health drop, which a bullet also causes. A death clears it, as `die()`
+ * does on the server. Keyed by player id; `now` is the flare's server clock.
  */
 export class BurnTracker {
-  private readonly until = new Map<number, number>()
+  private readonly runs = new Map<number, { until: number; confirmBy: number | null; quietUntil: number }>()
 
-  touch(id: number, now: number, burnSeconds: number): void {
-    this.until.set(id, now + burnSeconds)
+  /** The client's contact test says `id` is in the ribbon. */
+  touch(id: number, now: number, burn: number, confirmWithin: number): void {
+    const r = this.runs.get(id)
+    if (r && now < r.quietUntil) return
+    if (r && now < r.until) {
+      r.until = Math.max(r.until, now + burn)
+      return
+    }
+    this.runs.set(id, { until: now + burn, confirmBy: now + confirmWithin, quietUntil: 0 })
+  }
+
+  /**
+   * The server says `id` is burning. Confirms a provisional burn; with `start`,
+   * lights one with no touch at all.
+   */
+  confirm(id: number, now: number, confirmWithin: number, start: boolean): void {
+    const r = this.runs.get(id)
+    if (r && now < r.until) {
+      r.confirmBy = null
+      r.until = Math.max(r.until, now + confirmWithin)
+      return
+    }
+    if (start) this.runs.set(id, { until: now + confirmWithin, confirmBy: null, quietUntil: 0 })
   }
 
   burning(id: number, now: number): boolean {
-    const u = this.until.get(id)
-    return u !== undefined && now < u
+    const r = this.runs.get(id)
+    if (!r) return false
+    if (r.confirmBy !== null && now >= r.confirmBy) {
+      // Refuted: the server never said so. Out, and contact alone stays quiet until
+      // the burn it proposed would have ended.
+      r.quietUntil = r.until
+      r.until = 0
+      r.confirmBy = null
+    }
+    return now < r.until
   }
 
   /** Seconds of burn left, `0` when not burning. */
   left(id: number, now: number): number {
-    const u = this.until.get(id)
-    return u === undefined ? 0 : Math.max(0, u - now)
+    return this.burning(id, now) ? this.runs.get(id)!.until - now : 0
   }
 
   clear(id: number): void {
-    this.until.delete(id)
+    this.runs.delete(id)
   }
 
   clearAll(): void {
-    this.until.clear()
+    this.runs.clear()
   }
 }

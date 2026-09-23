@@ -2918,8 +2918,60 @@ impl World {
     #[doc(hidden)]
     pub fn force_effect(&mut self, kind: EffectKind, now: f32) -> u32 {
         let id = self.effects.force(kind, now);
-        self.install_effect(id, kind, self.effect_seed(id), now);
+        let seed = self.effect_seed(id);
+        // The scheduler's record says what was installed (T22.08D F4): the join
+        // catch-up re-announces running effects from it.
+        self.effects.record_seed(id, seed);
+        self.install_effect(id, kind, seed, now);
         id
+    }
+
+    /// **Every running effect, as the events that announced it** (T22.08D F4): its
+    /// `EffectStart` at the tick it started on, with the seed it was installed with,
+    /// and — once it is `Active` — its `EffectPhaseChanged` at the tick that
+    /// happened. For a socket that arrives while an effect runs: the join path sends
+    /// these through the same serializer as the live events, so the client starts
+    /// the effect through its one start path, origin and all.
+    ///
+    /// The ticks are **derived**, not stored: the scheduler keeps round times, and
+    /// `tick` and `round_time` advance together in `step`, so a start `k` ticks ago
+    /// is `round_time − started_at ≈ k·SIM_DT`. **Approximately, and measured**: `f32`
+    /// rounds every `+= SIM_DT`, one way, so over an effect's life the two disagree by
+    /// up to ~5 ms below 1024 s — under the half tick (8.3 ms) the rounding needs.
+    /// Past 1024 s the spacing of `f32` is 1.2e-4 s and it would not be; a round
+    /// cannot get there (`ROUND_SECONDS_MAX`). `running_effects_replay_the_live_announcements`
+    /// counts both ends over a whole maximum round.
+    pub fn running_effects(&self) -> Vec<GameEvent> {
+        let ticks_ago =
+            |at: f32| ((self.round_time - at) / crate::constants::SIM_DT).round() as u32;
+        let mut out = Vec::new();
+        for a in self.effects.active() {
+            out.push(GameEvent::EffectStart {
+                tick: self.tick.saturating_sub(ticks_ago(a.started_at)),
+                id: a.id,
+                kind: a.kind,
+                seed: a.seed,
+                duration: crate::effects::scheduler::active_duration(a.kind),
+            });
+            if a.phase == EffectPhase::Active {
+                out.push(GameEvent::EffectPhaseChanged {
+                    tick: self.tick.saturating_sub(ticks_ago(a.phase_started_at)),
+                    id: a.id,
+                    phase: a.phase,
+                });
+            }
+        }
+        out
+    }
+
+    /// The running flare's id and **the server's own elapsed** — `now − start`, the
+    /// very number stage 5's contact test hands `SolarFlare::touches`. For the
+    /// `DEV_PROBE` hook (T22.08D F1), so a check compares a client's clock against
+    /// the server's rather than against itself.
+    pub fn flare_elapsed(&self) -> Option<(u32, f32)> {
+        self.flare
+            .as_ref()
+            .map(|(id, start, _)| (*id, self.round_time - start))
     }
 
     /// Test seam: the vents the *installed* lava burst is using.
@@ -12644,8 +12696,8 @@ mod solar_flare_tests {
     use crate::constants::{
         MapScale, BASE_HEALTH, DEFAULT_MAP_GENERATOR, EFFECT_TELEGRAPH, METEOR_DURATION,
         METEOR_EVERY, METEOR_FRAGMENTS, METEOR_FRAG_SPEED_MIN, METEOR_SPEED,
-        PROJECTILE_MAX_LIFETIME, RADIATION_SHIELD_COST, SHIELD_DAMAGE_MULT, SHIELD_HIT_COST,
-        SIM_DT, SOLAR_FLARE_BURN_SECONDS, SOLAR_FLARE_DPS,
+        PROJECTILE_MAX_LIFETIME, RADIATION_SHIELD_COST, ROUND_SECONDS_MAX, SHIELD_DAMAGE_MULT,
+        SHIELD_HIT_COST, SIM_DT, SOLAR_FLARE_BURN_SECONDS, SOLAR_FLARE_DPS,
     };
 
     const ANA: PlayerId = 0;
@@ -12918,6 +12970,130 @@ mod solar_flare_tests {
     /// health bar (`R27` §5). A claim about the value, pinned against its basis,
     /// so a retune that makes the flare a one-touch kill or a tickle is a red
     /// here and not only a changed number everywhere else.
+    /// **T22.08D F4 — the catch-up says what the live events said.** A space round
+    /// rolling its own weather, then `WEATHER=flare`'s path (whose seed is the one
+    /// `record_seed` had to fix): at every tick an effect runs, `running_effects`
+    /// must equal the live `EffectStart` / `EffectPhaseChanged` for that id — tick,
+    /// kind, seed and duration. Counted at both ends: every effect that started was
+    /// seen in the catch-up, and some were.
+    ///
+    /// **And F2's basis, on the forced arm**: a client clocks the flare as
+    /// `(tick − start tick) · SIM_DT` off the snapshot tick; the server contacts at
+    /// `round_time − start`. The two are asserted within half a tick over a whole
+    /// maximum round of flares — measured 4.6 ms, under a pixel of the ribbon.
+    #[test]
+    fn running_effects_replay_the_live_announcements() {
+        for forced in [false, true] {
+            let mut w = world_on(GravityMode::Space);
+            if forced {
+                w.weather_mode = WeatherMode::Always(EffectKind::SolarFlare);
+            }
+            let mut starts = std::collections::BTreeMap::new();
+            let mut phases = std::collections::BTreeMap::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let (mut drift, mut clocked) = (0.0f32, 0u32);
+            w.set_round_seconds(ROUND_SECONDS_MAX);
+            for _ in 0..((ROUND_SECONDS_MAX + 20.0) / SIM_DT) as u32 {
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    match e {
+                        GameEvent::EffectStart { id, .. } => {
+                            starts.insert(id, e);
+                        }
+                        GameEvent::EffectPhaseChanged { id, .. } => {
+                            phases.insert(id, e);
+                        }
+                        _ => {}
+                    }
+                }
+                for e in w.running_effects() {
+                    let (id, live) = match &e {
+                        GameEvent::EffectStart { id, .. } => (*id, starts.get(id)),
+                        GameEvent::EffectPhaseChanged { id, .. } => (*id, phases.get(id)),
+                        other => panic!("the catch-up sent {other:?}"),
+                    };
+                    assert_eq!(
+                        Some(&e),
+                        live,
+                        "forced {forced}: effect {id} re-announced differently"
+                    );
+                    seen.insert(id);
+                }
+                if let Some((id, elapsed)) = w.flare_elapsed() {
+                    if let Some(GameEvent::EffectStart { tick, .. }) = starts.get(&id) {
+                        drift = drift.max((elapsed - (w.tick - tick) as f32 * SIM_DT).abs());
+                        clocked += 1;
+                    }
+                }
+            }
+            assert!(
+                !seen.is_empty(),
+                "forced {forced}: control — no effect ran in a round"
+            );
+            assert_eq!(
+                seen.len(),
+                starts.len(),
+                "forced {forced}: {} effects started, the catch-up showed {}",
+                starts.len(),
+                seen.len()
+            );
+            assert!(
+                clocked > 0,
+                "forced {forced}: control — no flare was clocked"
+            );
+            // Measured 4.6 ms (f32 rounding every `+= SIM_DT` the same way). The bound
+            // is the one `running_effects`' rounding needs; it is also under a
+            // pixel of the ribbon's travel (`SOLAR_FLARE_SPEED` · 8 ms ≈ 0.75 px).
+            assert!(
+                drift < 0.5 * SIM_DT,
+                "forced {forced}: tick·SIM_DT and round_time disagree by {drift} s about a flare's elapsed"
+            );
+        }
+    }
+
+    /// **`SOLAR_FLARE_CONFIRM_SECONDS`' basis** (T22.08D F3). A client shows a
+    /// burn on its own contact test only until the server's word should have come;
+    /// that word is the burn's first `Damage`, and it must land within
+    /// `RADIATION_LOG_INTERVAL` of the touch for the window (that plus the trip) to
+    /// be honest. Measured through `World::step`, so a burn cadence that drifts
+    /// makes this red rather than making every client's flames go out early.
+    #[test]
+    fn a_burns_first_damage_lands_inside_the_clients_confirmation_window() {
+        use crate::constants::{RADIATION_LOG_INTERVAL, SNAPSHOT_HZ, SOLAR_FLARE_CONFIRM_SECONDS};
+        let (mut w, _) = flaring();
+        w.flare = None;
+        let touched = w.round_time + SIM_DT;
+        w.player_mut(ANA).expect("seated").burn(touched);
+        let mut first = None;
+        for _ in 0..(2.0 * SOLAR_FLARE_CONFIRM_SECONDS / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            let hit = w.drain_events().iter().any(|e| {
+                matches!(
+                    e,
+                    GameEvent::Damage {
+                        victim: ANA,
+                        cause: DeathCause::Weather,
+                        ..
+                    }
+                )
+            });
+            if hit {
+                first = Some(w.round_time);
+                break;
+            }
+        }
+        let first = first.expect("control: the burn never logged a Damage");
+        let wait = first - touched;
+        assert!(
+            wait <= RADIATION_LOG_INTERVAL + 1e-3,
+            "the burn's first Damage came {wait} s after the touch — past one log interval"
+        );
+        assert!(
+            SOLAR_FLARE_CONFIRM_SECONDS >= wait + 1.0 / SNAPSHOT_HZ as f32,
+            "the window {SOLAR_FLARE_CONFIRM_SECONDS} leaves under a snapshot for the trip after a {wait} s wait"
+        );
+    }
+
     #[test]
     fn flare_basis_is_a_third_of_a_health_bar() {
         let share = SOLAR_FLARE_DPS * SOLAR_FLARE_BURN_SECONDS / BASE_HEALTH;

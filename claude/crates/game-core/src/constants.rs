@@ -1271,6 +1271,15 @@ pub const SOLAR_FLARE_TURN: f32 = 0.35;
 /// both render paths — a player must not be burned by fire they cannot see — and
 /// this is the soft halo outside it, which burns nobody.
 pub const SOLAR_FLARE_GLOW: f32 = 34.0;
+/// **Client only** (T22.08D F3): how long a client shows a body on fire on the
+/// strength of its own contact test before the server has said so. The contact is
+/// tested on predicted and interpolated positions, which can disagree with the
+/// server's for a whole burn; the server's word is a `weather` `damage` (to you) or
+/// a health drop in the snapshot (anyone else). A burn is logged once per
+/// `RADIATION_LOG_INTERVAL` from the touch (`PlayerState::burn_tick`), so a real
+/// burn's first word arrives within that, plus its trip — budgeted at two snapshot
+/// intervals. Flames with no word by then go out.
+pub const SOLAR_FLARE_CONFIRM_SECONDS: f32 = RADIATION_LOG_INTERVAL + 2.0 / SNAPSHOT_HZ as f32;
 
 // ---------------------------------------------------------------------------
 // Networking

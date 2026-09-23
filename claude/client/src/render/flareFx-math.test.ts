@@ -118,25 +118,63 @@ describe('strand — the flat path twisting threads (T22.08B)', () => {
   })
 })
 
-describe('BurnTracker — who is on fire, as the client can know it (T22.08B)', () => {
+describe('BurnTracker — who is on fire, as the client can know it (T22.08B, T22.08D F3)', () => {
+  // Fixture numbers in the shape of the shipped ones: a 4 s burn, a ~1 s window.
+  const BURN = 4
+  const WIN = 1.1
+
   it('writes the deadline on a touch and never stacks it (R79)', () => {
     const b = new BurnTracker()
     // The control: nobody burns before a touch.
     expect(b.burning(1, 0)).toBe(false)
-    b.touch(1, 10, 4)
+    b.touch(1, 10, BURN, WIN)
+    b.confirm(1, 10.5, WIN, false)
     expect(b.burning(1, 13.9)).toBe(true)
-    b.touch(1, 11, 4)
-    b.touch(1, 11, 4)
+    b.touch(1, 11, BURN, WIN)
+    b.touch(1, 11, BURN, WIN)
     // Rewritten: 11 + 4, not 10 + 4 + 4 + 4.
-    expect(b.left(1, 11)).toBeCloseTo(4, 6)
+    expect(b.left(1, 11)).toBeCloseTo(BURN, 6)
     expect(b.burning(1, 15.01)).toBe(false)
     expect(b.burning(2, 12)).toBe(false)
   })
 
+  /** The local rule, the half that puts flames out: a touch the server never confirms. */
+  it('a touch with no word from the server goes out at the window, and stays out', () => {
+    const b = new BurnTracker()
+    b.touch(1, 0, BURN, WIN)
+    // Provisional: shown at once, so a real burn is not a second late on screen.
+    expect(b.burning(1, WIN - 0.01)).toBe(true)
+    expect(b.burning(1, WIN + 0.01)).toBe(false)
+    // Still "touching" on the client: no relight on contact alone for the burn it proposed.
+    b.touch(1, WIN + 0.02, BURN, WIN)
+    expect(b.burning(1, WIN + 0.03)).toBe(false)
+    // The control beside it: the same touch, confirmed inside the window, burns on.
+    const c = new BurnTracker()
+    c.touch(1, 0, BURN, WIN)
+    c.confirm(1, WIN - 0.05, WIN, false)
+    expect(c.burning(1, WIN + 0.01)).toBe(true)
+    expect(c.burning(1, BURN - 0.01)).toBe(true)
+  })
+
+  /** The local rule, the half that lights them: the server burns you with no local contact. */
+  it("the server's word lights a burn with no touch only when it can mean nothing else", () => {
+    const b = new BurnTracker()
+    b.confirm(1, 5, WIN, true)
+    expect(b.burning(1, 5.01)).toBe(true)
+    // Each word keeps it lit a window further; silence puts it out.
+    b.confirm(1, 6, WIN, true)
+    expect(b.burning(1, 6 + WIN - 0.01)).toBe(true)
+    expect(b.burning(1, 6 + WIN + 0.01)).toBe(false)
+    // A remote's health drop (`start` false) is not enough on its own — a bullet does that.
+    const r = new BurnTracker()
+    r.confirm(2, 5, WIN, false)
+    expect(r.burning(2, 5.01)).toBe(false)
+  })
+
   it('a death or a new round clears it', () => {
     const b = new BurnTracker()
-    b.touch(1, 0, 4)
-    b.touch(2, 0, 4)
+    b.touch(1, 0, BURN, WIN)
+    b.touch(2, 0, BURN, WIN)
     b.clear(1)
     expect(b.burning(1, 1)).toBe(false)
     expect(b.burning(2, 1)).toBe(true)

@@ -235,7 +235,8 @@ export class SandboxScene extends Phaser.Scene {
     this.buildHud()
     this.feel = new FeelLayer()
     this.radiation = new RadiationFx()
-    this.flare = new FlareFx(this, hasWebGL(this))
+    // Authoritative: this scene's core is the simulation that burns (T22.08D F3).
+    this.flare = new FlareFx(this, hasWebGL(this), true)
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {

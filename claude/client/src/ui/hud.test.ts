@@ -84,8 +84,6 @@ describe('effectLabel', () => {
     expect(effectLabel('MeteorShower')).toBe('Meteor Shower')
     expect(effectLabel('LavaBurst')).toBe('Lava Burst')
     expect(effectLabel('HeavyFog')).toBe('Heavy Fog')
-    // T22.08B: the wire name is the `Debug` spelling, `SolarFlare`.
-    expect(effectLabel('SolarFlare')).toBe('Solar Flare')
   })
 
   it('leaves a single word and an empty string alone', () => {
@@ -125,6 +123,14 @@ describe('bannerText', () => {
     // ...and also when the deadline has simply passed, so a dropped `effect_end`
     // does not leave a banner up for the rest of the round.
     expect(bannerText([run({ endsAt: 9 })], 10)).toBeNull()
+  })
+
+  /** T22.08D F5: a flare's last seconds have no ribbon, and the banner says so. */
+  it('says a flare is burning out once its ribbon has gone', () => {
+    const flare = run({ kind: 'SolarFlare', endsAt: 40 })
+    // The control: lit, it reads like any other effect.
+    expect(bannerText([flare], 37)).toBe('Solar Flare 0:03')
+    expect(bannerText([{ ...flare, tail: true }], 37)).toBe('BURNING OUT · Solar Flare 0:03')
   })
 
   /** `docs/13` §1 allows overlap; the banner has one line. */

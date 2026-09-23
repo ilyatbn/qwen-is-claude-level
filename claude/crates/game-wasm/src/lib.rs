@@ -1505,8 +1505,12 @@ impl GameCore {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         let (w, h) = (self.map.mask.w as f32, self.map.mask.h as f32);
         let cache = &mut self.weather.flare_cache;
-        if cache.as_ref().map(|(s, _)| *s) != Some(seed) {
-            *cache = Some((seed, SolarFlare::new(seed, w, h)));
+        // One construction site (T22.08D F7): a stale entry is dropped, and the one
+        // `get_or_insert_with` builds whatever is missing. The first cut rebuilt a
+        // stale entry here *and* carried a second constructor in `get_or_insert_with`
+        // that could never run.
+        if cache.as_ref().is_some_and(|(s, _)| *s != seed) {
+            *cache = None;
         }
         &cache
             .get_or_insert_with(|| (seed, SolarFlare::new(seed, w, h)))
@@ -1934,6 +1938,7 @@ pub fn constants_json() -> String {
         SOLAR_FLARE_HEIGHT => c::SOLAR_FLARE_HEIGHT,
         SOLAR_FLARE_SAMPLES => c::SOLAR_FLARE_SAMPLES as f32,
         SOLAR_FLARE_BURN_SECONDS => c::SOLAR_FLARE_BURN_SECONDS,
+        SOLAR_FLARE_CONFIRM_SECONDS => c::SOLAR_FLARE_CONFIRM_SECONDS,
         EFFECT_TELEGRAPH => c::EFFECT_TELEGRAPH,
         SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,

@@ -461,9 +461,14 @@ const BURN_LIGHT_A = 0.6
  * started at `active` would draw the ribbon `EFFECT_TELEGRAPH` seconds behind the
  * one that burns.
  *
- * `at` is the server's round time **on the event's own tick** — the caller corrects
- * the last snapshot's round time by the tick difference — so the drawn ribbon and the
- * damaging one share an origin to the tick, not to a snapshot interval.
+ * **`at` and every `query` are on the server's tick clock** (T22.08D F2): `at` is the
+ * event's own tick × `SIM_DT`, and the caller queries with `ServerClock.now` — a
+ * smoothed estimate of the server's tick × `SIM_DT`. Both are full precision. The
+ * first cut took both from the snapshot's round time, which the codec truncates to
+ * 0.1 s and the scene re-set on every snapshot, so the ribbon's elapsed ran
+ * backwards 19 times in 120 frames. `(tick − start tick) · SIM_DT` is the server's
+ * `round_time − start` to under half a tick over a maximum round
+ * (`world::solar_flare_tests::running_effects_replay_the_live_announcements`).
  *
  * The sandbox does not use this: its `weatherStep` hands out the same query.
  */
@@ -504,9 +509,50 @@ export class FlareClock {
     this.hi = 0
   }
 
+  /** The running flare's effect id, or `-1` — for the banner's "burning out". */
+  get runningId(): number {
+    return this.id
+  }
+
   /** What to ask the core for, or `null` when no flare is running. */
   query(roundTime: number): { lo: number; hi: number; elapsed: number } | null {
     if (this.startedAt === null) return null
     return { lo: this.lo, hi: this.hi, elapsed: roundTime - this.startedAt }
+  }
+}
+
+/** How much of each sample's disagreement the estimate takes: slow, so jitter does not reach the screen. */
+const SERVER_CLOCK_GAIN = 0.1
+/** A disagreement past this is a new clock (a restart, a stalled tab), not jitter: adopt it. */
+const SERVER_CLOCK_RESYNC_S = 0.25
+
+/**
+ * The server's tick clock, seconds, **smoothed and at full precision** (T22.08D F2).
+ *
+ * Sampled from each snapshot's **tick** — a `u32`, exact, where the snapshot's round
+ * time is truncated to 0.1 s — plus half the round trip, against the local arrival
+ * time. The estimate is an offset from the local clock, moved a tenth of the way
+ * toward each sample, so it advances with the local clock between snapshots and
+ * arrival jitter moves it by milliseconds rather than stepping it. `ClockSync`'s
+ * shape without its outlier gate, which would reject every sample after a restart
+ * resets the tick; a jump past `SERVER_CLOCK_RESYNC_S` is adopted whole instead.
+ */
+export class ServerClock {
+  private offset: number | null = null
+
+  /** A snapshot of tick-time `serverS` arrived at local time `localS` (both seconds). */
+  sample(serverS: number, localS: number): void {
+    const o = serverS - localS
+    if (this.offset === null || Math.abs(o - this.offset) > SERVER_CLOCK_RESYNC_S) this.offset = o
+    else this.offset += (o - this.offset) * SERVER_CLOCK_GAIN
+  }
+
+  /** The server's tick-time now, or `null` before the first snapshot. */
+  now(localS: number): number | null {
+    return this.offset === null ? null : localS + this.offset
+  }
+
+  reset(): void {
+    this.offset = null
   }
 }

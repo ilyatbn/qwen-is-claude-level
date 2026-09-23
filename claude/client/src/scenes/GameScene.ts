@@ -22,7 +22,7 @@ import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
-import { C, Core, ambientRain, dequantizeAngle, strictConstants, type VentSpec } from '../core'
+import { C, Core, ambientRain, dequantizeAngle, strictConstants, type FlareQuery, type VentSpec } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -104,7 +104,7 @@ import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
-import { FlareClock, FogClock, LavaClock, ventLights } from '../render/weather-math'
+import { FlareClock, FogClock, LavaClock, ServerClock, ventLights } from '../render/weather-math'
 import { FlareFx, type FlareBody } from '../render/flareFx'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
@@ -410,6 +410,18 @@ export class GameScene extends Phaser.Scene {
   private readonly lava = new LavaClock()
   /** T22.08B: the running solar flare's seed and origin (`R80`: derived, not sent). */
   private readonly flareClock = new FlareClock()
+  /**
+   * T22.08D F2: the server's tick clock, smoothed — what the flare is drawn at. Sampled
+   * off every snapshot's exact tick, never its 0.1 s round time, so the ribbon only
+   * ever moves forward.
+   */
+  private readonly serverClock = new ServerClock()
+  /** T22.08D F3: each remote's health in the last snapshot — a drop during a flare confirms its burn. */
+  private readonly remoteHealth = new Map<number, number>()
+  /** The query the last frame drew the flare at — `debug().flareQuery`, frozen with the scene. */
+  private lastFlareQuery: FlareQuery | null = null
+  /** e2e only (T22.08D F1): callers waiting on the server's `debug_effects` answer. */
+  private readonly probeWaiters: ((p: unknown) => void)[] = []
   private flareFx!: FlareFx
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
@@ -667,6 +679,11 @@ export class GameScene extends Phaser.Scene {
     this.flareClock.clear()
     this.flareFx?.clear()
     this.flareBodies.length = 0
+    this.serverClock.reset()
+    this.remoteHealth.clear()
+    this.lastFlareQuery = null
+    // A pending probe resolves on its own timeout; the answer would be the old round's.
+    this.probeWaiters.length = 0
     this.vents = []
     this.death.cleared()
   }
@@ -810,6 +827,7 @@ export class GameScene extends Phaser.Scene {
         this.lastServerTick = stateTick
         this.roundTime = 0
         this.serverRoundTime = 0
+        this.serverClock.reset()
       }
       // §C25. Converted to a deadline on the server's own clock the moment the
       // phase is announced, because no further `round_state` is coming: the
@@ -1002,13 +1020,14 @@ export class GameScene extends Phaser.Scene {
         // alone — a banner fed from there would go up on the telegraph and never
         // come down. Grep the layer that owns the state, not the one that looks
         // like it should.
+        // The server's round time on the event's own tick: the last snapshot's,
+        // corrected by the tick difference. A live event is a tick or two off the
+        // snapshot; one re-sent to a joiner (T22.08D F4, `catch_up_effects`) can be
+        // seconds old, and this is what starts it where it really is.
+        const evTick = Number(p['tick'] ?? this.lastServerTick)
+        const evAt = this.serverRoundTime + (evTick - this.lastServerTick) * C().SIM_DT
         if (ev === 'effect_start') {
-          this.topHud?.startEffect(
-            id,
-            String(p['kind'] ?? ''),
-            this.serverRoundTime,
-            Number(p['duration'] ?? 0),
-          )
+          this.topHud?.startEffect(id, String(p['kind'] ?? ''), evAt, Number(p['duration'] ?? 0))
           // §F9. The server calls `HeavyFog::new(now)` on the same tick it emits
           // this, so the round time carried by the last snapshot is the ramp's
           // origin to within one snapshot interval — and the ramp is `FOG_RAMP`
@@ -1019,22 +1038,17 @@ export class GameScene extends Phaser.Scene {
           // of places, and the server derived them from this number.
           this.lava.start(id, rec.kind, String(p['seed'] ?? '0'))
           // T22.08B: the flare's ribbon is measured from the tick it was
-          // installed on, which is this event's tick. The last snapshot's round
-          // time corrected by the tick difference is the server's round time on
-          // that tick — an origin exact to the tick, not to a snapshot interval.
-          const evTick = Number(p['tick'] ?? this.lastServerTick)
-          this.flareClock.start(
-            id,
-            rec.kind,
-            String(p['seed'] ?? '0'),
-            this.serverRoundTime + (evTick - this.lastServerTick) * C().SIM_DT,
-          )
+          // installed on, which is this event's tick — and T22.08D F2: on the
+          // **tick clock**, `tick × SIM_DT`, the one `serverClock` estimates. Not
+          // `evAt`: that is built on the snapshot's round time, which the codec
+          // truncates to 0.1 s.
+          this.flareClock.start(id, rec.kind, String(p['seed'] ?? '0'), evTick * C().SIM_DT)
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
           // T19.24: the vents open here, not at `effect_start`. `lava.rs`
           // re-bases every `jet_until` to the moment it goes active, so this is
           // the only event that names the origin the server is using.
-          this.lava.activate(id, String(p['phase'] ?? ''), this.serverRoundTime)
+          this.lava.activate(id, String(p['phase'] ?? ''), evAt)
         } else {
           this.topHud?.endEffect(id)
           // Only *this* fog's end clears it — `FogClock` owns that rule.
@@ -1137,6 +1151,10 @@ export class GameScene extends Phaser.Scene {
     })
     // `damage` is scoped to victim and attacker only (docs/40 §3), so receiving
     // one already means it concerns me — no filtering needed here.
+    // e2e only (T22.08D F1): the server's own flare clock, on a `DEV_PROBE=1` server.
+    this.conn.on('debug_effects', (raw) => {
+      for (const f of this.probeWaiters.splice(0)) f(raw)
+    })
     this.conn.on('damage', (raw) => {
       const p = asRecord(raw)
       const victim = Number(p['victim'] ?? -1)
@@ -1146,6 +1164,13 @@ export class GameScene extends Phaser.Scene {
       const y = Number(p['y'] ?? at.y)
       if (victim === this.me) this.feel.damageTaken(x, y, amount)
       else this.feel.damageDealt(x, y, amount, false)
+      // T22.08D F3: the server's word that you are burning — scoped to you, so it is
+      // yours. During a flare it confirms your flames, or lights them when your own
+      // contact test missed.
+      if (victim === this.me && String(p['cause'] ?? '') === 'weather') {
+        const at = this.serverClock.now(performance.now() / 1000)
+        if (at !== null && this.flareClock.query(at) !== null) this.flareFx?.confirm(this.me, at, true)
+      }
       this.audio.spatial('hit', x, y, this.ear())
     })
     this.conn.on('death', (raw) => {
@@ -1375,6 +1400,12 @@ export class GameScene extends Phaser.Scene {
    * otherwise and the room never reaps (§B14's shape — quitting that does not
    * quit). A disconnect is how the server already frees a seat (`docs/40` §6).
    */
+  /** The running flare's query at the server's tick clock **now**, or `null` (T22.08D F2). */
+  private flareQueryNow(): FlareQuery | null {
+    const at = this.serverClock.now(performance.now() / 1000)
+    return at === null ? null : this.flareClock.query(at)
+  }
+
   private exitToTitle(): void {
     this.conn.close()
     this.scene.start('Title')
@@ -1520,6 +1551,19 @@ export class GameScene extends Phaser.Scene {
     if (s.darkness < this.observed.darknessMin) this.observed.darknessMin = s.darkness
     if (s.darkness > this.observed.darknessMax) this.observed.darknessMax = s.darkness
     this.clock.addSample(s.roundTime * 1000, now, this.lastRtt)
+    // T22.08D F2: the tick, exact, plus the trip — the flare's clock.
+    this.serverClock.sample(s.tick * C().SIM_DT + this.lastRtt / 2000, now / 1000)
+    // T22.08D F3: a remote whose health drops while a flare runs has the server's
+    // word behind its flames — the only per-player word a client gets about anyone
+    // else (`FlareFx`'s doc says what it cannot rule out).
+    const flareAt = this.serverClock.now(now / 1000)
+    const flaring = flareAt !== null && this.flareClock.query(flareAt) !== null
+    for (const p of s.players) {
+      if (p.id === this.me) continue
+      const was = this.remoteHealth.get(p.id)
+      if (flaring && flareAt !== null && was !== undefined && p.health < was) this.flareFx?.confirm(p.id, flareAt, false)
+      this.remoteHealth.set(p.id, p.health)
+    }
     this.interp.push(
       s.tick,
       now,
@@ -2058,8 +2102,12 @@ export class GameScene extends Phaser.Scene {
       if (me) {
         this.flareBodies.push({ id: this.me, alive: this.meAlive, x: me.x, y: me.y, w: k.PLAYER_W, h: k.PLAYER_H, drawX: me.x, drawY: me.y })
       }
-      this.flareFx.update(this.flareClock.query(this.roundTime), this.core, this.flareBodies, this.roundTime, this.roundTime)
+      const at = this.serverClock.now(performance.now() / 1000)
+      this.lastFlareQuery = at === null ? null : this.flareClock.query(at)
+      this.flareFx.update(this.lastFlareQuery, this.core, this.flareBodies, at ?? 0, this.roundTime)
       this.flareBodies.length = 0
+      // T22.08D F5: the ribbon has gone and only burns are finishing — say so.
+      if (this.flareClock.runningId >= 0) this.topHud?.setEffectTail(this.flareClock.runningId, this.flareFx.state.tail)
     }
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round
     // is in, and a client deciding locally would take the controls away a beat
@@ -2854,6 +2902,22 @@ export class GameScene extends Phaser.Scene {
         self.fx?.setVisible(on)
         return { visible: self.fx?.visible ?? false }
       },
+      /**
+       * e2e only (T22.08D F1): the server's own flare elapsed (`DEV_PROBE=1`), bracketed
+       * by the client's at the moment of asking and of hearing back — so a check compares
+       * the client's clock against the server's, not against itself.
+       */
+      probeFlare(): Promise<{ before: number | null; server: unknown; after: number | null }> {
+        return new Promise((resolve) => {
+          const before = self.flareQueryNow()?.elapsed ?? null
+          const timer = setTimeout(() => resolve({ before, server: null, after: null }), 5000)
+          self.probeWaiters.push((server) => {
+            clearTimeout(timer)
+            resolve({ before, server, after: self.flareQueryNow()?.elapsed ?? null })
+          })
+          self.conn.sendRaw('debug_effects', {})
+        })
+      },
       /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */
       showFlare(on: boolean) {
         self.flareFx.setHidden(!on)
@@ -3410,7 +3474,7 @@ export class GameScene extends Phaser.Scene {
           // clock's query, so a check can ask the core for the damage points itself
           // rather than read back what was drawn.
           flare: self.flareFx?.state ?? null,
-          flareQuery: self.flareClock.query(self.roundTime),
+          flareQuery: self.lastFlareQuery,
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte
           // above can be 0 while the frame is dark — that `||` is why both exist.

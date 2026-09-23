@@ -11,13 +11,20 @@
  * about — *"until it existed the networked client drew none of it"* — and no sandbox run
  * reaches it.
  *
- * One human alone in a private space room on a server forcing flares (`WEATHER=flare`):
+ * One human alone in a private space room on a server forcing flares (`WEATHER=flare`,
+ * `DEV_PROBE=1`):
  *
  * 1. the scene's clock picks the flare up and the layer draws it lit (`debug().flare`);
- * 2. **coverage** — the damage points, asked of the core off the scene's own
- *    `flareQuery` (not the layer's report), are under painted flare wherever they are on
- *    screen, against the same frozen instant with the flare hidden, and a control point
- *    clear of the ribbon does not change.
+ * 2. **the clock is the server's** (T22.08D F1) — `debug_effects` answers with the elapsed
+ *    stage 5's contact test uses, and the client's, read as it asks and as it hears back,
+ *    must bracket it within one snapshot interval. The first cut probed the damage points
+ *    with the scene's own query, so a +0.5 s origin (~80 px) stayed green;
+ * 3. **the clock only moves forward** (T22.08D F2) — over `MONO_FRAMES` drawn frames the
+ *    ribbon's elapsed never decreases, and it advances (the control);
+ * 4. **coverage, in both of GameScene's render paths** — the damage points at the drawn
+ *    frame's query are under painted flare wherever they are on screen, against the same
+ *    frozen instant with the flare hidden, and a control point clear of the ribbon does not
+ *    change. High Quality off (flat) and on (the shader), each asserted by `flare.shader`.
  */
 import { startStack, freePort, tally, shotsDir } from './harness.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
@@ -33,6 +40,10 @@ const ROUND_S = 120
 const SETTLE_FRAMES = 6
 /** Of the samples, at least this share must be on screen for the coverage to mean anything. */
 const MIN_ON_SCREEN = 0.5
+/** Drawn frames watched for a backwards step — the review counted 19 in 120. */
+const MONO_FRAMES = 120
+/** Server probes, each bracketed by the client's clock. */
+const PROBES = 5
 
 const dbg = (page) => page.evaluate(() => window.__game.debug())
 const frames = (page, n) =>
@@ -70,101 +81,183 @@ async function soloSpace(stack, name) {
   return { page, errors }
 }
 
+/**
+ * Frame the ribbon, freeze the scene (rendering goes on), and photograph every damage
+ * point — at the **drawn** frame's query, centre and ±0.8 of the contact radius across
+ * it — with the flare shown and hidden. `wantShader` is asserted off `flare.shader`, what
+ * the frame was drawn by, never the setting (§A39).
+ */
+async function coverage(page, k, path, wantShader) {
+  // Frame the ribbon, then freeze the scene; rendering goes on.
+  const aim = await page.evaluate(() => Array.from(window.__game.core.flarePoints(window.__game.debug().flareQuery)))
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < aim.length; i += 2) {
+    cx += aim[i]
+    cy += aim[i + 1]
+  }
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [(2 * cx) / aim.length, (2 * cy) / aim.length])
+  await frames(page, SETTLE_FRAMES)
+  await page.evaluate(() => window.__game.freeze(true))
+  try {
+    await frames(page, 2)
+    const d = await dbg(page)
+    const burns = await page.evaluate((q) => Array.from(window.__game.core.flarePoints(q)), d.flareQuery)
+    if (!d.flare.drawn || !d.flare.lit) throw new Error(`frozen on an undrawn flare: ${JSON.stringify({ ...d.flare, points: d.flare.points.length })}`)
+    const n = burns.length / 2
+    const probes = []
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 1)
+      const b = Math.min(n - 1, i + 1)
+      const tx = burns[2 * b] - burns[2 * a]
+      const ty = burns[2 * b + 1] - burns[2 * a + 1]
+      const l = Math.hypot(tx, ty) || 1
+      const off = k.SOLAR_FLARE_RIBBON_R * 0.8
+      for (const side of [0, 1, -1]) probes.push({ x: burns[2 * i] - (ty / l) * off * side, y: burns[2 * i + 1] + (tx / l) * off * side })
+    }
+    // Clear of the HUD's corners: the top and bottom sixth of the frame hold DOM.
+    const bounds = await page.evaluate(() => {
+      const r = document.querySelector('canvas').getBoundingClientRect()
+      return { left: r.left, top: r.top, w: r.width, h: r.height }
+    })
+    const inView = (s) => s.onScreen && s.y > bounds.top + bounds.h / 6 && s.y < bounds.top + (bounds.h * 5) / 6
+    const shown = []
+    for (const p of probes) {
+      const s = await toScreen(page, p.x, p.y)
+      if (inView(s)) shown.push({ x: s.x, y: s.y })
+    }
+    const ctrlWorld = await page.evaluate(
+      ([p, gap]) => {
+        const v = window.__game.debug().worldView
+        const w = v.width ?? v.w
+        const h = v.height ?? v.h
+        for (let y = v.y + h / 5; y < v.y + (h * 4) / 5; y += 13) {
+          for (let x = v.x + w / 5; x < v.x + (w * 4) / 5; x += 13) {
+            let clear = true
+            for (let i = 0; clear && i + 1 < p.length; i += 2) if (Math.hypot(p[i] - x, p[i + 1] - y) < gap) clear = false
+            if (clear) return { x, y }
+          }
+        }
+        return null
+      },
+      [burns, k.SOLAR_FLARE_RIBBON_R + k.SOLAR_FLARE_GLOW + 40],
+    )
+    const on = await photo(page)
+    await page.screenshot({ path: join(shotsDir, `solar-flare-match-${path}.png`) })
+    await page.evaluate(() => window.__game.showFlare(false))
+    await frames(page, 2)
+    const off = await photo(page)
+    await page.evaluate(() => window.__game.showFlare(true))
+    const ctrl = ctrlWorld ? await toScreen(page, ctrlWorld.x, ctrlWorld.y) : null
+    const cmp = await comparePhotos(page, on, off, { points: ctrl ? [...shown, { x: ctrl.x, y: ctrl.y }] : shown })
+    const covered = cmp.points.slice(0, shown.length).filter(Boolean).length
+    if (shown.length < probes.length * MIN_ON_SCREEN) {
+      fail(`only ${shown.length} of ${probes.length} damage points were in view after framing the ribbon — coverage would mean nothing`)
+    } else if (covered < shown.length) {
+      const bad = cmp.detail.slice(0, shown.length).filter((_, i) => !cmp.points[i])
+      fail(`only ${covered} of ${shown.length} damage points in view are under painted flare (${d.flare.shader ? 'shader' : 'flat'}): ${JSON.stringify(bad.slice(0, 5))}`)
+    } else ok(`${covered}/${shown.length} damage points in view painted in GameScene (${d.flare.shader ? 'shader' : 'flat'}), at the drawn frame's query — its clock checked against the server's above`)
+    if (!ctrl) fail('no point in view clear of the ribbon for the control')
+    else if (cmp.points[shown.length]) fail(`control: a point clear of the flare changed too: ${JSON.stringify(cmp.detail[shown.length])}`)
+    else ok('control: a point clear of the ribbon did not change')
+  } finally {
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+}
+
 const stack = await startStack({
   port: await freePort(),
   label: 'solar-flare-match',
-  env: { BOT_COUNT: '0', FIXED_SEED: '4242', WEATHER: 'flare', DEV_WARMUP_SECONDS: String(WARMUP_S), ROUND_SECONDS: String(ROUND_S) },
+  env: { BOT_COUNT: '0', FIXED_SEED: '4242', WEATHER: 'flare', DEV_PROBE: '1', DEV_WARMUP_SECONDS: String(WARMUP_S), ROUND_SECONDS: String(ROUND_S) },
 })
 try {
   const { page, errors } = await soloSpace(stack, 'ana')
   const k = await page.evaluate(() => window.__game.constants())
-  const lit = await page
-    .waitForFunction(() => window.__game.debug().flare?.lit === true, null, {
-      timeout: deadlineMs(WARMUP_S + k.EFFECT_TELEGRAPH + 30, 'a lit flare in the match'),
-      polling: 'raf',
-    })
-    .then(() => true)
-    .catch(() => false)
+  const waitLit = (what) =>
+    page
+      .waitForFunction(() => window.__game.debug().flare?.lit === true, null, {
+        timeout: deadlineMs(WARMUP_S + k.EFFECT_TELEGRAPH + k.SOLAR_FLARE_BURN_SECONDS + 30, what),
+        polling: 'raf',
+      })
+      .then(() => true)
+      .catch(() => false)
+  const lit = await waitLit('a lit flare in the match')
   const d0 = await dbg(page)
   if (!lit) {
     fail(`GameScene never drew a lit flare on a WEATHER=flare space server: ${JSON.stringify({ phase: d0.phase, flare: d0.flare && { ...d0.flare, points: d0.flare.points.length }, query: d0.flareQuery })}`)
   } else {
     ok(`GameScene picked the flare up off effect_start and drew it lit (${d0.flareQuery.elapsed.toFixed(2)} s in)`)
-    // Frame the ribbon, then freeze the scene; rendering goes on.
-    const aim = await page.evaluate(() => Array.from(window.__game.core.flarePoints(window.__game.debug().flareQuery)))
-    let cx = 0
-    let cy = 0
-    for (let i = 0; i < aim.length; i += 2) {
-      cx += aim[i]
-      cy += aim[i + 1]
+
+    // --- 2. the client's flare clock against the server's own (F1) -------------------
+    {
+      const tol = 1 / k.SNAPSHOT_HZ
+      let worst = 0
+      let centre = 0
+      const bad = []
+      let answered = 0
+      for (let i = 0; i < PROBES; i++) {
+        const r = await page.evaluate(() => window.__game.probeFlare())
+        const srv = r.server?.flare
+        if (!srv || r.before === null || r.after === null) continue
+        answered++
+        const off = Math.max(r.before - srv.elapsed, srv.elapsed - r.after, 0)
+        worst = Math.max(worst, off)
+        // Where inside the bracket, so a pass says how close and not only "inside".
+        centre = Math.max(centre, Math.abs(srv.elapsed - (r.before + r.after) / 2))
+        if (off > tol) bad.push({ before: r.before, server: srv.elapsed, after: r.after })
+        await frames(page, 7)
+      }
+      if (answered < PROBES / 2) fail(`the server answered ${answered} of ${PROBES} flare probes — is DEV_PROBE set?`)
+      else if (bad.length) fail(`the client's flare clock is off the server's by more than a snapshot (${tol} s): ${JSON.stringify(bad.slice(0, 3))}`)
+      else ok(`client flare elapsed brackets the server's over ${answered} probes: outside by ≤ ${(worst * 1000).toFixed(1)} ms, ≤ ${(centre * 1000).toFixed(1)} ms from the bracket's middle (tolerance ${tol * 1000} ms)`)
     }
-    await page.evaluate(([x, y]) => window.__game.watch(x, y), [(2 * cx) / aim.length, (2 * cy) / aim.length])
-    await frames(page, SETTLE_FRAMES)
-    await page.evaluate(() => window.__game.freeze(true))
-    try {
-      await frames(page, 2)
-      const d = await dbg(page)
-      const burns = await page.evaluate((q) => Array.from(window.__game.core.flarePoints(q)), d.flareQuery)
-      if (!d.flare.drawn || !d.flare.lit) throw new Error(`frozen on an undrawn flare: ${JSON.stringify({ ...d.flare, points: d.flare.points.length })}`)
-      const n = burns.length / 2
-      const probes = []
-      for (let i = 0; i < n; i++) {
-        const a = Math.max(0, i - 1)
-        const b = Math.min(n - 1, i + 1)
-        const tx = burns[2 * b] - burns[2 * a]
-        const ty = burns[2 * b + 1] - burns[2 * a + 1]
-        const l = Math.hypot(tx, ty) || 1
-        const off = k.SOLAR_FLARE_RIBBON_R * 0.8
-        for (const side of [0, 1, -1]) probes.push({ x: burns[2 * i] - (ty / l) * off * side, y: burns[2 * i + 1] + (tx / l) * off * side })
-      }
-      // Clear of the HUD's corners: the top and bottom sixth of the frame hold DOM.
-      const bounds = await page.evaluate(() => {
-        const r = document.querySelector('canvas').getBoundingClientRect()
-        return { left: r.left, top: r.top, w: r.width, h: r.height }
-      })
-      const inView = (s) => s.onScreen && s.y > bounds.top + bounds.h / 6 && s.y < bounds.top + (bounds.h * 5) / 6
-      const shown = []
-      for (const p of probes) {
-        const s = await toScreen(page, p.x, p.y)
-        if (inView(s)) shown.push({ x: s.x, y: s.y })
-      }
-      const ctrlWorld = await page.evaluate(
-        ([p, gap]) => {
-          const v = window.__game.debug().worldView
-          const w = v.width ?? v.w
-          const h = v.height ?? v.h
-          for (let y = v.y + h / 5; y < v.y + (h * 4) / 5; y += 13) {
-            for (let x = v.x + w / 5; x < v.x + (w * 4) / 5; x += 13) {
-              let clear = true
-              for (let i = 0; clear && i + 1 < p.length; i += 2) if (Math.hypot(p[i] - x, p[i + 1] - y) < gap) clear = false
-              if (clear) return { x, y }
+
+    // --- 3. the ribbon's clock never runs backwards (F2) -------------------------------
+    {
+      const series = await page.evaluate(
+        (n) =>
+          new Promise((resolve) => {
+            const out = []
+            const tick = () => {
+              const f = window.__game.debug().flare
+              if (f?.drawn) out.push(f.elapsed)
+              if (out.length >= n) resolve(out)
+              else requestAnimationFrame(tick)
             }
-          }
-          return null
-        },
-        [burns, k.SOLAR_FLARE_RIBBON_R + k.SOLAR_FLARE_GLOW + 40],
+            requestAnimationFrame(tick)
+          }),
+        MONO_FRAMES,
       )
-      const on = await photo(page)
-      await page.screenshot({ path: join(shotsDir, 'solar-flare-match.png') })
-      await page.evaluate(() => window.__game.showFlare(false))
-      await frames(page, 2)
-      const off = await photo(page)
-      await page.evaluate(() => window.__game.showFlare(true))
-      const ctrl = ctrlWorld ? await toScreen(page, ctrlWorld.x, ctrlWorld.y) : null
-      const cmp = await comparePhotos(page, on, off, { points: ctrl ? [...shown, { x: ctrl.x, y: ctrl.y }] : shown })
-      const covered = cmp.points.slice(0, shown.length).filter(Boolean).length
-      if (shown.length < probes.length * MIN_ON_SCREEN) {
-        fail(`only ${shown.length} of ${probes.length} damage points were in view after framing the ribbon — coverage would mean nothing`)
-      } else if (covered < shown.length) {
-        const bad = cmp.detail.slice(0, shown.length).filter((_, i) => !cmp.points[i])
-        fail(`only ${covered} of ${shown.length} damage points in view are under painted flare (${d.flare.shader ? 'shader' : 'flat'}): ${JSON.stringify(bad.slice(0, 5))}`)
-      } else ok(`${covered}/${shown.length} damage points in view painted in GameScene (${d.flare.shader ? 'shader' : 'flat'}), off the scene's own FlareClock query`)
-      if (!ctrl) fail('no point in view clear of the ribbon for the control')
-      else if (cmp.points[shown.length]) fail(`control: a point clear of the flare changed too: ${JSON.stringify(cmp.detail[shown.length])}`)
-      else ok('control: a point clear of the ribbon did not change')
-    } finally {
-      await page.evaluate(() => window.__game.freeze(false))
+      let back = 0
+      let most = 0
+      for (let i = 1; i < series.length; i++) {
+        if (series[i] < series[i - 1]) {
+          back++
+          most = Math.max(most, series[i - 1] - series[i])
+        }
+      }
+      const span = series[series.length - 1] - series[0]
+      if (back) fail(`the flare's elapsed went backwards ${back} times in ${series.length} drawn frames, by up to ${most.toFixed(3)} s`)
+      else if (!(span > 0.5)) fail(`control: over ${series.length} drawn frames the flare's clock moved ${span} s — it is not running`)
+      else ok(`the flare's elapsed never decreased over ${series.length} drawn frames (${span.toFixed(2)} s of flare)`)
     }
+
+    // --- 4. coverage, flat and shader --------------------------------------------------
+    for (const hq of [false, true]) {
+      const path = hq ? 'shader' : 'flat'
+      const q = await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+      if (q.setting !== hq) {
+        fail(`${path}: High Quality would not change: ${JSON.stringify(q)}`)
+        continue
+      }
+      await frames(page, 2)
+      if (!(await dbg(page)).flare?.lit && !(await waitLit(`a lit flare for the ${path} path`))) {
+        fail(`${path}: no lit flare to photograph`)
+        continue
+      }
+      await coverage(page, k, path, hq)
+    }
+    await page.evaluate(() => window.__game.setHighQuality(false))
   }
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`)
 } catch (e) {

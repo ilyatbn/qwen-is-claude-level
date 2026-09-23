@@ -21,10 +21,24 @@
  * # Who is burning
  *
  * Not on the wire (`R80`: the flags byte is full). The client asks the core's own
- * contact test, `flare_touches`, about every drawn body each lit frame and keeps the
- * deadlines in a `BurnTracker` — the server's rule evaluated on the client's copy of
- * the positions, so a remote player on fire is seen on fire. A burning body gets
- * flickering flame tongues for as long as its burn lasts, ribbon or no ribbon.
+ * contact test, `flare_touches`, about every drawn body each lit frame — the server's
+ * rule, but on the client's copy of the positions, predicted for you and interpolated
+ * for everyone else, which can be wrong for a whole burn. So contact only
+ * **proposes** (T22.08D F3, `BurnTracker`): flames go out after
+ * `SOLAR_FLARE_CONFIRM_SECONDS` unless the server confirms through `confirm`.
+ *
+ * - **You**: a `weather` `damage` while a flare runs — scoped to its victim, so it is
+ *   yours and nobody else's — confirms a touch, and lights the flames with no touch
+ *   at all when the client's contact test missed.
+ * - **Anyone else**: the only per-player signal a client gets is the snapshot's
+ *   health, so a drop while the flare runs confirms a touch. **It is not proof** — a
+ *   bullet drops health too — which is why it never lights flames on its own, and
+ *   why a remote shown burning is still the client's contact test, confirmed by
+ *   *some* damage. A `weather` `damage` is not sent to third parties
+ *   (`events.rs::scope_of`), so nothing better exists on the wire today.
+ *
+ * A burning body gets flickering flame tongues for as long as its burn lasts,
+ * ribbon or no ribbon.
  */
 
 import Phaser from 'phaser'
@@ -59,6 +73,8 @@ export interface FlareState {
   /** Frames in which a ribbon was drawn, for a check's page-not-drawing arm. */
   frames: number
   burning: number[]
+  /** T22.08D F5: past the telegraph with the ribbon gone — burns finishing, nothing to dodge. */
+  tail: boolean
 }
 
 let flareSeed = 0
@@ -85,12 +101,19 @@ export class FlareFx {
     points: [],
     frames: 0,
     burning: [],
+    tail: false,
   }
   private frames = 0
 
+  /**
+   * `authoritative`: the core this layer asks **is** the simulation that burns — the
+   * sandbox, whose own `weather_step` touches with the same positions — so a touch is
+   * the server's word and needs no confirming. A match passes `false` (T22.08D F3).
+   */
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly webgl: boolean,
+    private readonly authoritative = false,
   ) {
     // At the particles' depth, over the terrain and the players, under the HUD: a flare
     // is light, and it crosses rock as easily as space. **The same depth, not 41**:
@@ -103,8 +126,8 @@ export class FlareFx {
   }
 
   /**
-   * One frame. `q` is the running flare or `null`; `now` is the round clock the burn
-   * deadlines are kept in; `t` stirs the animation.
+   * One frame. `q` is the running flare or `null`; `now` is the flare's server clock,
+   * which the burn deadlines are kept in; `t` stirs the animation.
    */
   update(q: FlareQuery | null, core: Core, bodies: readonly FlareBody[], now: number, t: number): void {
     const c = C()
@@ -124,7 +147,8 @@ export class FlareFx {
       if (lit) {
         for (const b of bodies) {
           if (b.alive && core.flareTouches(q, b.x, b.y, b.w, b.h)) {
-            this.tracker.touch(b.id, now, c.SOLAR_FLARE_BURN_SECONDS)
+            this.tracker.touch(b.id, now, c.SOLAR_FLARE_BURN_SECONDS, c.SOLAR_FLARE_CONFIRM_SECONDS)
+            if (this.authoritative) this.tracker.confirm(b.id, now, c.SOLAR_FLARE_CONFIRM_SECONDS, false)
           }
         }
       }
@@ -148,7 +172,19 @@ export class FlareFx {
       burning.push(b.id)
       if (!this.hidden) this.paintBurning(b, t, this.tracker.left(b.id, now))
     }
-    this.last = { drawn, shader: viaShader, strength, lit, elapsed: q?.elapsed ?? 0, points, frames: this.frames, burning }
+    // `q ?`, not `q !== null`: the sandbox's `weatherStep` JSON leaves `flare` out
+    // when there is none, and `undefined !== null` took the whole sandbox down.
+    const tail = q ? q.elapsed >= c.EFFECT_TELEGRAPH && !lit : false
+    this.last = { drawn, shader: viaShader, strength, lit, elapsed: q?.elapsed ?? 0, points, frames: this.frames, burning, tail }
+  }
+
+  /**
+   * The server's word that `id` is burning (T22.08D F3): a `weather` `damage` to you
+   * (`start` — it lights flames with no touch), a health drop for anyone else (not
+   * `start` — a bullet does that too). Only while a flare runs; the caller checks.
+   */
+  confirm(id: number, now: number, start: boolean): void {
+    this.tracker.confirm(id, now, C().SOLAR_FLARE_CONFIRM_SECONDS, start)
   }
 
   /** e2e only (§C2): hide the flare for a same-instant control frame. */

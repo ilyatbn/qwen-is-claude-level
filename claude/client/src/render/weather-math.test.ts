@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { CloudRain, EmberField, FlareClock, FogClock, LavaClock, fogVeilAlpha, type RainCloud } from './weather-math'
+import { CloudRain, EmberField, FlareClock, FogClock, LavaClock, ServerClock, fogVeilAlpha, type RainCloud } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -391,5 +391,56 @@ describe('CloudRain — rain falls from clouds and stops at the ground (T21.31)'
     run(a, 3, [cloud])
     run(b, 3, [cloud])
     expect(a.drops).toEqual(b.drops)
+  })
+})
+
+describe('ServerClock — the flare clock is monotonic off jittered snapshots (T22.08D F2)', () => {
+  /** 20 Hz snapshots arriving up to 30 ms late at random; frames at 60 Hz; returns elapsed per frame. */
+  function run(truncated: boolean): number[] {
+    const k = C()
+    const clock = new ServerClock()
+    let seed = 7
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+    const ticksPerSnap = k.SIM_HZ / k.SNAPSHOT_HZ
+    const out: number[] = []
+    let snapT = 0
+    let pending: { server: number; arrive: number }[] = []
+    for (let f = 0; f < 600; f++) {
+      const local = f / 60
+      while (snapT / k.SIM_HZ <= local) {
+        const server = (snapT * k.SIM_DT)
+        // The shape F2 replaced: the codec's 0.1 s round time.
+        pending.push({ server: truncated ? Math.floor(server * 10) / 10 : server, arrive: snapT / k.SIM_HZ + rand() * 0.03 })
+        snapT += ticksPerSnap
+      }
+      for (const p of pending.filter((p) => p.arrive <= local)) clock.sample(p.server, p.arrive)
+      pending = pending.filter((p) => p.arrive > local)
+      const now = clock.now(local)
+      if (now !== null) out.push(now)
+    }
+    return out
+  }
+  const decreases = (xs: number[]) => xs.slice(1).filter((x, i) => x < xs[i]!).length
+
+  it('never runs backwards on tick samples', () => {
+    const xs = run(false)
+    expect(xs.length).toBeGreaterThan(500)
+    expect(decreases(xs)).toBe(0)
+    // And it tracks the truth: within one snapshot interval of the frame's tick-time.
+    expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeLessThan(1 / C().SNAPSHOT_HZ)
+  })
+
+  it('the control: the same clock on the 0.1 s round time is not what it tracks', () => {
+    // Truncation biases it ~50 ms low — the instrument this replaced was worse still,
+    // re-set to the truncated value on every snapshot.
+    const xs = run(true)
+    expect(Math.abs(xs[xs.length - 1]! - 599 / 60)).toBeGreaterThan(0.02)
+  })
+
+  it('adopts a new clock whole — a restart resets the tick', () => {
+    const c = new ServerClock()
+    c.sample(100, 10)
+    c.sample(0, 10.05)
+    expect(c.now(10.05)).toBeCloseTo(0, 6)
   })
 })

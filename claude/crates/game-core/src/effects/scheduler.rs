@@ -370,6 +370,20 @@ impl EffectScheduler {
         self.last_now = self.last_now.map(|n| n + by);
     }
 
+    /// Record that `id` was **installed** with `seed`, not the one `force` drew.
+    ///
+    /// T22.08D F4: `World::force_effect` installs a forced effect with
+    /// `World::effect_seed` (T19.24), so until this existed `ActiveEffect::seed` held a
+    /// number nothing was built from for every forced effect — a field meaning two
+    /// things, found by the first reader that wanted it (the join catch-up, which
+    /// re-announces a running effect from this list). `force` still draws its seed,
+    /// so the stream every later roll takes from does not move.
+    pub fn record_seed(&mut self, id: u32, seed: u64) {
+        if let Some(e) = self.active.iter_mut().find(|e| e.id == id) {
+            e.seed = seed;
+        }
+    }
+
     /// True only during `Active` — a telegraphing effect is a warning, not a hazard.
     pub fn is_active(&self, kind: EffectKind) -> bool {
         self.active

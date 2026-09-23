@@ -453,6 +453,7 @@ export interface Constants {
   SOLAR_FLARE_HEIGHT: number
   SOLAR_FLARE_SAMPLES: number
   SOLAR_FLARE_BURN_SECONDS: number
+  SOLAR_FLARE_CONFIRM_SECONDS: number
   EFFECT_TELEGRAPH: number
   SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number

@@ -13,7 +13,7 @@ column is what nobody is checking while it sits here.
 
 | test | kind | evidence | guards |
 |---|---|---|---|
-| `terrain-render` | browser | red in the T21.18 laser gate (2026-09-14): "19.0 % of the frame changed — the view is moving" | a crater changes the rendered picture (§C0) |
+| `terrain-render` | browser | red in the T21.18 laser gate (2026-09-14): "19.0 % of the frame changed — the view is moving". **Since T22.06 it was also red deterministically, not at random**: its layer list lacked T22.06's sky depth −27 ("the sandbox builds world layers [-30,-29,-28,-27,…], expected [-30,-29,-28,-22,…]"). Fixed in T22.08D: green alone (`gate-t2208d-terrain.txt`), but **the original flake is still live** — the same session, run beside `solar-flare-match`, it read "15.5 % of the frame changed — the view is moving" (`gate-t2208d-donewhen-e2e.txt`). Un-parkable as far as the stale pin goes; the camera-motion flake is the owner's call. Flag left in place | a crater changes the rendered picture (§C0) |
 | `boots-visible` | browser | same gate: control region changed by 12.8; T21.23 measured it **2-in-3 red on an idle box** at HEAD, camera ease moving a screen-space band | ironman boots are visible on the player |
 | `two-clients` | browser | red in a T21.26 gate (2026-09-14); a gun-platform flake that T21.22b was meant to close | the M6 checkpoint — two clients, one server, one round |
 | `bullets-visible` | browser | carried on the known-flaky list since M19 (`HANDOFF-M19.md`) | a bullet is drawn while it flies (§F2) |

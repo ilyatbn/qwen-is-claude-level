@@ -948,6 +948,40 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     }
                 });
             }
+            // T22.08D F1: **the server's own flare clock, for a check** (`DEV_PROBE=1`).
+            // `solar-flare-match` asked the client's clock where the damage points
+            // were and then checked the client drew them there — a +0.5 s origin
+            // (~80 px) stayed green. This answers with the number stage 5's contact
+            // test uses (`World::flare_elapsed`), so the client's elapsed is compared
+            // against the server's and not against itself. Registered only on a dev
+            // server: it costs the room task a command round-trip per call, and an
+            // unauthenticated verb that queues work is not something to ship open.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on("debug_effects", move |socket: SocketRef| {
+                    let ctx = ctx.clone();
+                    async move {
+                        let Some((_, room, _)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
+                        let probe = room
+                            .inspect(|w| {
+                                let flare = w.flare_elapsed();
+                                serde_json::json!({
+                                    "tick": w.tick,
+                                    "round_time": w.round_time,
+                                    "flare": flare.map(|(id, elapsed)| serde_json::json!({
+                                        "id": id, "elapsed": elapsed
+                                    })),
+                                })
+                            })
+                            .await;
+                        if let Some(p) = probe {
+                            emit(&socket, "debug_effects", &p);
+                        }
+                    }
+                });
+            }
             {
                 let ctx = ctx.clone();
                 socket.on(
@@ -1510,6 +1544,21 @@ async fn seat(
         );
     }
 
+    // The weather already running (T22.08D F4).
+    //
+    // The same pattern a fourth time: `effect_start` is an event, so a socket that
+    // arrives mid-effect was never told a flare exists — it would draw no ribbon
+    // and still take the whole burn — nor which lava vents are open. Sent through
+    // the **live** serializer at the ticks and seeds the effect was announced with,
+    // so the client starts it through its one start path, origin and all.
+    // Dormant with the three catch-ups above (§E4 refuses a mid-match join) and
+    // kept for their reason: reconnection needs it.
+    if let Some(effects) = room.inspect(catch_up_effects).await {
+        for (name, payload) in &effects {
+            emit(&socket, name, payload);
+        }
+    }
+
     // Their own inventory.
     //
     // `inventory` is pushed on pickup, use and death and
@@ -1619,6 +1668,17 @@ fn catch_up_item(
             "grounded": it.grounded,
         }),
     )
+}
+
+/// Every running effect as the `effect_start` (and, once `Active`, the
+/// `effect_phase`) that announced it — `World::running_effects` through the live
+/// `events::name_of` / `payload_of`, so a joiner's copy cannot drift from a
+/// watcher's (T22.08D F4).
+fn catch_up_effects(w: &mut game_core::world::World) -> Vec<(&'static str, serde_json::Value)> {
+    w.running_effects()
+        .iter()
+        .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w)))
+        .collect()
 }
 
 fn emit(socket: &SocketRef, ev: &'static str, payload: &serde_json::Value) {
@@ -1990,5 +2050,66 @@ mod tests {
                 "the catch-up carries `{k}`, which a watcher never hears: {caught_up}"
             );
         }
+    }
+
+    /// **A socket that arrives mid-flare is told the flare exists** (T22.08D F4).
+    /// A space round forcing flares (`WEATHER=flare`'s path) is stepped, every
+    /// `effect_start` / `effect_phase` recorded as a watcher received it — name and
+    /// payload, off the live serializer at the tick it was emitted. At every tick
+    /// the join path's `catch_up_effects` must equal the running effects' records;
+    /// the control is that it carried the flare at all, telegraph and `Active`.
+    #[test]
+    fn a_join_mid_effect_is_sent_the_running_effects_as_they_were_announced() {
+        use game_core::constants::{GravityMode, MapScale, DEFAULT_MAP_GENERATOR, SIM_DT};
+        use game_core::effects::EffectKind;
+        use game_core::world::{GameEvent, RoundPhase, WeatherMode, World};
+        use std::collections::BTreeMap;
+
+        let mut w = World::with_gravity(
+            4242,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.weather_mode = WeatherMode::Always(EffectKind::SolarFlare);
+        // id -> (the start as heard, the phase change as heard), dropped at the end.
+        let mut heard: BTreeMap<u32, Vec<(&'static str, serde_json::Value)>> = BTreeMap::new();
+        let (mut telegraph, mut active) = (0u32, 0u32);
+        for _ in 0..(60.0 / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::EffectStart { id, .. }
+                    | GameEvent::EffectPhaseChanged { id, .. } => {
+                        heard.entry(id).or_default().push((
+                            crate::events::name_of(&e),
+                            crate::events::payload_of(&e, &w),
+                        ))
+                    }
+                    GameEvent::EffectEnd { id, .. } => {
+                        heard.remove(&id);
+                    }
+                    _ => {}
+                }
+            }
+            let caught_up = catch_up_effects(&mut w);
+            let want: Vec<_> = heard.values().flatten().cloned().collect();
+            assert_eq!(
+                caught_up, want,
+                "a joiner would be told something a watcher was not"
+            );
+            match caught_up.len() {
+                1 => telegraph += 1,
+                2 => active += 1,
+                _ => {}
+            }
+        }
+        assert!(
+            telegraph > 0 && active > 0,
+            "control: the catch-up never carried a telegraphing ({telegraph}) and an active ({active}) flare"
+        );
     }
 }

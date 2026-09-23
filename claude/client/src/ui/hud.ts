@@ -33,6 +33,12 @@ export interface EffectRun {
   phase: EffectPhase
   /** Round time the whole effect stops, on the server's clock. */
   endsAt: number
+  /**
+   * T22.08D F5: the hazard itself has gone and only its consequences are still
+   * running — a solar flare's last `SOLAR_FLARE_BURN_SECONDS`, when the ribbon is
+   * gone and burns are finishing. Absent for every other effect.
+   */
+  tail?: boolean
 }
 
 /** `MM:SS`, floored, never negative. */
@@ -97,7 +103,9 @@ export function bannerText(runs: readonly EffectRun[], now: number): string | nu
   const left = clockText(soonest.endsAt - now)
   // The telegraph says what is *coming*; the active phase says what is here.
   // Same element, so the warning does not move on the screen when it lands.
-  const verb = soonest.phase === 'telegraph' ? 'INCOMING' : ''
+  // A flare's tail says so (T22.08D F5): a banner counting a hazard that is no
+  // longer on screen reads as a hazard you cannot find.
+  const verb = soonest.phase === 'telegraph' ? 'INCOMING' : soonest.tail ? 'BURNING OUT' : ''
   return `${verb ? `${verb} · ` : ''}${effectLabel(soonest.kind)} ${left}`.trim()
 }
 
@@ -205,6 +213,12 @@ export class Hud {
   setEffectPhase(id: number, phase: EffectPhase): void {
     const run = this.runs.get(id)
     if (run) run.phase = phase
+  }
+
+  /** The effect's hazard has gone and its tail is running (T22.08D F5). */
+  setEffectTail(id: number, on: boolean): void {
+    const run = this.runs.get(id)
+    if (run) run.tail = on
   }
 
   /** `effect_end`. */
