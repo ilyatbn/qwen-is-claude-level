@@ -51,7 +51,7 @@ export interface SpaceSkyDebug {
   moon: SpaceBodyDebug & { front: boolean }
   /** The clock the last frame was placed at. */
   clock: number
-  hidden: SpaceBodyName[]
+  hidden: SpaceSkyPart[]
 }
 
 let generation = 0
@@ -59,6 +59,13 @@ let generation = 0
 const SHADE_OVERHANG = 2
 
 export type SpaceBodyName = 'sun' | 'earth' | 'moon'
+/**
+ * What a check may hide for a control frame: a body (with its glow and its shade),
+ * or `'shade'` — both planets' night sides, so a body can be measured as its whole
+ * disc. T22.06B F3: with the shade up, the earth's night side sits under the
+ * changed-pixel threshold and its centroid was pulled ~25 px toward the lit side.
+ */
+export type SpaceSkyPart = SpaceBodyName | 'shade'
 const BODY_NAMES: readonly SpaceBodyName[] = ['sun', 'earth', 'moon']
 
 export class SpaceSky {
@@ -80,8 +87,10 @@ export class SpaceSky {
   private starsDrawn = 0
   private shown = false
   /** A check's control frame: these bodies off, everything else left on. */
-  private readonly hiddenBodies = new Set<SpaceBodyName>()
+  private readonly hiddenBodies = new Set<SpaceSkyPart>()
   private clock = 0
+  /** `getBounds` fills this rather than allocating a rectangle every frame (T22.06B F4). */
+  private readonly boundsOut = new Phaser.Geom.Rectangle()
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene
@@ -134,7 +143,7 @@ export class SpaceSky {
     // map's size is the camera's bounds (`CameraRig` sets them to it) — derived, so no
     // caller can hand the sky a map size that disagrees with the one being flown.
     const cam = this.scene.cameras.main
-    const map = cam.useBounds ? cam.getBounds() : { width: cam.width, height: cam.height }
+    const map = cam.useBounds ? cam.getBounds(this.boundsOut) : { width: cam.width, height: cam.height }
     const ox = (map.width / 2 - cam.width / 2) * c.SPACE_BODY_PARALLAX
     const oy = (map.height / 2 - cam.height / 2) * c.SPACE_BODY_PARALLAX
     const at = (fx: number, fy: number) => ({ x: view.left + fx * view.w + ox, y: view.top + fy * view.h + oy })
@@ -185,7 +194,7 @@ export class SpaceSky {
    * are proved to be that body and no other — the moon passes close to the earth, and
    * a patch around it would otherwise carry the earth's glow.
    */
-  setBodiesVisible(on: boolean, which: SpaceBodyName | 'all' = 'all'): void {
+  setBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all'): void {
     for (const n of which === 'all' ? BODY_NAMES : [which]) {
       if (on) this.hiddenBodies.delete(n)
       else this.hiddenBodies.add(n)
@@ -194,8 +203,12 @@ export class SpaceSky {
   }
 
   private applyVisibility(): void {
+    const shades = new Set<Phaser.GameObjects.Image>([this.earthShade, this.moonShade])
     for (const n of BODY_NAMES) {
-      for (const o of this.body(n)) o.setVisible(this.shown && !this.hiddenBodies.has(n))
+      for (const o of this.body(n)) {
+        const hidden = this.hiddenBodies.has(n) || (shades.has(o) && this.hiddenBodies.has('shade'))
+        o.setVisible(this.shown && !hidden)
+      }
     }
   }
 

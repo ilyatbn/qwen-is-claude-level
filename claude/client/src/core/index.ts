@@ -374,6 +374,10 @@ export interface Constants {
   SPACE_MOON_RADIUS: number
   SPACE_SUN_RADIUS: number
   SPACE_SUN_GLOW: number
+  SPACE_SUN_PATH_RX: number
+  SPACE_SUN_PATH_RY: number
+  SPACE_EARTH_PATH_RX: number
+  SPACE_EARTH_PATH_RY: number
   SPACE_SUN_PERIOD: number
   SPACE_EARTH_PERIOD: number
   SPACE_MOON_PERIOD: number

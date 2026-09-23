@@ -6800,3 +6800,9 @@ Stopped at a clean boundary: tree clean, nothing running, last code commit `8858
 T22.06B (the backdrop review's fixes — file written, not started), then T22.08A/B (solar flares; rulings R78–R85 +
 forward sweep in `tasks/M22/T22.08-RULINGS-AND-SWEEP.md`, binding). A batch gate is owed for T22.06 + T22.06B.
 M23 (the art refactor) is fully specified in `tasks/M23/` and starts after M22 (R16); owner to confirm F5–F7.
+
+## T22.06B — what the backdrop review found (2026-09-23)
+F1 a clear body that draws < 40 px fails (moon-behind-earth the one exemption); F2 `measure` returns `compared`, patch chosen after the player rests, clear of it and with a clear earth; F3 `'shade'` hideable, bodies located on lit discs, tolerance 6 px flat (earth 21 → 2 px off); F4 `getBounds(out)`; F5 path rx/ry → `constants.rs`; F6 no `PhaseChange` on a space map (hash unchanged, `last_day_phase` still tracked); F7 `onMapInit` keys space on the decoded map's asteroids; flaky-test rows moved into the table.
+Plants, each red: moon+shade alpha 0 → *"moon: clear on screen at both moments but hiding it changed only 0 / 0 px"* (both paths); patch margin off → *"compared only 0 of 6400 px"*; shade no-op → *"earth at t0: … 26.7 px … (tolerance 6)"*; F6 gate `if true` → *"a space world announced 2 day phases"*.
+Done-when: `e2e space-sky,space-sky-canvas,space-sky-match` 3/3; `--changed HEAD --fast` all passed (rust 1573/0/25, vitest 1005/1005); clippy 0; extra mapped e2e 6/6 (sky, living-sky, m4-checkpoint, lobby-start, thrusters-match, radiation-match). Logs `gate-t2206b-*.txt`.
+F7 has no assertion (dormant while `CAVE_BACKDROP` is false).

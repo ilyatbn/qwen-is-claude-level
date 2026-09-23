@@ -1567,10 +1567,20 @@ pub const SPACE_MOON_RADIUS: f32 = 15.0;
 /// The sun's disc; its glow is `SPACE_SUN_GLOW` times this.
 pub const SPACE_SUN_RADIUS: f32 = 12.0;
 pub const SPACE_SUN_GLOW: f32 = 9.0;
+/// The half-extents of the sun's and the earth's elliptical paths across the view,
+/// as fractions of it (the centres stay in `spaceSky-math.ts`: they are composition —
+/// the sun high, the earth low). Here because a body's **speed** is its path's length
+/// over its period, so `SPACE_EARTH_PERIOD`'s pace below is a claim about both
+/// (T22.06B F5); `spaceSky-math.test.ts` measures that pace off the function.
+pub const SPACE_SUN_PATH_RX: f32 = 0.36;
+pub const SPACE_SUN_PATH_RY: f32 = 0.1;
+pub const SPACE_EARTH_PATH_RX: f32 = 0.28;
+pub const SPACE_EARTH_PATH_RY: f32 = 0.08;
 /// Seconds per lap of each body's path. **The owner asked that they move**, so each
 /// is sized against a round (`ROUND_SECONDS` 240): the moon laps the earth twice,
-/// the earth crosses a good third of its path — ~3 camera px/s, ~6 on screen, which
-/// is slow enough to be scenery and fast enough that a player sees it has moved.
+/// the earth crosses a good third of its path — at `SPACE_EARTH_PATH_RX`/`_RY` of the
+/// view, ~3 camera px/s, ~6 on screen, which is slow enough to be scenery and fast
+/// enough that a player sees it has moved.
 pub const SPACE_SUN_PERIOD: f32 = 900.0;
 pub const SPACE_EARTH_PERIOD: f32 = 420.0;
 pub const SPACE_MOON_PERIOD: f32 = 120.0;

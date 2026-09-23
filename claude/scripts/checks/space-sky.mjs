@@ -12,8 +12,8 @@
  *    centroid must sit on the screen position `debug()` reports.
  * 2. **They move across a round.** The same measurement `DT` round-seconds later: each
  *    body's *pixel* centroid moved, by about what `debug()` says it moved. **The camera
- *    did not do it**: the camera's view is asserted identical, and a patch of asteroid at
- *    the centre of the screen — terrain, drawn over the sky — is the control region that
+ *    did not do it**: the camera's view is asserted identical, and a patch of asteroid clear
+ *    of the player — terrain, drawn over the sky — is the control region that
  *    must not change (it would, if the camera had moved or the world had darkened).
  * 3. **Stars, and they drift.** Point lights on the dark counted in the all-bodies-hidden
  *    frame; at `DT` later few of them are where they were, while a second photograph of
@@ -51,8 +51,20 @@ const SEARCH_STEP = 10
 const SEARCH_SPAN = 600
 /** A pixel counts as changed when some channel moves more than this. */
 const THR = 10
-/** A body is "drawn" if at least this many pixels change when it alone is hidden. */
+/**
+ * A body clear on screen at both moments must change at least this many pixels when
+ * it alone is hidden, or the check fails (T22.06B F1: it used to log "not clear" and
+ * pass, so the moon at alpha 0 went green).
+ */
 const BODY_PIXEL_FLOOR = 40
+/**
+ * How far a body's pixel centroid may sit from where `debug()` puts it, px. Measured
+ * with both night sides hidden (T22.06B F3), so the whole disc is compared: sun 0.7,
+ * earth and moon under 3 on the review's logs. It was `R/2 + 6` — 70 px on the earth.
+ */
+const POSITION_TOL = 6
+/** Ten-frame looks for the sandbox player to come to rest before a control patch is chosen. */
+const SETTLE_TRIES = 60
 /** Point lights on the dark that make a star field, in the measured region. */
 const STAR_FLOOR = 60
 
@@ -81,30 +93,22 @@ export default async function ({ page, shot, log }) {
   log(`renderer: ${renderer}`)
   if (renderer === 'webgl') await g(() => window.__game.setHighQuality(true))
 
-  // --- frame: the asteroid nearest the map's centre, dead centre of the screen ---
-  const rock = await g(() => {
+  // --- frame: an asteroid dead centre of the screen, clear of the player ---------
+  const rocks = await g(() => {
     const c = window.__game.core
     const cx = c.width / 2
     const cy = c.height / 2
-    const a = [...c.meta.asteroids].sort((p, q) => Math.hypot(p.x - cx, p.y - cy) - Math.hypot(q.x - cx, q.y - cy))[0]
-    return a ? { x: a.x, y: a.y, r: a.radius ?? a.r } : null
+    return [...c.meta.asteroids]
+      .sort((p, q) => Math.hypot(p.x - cx, p.y - cy) - Math.hypot(q.x - cx, q.y - cy))
+      .map((a) => ({ x: a.x, y: a.y, r: a.radius ?? a.r }))
   })
-  if (!rock) throw new Error('no asteroids — `?gravity=space` did not reach the scene')
-  if (!rock.r) throw new Error(`the asteroid has no radius field: ${JSON.stringify(rock)}`)
-  await g(([x, y]) => {
-    window.__game.watch(x, y)
-    window.__game.forceAmbient(1)
-  }, [rock.x, rock.y])
-  // `worldView` refreshes in `preRender`: read through it only after frames are drawn.
-  await frames(SETTLE_FRAMES)
+  if (!rocks.length) throw new Error('no asteroids — `?gravity=space` did not reach the scene')
+  if (!rocks[0].r) throw new Error(`the asteroid has no radius field: ${JSON.stringify(rocks[0])}`)
 
   const vw = await g(() => ({ w: window.innerWidth, h: window.innerHeight }))
-  /** Inside the asteroid, around the screen centre: terrain, drawn over the sky. */
-  const rockHalf = Math.max(6, Math.min(40, Math.floor(rock.r * 0.35 * 2)))
-  const rockRect = { x: Math.round(vw.w / 2 - rockHalf), y: Math.round(vw.h / 2 - rockHalf), w: rockHalf * 2, h: rockHalf * 2 }
   /**
    * The DOM over the canvas — the sandbox panel, the HUD strip, the suit line, the
-   * minimap — read off the page rather than guessed, plus the centre asteroid patch.
+   * minimap — read off the page rather than guessed.
    */
   const overlays = await g(() => {
     const game = document.querySelector('canvas')
@@ -123,7 +127,6 @@ export default async function ({ page, shot, log }) {
     }
     return out
   })
-  const exclude = [...overlays, rockRect]
   /**
    * The player and the crosshair beside it, **where they are now**: an asteroid's well
    * pulls the body in (T22.11B), and it animates on the browser's clock, so two
@@ -136,9 +139,33 @@ export default async function ({ page, shot, log }) {
     const half = 3 * k.PLAYER_H * s.scale
     return { x: Math.floor(s.x - half), y: Math.floor(s.y - half), w: Math.ceil(2 * half), h: Math.ceil(2 * half) }
   }
-  log(`overlays excluded: ${overlays.map((r) => `${r.x},${r.y} ${r.w}×${r.h}`).join(' | ')}`)
-  const overlapsAny = (b) => exclude.some((r) => b.x < r.x + r.w && r.x < b.x + b.w && b.y < r.y + r.h && r.y < b.y + b.h)
+  const overlaps = (p, q) => p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h
   const onScreen = (b) => b.x >= 0 && b.y >= 0 && b.x + b.w <= vw.w && b.y + b.h <= vw.h
+  /**
+   * The control patch: inside an asteroid — terrain, drawn over the sky — and **clear
+   * of the player** (T22.06B F2). The nearest rock to the map's centre is where the
+   * sandbox player stands, so its patch sat wholly inside the player's exclusion box
+   * and the control compared zero pixels. Rocks are tried outward from the centre
+   * until one's patch is on screen, clear of every overlay and of the player with a
+   * box's margin to spare for the well's pull.
+   */
+  // The sandbox player starts in open space and a well pulls it onto a rock; a patch
+  // chosen while it is still falling is the one it lands on (seen: accepted clear,
+  // then wholly under its box at the moments). So the body comes to rest first.
+  let settled = false
+  let prev = (await dbg()).player
+  for (let i = 0; i < SETTLE_TRIES && !settled; i++) {
+    await frames(10)
+    const p = (await dbg()).player
+    settled = Math.hypot(p.x - prev.x, p.y - prev.y) < 0.5
+    prev = p
+  }
+  if (!settled) throw new Error(`the sandbox player did not come to rest in ${SETTLE_TRIES * 10} frames — no patch can be chosen clear of it`)
+  // Chosen with the moments, below: `rockRect` joins `exclude` once it is.
+  let rockRect = null
+  let exclude = overlays
+  log(`overlays excluded: ${overlays.map((r) => `${r.x},${r.y} ${r.w}×${r.h}`).join(' | ')}`)
+  const overlapsAny = (b) => exclude.some((r) => overlaps(r, b))
 
   /** Everything measured at one frozen moment. */
   const moment = async (t, label) => {
@@ -153,6 +180,11 @@ export default async function ({ page, shot, log }) {
     const pb = await playerBox()
     const shown = await photo()
     const again = await photo()
+    // Located with both night sides off (F3): under the shade the earth's dark half
+    // sits below THR against black sky, and the centroid slid toward the lit half.
+    await g(() => window.__game.setSpaceBodiesVisible(false, 'shade'))
+    await frames(2)
+    const lit = await photo()
     const without = {}
     for (const name of ['sun', 'earth', 'moon']) {
       await g((n) => window.__game.setSpaceBodiesVisible(false, n), name)
@@ -160,6 +192,7 @@ export default async function ({ page, shot, log }) {
       without[name] = await photo()
       await g((n) => window.__game.setSpaceBodiesVisible(true, n), name)
     }
+    await g(() => window.__game.setSpaceBodiesVisible(true, 'shade'))
     await g(() => window.__game.setSpaceBodiesVisible(false, 'all'))
     await frames(2)
     const bare = await photo()
@@ -167,7 +200,7 @@ export default async function ({ page, shot, log }) {
     await g(() => window.__game.setSpaceBodiesVisible(true, 'all'))
     await frames(2)
     await shot(`space-sky-${renderer}-${label}`)
-    return { t, d, pb, shown, again, without, bare, bare2 }
+    return { t, d, pb, shown, again, lit, without, bare, bare2 }
   }
 
   /** In-page image maths: per-box changed-pixel centroids, star pixels, means. */
@@ -196,9 +229,13 @@ export default async function ({ page, shot, log }) {
         let n = 0
         let sx = 0
         let sy = 0
+        // How many pixels were compared at all: a region wholly inside an exclusion
+        // reports n = 0 and would read as "unchanged" (T22.06B F2).
+        let compared = 0
         for (let y = y0; y < y1; y++) {
           for (let x = x0; x < x1; x++) {
             if (inAny(x, y, j.exclude)) continue
+            compared++
             const i = (y * W + x) * 4
             const m = Math.max(Math.abs(A.data[i] - B.data[i]), Math.abs(A.data[i + 1] - B.data[i + 1]), Math.abs(A.data[i + 2] - B.data[i + 2]))
             if (m > j.thr) {
@@ -208,7 +245,7 @@ export default async function ({ page, shot, log }) {
             }
           }
         }
-        return { n, cx: n ? sx / n : null, cy: n ? sy / n : null }
+        return { n, compared, cx: n ? sx / n : null, cy: n ? sy / n : null }
       }
       if (j.kind === 'stars') {
         // A star is a point light on the dark: bright itself, dark around it. Rock and
@@ -254,46 +291,92 @@ export default async function ({ page, shot, log }) {
     const out = {}
     const sky = m.d.spaceSky
     if (!sky) throw new Error(`t=${m.t}: debug().spaceSky is null — the space sky is not up`)
+    const earthDisc = bodyBox(sky.earth, 1)
     for (const name of ['sun', 'earth', 'moon']) {
       const b = sky[name]
       const box = bodyBox(b, REACH[name])
-      const r = await measure({ kind: 'diff', a: m.shown, b: m.without[name], box, exclude, thr: THR })
+      const r = await measure({ kind: 'diff', a: m.lit, b: m.without[name], box, exclude, thr: THR })
       // Located only where the whole box is on the canvas and clear of every overlay:
       // a box clipped on one side has its centroid pulled to the other.
-      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box) }
+      // The one legitimate way for a clear body to draw nothing: the moon on the far
+      // side of its orbit, behind the earth's disc.
+      const behind = name === 'moon' && sky.moon.front === false && overlaps(bodyBox(b, 1), earthDisc)
+      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box), behind }
     }
     return out
   }
 
   // ================================= space ========================================
-  // --- choose the moments: the bodies' boxes clear of every overlay -----------------
+  // --- choose the camera and the moments ------------------------------------------
   // A search over the sky's own positions (read, not predicted) rather than a
   // hardcoded time, which would rot the moment any orbit constant moved. The earth
   // must be clear at both moments; the more of the other two the better.
-  const clearAt = new Map()
-  for (let t = 0; t <= SEARCH_SPAN + DT; t += SEARCH_STEP) {
-    await g((tt) => window.__game.setTime(tt), t)
-    await frames(2)
-    const sky = (await dbg()).spaceSky
-    if (!sky) throw new Error('debug().spaceSky is null at ?gravity=space — the space sky never came up')
-    clearAt.set(
-      t,
-      ['sun', 'earth', 'moon'].filter((n) => {
-        const box = bodyBox(sky[n], REACH[n])
-        return onScreen(box) && !overlapsAny(box)
-      }),
-    )
-  }
-  let T0 = null
-  let best = -1
-  for (let t = 0; t <= SEARCH_SPAN; t += SEARCH_STEP) {
-    const both = clearAt.get(t).filter((n) => clearAt.get(t + DT).includes(n))
-    if (both.includes('earth') && both.length > best) {
-      best = both.length
-      T0 = t
+  const searchMoments = async () => {
+    const clearAt = new Map()
+    for (let t = 0; t <= SEARCH_SPAN + DT; t += SEARCH_STEP) {
+      await g((tt) => window.__game.setTime(tt), t)
+      await frames(2)
+      const sky = (await dbg()).spaceSky
+      if (!sky) throw new Error('debug().spaceSky is null at ?gravity=space — the space sky never came up')
+      clearAt.set(
+        t,
+        ['sun', 'earth', 'moon'].filter((n) => {
+          const box = bodyBox(sky[n], REACH[n])
+          return onScreen(box) && !overlapsAny(box)
+        }),
+      )
     }
+    let T0 = null
+    let best = -1
+    for (let t = 0; t <= SEARCH_SPAN; t += SEARCH_STEP) {
+      const both = clearAt.get(t).filter((n) => clearAt.get(t + DT).includes(n))
+      if (both.includes('earth') && both.length > best) {
+        best = both.length
+        T0 = t
+      }
+    }
+    return T0 === null ? null : { T0, best }
   }
-  if (T0 === null) throw new Error(`no moment in ${SEARCH_SPAN} s has the earth clear of the overlays at t and t + ${DT}`)
+  /**
+   * The camera sits on an asteroid, and a patch inside it — terrain, drawn over the
+   * sky — is the control region. **Clear of the player** (T22.06B F2): the rock
+   * nearest the map's centre is where the sandbox player lands, so its patch sat
+   * wholly inside the player's exclusion box and the control compared zero pixels.
+   * Rocks are tried outward from the centre until one's patch is on screen, clear of
+   * every overlay and of the player with a box's margin, **and** the sky from there
+   * has moments with the earth clear (the patch is an exclusion the bodies avoid).
+   */
+  let rock = null
+  let found = null
+  const tried = []
+  for (const cand of rocks.slice(0, 16)) {
+    await g(([x, y]) => {
+      window.__game.watch(x, y)
+      window.__game.forceAmbient(1)
+    }, [cand.x, cand.y])
+    // `worldView` refreshes in `preRender`: read through it only after frames are drawn.
+    await frames(SETTLE_FRAMES)
+    const s = await toScreen(page, cand.x, cand.y)
+    const half = Math.max(6, Math.min(40, Math.floor(cand.r * 0.35 * s.scale)))
+    const box = { x: Math.round(s.x - half), y: Math.round(s.y - half), w: half * 2, h: half * 2 }
+    const pb = await playerBox()
+    const wide = { x: pb.x - pb.w / 2, y: pb.y - pb.h / 2, w: pb.w * 2, h: pb.h * 2 }
+    if (!onScreen(box) || overlays.some((r) => overlaps(r, box)) || overlaps(wide, box)) {
+      tried.push(`${cand.x},${cand.y}: patch not clear`)
+      continue
+    }
+    rockRect = box
+    exclude = [...overlays, rockRect]
+    found = await searchMoments()
+    if (found) {
+      rock = cand
+      break
+    }
+    tried.push(`${cand.x},${cand.y}: no moment with the earth clear`)
+  }
+  if (!rock) throw new Error(`no asteroid near the centre gives a clear control patch and a clear earth: ${tried.join('; ')}`)
+  const { T0, best } = found
+  log(`control rock at ${rock.x},${rock.y} r ${rock.r}: patch ${rockRect.x},${rockRect.y} ${rockRect.w}×${rockRect.h}${tried.length ? ` (passed over ${tried.join('; ')})` : ''}`)
   log(`moments: t0 = ${T0} s, t1 = ${T0 + DT} s (${best} bodies clear at both)`)
 
   const a = await moment(T0, 't0')
@@ -304,12 +387,15 @@ export default async function ({ page, shot, log }) {
   const vb = b.d.worldView
   if (va.x !== vb.x || va.y !== vb.y) throw new Error(`the camera moved between the moments: ${JSON.stringify(va)} → ${JSON.stringify(vb)}`)
   const rockDiff = await measure({ kind: 'diff', a: a.shown, b: b.shown, box: rockRect, exclude: [a.pb, b.pb], thr: THR })
+  if (rockDiff.compared < (rockRect.w * rockRect.h) / 2) {
+    throw new Error(`control: the asteroid patch compared only ${rockDiff.compared} of ${rockRect.w * rockRect.h} px — the player's box covers it`)
+  }
   if (rockDiff.n > rockRect.w * rockRect.h * 0.01) {
     throw new Error(`control: the asteroid patch at the centre changed (${rockDiff.n} px) — the camera or the light moved, not the sky`)
   }
   const selfDiff = await measure({ kind: 'diff', a: a.shown, b: a.again, box: { x: 0, y: 0, w: vw.w, h: vw.h }, exclude, thr: THR })
   if (selfDiff.n > 50) throw new Error(`control: two photographs of one frozen moment differ by ${selfDiff.n} px`)
-  log(`controls: camera still at ${va.x},${va.y}; asteroid patch ${rockDiff.n} px changed; same-moment pair ${selfDiff.n} px`)
+  log(`controls: camera still at ${va.x},${va.y}; asteroid patch ${rockDiff.n} of ${rockDiff.compared} px changed; same-moment pair ${selfDiff.n} px`)
 
   // --- 1 & 2: each body drawn where it says, and moved --------------------------
   const la = await locate(a)
@@ -319,17 +405,24 @@ export default async function ({ page, shot, log }) {
     const [p, q] = [la[name], lb[name]]
     const fmt = (r) => (r.cx === null ? 'none' : `${r.cx.toFixed(0)},${r.cy.toFixed(0)} (${r.n} px)`)
     log(`${name}: t0 ${fmt(p)} want ${p.want.x.toFixed(0)},${p.want.y.toFixed(0)} | t1 ${fmt(q)} want ${q.want.x.toFixed(0)},${q.want.y.toFixed(0)}`)
-    const drawn = p.n >= BODY_PIXEL_FLOOR && q.n >= BODY_PIXEL_FLOOR && p.clear && q.clear
-    if (!drawn) {
-      // The earth is the one that must always be measurable; a sun or moon behind the
-      // asteroid, under an overlay or off the edge at one moment is covered by the others.
-      if (name === 'earth') throw new Error(`the earth cannot be measured: ${p.n} / ${q.n} px, clear ${p.clear} / ${q.clear}`)
+    // "Not clear" and "drew nothing" are different answers (F1): only the first may
+    // skip a body. A body whose box is on screen and clear of every overlay at both
+    // moments **must** draw, unless it is the moon behind the earth.
+    if (!(p.clear && q.clear)) {
+      if (name === 'earth') throw new Error(`the earth cannot be measured: clear ${p.clear} / ${q.clear}`)
       log(`${name}: not clear on screen at both moments, not measured`)
       continue
     }
+    if (p.behind || q.behind) {
+      log(`${name}: behind the earth at ${p.behind ? 't0' : 't1'}, not measured`)
+      continue
+    }
+    if (p.n < BODY_PIXEL_FLOOR || q.n < BODY_PIXEL_FLOOR) {
+      throw new Error(`${name}: clear on screen at both moments but hiding it changed only ${p.n} / ${q.n} px (want ≥ ${BODY_PIXEL_FLOOR}) — it is not drawn`)
+    }
     for (const [r, when] of [[p, 't0'], [q, 't1']]) {
       const off = Math.hypot(r.cx - r.want.x, r.cy - r.want.y)
-      if (off > r.R * 0.5 + 6) throw new Error(`${name} at ${when}: its pixels centre ${off.toFixed(1)} px from where debug() puts it (R ${r.R})`)
+      if (off > POSITION_TOL) throw new Error(`${name} at ${when}: its pixels centre ${off.toFixed(1)} px from where debug() puts it (tolerance ${POSITION_TOL})`)
     }
     const seen = Math.hypot(q.cx - p.cx, q.cy - p.cy)
     const said = Math.hypot(q.want.x - p.want.x, q.want.y - p.want.y)

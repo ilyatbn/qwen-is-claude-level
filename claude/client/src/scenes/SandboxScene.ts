@@ -27,7 +27,7 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
-import type { SpaceBodyName } from '../render/spaceSky'
+import type { SpaceSkyPart } from '../render/spaceSky'
 import type { SkyGround } from '../render/parallax'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
@@ -1111,7 +1111,7 @@ export class SandboxScene extends Phaser.Scene {
         self.sky?.parallax.setVisible(on)
       },
       /** T22.06: hide the space sky's bodies, one or all — `space-sky`'s control frames. */
-      setSpaceBodiesVisible(on: boolean, which: SpaceBodyName | 'all' = 'all') {
+      setSpaceBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all') {
         self.sky?.space.setBodiesVisible(on, which)
         return self.sky?.spaceDebug ?? null
       },

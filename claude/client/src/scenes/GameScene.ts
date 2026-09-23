@@ -1396,7 +1396,14 @@ export class GameScene extends Phaser.Scene {
     // neither on a networked client — `loadMask` clones the startup map's meta —
     // so `WorldView` was building every round's rock from seed 1 and theme 0.
     // `this.mapSeed` is the same value the sky already uses, two lines below.
-    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, this.gravity === SPACE_GRAVITY)
+    // **Space is read off this map, not off `this.gravity`** (T22.06B F7). A
+    // mid-match joiner is sent `map_init` *before* `lobby_state`, so at this line
+    // `this.gravity` is whatever the previous match left it (the field outlives a
+    // round) and the cave-backdrop lock was decided by the wrong match. The map's
+    // own rocks are the same predicate the server gates on (`Map::space_geometry`,
+    // R58: non-empty asteroids), and they arrive in this very message.
+    const spaceMap = init.asteroids.length > 0
+    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, spaceMap)
 
     // The **same** theme the terrain resolves, not a second opinion: both now
     // read `map_init`'s theme, so a distant ridge stays the colour of the ground

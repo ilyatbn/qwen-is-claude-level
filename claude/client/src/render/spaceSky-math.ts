@@ -17,6 +17,10 @@ import { clientTagSeed, hash01, wrappedNoise } from './noise-math'
 
 /** The space backdrop's tunables, a subset of `C()` (`constants.rs` has the bases). */
 export interface SpaceSkyTuning {
+  SPACE_SUN_PATH_RX: number
+  SPACE_SUN_PATH_RY: number
+  SPACE_EARTH_PATH_RX: number
+  SPACE_EARTH_PATH_RY: number
   SPACE_EARTH_PERIOD: number
   SPACE_SUN_PERIOD: number
   SPACE_MOON_PERIOD: number
@@ -30,13 +34,14 @@ export const SPACE_SKY_TOP = 0x010208
 export const SPACE_SKY_BOTTOM = 0x0a1030
 
 /**
- * The paths across the view, as fractions of it: centre and half-extents of an
- * ellipse. **Composition, not tuning** — like `sky-math.ts`'s gradient keyframes they
- * say where on the screen a thing belongs (the sun high, the earth low and large), and
- * `constants.rs` keeps what a player would tune: sizes, periods, drift, parallax.
+ * The centres of the paths across the view, as fractions of it. **Composition, not
+ * tuning** — like `sky-math.ts`'s gradient keyframes they say where on the screen a
+ * thing belongs (the sun high, the earth low and large). The half-extents are
+ * `SPACE_*_PATH_RX/RY` in `constants.rs` (T22.06B F5): with the periods beside them
+ * they are the bodies' speed, which is a tunable.
  */
-const SUN_PATH = { cx: 0.5, cy: 0.24, rx: 0.36, ry: 0.1 }
-const EARTH_PATH = { cx: 0.5, cy: 0.66, rx: 0.28, ry: 0.08 }
+const SUN_PATH = { cx: 0.5, cy: 0.24 }
+const EARTH_PATH = { cx: 0.5, cy: 0.66 }
 
 /** Per-seed phases, so each map's sky starts from its own arrangement. */
 export interface SpaceSkySeed {
@@ -79,8 +84,11 @@ export function spaceBodies(
   const as = s.sun + (TAU * t) / c.SPACE_SUN_PERIOD
   const ae = s.earth + Math.PI + (TAU * t) / c.SPACE_EARTH_PERIOD
   const am = s.moon + (TAU * t) / c.SPACE_MOON_PERIOD
-  const sun = { fx: SUN_PATH.cx + SUN_PATH.rx * Math.cos(as), fy: SUN_PATH.cy + SUN_PATH.ry * Math.sin(as) }
-  const earth = { fx: EARTH_PATH.cx + EARTH_PATH.rx * Math.cos(ae), fy: EARTH_PATH.cy + EARTH_PATH.ry * Math.sin(ae) }
+  const sun = { fx: SUN_PATH.cx + c.SPACE_SUN_PATH_RX * Math.cos(as), fy: SUN_PATH.cy + c.SPACE_SUN_PATH_RY * Math.sin(as) }
+  const earth = {
+    fx: EARTH_PATH.cx + c.SPACE_EARTH_PATH_RX * Math.cos(ae),
+    fy: EARTH_PATH.cy + c.SPACE_EARTH_PATH_RY * Math.sin(ae),
+  }
   const moon = {
     dx: c.SPACE_MOON_ORBIT * Math.cos(am),
     dy: c.SPACE_MOON_ORBIT * c.SPACE_MOON_TILT * Math.sin(am),

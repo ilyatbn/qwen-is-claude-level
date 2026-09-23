@@ -1353,11 +1353,18 @@ impl World {
         let day = cycle_at(now).phase;
         if day != self.last_day_phase {
             self.last_day_phase = day;
-            let tick = self.tick;
-            self.events.push(GameEvent::PhaseChange {
-                tick,
-                day_phase: day,
-            });
+            // T22.06B F6: **no dawn or dusk in orbit.** `darkness` is 0 in space,
+            // so the only thing this event still did there was play the
+            // `phase_change` cue every half-cycle over a sky with no night. Gated
+            // on the map (R58), like `wildlife_allowed`. `last_day_phase` is still
+            // kept above, so the state hash — and `REPLAY_VERSION` — do not move.
+            if self.map.space_geometry().is_none() {
+                let tick = self.tick;
+                self.events.push(GameEvent::PhaseChange {
+                    tick,
+                    day_phase: day,
+                });
+            }
         }
 
         // 2. player inputs, in ascending PlayerId, always.
@@ -8988,7 +8995,7 @@ mod animals_in_a_round {
 mod nothing_lives_in_space {
     use super::*;
     use crate::constants::{
-        GravityMode, ANIMAL_INTERVAL, BIRD_INTERVAL, DEFAULT_MAP_GENERATOR, SIM_DT,
+        GravityMode, ANIMAL_INTERVAL, BIRD_INTERVAL, CYCLE_LENGTH, DEFAULT_MAP_GENERATOR, SIM_DT,
     };
 
     /// Four seeds, because a population claim needs more than one draw.
@@ -9041,6 +9048,37 @@ mod nothing_lives_in_space {
                  none anywhere"
             );
         }
+    }
+
+    /// Every `PhaseChange` one world announces over a full day and a bit.
+    fn day_phase_changes(gravity: GravityMode) -> usize {
+        let mut w = World::with_gravity(4242, MapScale::Small, 0, DEFAULT_MAP_GENERATOR, gravity);
+        let _ = w.drain_events();
+        let mut n = 0;
+        for _ in 0..((CYCLE_LENGTH + 2.0) / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            n += w
+                .drain_events()
+                .iter()
+                .filter(|e| matches!(e, GameEvent::PhaseChange { .. }))
+                .count();
+        }
+        n
+    }
+
+    /// T22.06B F6: **space announces no dawn and no dusk** — the client plays the
+    /// `phase_change` cue off this event, and there is no night in orbit. The
+    /// standard world on the same seed is the control that the instrument counts
+    /// the events at all.
+    #[test]
+    fn a_space_round_announces_no_day_phase_and_a_standard_round_does() {
+        let space = day_phase_changes(GravityMode::Space);
+        let standard = day_phase_changes(GravityMode::Standard);
+        assert!(
+            standard >= 2,
+            "control: a standard world announced {standard} day phases over a whole cycle"
+        );
+        assert_eq!(space, 0, "a space world announced {space} day phases");
     }
 
     /// **The guard reads the generator, not `self.gravity`** (`R58`).
