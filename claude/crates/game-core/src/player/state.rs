@@ -263,6 +263,18 @@ impl PlayerState {
         self.battery > 0.0 && (suit || self.holds_shield_generator())
     }
 
+    /// Took a killing blow and `World::resolve_deaths` has not run yet.
+    ///
+    /// **`alive` stays true until then**, so "alive" and "can still be hurt
+    /// into a new cause of death" are different questions inside a tick. The
+    /// one predicate for the second: `resolve_deaths` picks its dead with it,
+    /// and stage 8c skips them with it — a body poisoned or struck dead
+    /// earlier in the tick must not also be irradiated, or R75's list names
+    /// radiation for a death it did not cause (review of T22.09A, F1).
+    pub fn is_dying(&self) -> bool {
+        self.alive && self.health <= 0.0
+    }
+
     /// Is space's radiation getting through to this player right now?
     /// (T22.09A, `M22-RULINGS` R6.) Snapshot bit 7, and `GameCore::irradiated`.
     ///

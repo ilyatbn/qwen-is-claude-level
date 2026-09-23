@@ -374,9 +374,19 @@ try {
         fail(`control: no live burning frame before fay died: ${JSON.stringify(brief(before, fay))}`)
       } else {
         ok(`control: fay burns alive at ${before.health.toFixed(1)} health, plume drawn`)
+        // **Eve's view lit, the control for eve's view out** (T22.09A review, F5):
+        // without it "eve draws no plume after the death" holds for an eve who never
+        // drew one. Only a live burn draws a remote plume, so a true here was taken
+        // before the death whenever the wait happens to return.
+        const eveLit = await waitOn(eve, (id) => !!window.__game.debug().plumes?.[id]?.drawn, fay.id, 5, 'eve sees the burn')
+        if (!eveLit) fail(`control: eve never drew fay's burning plume: ${JSON.stringify(await plumeOf(eve, fay))}`)
+        else ok("control: eve draws fay's plume while she burns")
         const died = await waitOn(fay, () => !window.__game.debug().death.meAlive, null, burnable + 5, 'death')
         await frames(fay, SETTLE_FRAMES)
         const after = await dbg(fay)
+        // **Waited on, on eve's own page, not read once** — the remote is drawn off
+        // the interpolation buffer, and the bell arm measured a single read racing it.
+        const eveOut = await waitOn(eve, (id) => window.__game.debug().plumes?.[id]?.drawn === false, fay.id, 5, 'remote off after death')
         const eveSees = await plumeOf(eve, fay)
         await fay.page.screenshot({ path: join(shotsDir, 'thrusters-match-dead.png') })
         if (!died) fail(`the poison never killed fay: ${JSON.stringify(brief(after, fay))}`)
@@ -389,7 +399,7 @@ try {
         else if (after.plumes?.[fay.id]?.drawn !== false) {
           fail(`fay is dead with thrust held and her own view still fires her plume: ${JSON.stringify(brief(after, fay))}`)
         } else ok(`fay died mid-burn, thrust held: her plume is out (moveState ${after.player?.moveState})`)
-        if (died && eveSees?.drawn !== false) fail(`eve still draws dead fay's plume: ${JSON.stringify(eveSees)}`)
+        if (died && (!eveOut || eveSees?.drawn !== false)) fail(`eve still draws dead fay's plume: ${JSON.stringify(eveSees)}`)
         else if (died) ok("and eve's view of her is out too")
       }
     } finally {

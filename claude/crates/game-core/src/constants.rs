@@ -1715,8 +1715,12 @@ pub const RADIATION_SHIELD_COST: f32 = 1.0;
 /// the client. One a second is the rate the owner described.
 pub const RADIATION_LOG_INTERVAL: f32 = 1.0;
 /// `BATTERY_PACK`'s natural spawn weight is multiplied by this in space (R24,
-/// R76). Its Spawn weight is 14 of 241 (5.81 %); doubled it is 28 of 255
-/// (≈ 11 %). **Spawn column only** — crates are a separate economy (R76).
+/// R76): its share of `items::registry::weights(WeightColumn::Spawn)` goes from
+/// `w / total` to `m·w / (total + (m − 1)·w)`, `m` being this — roughly `m`
+/// times while the pack is a small part of the column. No figures here on purpose: the column is the source,
+/// and `spawning.rs::the_battery_pack_is_doubled_on_the_space_spawn_column_only`
+/// re-derives the share from it. **Spawn column only** — crates are a separate
+/// economy (R76).
 pub const BATTERY_PACK_SPACE_WEIGHT_MULT: u16 = 2;
 // `SHIELD_DURATION` and `SHIELD_DRAIN` are **gone** (T20.08). One was the timer's
 // length and the other its per-second cost, and there is no timer: a generator is

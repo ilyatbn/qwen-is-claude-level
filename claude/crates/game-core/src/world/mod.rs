@@ -1451,7 +1451,10 @@ impl World {
             let log: DamageLog = Default::default();
             {
                 let mut entries = log.borrow_mut();
-                for p in self.players.iter_mut().filter(|p| p.alive) {
+                // Not the dying (F1): struck dead earlier in this tick, they
+                // are `alive` until `resolve_deaths`, and one radiation entry
+                // landing on them would relabel that death Radiation (R75).
+                for p in self.players.iter_mut().filter(|p| p.alive && !p.is_dying()) {
                     if let Some(amount) = p.radiation_tick(now, dt) {
                         entries.push((p.id, amount, DamageSource::Radiation));
                     }
@@ -3212,7 +3215,7 @@ impl World {
         let mut scored = false;
 
         for i in 0..self.players.len() {
-            if self.players[i].alive && self.players[i].health <= 0.0 {
+            if self.players[i].is_dying() {
                 // The void wins over any recent attacker as the *direct* cause;
                 // `killer` still hands the credit to whoever put you there.
                 let direct = if self.is_in_the_void(&self.players[i]) {
@@ -12249,6 +12252,90 @@ mod radiation_tests {
         );
     }
 
+    /// **A body that took a killing blow earlier in the tick is not
+    /// irradiated on it** (review of T22.09A, F1). `alive` stays true until
+    /// `resolve_deaths`, so a stage-8c filter on `alive` alone let radiation
+    /// land on the dying — putting them on the R75 list and relabelling a
+    /// hazard death as Radiation, the one mislabel R75 exists to prevent, about
+    /// one tick in sixty. The killing blow is toxic poison (stage 8a): a
+    /// `DamageSource::Weather` hit landing before 8c on the same tick, the
+    /// same path a meteor takes, and the only one a test can time to the tick.
+    ///
+    /// **The control** is the same tick with no poison: radiation does fire on
+    /// it, so the absence below is the filter's and not the clock's.
+    #[test]
+    fn a_hazard_death_on_the_radiation_tick_is_not_named_radiation() {
+        use crate::constants::TOXIC_POISON_DPS;
+        let one_tick = |poison: bool| {
+            let mut w = world(GravityMode::Space);
+            let now = w.round_time;
+            if let Some(p) = w.player_mut(ANA) {
+                // One tick short of a whole interval: the next step logs.
+                p.radiation_exposure = RADIATION_LOG_INTERVAL - SIM_DT;
+                if poison {
+                    p.health = TOXIC_POISON_DPS * SIM_DT * 0.5;
+                    p.poisoned_until = now + 1.0;
+                }
+            }
+            sweep(&mut w);
+            w.step(SIM_DT);
+            let (mut rad, mut deaths) = (0, Vec::new());
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::Damage {
+                        victim: ANA,
+                        cause: DeathCause::Radiation,
+                        ..
+                    } => rad += 1,
+                    GameEvent::Death {
+                        victim: ANA, cause, ..
+                    } => deaths.push(cause),
+                    _ => {}
+                }
+            }
+            (rad, deaths)
+        };
+        assert_eq!(
+            one_tick(false),
+            (1, vec![]),
+            "control: radiation did not land on the tick under test"
+        );
+        assert_eq!(
+            one_tick(true),
+            (0, vec![DeathCause::Weather]),
+            "poisoned dead on the radiation tick: (radiation Damage events, death causes)"
+        );
+    }
+
+    /// **Stage 8c runs in `Playing` only** (review of T22.09A, F2): deleting
+    /// `playing &&` once left every test green, because `apply_damage_log`'s
+    /// warmup gate hides the damage — but not the *drain*, and not `Ended`.
+    /// Warmup and Ended leave bo's sealed battery and ana's radiation alone;
+    /// Playing, in the same test, moves both.
+    #[test]
+    fn radiation_and_the_seal_drain_are_playing_only() {
+        for (phase, live) in [
+            (RoundPhase::Warmup, false),
+            (RoundPhase::Ended, false),
+            (RoundPhase::Playing, true),
+        ] {
+            let mut w = world(GravityMode::Space);
+            w.set_phase(phase);
+            let _ = w.drain_events();
+            let b0 = battery(&w, BO);
+            let hits = run(&mut w, 3.0);
+            assert_eq!(w.phase, phase, "the phase moved under the test");
+            let drained = b0 - battery(&w, BO);
+            if live {
+                assert!(drained > 0.0, "control: Playing did not drain the seal");
+                assert!(!hits.is_empty(), "control: Playing did not irradiate ana");
+            } else {
+                assert_eq!(drained, 0.0, "{phase:?}: the sealed suit drained");
+                assert!(hits.is_empty(), "{phase:?}: radiation events {hits:?}");
+            }
+        }
+    }
+
     /// R2, at the live site: `apply_damage_log` hands `apply_damage` the
     /// mode's suit, so **a charged suit softens a weapon hit by
     /// `SHIELD_DAMAGE_MULT`** exactly as a generator does — and a flat one, the
@@ -12287,6 +12374,9 @@ mod radiation_tests {
         for (g, want) in [
             (GravityMode::Space, BATTERY_MAX),
             (GravityMode::Standard, 0.0),
+            // Low gravity is the other non-space mode, and the one a
+            // `!= Standard` test in `issue_suit` would wrongly suit up.
+            (GravityMode::Low, 0.0),
         ] {
             let mut w = World::for_test(4242, MapScale::Small);
             w.weather_mode = WeatherMode::Off;
