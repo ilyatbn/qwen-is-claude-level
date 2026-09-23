@@ -67,6 +67,10 @@ const EXEMPT: Record<string, string> = {
   unlockAudio: 'reassigned by initAudio() alongside the Mixer it unlocks',
   repeatFire:
     'readonly, and self-healing: the first frame with the button not held clears it (autoFire.ts)',
+  // T22.04. Written beside `core.setGravity` in the `lobby_state` handler and read only
+  // to draw the plume; the core it mirrors is not reset either, so resetting this alone
+  // would make the drawing disagree with the prediction until the next `lobby_state`.
+  gravity: "the match's, set with core.setGravity on every lobby_state; outlives a round as the core does",
 }
 
 describe('GameScene survives re-entry, so resetForNewRound must know every field (T20.13)', () => {
