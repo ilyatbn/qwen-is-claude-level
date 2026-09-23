@@ -15,6 +15,7 @@ pub mod cycle;
 pub mod mount;
 pub mod teleport;
 pub mod tombstones;
+pub mod vortex;
 
 use animals::{AnimalId, AnimalKind, Animals};
 use birds::{BirdId, BirdKind, Birds};
@@ -375,6 +376,30 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// T22.10: a breach in the space rim became a vortex. Everyone: it is in the
+    /// world for all to see — and off the minimap (R9, point 5), which is the
+    /// client's business, not the event's.
+    VortexOpen {
+        tick: u32,
+        id: u32,
+        x: f32,
+        y: f32,
+    },
+    /// T22.10: a vortex stopped pulling — replaced by a fourth (R9, point 2).
+    VortexClose {
+        tick: u32,
+        id: u32,
+    },
+    /// T22.10: vortex `vortex` took player `id` and put them at `(x, y)` — a
+    /// `Teleport` in all but its source, which is why it is its own event rather
+    /// than `from_pad` carrying a value that means "not a pad".
+    VortexTrip {
+        tick: u32,
+        id: PlayerId,
+        vortex: u32,
+        x: f32,
+        y: f32,
+    },
     /// A grave where someone fell (§B8).
     TombstoneSpawn {
         tick: u32,
@@ -469,6 +494,9 @@ impl GameEvent {
             | GameEvent::Death { tick, .. }
             | GameEvent::Respawn { tick, .. }
             | GameEvent::Teleport { tick, .. }
+            | GameEvent::VortexOpen { tick, .. }
+            | GameEvent::VortexClose { tick, .. }
+            | GameEvent::VortexTrip { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
             | GameEvent::TombstoneDespawn { tick, .. }
             | GameEvent::Score { tick }
@@ -895,6 +923,15 @@ pub struct World {
     /// Re-deriving the cause from "in space and unsealed" was rejected (R75):
     /// every unsealed player is that, so a meteor kill would read radiation.
     irradiated_this_tick: Vec<PlayerId>,
+    /// T22.10: the live breach vortices, in opening order — the order the pull is
+    /// summed in, on both sides. Hashed.
+    pub vortices: Vec<vortex::Vortex>,
+    /// The next vortex id. Hashed: it names the next one.
+    vortex_seq: u32,
+    /// Where a vortex puts people: its own stream, so a capture does not move any
+    /// other roll (the pads share `rng`; a vortex is rarer and should not). Hashed
+    /// by position, as `rng` is.
+    vortex_rng: ChaCha8Rng,
 }
 
 /// The map cache behind `World::for_test`: one generation per
@@ -1083,6 +1120,9 @@ impl World {
             fog: None,
             flare: None,
             irradiated_this_tick: Vec::new(),
+            vortices: Vec::new(),
+            vortex_seq: 0,
+            vortex_rng: substream(seed, "vortex"),
         }
     }
 
@@ -1520,6 +1560,11 @@ impl World {
             self.apply_damage_log(&log, &bird_log, &animal_log, now);
         }
 
+        // 8b0. breach vortices (T22.10). **Before the void**, so a body leaving
+        // through a hole is caught while it is still inside the grace band
+        // (`SPACE_VOID_GRACE`'s basis) rather than killed there.
+        self.step_vortices(now);
+
         // 8b. the void (§C15). **Before the deaths**, because it works by putting
         // a body's health at zero and letting `resolve_deaths` do everything a
         // death does — the drop, the score, the event, the respawn timer.
@@ -1828,8 +1873,13 @@ impl World {
             // bell costs nobody anything. So: no gate, said out loud rather than
             // omitted, and `T22.12` adds the condition here for its own
             // `Kind::BlackHole` when it lands.
-            let env =
-                crate::world::attractors::env_at(&self.map, gravity, self.players[idx].body.pos);
+            let (pulls, n) = vortex::centres(&self.vortices);
+            let env = crate::world::attractors::env_at(
+                &self.map,
+                gravity,
+                &pulls[..n],
+                self.players[idx].body.pos,
+            );
             let p = &mut self.players[idx];
             let impact = apply_input(
                 &self.map,
@@ -3352,10 +3402,9 @@ impl World {
     /// words: "the void is not fall damage, it is a boundary"), so it sets the
     /// health directly and lets `resolve_deaths` attribute it.
     fn step_void(&mut self) {
-        let floor = self.map.mask.h as f32;
-        for p in self.players.iter_mut() {
-            if p.alive && p.body.head_y() > floor {
-                p.health = 0.0;
+        for i in 0..self.players.len() {
+            if self.players[i].alive && self.is_in_the_void(&self.players[i]) {
+                self.players[i].health = 0.0;
             }
         }
     }
@@ -3366,8 +3415,84 @@ impl World {
     /// **without a flag to keep in sync** — the position it is reading is the one
     /// that killed them, one pass earlier in the same tick, and nothing moves a
     /// dead body until it respawns. Derive, do not add a fourth flag.
+    ///
+    /// **In space, the void is also outside the rim** (`M22-RULINGS` R16, T22.10):
+    /// breach the left, right or top arc and `clamp_to_world` would otherwise hold a
+    /// living player outside the arena for the rest of the round. Past the outer edge
+    /// by `SPACE_VOID_GRACE`, measured at the body's centre — the band a vortex has
+    /// to catch you in first. One predicate, so `step_void` and `resolve_deaths`
+    /// still cannot disagree about who fell.
     fn is_in_the_void(&self, p: &PlayerState) -> bool {
-        p.body.head_y() > self.map.mask.h as f32
+        if p.body.head_y() > self.map.mask.h as f32 {
+            return true;
+        }
+        self.map
+            .space_geometry()
+            .is_some_and(|geo| geo.in_the_void(p.body.pos.x, p.body.pos.y))
+    }
+
+    /// T22.10: open a vortex at every breach the carves made this tick, then take
+    /// every player a vortex has caught.
+    ///
+    /// **The arrival is a teleport's in everything but the destination**
+    /// (`fire_pads`): a fresh `Body`, the jump and jetpack reset with **fuel
+    /// surviving the trip** (R9's addendum — a reset tank turned every pad into a
+    /// refuelling station, and in a mode where fuel is the economy that is worse
+    /// here), and `teleport::arrive`, whose cooldown is also the vortex's: a player
+    /// who drifts straight back is not taken again inside `TELEPORT_COOLDOWN`. The
+    /// destination is T22.05B's picker, `Map::random_body_site` — the one answer to
+    /// *"somewhere valid on this map"*, so a vortex cannot pop you inside rock.
+    fn step_vortices(&mut self, now: f32) {
+        let tick = self.tick;
+        for (x, y) in self.map.take_breaches() {
+            let at = Vec2::new(x as f32, y as f32);
+            if let vortex::Opened::New { id, replaced } =
+                vortex::open(&mut self.vortices, &mut self.vortex_seq, at)
+            {
+                if let Some(old) = replaced {
+                    self.events.push(GameEvent::VortexClose { tick, id: old });
+                }
+                self.events.push(GameEvent::VortexOpen {
+                    tick,
+                    id,
+                    x: at.x,
+                    y: at.y,
+                });
+            }
+        }
+        if self.vortices.is_empty() {
+            return;
+        }
+        for i in 0..self.players.len() {
+            let p = &self.players[i];
+            if !p.alive || now < p.teleport.ready_at {
+                continue;
+            }
+            let Some(vid) = vortex::captor(&self.vortices, p.body.pos) else {
+                continue;
+            };
+            let Some(site) = self.map.random_body_site(&mut self.vortex_rng) else {
+                continue;
+            };
+            let dest = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
+            let p = &mut self.players[i];
+            p.body = crate::physics::body::Body::new(dest);
+            p.jump = crate::player::movement::JumpState::default();
+            let fuel = p.jetpack.fuel;
+            p.jetpack = crate::player::jetpack::JetpackState {
+                fuel,
+                ..Default::default()
+            };
+            teleport::arrive(&mut p.teleport, dest, now);
+            let id = p.id;
+            self.events.push(GameEvent::VortexTrip {
+                tick,
+                id,
+                vortex: vid,
+                x: dest.x,
+                y: dest.y,
+            });
+        }
     }
 
     fn resolve_deaths(&mut self, now: f32) {
@@ -3571,6 +3696,10 @@ impl World {
             // here, where the player is, rather than plumbed through `MoveMods`:
             // `apply_input` never sees this, so it is not a prediction input and
             // it does not belong in the byte T20.19's rule governs.
+            //
+            // **The breach vortex takes wings, and that is not a contradiction**
+            // (`M22-RULINGS` R9, point 1): a pad is something you *choose to use*;
+            // a vortex is a thing that happens to you (`vortex::captor`).
             let eligible =
                 !self.players[i].holds_utility(crate::items::registry::UtilityId::UnicornWings);
             let fired = teleport::step(
@@ -4561,6 +4690,18 @@ impl World {
         let mut probe = self.rng.clone();
         h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
 
+        // T22.10: the vortices pull and take, so they are state; their stream by
+        // position, as `rng` is.
+        h.update(&(self.vortices.len() as u32).to_le_bytes());
+        for v in &self.vortices {
+            h.update(&v.id.to_le_bytes());
+            h.update(&v.pos.x.to_le_bytes());
+            h.update(&v.pos.y.to_le_bytes());
+        }
+        h.update(&self.vortex_seq.to_le_bytes());
+        let mut probe = self.vortex_rng.clone();
+        h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
+
         *h.finalize().as_bytes()
     }
 }
@@ -4872,6 +5013,17 @@ mod state_hash_tests {
         w.players[0].iframes_until = 9.0;
         changed.push(("iframes", w.state_hash()));
 
+        // T22.10: a vortex pulls and takes, so the list is state.
+        let mut w = world();
+        w.vortices.push(super::vortex::Vortex {
+            id: 0,
+            pos: Vec2::new(300.0, 200.0),
+        });
+        changed.push(("vortices", w.state_hash()));
+        let mut w = world();
+        w.vortex_seq = 5;
+        changed.push(("vortex seq", w.state_hash()));
+
         let mut w = world();
         w.players[0].fire_ready_at = 9.0;
         changed.push(("cooldown", w.state_hash()));
@@ -5002,6 +5154,10 @@ mod state_hash_coverage {
             // T22.08A: seed and start only, both the scheduler's (hashed) — the
             // ribbon is a pure function of them (`effects/flare.rs`).
             flare: _,
+            // T22.10: the live vortices, the next id and the destination stream.
+            vortices: _,
+            vortex_seq: _,
+            vortex_rng: _,
 
             // Deliberately NOT hashed, each for a stated reason:
             // `seed` is an input, fixed for the round and carried in the replay

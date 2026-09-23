@@ -1648,6 +1648,25 @@ fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_j
         )
     }));
     out.extend(catch_up_effects(w));
+    // T22.10: the live vortices, as `vortex_open` announced them — the list the
+    // client's `set_vortices` sums, so a joiner told nothing would rubber-band in
+    // every one of them. Opening order, which is the summing order.
+    let tick = w.tick;
+    let vortices: Vec<game_core::world::GameEvent> = w
+        .vortices
+        .iter()
+        .map(|v| game_core::world::GameEvent::VortexOpen {
+            tick,
+            id: v.id,
+            x: v.pos.x,
+            y: v.pos.y,
+        })
+        .collect();
+    out.extend(
+        vortices
+            .iter()
+            .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w))),
+    );
     out
 }
 
@@ -2082,11 +2101,25 @@ mod tests {
             graves
         );
         assert_eq!(
-            &sent[items + graves..],
+            &sent[items + graves..items + graves + effects.len()],
             &effects[..],
             "a joiner is not told the weather that is running: {names:?}"
         );
         assert!(names.contains(&"effect_start"));
+
+        // T22.10: and the vortices. A breach through the rim, one step to open it.
+        let geo = w.map.space_geometry().expect("space");
+        let _ = w.map.carve_circle(
+            geo.cx.round() as i32,
+            (geo.cy - geo.ry).round() as i32,
+            game_core::constants::METEOR_CARVE_R as i32,
+        );
+        w.step(SIM_DT);
+        assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
+        let sent = catch_up_world(&mut w);
+        let opens: Vec<_> = sent.iter().filter(|(n, _)| *n == "vortex_open").collect();
+        assert_eq!(opens.len(), 1, "a joiner is not told the vortex");
+        assert_eq!(opens[0].1["id"], w.vortices[0].id);
     }
 
     /// **A socket that arrives mid-flare is told the flare exists** (T22.08D F4).

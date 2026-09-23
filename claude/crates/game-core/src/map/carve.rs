@@ -12,7 +12,9 @@
 //!
 //! See `docs/11-map-destruction.md` §1–§5.
 
-use crate::constants::{BEDROCK_H, CHUNK_SIZE, COARSE_CELL, GUN_PLATFORMS, TELEPORT_PADS, WALL_W};
+use crate::constants::{
+    BEDROCK_H, CHUNK_SIZE, COARSE_CELL, GUN_PLATFORMS, MAX_PENDING_BREACHES, TELEPORT_PADS, WALL_W,
+};
 use crate::map::shape;
 use crate::map::Map;
 use crate::math::isqrt;
@@ -25,12 +27,25 @@ pub struct CarveResult {
     pub dirty_chunks: Vec<ChunkId>,
     /// Buried slot ids exposed by this carve.
     pub revealed: Vec<u16>,
+    /// T22.10: the point on the space rim's centreline where this carve opened a
+    /// hole through it, if it did — once per **carve call**, never per stamp.
+    pub breach: Option<(i32, i32)>,
 }
 
 impl Map {
     /// Clear a filled circle. Bedrock and the side walls are never touched.
     pub fn carve_circle(&mut self, cx: i32, cy: i32, r: i32) -> CarveResult {
-        self.circle(cx, cy, r, false)
+        let mut out = self.circle(cx, cy, r, false);
+        // Saturating: `circle` rejects centres near `i32::MAX` before any arithmetic
+        // on them, and this box must not be the first place that overflows.
+        let bbox = (
+            cx.saturating_sub(r),
+            cy.saturating_sub(r),
+            cx.saturating_add(r),
+            cy.saturating_add(r),
+        );
+        self.note_breach(bbox, (cx, cy), &mut out);
+        out
     }
 
     /// Add solid rock back. Not used in v1 gameplay; exists for tests and tools.
@@ -79,7 +94,77 @@ impl Map {
             }
             acc.revealed.extend(step.revealed);
         }
+        // **Once for the whole sweep** (`M22-RULINGS` R19): `circle` is stamped once
+        // per Bresenham centre, so a detector per stamp would open a vortex per pixel
+        // of one shovel swing or one lava channel.
+        let bbox = (
+            x0.min(x1).saturating_sub(r),
+            y0.min(y1).saturating_sub(r),
+            x0.max(x1).saturating_add(r),
+            y0.max(y1).saturating_add(r),
+        );
+        self.note_breach(bbox, ((x0 + x1) / 2, (y0 + y1) / 2), &mut acc);
         acc
+    }
+
+    /// **T22.10: did this carve open the space rim?** Recorded on the result and
+    /// queued for `World::step_vortices`.
+    ///
+    /// **Here, at the two public carves, and nowhere else** (R19): every production
+    /// carve — the seven sites R19 lists — goes through `carve_circle` or
+    /// `carve_capsule`, so a breach cannot be made by a path this does not see. Not
+    /// inside `circle` itself, which also serves `fill_circle` and is stamped per
+    /// pixel by the capsule.
+    ///
+    /// Cheap for almost every carve: nothing on a map with no rim, nothing that
+    /// removed no rock, nothing whose bounding circle cannot reach the rim band. What
+    /// is left is a flood over the carve's box (`space::breach_in`).
+    fn note_breach(
+        &mut self,
+        (x0, y0, x1, y1): (i32, i32, i32, i32),
+        (cx, cy): (i32, i32),
+        out: &mut CarveResult,
+    ) {
+        if out.pixels_removed == 0 {
+            return;
+        }
+        let Some(geo) = self.space_geometry() else {
+            return;
+        };
+        // Onto the map first: a carve that removed rock touched it, but its box may
+        // be `i32`-wide (a radius of `i32::MAX` is legal and means "all of it").
+        let (w, h) = (self.mask.w as i32, self.mask.h as i32);
+        let (x0, y0, x1, y1) = (
+            x0.clamp(0, w - 1),
+            y0.clamp(0, h - 1),
+            x1.clamp(0, w - 1),
+            y1.clamp(0, h - 1),
+        );
+        let half = geo.thickness * 0.5;
+        let reach = ((x1 - x0).max(y1 - y0) as f32) * std::f32::consts::FRAC_1_SQRT_2;
+        if geo.distance_to_rim(cx as f32, cy as f32) > reach + half + 1.0 {
+            return;
+        }
+        let pad = geo.thickness as i32 + 2;
+        if !crate::map::gen::space::breach_in(
+            &self.mask,
+            &geo,
+            (x0 - pad, y0 - pad, x1 + pad, y1 + pad),
+        ) {
+            return;
+        }
+        let at = geo.onto_rim(cx as f32, cy as f32);
+        out.breach = Some(at);
+        if self.breaches.len() >= MAX_PENDING_BREACHES {
+            self.breaches.remove(0);
+        }
+        self.breaches.push(at);
+    }
+
+    /// Breaches since the last drain, oldest first (T22.10). `World::step_vortices`
+    /// is the consumer.
+    pub fn take_breaches(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.breaches)
     }
 
     fn circle(&mut self, cx: i32, cy: i32, r: i32, solid: bool) -> CarveResult {
@@ -892,5 +977,81 @@ mod tests {
         let len = sorted.len();
         sorted.dedup();
         assert_eq!(sorted.len(), len, "duplicate dirty chunk ids");
+    }
+
+    // ------------------------------------------------------------- T22.10 breach
+
+    /// A Small space map and its rim, and the rim's top centreline point.
+    fn space() -> (Map, crate::map::gen::space::SpaceGeometry, (i32, i32)) {
+        let map = crate::map::meta::generate_with(
+            4242,
+            MapScale::Small,
+            crate::constants::MapGenerator::Space,
+        );
+        let geo = map.space_geometry().expect("a space map has a rim");
+        let top = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+        (map, geo, top)
+    }
+
+    /// **A breach is a carve through the rim, and only that.** Three carves, each
+    /// removing rock: an island in the arena, a nick in the rim's outer face, and a
+    /// meteor-sized crater straight through it. Only the last is a breach — the
+    /// controls are what stop this passing for a game that calls every carve one.
+    #[test]
+    fn a_carve_through_the_rim_is_a_breach_and_an_island_or_a_nick_is_not() {
+        let (mut map, geo, (tx, ty)) = space();
+        let rock = map.meta.asteroids[0];
+        let island = map.carve_circle(rock.x, rock.y, rock.r / 2);
+        assert!(
+            island.pixels_removed > 0,
+            "control: the island carve removed nothing"
+        );
+        assert_eq!(island.breach, None, "an asteroid is not the rim");
+
+        let outer = ty - (geo.thickness * 0.5) as i32;
+        let nick = map.carve_circle(tx, outer, 6);
+        assert!(nick.pixels_removed > 0, "control: the nick removed nothing");
+        assert_eq!(
+            nick.breach, None,
+            "a nick that does not go through is not a hole"
+        );
+        assert!(map.take_breaches().is_empty());
+
+        let hole = map.carve_circle(tx, ty, crate::constants::METEOR_CARVE_R as i32);
+        let (bx, by) = hole.breach.expect("a crater through the rim is a breach");
+        assert!(
+            (bx - tx).abs() <= 1 && (by - ty).abs() <= 1,
+            "the breach sits on the rim: {bx},{by}"
+        );
+        assert_eq!(map.take_breaches(), vec![(bx, by)]);
+        assert!(map.take_breaches().is_empty(), "drained");
+    }
+
+    /// **One capsule, one breach** (`M22-RULINGS` R19). A shovel swing or a lava
+    /// channel stamps `circle` once per Bresenham centre — here about eighty — so a
+    /// detector per stamp would queue a breach per pixel of one swing.
+    #[test]
+    fn a_capsule_through_the_rim_is_one_breach_not_one_per_stamp() {
+        let (mut map, geo, (tx, ty)) = space();
+        let x = tx + 300;
+        let t = geo.thickness as i32;
+        let out = map.carve_capsule(x, ty - t - 8, x, ty + t + 8, 6);
+        assert!(
+            out.breach.is_some(),
+            "a channel through the rim is a breach"
+        );
+        assert_eq!(map.take_breaches().len(), 1);
+    }
+
+    /// The landscape generators have no rim, so nothing there is ever a breach —
+    /// however large the crater or wherever it lands.
+    #[test]
+    fn no_carve_on_a_landscape_map_is_a_breach() {
+        let mut map = generate(4242, MapScale::Small);
+        assert!(map.space_geometry().is_none());
+        for (x, y) in [(200, 150), (1024, 100), (1800, 900)] {
+            assert_eq!(map.carve_circle(x, y, 60).breach, None);
+        }
+        assert!(map.take_breaches().is_empty());
     }
 }

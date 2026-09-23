@@ -82,6 +82,12 @@ pub struct GameCore {
     /// `Standard` until told otherwise, which is what the sandbox — never told
     /// — always was.
     gravity: GravityMode,
+    /// T22.10: the live breach vortices' centres, in the server's opening order —
+    /// the list `env_at` chains after the asteroids. Filled by [`GameCore::set_vortices`]
+    /// from `vortex_open` / `vortex_close`; empty on a client told nothing, which
+    /// predicts no pull while the server pulls — the rubber-band `set_asteroids`'s
+    /// doc describes, for this list.
+    vortices: Vec<Vec2>,
 }
 
 /// The sandbox's weather, driven by `weather_step`.
@@ -129,6 +135,7 @@ impl GameCore {
             weather: Weather::default(),
             phase: game_core::world::RoundPhase::Playing,
             gravity: GravityMode::Standard,
+            vortices: Vec::new(),
         }
     }
 
@@ -438,6 +445,15 @@ impl GameCore {
             .collect();
     }
 
+    /// T22.10: the live vortices, as the server holds them — centres in **opening
+    /// order**, which is the order `env_at` sums them in on the server. Parallel
+    /// arrays for `set_asteroids`' reason. The client keeps the list in the order
+    /// `vortex_open` arrived and drops on `vortex_close`; it never sorts.
+    pub fn set_vortices(&mut self, xs: &[f32], ys: &[f32]) {
+        let n = xs.len().min(ys.len());
+        self.vortices = (0..n).map(|i| Vec2::new(xs[i], ys[i])).collect();
+    }
+
     /// The summed gravity field at a world point, px/s², as `[ax, ay]`.
     ///
     /// **A readback, in the sense [`GameCore::teleport_pads`] is one**: nothing
@@ -454,7 +470,12 @@ impl GameCore {
     /// what makes the check's control frame (`set_asteroids` with an empty list)
     /// assert the *effect* rather than the ask.
     pub fn field_accel_at(&self, x: f32, y: f32) -> Box<[f32]> {
-        let env = game_core::world::attractors::env_at(&self.map, self.gravity, Vec2::new(x, y));
+        let env = game_core::world::attractors::env_at(
+            &self.map,
+            self.gravity,
+            &self.vortices,
+            Vec2::new(x, y),
+        );
         Box::new([env.accel.x, env.accel.y])
     }
 
@@ -561,6 +582,7 @@ impl GameCore {
         // `World::apply_inputs` copies it: it is the world's setting, not the
         // player's.
         let gravity = self.gravity;
+        let vortices = &self.vortices;
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -617,7 +639,7 @@ impl GameCore {
         // `worldMirror.ts::applyMapInit` through [`GameCore::set_asteroids`],
         // beside `setTeleportPads`; wiring this call at T22.11B is what made that
         // a one-line change rather than a second design.
-        let env = game_core::world::attractors::env_at(map, gravity, p.body.pos);
+        let env = game_core::world::attractors::env_at(map, gravity, vortices, p.body.pos);
         apply_input(
             map,
             &mut p.body,
@@ -3796,6 +3818,40 @@ mod tests {
             "`load_mask` now re-extracts the same surface whichever order the two \
              messages arrive in — good news, and this test's second half is stale"
         );
+    }
+
+    /// **T22.10: the mirror sums the vortex the server sums**, once told. A breach is
+    /// opened on the server world through its own carve and step; the mirror is
+    /// handed the list through `set_vortices` and must then report the server's
+    /// field **bit-for-bit** — `apply_input` reads the same `env_at` with the same
+    /// list, so this is the prediction. The control is the mirror told nothing: it
+    /// predicts no vortex while the server pulls, the rubber-band this setter exists
+    /// to prevent.
+    #[test]
+    fn a_mirror_told_the_vortices_predicts_the_servers_pull_and_one_not_told_does_not() {
+        use game_core::world::vortex::centres;
+        let (mut w, mut core) = space_world_and_mirror(true);
+        let geo = w.map.space_geometry().expect("space");
+        let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+        let _ = w
+            .map
+            .carve_circle(tx, ty, game_core::constants::METEOR_CARVE_R as i32);
+        w.step(SIM_DT);
+        assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
+        let v = w.vortices[0].pos;
+        let at = v + Vec2::new(0.0, game_core::constants::VORTEX_CAPTURE_R * 1.5);
+        let (pulls, n) = centres(&w.vortices);
+        let server =
+            game_core::world::attractors::env_at(&w.map, GravityMode::Space, &pulls[..n], at).accel;
+
+        let untold = core.field_accel_at(at.x, at.y);
+        assert!(
+            (untold[0] - server.x).abs() + (untold[1] - server.y).abs() > 100.0,
+            "control: a mirror told nothing already agrees, so the setter proves nothing"
+        );
+        core.set_vortices(&[v.x], &[v.y]);
+        let told = core.field_accel_at(at.x, at.y);
+        assert_eq!((told[0], told[1]), (server.x, server.y));
     }
 
     /// **The readback the browser check steers by** (`T22.11C`, `R63`).

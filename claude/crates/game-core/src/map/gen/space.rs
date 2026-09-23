@@ -42,7 +42,7 @@ use crate::constants::{
     SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER,
     SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC,
     SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_THICKNESS,
-    SPACE_SPAWN_GRID, SPAWN_COUNT_MIN,
+    SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
 use crate::map::gen::spawns::pick_separated;
@@ -155,6 +155,27 @@ impl SpaceGeometry {
     /// the full-width floor crust (R35).
     pub fn inside(&self, x: f32, y: f32) -> bool {
         self.norm(x, y) < 1.0
+    }
+
+    /// `(x, y)` moved along its ray from the centre onto the rim centreline, rounded
+    /// — where a breach's vortex sits (T22.10). Radial rather than closest-point:
+    /// the two differ by under a pixel inside a thickness of the rim, which is the
+    /// only place a breach can be, and this one needs no iteration.
+    pub fn onto_rim(&self, x: f32, y: f32) -> (i32, i32) {
+        let n = self.norm(x, y);
+        if n < 1e-6 {
+            return ((self.cx + self.rx).round() as i32, self.cy.round() as i32);
+        }
+        let (px, py) = (self.cx + (x - self.cx) / n, self.cy + (y - self.cy) / n);
+        (px.round() as i32, py.round() as i32)
+    }
+
+    /// Past the rim's **outer edge** by more than `SPACE_VOID_GRACE`: the void
+    /// (`M22-RULINGS` R16). `World::is_in_the_void`'s space arm, here so the band
+    /// and the ellipse it is measured from live together.
+    pub fn in_the_void(&self, x: f32, y: f32) -> bool {
+        self.norm(x, y) > 1.0
+            && self.distance_to_rim(x, y) > self.thickness * 0.5 + SPACE_VOID_GRACE
     }
 
     /// Distance from `(x, y)` to the rim **centreline**, in px, to sub-pixel
@@ -638,6 +659,54 @@ pub fn rim_is_closed(mask: &Mask, geo: &SpaceGeometry) -> bool {
         }
     }
     true
+}
+
+/// **Does air cross the rim inside `(x0, y0, x1, y1)`?** — `rim_is_closed`'s
+/// question asked of one box, for a carve at runtime (T22.10).
+///
+/// **The same claim, and it has to be**: `rim_is_closed` is a statement about
+/// generation — the map is born closed — and this is the runtime half, where a hole
+/// is a vortex and not an exit. Both stand. The flood is `rim_is_closed`'s: air
+/// 4-connected (the dual of 8-connected rock), seeded from every air pixel in the
+/// box **past the outer edge**, and the answer is yes the moment it reaches air
+/// **past the inner edge**. Confined to the box, so a carve costs its own
+/// neighbourhood; the caller pads the box by a rim thickness so a hole the carve
+/// completes is inside it.
+pub fn breach_in(mask: &Mask, geo: &SpaceGeometry, (x0, y0, x1, y1): (i32, i32, i32, i32)) -> bool {
+    let (x0, y0) = (x0.max(0), y0.max(0));
+    let (x1, y1) = (x1.min(mask.w as i32 - 1), y1.min(mask.h as i32 - 1));
+    if x1 < x0 || y1 < y0 {
+        return false;
+    }
+    let bw = (x1 - x0 + 1) as usize;
+    let mut seen = vec![false; bw * (y1 - y0 + 1) as usize];
+    let idx = |x: i32, y: i32| (y - y0) as usize * bw + (x - x0) as usize;
+    let half = geo.thickness * 0.5;
+    let mut stack: Vec<(i32, i32)> = Vec::new();
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (fx, fy) = (x as f32, y as f32);
+            if !mask.get(x, y) && geo.norm(fx, fy) > 1.0 && geo.distance_to_rim(fx, fy) > half {
+                seen[idx(x, y)] = true;
+                stack.push((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = stack.pop() {
+        let (fx, fy) = (x as f32, y as f32);
+        if geo.norm(fx, fy) < 1.0 && geo.distance_to_rim(fx, fy) > half {
+            return true;
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            if nx < x0 || ny < y0 || nx > x1 || ny > y1 || seen[idx(nx, ny)] || mask.get(nx, ny) {
+                continue;
+            }
+            seen[idx(nx, ny)] = true;
+            stack.push((nx, ny));
+        }
+    }
+    false
 }
 
 /// Every grid point in **open space** — air a player box fits in, inside the

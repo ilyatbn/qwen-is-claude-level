@@ -277,6 +277,10 @@ pub struct Map {
     // Maintained by carve (`map::carve`), drained by the client renderer.
     pub(crate) dirty: Vec<bool>,
     pub(crate) dirty_list: Vec<u32>,
+    // T22.10: where carves opened the space rim, maintained by carve, drained by
+    // `World::step_vortices`. Bounded (`MAX_PENDING_BREACHES`): a client's map carves
+    // too and nothing there drains it.
+    pub(crate) breaches: Vec<(i32, i32)>,
 }
 
 impl Map {
@@ -293,6 +297,7 @@ impl Map {
             meta,
             dirty: vec![false; chunks],
             dirty_list: Vec::new(),
+            breaches: Vec::new(),
         }
     }
 
@@ -881,6 +886,7 @@ pub(crate) fn generate_full_with(
         coarse,
         dirty: vec![false; chunk_count],
         dirty_list: Vec::new(),
+        breaches: Vec::new(),
     }
 }
 

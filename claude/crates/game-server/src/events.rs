@@ -70,6 +70,10 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::Death { .. }
         | GameEvent::Respawn { .. }
         | GameEvent::Teleport { .. }
+        // T22.10: a vortex is in the world for everyone, and so is who it took.
+        | GameEvent::VortexOpen { .. }
+        | GameEvent::VortexClose { .. }
+        | GameEvent::VortexTrip { .. }
         | GameEvent::TombstoneSpawn { .. }
         | GameEvent::TombstoneDespawn { .. }
         | GameEvent::Score { .. }
@@ -114,6 +118,9 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Death { .. } => "death",
         GameEvent::Respawn { .. } => "respawn",
         GameEvent::Teleport { .. } => "teleport",
+        GameEvent::VortexOpen { .. } => "vortex_open",
+        GameEvent::VortexClose { .. } => "vortex_close",
+        GameEvent::VortexTrip { .. } => "vortex_trip",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
         GameEvent::TombstoneDespawn { .. } => "tombstone_despawn",
         GameEvent::Score { .. } => "score",
@@ -366,6 +373,13 @@ pub fn payload_with_votes(
         // Everyone: a player vanishing from one pad and appearing on another is
         // something the other players have to be able to read, and a snapshot
         // alone shows only the arrival.
+        GameEvent::VortexOpen { id, x, y, .. } => {
+            json!({"tick": tick, "id": id, "x": x, "y": y})
+        }
+        GameEvent::VortexClose { id, .. } => json!({"tick": tick, "id": id}),
+        GameEvent::VortexTrip {
+            id, vortex, x, y, ..
+        } => json!({"tick": tick, "id": id, "vortex": vortex, "x": x, "y": y}),
         GameEvent::Teleport {
             id,
             from_pad,

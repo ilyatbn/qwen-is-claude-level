@@ -69,6 +69,7 @@
 
 use crate::constants::{
     GravityMode, SPACE_LEVEL_MAX, SPACE_MAX_SPEED, SPACE_WELL_ACCEL_MAX, SPACE_WELL_REACH_MAX,
+    VORTEX_ACCEL_MAX, VORTEX_REACH,
 };
 use crate::map::meta::Asteroid;
 use crate::map::Map;
@@ -85,6 +86,10 @@ use crate::player::Env;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     Asteroid,
+    /// T22.10's breach vortex. **Not escapable near its centre, by design** — its
+    /// basis is on `VORTEX_ACCEL_MAX` — so the asteroid escape guarantee must never
+    /// widen to it.
+    Vortex,
 }
 
 /// One thing that pulls players toward it.
@@ -162,6 +167,19 @@ fn table_level(level: u8) -> f32 {
     level.clamp(1, SPACE_LEVEL_MAX) as f32
 }
 
+impl Attractor {
+    /// A breach vortex at `pos` (T22.10): `VORTEX_ACCEL_MAX` at the centre, linear
+    /// to nothing at `VORTEX_REACH` — the wells' shape (R47) with the vortex's numbers.
+    pub fn vortex(pos: Vec2) -> Self {
+        Attractor {
+            pos,
+            strength: VORTEX_ACCEL_MAX,
+            reach: VORTEX_REACH,
+            kind: Kind::Vortex,
+        }
+    }
+}
+
 /// Every asteroid on this map as an attractor, in the map's own order.
 ///
 /// The order is `place_asteroids`' order, which both sides receive — the server
@@ -195,7 +213,12 @@ pub fn field_at<I: IntoIterator<Item = Attractor>>(attractors: I, pos: Vec2) -> 
 ///
 /// The match is exhaustive on purpose. A fourth gravity mode has to come here and
 /// say whether it has a field, rather than inheriting one arm's answer from a `_`.
-pub fn env_at(map: &Map, gravity: GravityMode, pos: Vec2) -> Env {
+///
+/// `vortices` (T22.10) are the live breach vortices, in the order the world opened
+/// them — the order both sides hold them in, so the sum is the same sum. Chained
+/// **after** the asteroids, into the **same** `field_at` (R11: one summation; a
+/// second loop beside it is the thing that rule exists to prevent).
+pub fn env_at(map: &Map, gravity: GravityMode, vortices: &[Vec2], pos: Vec2) -> Env {
     match gravity {
         // **The control that this task did not change the game everyone else is
         // playing.** Standard and low gravity get the same `Env` they got at
@@ -204,7 +227,10 @@ pub fn env_at(map: &Map, gravity: GravityMode, pos: Vec2) -> Env {
         GravityMode::Standard | GravityMode::Low => Env::field_free(gravity),
         GravityMode::Space => Env {
             gravity,
-            accel: field_at(asteroid_attractors(map), pos),
+            accel: field_at(
+                asteroid_attractors(map).chain(vortices.iter().map(|&v| Attractor::vortex(v))),
+                pos,
+            ),
             max_speed: Some(SPACE_MAX_SPEED),
         },
     }
@@ -265,7 +291,7 @@ mod tests {
     /// itself forever while `World::apply_inputs` handed out something else.
     fn step(map: &Map, st: &mut MovementState, buttons: u8, gravity: GravityMode) {
         let input = Input::new(0, buttons, 0);
-        let env = env_at(map, gravity, st.body.pos);
+        let env = env_at(map, gravity, &[], st.body.pos);
         st.step(
             map,
             &input,
@@ -875,13 +901,13 @@ mod tests {
 
         for mode in [GravityMode::Standard, GravityMode::Low] {
             assert_eq!(
-                env_at(&map, mode, at),
+                env_at(&map, mode, &[], at),
                 Env::field_free(mode),
                 "{mode:?} picked up a field or a speed cap from a map with rocks on it"
             );
         }
         // The presence half, in the same test: the same map, the same point.
-        let space = env_at(&map, GravityMode::Space, at);
+        let space = env_at(&map, GravityMode::Space, &[], at);
         assert_ne!(space.accel, Vec2::ZERO, "space read no field at all");
         assert_eq!(space.max_speed, Some(SPACE_MAX_SPEED));
     }

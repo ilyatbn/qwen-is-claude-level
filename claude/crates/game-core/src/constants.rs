@@ -731,6 +731,61 @@ pub const SPACE_WELL_REACH_MAX: f32 = JETPACK_CLIMB_BUDGET;
 /// fires on an honest fall toward one rock and still bounds the runaway.
 pub const SPACE_MAX_SPEED: f32 = 1350.0;
 
+// ---------------------------------------------------------------------------
+// T22.10: the breach vortex, and R16's void outside the rim
+// ---------------------------------------------------------------------------
+//
+// **The rim is the only thing keeping players in the arena, and a hole in it is a
+// way out.** The vortex is what makes that not true: breaching the rim does not
+// let you leave, it recycles you. It is **containment dressed as a reward**, not
+// decoration — a build that makes it optional ships a player floating off the map.
+
+/// How far past the rim's **outer edge** a body may be before the void takes it,
+/// px (`M22-RULINGS` R16's grace band).
+///
+/// **Two ticks at the fastest a body moves in space**: `SPACE_MAX_SPEED · SIM_DT`
+/// is 22.5 px a tick, so a body leaving through a hole is sampled at least twice
+/// between the outer edge and the void — room for the vortex's capture to run
+/// first. Less than one tick's travel and a fast body could cross the band between
+/// two samples; the void would then be the answer to a breach, which is the one
+/// thing R16 forbids.
+pub const SPACE_VOID_GRACE: f32 = 2.0 * SPACE_MAX_SPEED * SIM_DT;
+
+/// At most this many vortices pull at once (`M22-RULINGS` R9, point 2). A fourth
+/// breach replaces the **oldest**, which stops pulling. The hole it guarded stays
+/// open — a hole never heals (R9, point 3) — and is then an exit to the void.
+pub const MAX_ACTIVE_VORTICES: usize = 3;
+
+/// A player whose centre comes within this of a vortex is taken, px — and a breach
+/// this close to a live vortex is the same hole, not a new one.
+///
+/// **Basis (R16: capture must exceed the rim thickness plus the band):** the widest
+/// single carve (`METEOR_CARVE_R`, the hole's half-width across the rim) plus the
+/// whole rim thickness plus the void band. A body leaving through any part of a
+/// one-carve hole is inside this disc from the rim's inner edge until it is past
+/// the band: `sqrt(50² + (16 + 45)²)` = 79 px at the far corner, against 127. A
+/// hole widened by more carves is still covered, because a carve that lands
+/// further than this from every vortex makes its own (`World::open_vortex`).
+pub const VORTEX_CAPTURE_R: f32 = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + SPACE_VOID_GRACE;
+
+/// A vortex's pull at its centre, px/s² — **twice the strongest thrust**
+/// (`JETPACK_THRUST_DOWN`), so it sucks. It falls off linearly to
+/// [`VORTEX_REACH`] (R47's shape, through `world::attractors`), so thrust wins
+/// beyond half the reach and loses inside it: the no-escape radius is exactly
+/// `VORTEX_REACH / 2`.
+pub const VORTEX_ACCEL_MAX: f32 = 2.0 * JETPACK_THRUST_DOWN;
+
+/// How far a vortex pulls, centre to cutoff, px. **Four capture radii**, so the
+/// no-escape radius (half the reach) is twice the capture radius: a player who
+/// drifts into the band where thrust no longer wins has a capture radius of warning
+/// — the swirl — before they are taken.
+pub const VORTEX_REACH: f32 = 4.0 * VORTEX_CAPTURE_R;
+
+/// Most breaches a map holds for the world to drain in one tick. The world drains
+/// every tick; a client's copy of the map carves too and never drains, so the list
+/// is bounded rather than trusted to be emptied.
+pub const MAX_PENDING_BREACHES: usize = 8;
+
 /// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
 /// the canvas as sky before the profile's amplitude is applied, which is what
 /// makes the silhouette read against the sky instead of filling the frame.
