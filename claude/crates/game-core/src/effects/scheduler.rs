@@ -16,6 +16,14 @@ use rand::Rng;
 /// most likely error in the whole milestone (`docs/13-weather-effects.md` §5).
 const LAVA_ACTIVE: f32 = crate::constants::LAVA_JET_DURATION + crate::constants::LAVA_BURN_DURATION;
 
+/// The flare's `Active` window: the ribbon's life, then the burn it can leave on
+/// whoever it touched last (T22.08C F1). The same shape as `LAVA_ACTIVE` for the
+/// same reason — `tick` refuses any effect whose `Active` window outlives the
+/// round, so the window must include the burn or a flare rolled near the end
+/// burns people on the results screen. The ribbon itself is gone for the tail:
+/// `flare::SolarFlare::lit`.
+const FLARE_ACTIVE: f32 = SOLAR_FLARE_DURATION + crate::constants::SOLAR_FLARE_BURN_SECONDS;
+
 /// Weights from `docs/13-weather-effects.md` §1, in `KINDS` order, and the solar
 /// flare's (T22.08A) appended.
 const WEIGHTS: [u16; 5] = [3, 3, 2, 2, SOLAR_FLARE_WEIGHT];
@@ -121,7 +129,7 @@ pub fn active_duration(kind: EffectKind) -> f32 {
         EffectKind::MeteorShower => METEOR_DURATION,
         EffectKind::LavaBurst => LAVA_ACTIVE,
         EffectKind::HeavyFog => FOG_DURATION,
-        EffectKind::SolarFlare => SOLAR_FLARE_DURATION,
+        EffectKind::SolarFlare => FLARE_ACTIVE,
     }
 }
 
@@ -709,10 +717,15 @@ mod tests {
         }
     }
 
-    /// **The ground's schedule did not move when the flare joined the table**
-    /// (R78): a zero weight at the end of the table draws identically. Pinned by
-    /// the same scheduler with the flare's switch off — a table that never
-    /// contained it — against the shipped one, kind by kind and time by time.
+    /// **A zero weight at the end of the table draws identically to no entry**
+    /// (R78): the same scheduler with the flare's switch off against the shipped
+    /// one, kind by kind and time by time.
+    ///
+    /// **This is not the guard that the ground's schedule did not move** — both
+    /// sides run the same `roll_kind`, so an extra RNG draw planted there moves
+    /// both together and this stays green (measured, T22.08C F2). That guard is
+    /// `tests/golden.rs::the_standard_weather_schedule_matches_the_golden_table`,
+    /// recorded before the flare existed.
     #[test]
     fn the_flare_does_not_move_the_grounds_schedule() {
         let run = |mut s: EffectScheduler| {
@@ -853,6 +866,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **A flare's last burn fits in its own window** (T22.08C F1). The ribbon's
+    /// last lit instant plus a full `SOLAR_FLARE_BURN_SECONDS` must end inside the
+    /// effect's `Active` window, or `no_effect_starts_that_would_outlive_the_round`
+    /// passes while a flare rolled near the bell burns people on the results
+    /// screen. The control: the ribbon is lit for a real stretch of that window.
+    #[test]
+    fn a_flares_last_burn_ends_inside_its_window() {
+        use crate::constants::SOLAR_FLARE_BURN_SECONDS;
+        use crate::effects::flare::SolarFlare;
+        let window_end = EFFECT_TELEGRAPH + active_duration(EffectKind::SolarFlare);
+        let last_lit = (0..=(window_end / DT) as u32)
+            .map(|i| i as f32 * DT)
+            .filter(|t| SolarFlare::lit(*t))
+            .fold(f32::NAN, f32::max);
+        assert!(
+            last_lit - EFFECT_TELEGRAPH > SOLAR_FLARE_DURATION * 0.9,
+            "control: the ribbon was lit only until {last_lit}"
+        );
+        assert!(
+            last_lit + SOLAR_FLARE_BURN_SECONDS <= window_end,
+            "a touch at {last_lit} burns until {} — past the window's end at {window_end}",
+            last_lit + SOLAR_FLARE_BURN_SECONDS
+        );
     }
 
     #[test]

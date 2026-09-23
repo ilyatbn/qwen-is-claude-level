@@ -16,8 +16,9 @@
 //! file answers only *where the ribbon is* and *does it touch this box*.
 
 use crate::constants::{
-    SOLAR_FLARE_HEIGHT, SOLAR_FLARE_ORBIT, SOLAR_FLARE_RIBBON_R, SOLAR_FLARE_SAMPLES,
-    SOLAR_FLARE_SPAN, SOLAR_FLARE_SPEED, SOLAR_FLARE_TURN,
+    EFFECT_TELEGRAPH, SOLAR_FLARE_DURATION, SOLAR_FLARE_HEIGHT, SOLAR_FLARE_ORBIT,
+    SOLAR_FLARE_RIBBON_R, SOLAR_FLARE_SAMPLES, SOLAR_FLARE_SPAN, SOLAR_FLARE_SPEED,
+    SOLAR_FLARE_TURN,
 };
 use crate::math::Vec2;
 use crate::rng::{range_f32, substream};
@@ -98,6 +99,16 @@ impl SolarFlare {
         }
     }
 
+    /// **Does the ribbon exist and burn at `elapsed`?** From the end of the
+    /// telegraph for `SOLAR_FLARE_DURATION`. The effect itself stays `Active`
+    /// `SOLAR_FLARE_BURN_SECONDS` longer than that (T22.08C F1: the lava way, so no
+    /// flare is scheduled whose last burn outlives the round), and for that tail
+    /// the ribbon is gone — this is the one statement of when it is there, read by
+    /// the server's contact and by the client's drawing (wasm `flare_lit`).
+    pub fn lit(elapsed: f32) -> bool {
+        (EFFECT_TELEGRAPH..EFFECT_TELEGRAPH + SOLAR_FLARE_DURATION).contains(&elapsed)
+    }
+
     /// Where the loop's centre (the midpoint of its footpoints) is.
     pub fn centre_at(&self, elapsed: f32) -> Vec2 {
         self.orbit + Vec2::from_angle(self.start + self.omega * elapsed) * self.rho
@@ -129,17 +140,24 @@ impl SolarFlare {
     }
 
     /// Does the ribbon at `elapsed` touch a `w × h` box centred on `centre`?
+    /// Never outside [`Self::lit`] — here rather than at each caller, because the
+    /// server and the sandbox both touch through this and a second copy of the
+    /// window is a guard one of them would drop (T22.08C F1).
     pub fn touches(&self, elapsed: f32, centre: Vec2, w: f32, h: f32) -> bool {
-        self.points_at(elapsed)
-            .into_iter()
-            .any(|p| circle_touches_box(p, SOLAR_FLARE_RIBBON_R, centre, w, h))
+        Self::lit(elapsed)
+            && self
+                .points_at(elapsed)
+                .into_iter()
+                .any(|p| circle_touches_box(p, SOLAR_FLARE_RIBBON_R, centre, w, h))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, PLAYER_H, PLAYER_W, SOLAR_FLARE_DURATION};
+    use crate::constants::{MapScale, PLAYER_H, PLAYER_W};
+    use crate::effects::scheduler::active_duration;
+    use crate::weapons::explode::EffectKind;
 
     const SEEDS: [u64; 6] = [1, 7, 42, 4242, 90210, 31337];
     const SCALES: [MapScale; 3] = [MapScale::Small, MapScale::Medium, MapScale::Large];
@@ -150,9 +168,10 @@ mod tests {
         (SolarFlare::new(seed, w, h), w, h)
     }
 
-    /// Times across a whole flare, telegraph included, a little past the end.
+    /// Times across a whole flare effect: telegraph, ribbon and the burn's tail.
     fn times() -> impl Iterator<Item = f32> {
-        (0..=((SOLAR_FLARE_DURATION + 4.0) * 10.0) as u32).map(|i| i as f32 * 0.1)
+        let end = EFFECT_TELEGRAPH + active_duration(EffectKind::SolarFlare);
+        (0..=(end * 10.0) as u32).map(|i| i as f32 * 0.1)
     }
 
     #[test]

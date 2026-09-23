@@ -183,3 +183,79 @@ fn generated_masks_match_the_golden_table() {
         );
     }
 }
+
+// --- The weather schedule (T22.08C F2) -----------------------------------------
+
+fn weather_table_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden_weather.txt")
+}
+
+/// **Every effect a standard round starts, as (tick, kind, seed)**, for three
+/// seeds over a 1200 s round, through `World::step` — the live path, table read
+/// off the map and all.
+///
+/// Why a golden and not a comparison: T22.08A's
+/// `the_flare_does_not_move_the_grounds_schedule` compared the shipped ground
+/// table against the ground table with the flare switched off — both sides ran
+/// the same `roll_kind`, so an extra RNG draw planted there moved both together
+/// and every test stayed green (the review of `9535325`). A table recorded
+/// **before** the flare existed (`9535325^`, built in a scratch worktree) is the
+/// only thing that can say the ground's weather did not move. An extra draw
+/// shifts every later seed and interval, so the first differing line is where it
+/// landed.
+fn compute_weather() -> String {
+    use game_core::constants::{GravityMode, DEFAULT_MAP_GENERATOR, SIM_DT};
+    use game_core::world::{GameEvent, RoundPhase, World};
+    const ROUND: f32 = 1200.0;
+    let mut out = String::new();
+    out.push_str("# seed tick kind effect-seed — standard mode, 1200 s round\n");
+    out.push_str("# recorded at 9535325^ (before the solar flare); regenerate only on an\n");
+    out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
+    for seed in [1u64, 4242, 90210] {
+        let mut w = World::with_gravity(
+            seed,
+            MapScale::Medium,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Standard,
+        );
+        w.set_round_seconds(ROUND);
+        w.set_phase(RoundPhase::Playing);
+        for _ in 0..(ROUND / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::EffectStart {
+                    tick,
+                    kind,
+                    seed: s,
+                    ..
+                } = e
+                {
+                    let _ = writeln!(out, "{seed} {tick} {kind:?} {s}");
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn the_standard_weather_schedule_matches_the_golden_table() {
+    let current = compute_weather();
+    if std::env::var("GOLDEN_UPDATE").is_ok() {
+        std::fs::write(weather_table_path(), &current).expect("write weather table");
+        return;
+    }
+    let expected = std::fs::read_to_string(weather_table_path()).expect("golden_weather.txt");
+    // The control: the table holds a real schedule, not a header.
+    let rows = expected.lines().filter(|l| !l.starts_with('#')).count();
+    assert!(rows >= 60, "the golden weather table has only {rows} rows");
+    for (i, (a, b)) in expected.lines().zip(current.lines()).enumerate() {
+        assert_eq!(a, b, "golden weather mismatch at line {}", i + 1);
+    }
+    assert_eq!(
+        expected.lines().count(),
+        current.lines().count(),
+        "golden weather table differs in length"
+    );
+}

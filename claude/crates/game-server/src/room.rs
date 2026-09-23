@@ -1108,6 +1108,19 @@ impl Room {
             // `DEV_WARMUP_SECONDS`, for the same reason and at both sites.
             world.set_warmup_seconds(warmup_seconds);
             world.weather_mode = weather_mode;
+            // T22.08C F7: `WEATHER=flare` on a map with no space is refused by
+            // the world (R83) — say so, or the operator watches a round with no
+            // weather and nothing in the log to say why.
+            if let (game_core::world::WeatherMode::Always(kind), None) =
+                (weather_mode, world.forced_effect())
+            {
+                tracing::warn!(
+                    target: "game::weather",
+                    ?kind,
+                    ?gravity,
+                    "WEATHER forces an effect this map refuses; the round runs without it"
+                );
+            }
             // T22.01's `world.gravity = gravity` was here. It is now the
             // constructor's fifth argument, for `T22.05A`: the reason it had to
             // move is that the map is derived from it, so an assignment after

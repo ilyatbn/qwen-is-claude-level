@@ -343,6 +343,8 @@ pub enum GameEvent {
         tick: u32,
         victim: PlayerId,
         attacker: Option<PlayerId>,
+        /// The health that came off — what **landed** through a suit or a
+        /// generator, not what was rolled (T22.08C F4).
         amount: f32,
         cause: DeathCause,
     },
@@ -1461,7 +1463,18 @@ impl World {
         // radiation tick is a `Weather` death and R75's list never names it —
         // `a_hazard_death_on_the_radiation_tick_is_not_named_radiation`'s flare
         // arm. Not the dying, for 8c's reason.
-        {
+        //
+        // **`Playing` only, and it is two guards** (T22.08C F1 — the first cut
+        // left this ungated, "like poison", and a flare touched in the last
+        // seconds burned on the results screen: five `Damage` and a `Death` in
+        // `Ended`, a score changed and a kill `killer()` could credit after the
+        // bell). The first guard is the schedule's, the lava way:
+        // `active_duration(SolarFlare)` is the ribbon's life **plus**
+        // `SOLAR_FLARE_BURN_SECONDS`, so no flare is rolled whose last burn could
+        // outlive the round. This gate is the belt for the paths that do not roll —
+        // `WEATHER=flare`, a forced effect, a round cut short — where a burn that
+        // outlives `Playing` simply stops.
+        if playing {
             let log: DamageLog = Default::default();
             {
                 let mut entries = log.borrow_mut();
@@ -2761,11 +2774,17 @@ impl World {
                     att.steal_life(landed, victim_shielded);
                 }
             }
+            // **The event carries `landed` too** (T22.08C F4). It carried the
+            // rolled `amount`, so under the suit or a generator the number over
+            // your head said 8 when 6 came off. Every consumer was read first and
+            // none wants the roll: the client's damage number and vignette
+            // (`feelLayer`), the balance and bot reports' "damage dealt", the
+            // radiation report. Lifesteal already used `landed`, above.
             self.events.push(GameEvent::Damage {
                 tick,
                 victim,
                 attacker,
-                amount,
+                amount: landed,
                 cause,
             });
         }
@@ -2935,6 +2954,23 @@ impl World {
         self.seed ^ (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
     }
 
+    /// The kind `weather_mode` forces on this map, or `None` — `Auto`, `Off`, or
+    /// a force this map refuses (R83: a flare off a space map). **One rule, two
+    /// readers**: `step_weather` forces with it, and the server's room warns when
+    /// a configured `WEATHER=` comes back refused (T22.08C F7), which was
+    /// otherwise silent.
+    pub fn forced_effect(&self) -> Option<EffectKind> {
+        match self.weather_mode {
+            WeatherMode::Always(EffectKind::SolarFlare)
+                if WeatherTable::of(&self.map) != WeatherTable::Space =>
+            {
+                None
+            }
+            WeatherMode::Always(kind) => Some(kind),
+            _ => None,
+        }
+    }
+
     fn step_weather(&mut self, now: f32, dt: f32) {
         let ends = self.round_ends_at();
         // `Always` restarts its effect the moment nothing of that kind is on the
@@ -2952,12 +2988,7 @@ impl World {
         // map: `WEATHER=flare` on a standard round forces nothing and leaves the
         // scheduler alone.
         let table = WeatherTable::of(&self.map);
-        let forced = match self.weather_mode {
-            WeatherMode::Always(EffectKind::SolarFlare) if table != WeatherTable::Space => None,
-            WeatherMode::Always(kind) => Some(kind),
-            _ => None,
-        };
-        if let Some(kind) = forced {
+        if let Some(kind) = self.forced_effect() {
             // Keep the scheduler's own roll out of the way, or `Always(fog)` is
             // "fog, plus whatever else the weather felt like" — which is exactly
             // what a check using the switch is trying not to have.
@@ -3055,6 +3086,8 @@ impl World {
         // T22.08A: the flare **touches** here and burns in stage 8a2 (R81). A
         // touch writes the deadline (R79); only `Active` touches — a telegraph is
         // a warning. The living and not-yet-dying only, as 8c asks.
+        // The effect stays `Active` for the burn's tail after the ribbon has gone
+        // (F1); `SolarFlare::touches` is false then (`SolarFlare::lit`).
         if let Some((_, start, f)) = self.flare.as_ref() {
             if self.effects.is_active(EffectKind::SolarFlare) {
                 let elapsed = now - start;
@@ -12787,13 +12820,20 @@ mod solar_flare_tests {
             "unsealed lost {got:?}, want {full}"
         );
         assert_eq!(got[BO as usize].0, n, "sealed: {got:?}");
-        // The `Damage` event carries what was *rolled*; what the suit let through
-        // is read off health — bo is sealed, so radiation takes none of it.
+        // Health is the truth — bo is sealed, so radiation takes none of it.
         let lost = h0 - w.player(BO).expect("seated").health;
         let sealed = full * SHIELD_DAMAGE_MULT;
         assert!(
             (lost - sealed).abs() < 1e-3,
             "sealed lost {lost} health, want {sealed}"
+        );
+        // **And the `Damage` events say so** (T22.08C F4): they carry what
+        // *landed*, so the number over a sealed player's head is the health that
+        // came off, not the rolled amount the suit softened.
+        assert!(
+            (got[BO as usize].1 - lost).abs() < 1e-3,
+            "the sealed player's Damage events total {} but {lost} health came off",
+            got[BO as usize].1
         );
         // The energy: the seal's drain for the whole run, plus one hit's cost per burn.
         let spent = b0 - w.player(BO).expect("seated").battery;
@@ -12802,6 +12842,75 @@ mod solar_flare_tests {
         assert!(
             (spent - (drain + hits)).abs() < 0.05,
             "the sealed suit spent {spent}: want the drain {drain} + the hits {hits}"
+        );
+    }
+
+    /// **No flare burns after the bell** (T22.08C F1). A touch in the last
+    /// seconds of `Playing`, then the round ends: not one flare `Damage` in
+    /// `Ended` — a death there changes the score and `killer()` could credit a
+    /// kill on the results screen. The control is the same touch left in
+    /// `Playing`, which burns the full `SOLAR_FLARE_BURN_SECONDS`.
+    #[test]
+    fn a_flare_burn_stops_at_the_bell() {
+        let burns_after = |end_the_round: bool| {
+            let (mut w, start) = flaring();
+            let next = w.round_time + SIM_DT;
+            let pts = w
+                .flare
+                .as_ref()
+                .expect("installed")
+                .2
+                .points_at(next - start);
+            let p = w.player_mut(ANA).expect("seated");
+            p.body.pos = pts[pts.len() / 2];
+            p.body.vel = Vec2::ZERO;
+            w.step(SIM_DT);
+            assert!(
+                w.player(ANA).expect("seated").burning(w.round_time),
+                "the touch did not take"
+            );
+            // The ribbon gone, so the one touch above is the only burn.
+            w.flare = None;
+            if end_the_round {
+                w.set_phase(RoundPhase::Ended);
+            }
+            flare_damage(&mut w, SOLAR_FLARE_BURN_SECONDS + 1.0)[ANA as usize].0
+        };
+        assert!(
+            burns_after(false) >= SOLAR_FLARE_BURN_SECONDS as u32 - 1,
+            "control: the burn in Playing logged too little to mean anything"
+        );
+        assert_eq!(burns_after(true), 0, "a flare burned after the bell");
+    }
+
+    /// **The burn's tail touches nobody** (F1): the effect stays `Active` for
+    /// `SOLAR_FLARE_BURN_SECONDS` after the ribbon has gone, and a body standing
+    /// where the ribbon's formula would put it then is not burned. The presence
+    /// is `a_player_on_the_ribbon_burns_and_one_clear_of_it_does_not`, same fixture.
+    #[test]
+    fn nobody_is_touched_in_the_burns_tail() {
+        let (mut w, start) = flaring();
+        while SolarFlare::lit(w.round_time + SIM_DT - start) {
+            w.step(SIM_DT);
+        }
+        assert!(
+            w.effects.is_active(EffectKind::SolarFlare),
+            "control: the effect is no longer Active, so this tests nothing"
+        );
+        let next = w.round_time + SIM_DT;
+        let pts = w
+            .flare
+            .as_ref()
+            .expect("installed")
+            .2
+            .points_at(next - start);
+        let p = w.player_mut(ANA).expect("seated");
+        p.body.pos = pts[pts.len() / 2];
+        p.body.vel = Vec2::ZERO;
+        w.step(SIM_DT);
+        assert!(
+            !w.player(ANA).expect("seated").burning(w.round_time),
+            "a ribbon that has gone burned ana"
         );
     }
 
@@ -12860,7 +12969,8 @@ mod solar_flare_tests {
             peak = peak.max(w.projectiles.len());
         }
         let (mw, mh) = (w.map.mask.w as f32, w.map.mask.h as f32);
-        let flight = ((mh + 32.0) / METEOR_SPEED).min(PROJECTILE_MAX_LIFETIME);
+        let flight = ((mh - crate::effects::meteor::spawn_band().0) / METEOR_SPEED)
+            .min(PROJECTILE_MAX_LIFETIME);
         let frag_flight = (mw.hypot(mh) / METEOR_FRAG_SPEED_MIN).min(PROJECTILE_MAX_LIFETIME);
         let per = |t: f32| (t / METEOR_EVERY).ceil() as usize + 1;
         let ceiling = per(flight) + per(frag_flight) * METEOR_FRAGMENTS as usize;

@@ -1520,6 +1520,15 @@ impl GameCore {
             .collect()
     }
 
+    /// Is a flare's ribbon lit — there, and burning — `elapsed` seconds after its
+    /// `effect_start`? `SolarFlare::lit`, the window the server touches in
+    /// (T22.08C F1): the effect's `Active` phase runs `SOLAR_FLARE_BURN_SECONDS`
+    /// past it, so the phase alone would draw a ribbon for four seconds after it
+    /// stopped burning anyone.
+    pub fn flare_lit(elapsed: f32) -> bool {
+        SolarFlare::lit(elapsed)
+    }
+
     pub fn lava_vents(&mut self, seed_lo: u32, seed_hi: u32, elapsed: f32) -> String {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         if self.weather.lava_seed != Some(seed) {
