@@ -10,11 +10,17 @@ import {
 
 describe('suitState', () => {
   it('is irradiated whenever the Rust predicate says so, and sealed only in space alive', () => {
-    expect(suitState(true, true, true)).toBe('irradiated')
-    expect(suitState(true, true, false)).toBe('sealed')
+    expect(suitState(true, true, true, true)).toBe('irradiated')
+    expect(suitState(true, true, false, true)).toBe('sealed')
     // The absences, each with the one input that turns it off.
-    expect(suitState(false, true, false)).toBe('none')
-    expect(suitState(true, false, false)).toBe('none')
+    expect(suitState(false, true, false, true)).toBe('none')
+    expect(suitState(true, false, false, true)).toBe('none')
+  })
+
+  it('draws nothing outside a live round, sealed or not (T22.09C F8)', () => {
+    // The two presences above are the controls: only `live` differs.
+    expect(suitState(true, true, false, false)).toBe('none')
+    expect(suitState(true, true, true, false)).toBe('none')
   })
 })
 

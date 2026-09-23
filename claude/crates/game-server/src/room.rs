@@ -1209,6 +1209,7 @@ impl Room {
         for (id, _, _, _) in &seated {
             self.grant_dev_loadout(*id);
             self.grant_start_kit(*id);
+            self.apply_dev_battery(*id);
         }
     }
 
@@ -1363,6 +1364,7 @@ impl Room {
                 .push(Bot::new(id, seed, index, self.config.bot_skill));
             self.grant_dev_loadout(id);
             self.grant_start_kit(id);
+            self.apply_dev_battery(id);
         }
         if !self.bots.is_empty() {
             tracing::info!(
@@ -1488,6 +1490,22 @@ impl Room {
             (game_core::items::registry::LASER_PISTOL, 1),
         ];
         self.give_all(id, &items);
+    }
+
+    /// Development only (`DEV_START_BATTERY`, T22.09C): overwrite the suit battery.
+    ///
+    /// Called **last** at every route into a life — the three join sites and the
+    /// respawn loop — after `World::issue_suit` (inside `add_player` and the
+    /// world's respawn) and after `grant_start_kit`, both of which fill it. Its own
+    /// function rather than a line in `grant_dev_loadout`, because the respawn
+    /// loop does not call that and `grant_start_kit` runs after it.
+    fn apply_dev_battery(&mut self, id: PlayerId) {
+        let Some(energy) = self.config.dev_start_battery else {
+            return;
+        };
+        if let Some(p) = self.world.as_mut().and_then(|w| w.player_mut(id)) {
+            p.battery = energy.min(game_core::constants::BATTERY_MAX);
+        }
     }
 
     /// Hand `id` a list of `(item, count)` pairs.
@@ -1698,6 +1716,7 @@ impl Room {
                         }
                         self.grant_dev_loadout(id);
                         self.grant_start_kit(id);
+                        self.apply_dev_battery(id);
                     }
                 }
                 let _ = reply.send(id);
@@ -2423,6 +2442,7 @@ impl Room {
         }
         for id in respawned {
             self.grant_start_kit(id);
+            self.apply_dev_battery(id);
         }
 
         // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can

@@ -1459,6 +1459,7 @@ export class SandboxScene extends Phaser.Scene {
       this.gravity === SPACE_GRAVITY,
       true,
       this.core.irradiated(0, this.simTime),
+      true, // no round in the sandbox: always live
       C().RADIATION_LOG_INTERVAL,
     )
     this.world.update(this.world.rig.center)

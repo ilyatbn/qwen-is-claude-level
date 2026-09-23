@@ -2010,6 +2010,8 @@ export class GameScene extends Phaser.Scene {
       this.gravity === SPACE_GRAVITY,
       this.meAlive,
       this.irradiated && this.meAlive,
+      // F8: radiation and the seal's drain are `Playing`-only on the server.
+      this.phase === 'playing',
       C().RADIATION_LOG_INTERVAL,
     )
     // §C3. Phase-driven, not clock-driven: the server owns which phase the round

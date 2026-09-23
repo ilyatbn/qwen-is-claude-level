@@ -139,7 +139,11 @@ export function loadContext(checks, dir = root) {
 export function affected(changed, ctx) {
   const { checks, imports, members, dependents, linkDependents, namedByClientTests } = ctx
   const inDefault = (c) => !c.flaky && !c.optIn && !c.disabled
-  const byFile = new Map(checks.map((c) => [c.file, c]))
+  // file → every check registered on it. One file may back several entries (`radiation.mjs`
+  // runs as `radiation` and `radiation-standard`); a `Map` straight from `checks` kept only the
+  // last of them, so a scripts-only change silently skipped the rest (T22.09C F4).
+  const byFile = new Map()
+  for (const c of checks) byFile.set(c.file, [...(byFile.get(c.file) ?? []), c])
   const e2e = new Set()
   const crates = new Set()
   const reasons = []
@@ -211,10 +215,11 @@ export function affected(changed, ctx) {
       }
       const got = []
       for (const f of reach) {
-        const check = byFile.get(f)
-        if (check && (f === file || inDefault(check))) {
-          e2e.add(check.name)
-          got.push(check.name)
+        for (const check of byFile.get(f) ?? []) {
+          if (f === file || inDefault(check)) {
+            e2e.add(check.name)
+            got.push(check.name)
+          }
         }
         if (f === 'scripts/e2e.mjs') {
           allE2e()

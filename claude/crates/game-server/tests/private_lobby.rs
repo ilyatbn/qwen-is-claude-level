@@ -10,9 +10,10 @@
 use std::sync::Arc;
 
 use game_core::constants::{
-    GravityMode, MapScale, StartKit, BASE_HEALTH, INVENTORY_SLOTS, LOBBY_BOT_TIMEOUT,
-    LOBBY_CAPACITY, PISTOL_AMMO, RESPAWN_DELAY, ROUND_SECONDS, ROUND_SECONDS_MAX,
-    ROUND_SECONDS_MIN, ROUND_SECONDS_STEP, SIM_DT, START_KIT_GRENADES, WARMUP_SECONDS,
+    GravityMode, MapScale, StartKit, BASE_HEALTH, BATTERY_MAX, INVENTORY_SLOTS, LOBBY_BOT_TIMEOUT,
+    LOBBY_CAPACITY, PISTOL_AMMO, RADIATION_LOG_INTERVAL, RESPAWN_DELAY, ROUND_SECONDS,
+    ROUND_SECONDS_MAX, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP, SIM_DT, START_KIT_GRENADES,
+    WARMUP_SECONDS,
 };
 use game_core::items::registry::WEAPON_BAZOOKA;
 use game_core::world::RoundPhase;
@@ -877,4 +878,76 @@ fn a_public_lobby_refuses_all_three_settings() {
     assert_eq!(set_bots(&mut room, ana, false), want);
     assert_eq!(set_kit(&mut room, ana, StartKit::All), want);
     assert_eq!(set_round_seconds(&mut room, ana, ROUND_SECONDS_MAX), want);
+}
+
+/// T22.09C (review F1): `DEV_START_BATTERY` is the last word on the suit at spawn
+/// **and** at respawn — after `World::issue_suit` and §F7's kit, both of which
+/// fill it. The control is the same space room without the knob: a full suit at
+/// spawn, so a flat one below is the knob and not a room that issued no suit.
+///
+/// The death is space's own: a flat suit in `Playing` is irradiated, so a player
+/// set to 1 health dies of it and respawns through the real path.
+#[test]
+fn dev_start_battery_holds_after_the_suit_at_spawn_and_at_respawn() {
+    let battery = |knob: Option<f32>, respawn: bool| -> f32 {
+        let mut room = Room::new(Arc::new(Config {
+            map_scale: MapScale::Small,
+            bot_count: 0,
+            dev_start_battery: knob,
+            ..Config::default()
+        }));
+        room.apply_for_test(Command::SetIdentity {
+            code: Some("ABC123".into()),
+            private: true,
+        });
+        let ana = seat(&mut room, "ana");
+        assert_eq!(set_gravity(&mut room, ana, GravityMode::Space), Ok(()));
+        // The kit that also fills the battery, so the ordering is under test too.
+        assert_eq!(set_kit(&mut room, ana, StartKit::All), Ok(()));
+        ready(&mut room, ana, true);
+        start(&mut room);
+        let read = |room: &Room| {
+            room.world()
+                .and_then(|w| w.player(ana))
+                .map(|p| (p.alive, p.battery))
+                .expect("seated")
+        };
+        if !respawn {
+            return read(&room).1;
+        }
+        let mut playing = false;
+        for _ in 0..((WARMUP_SECONDS * 2.0) / SIM_DT) as usize {
+            let _ = room.tick_inline(SIM_DT);
+            if room.phase() == RoundPhase::Playing {
+                playing = true;
+                break;
+            }
+        }
+        assert!(playing, "the round never left warmup");
+        room.world_mut()
+            .and_then(|w| w.player_mut(ana))
+            .expect("seated")
+            .health = 1.0;
+        let (mut saw_dead, mut back) = (false, None);
+        let ticks = ((RADIATION_LOG_INTERVAL + RESPAWN_DELAY) * 3.0 / SIM_DT) as usize;
+        for _ in 0..ticks {
+            let _ = room.tick_inline(SIM_DT);
+            let (alive, b) = read(&room);
+            if !alive {
+                saw_dead = true;
+            } else if saw_dead {
+                back = Some(b);
+                break;
+            }
+        }
+        assert!(saw_dead, "a flat suit in space at 1 health never died");
+        back.expect("the player never respawned")
+    };
+    assert_eq!(
+        battery(None, false),
+        BATTERY_MAX,
+        "control: no suit issued in a space room"
+    );
+    assert_eq!(battery(Some(0.0), false), 0.0, "at join");
+    assert_eq!(battery(Some(0.0), true), 0.0, "at respawn");
 }

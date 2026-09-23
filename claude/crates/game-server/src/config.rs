@@ -136,6 +136,19 @@ pub struct Config {
     /// adding it to `DEV_LOADOUT` would change the bag every other check selects
     /// from. Not in the replay header, for `dev_flashlight`'s reason.
     pub dev_smoke: bool,
+    /// Development only (`DEV_START_BATTERY=<energy>`): the suit battery every
+    /// player starts **and respawns** with. `None` = off (T22.09C, review F1).
+    ///
+    /// Sibling of `dev_start_health`. A networked check has to photograph a
+    /// flat suit in space, and the honest route there is `BATTERY_MAX` seconds
+    /// of drain — a gate waiting 100 s on a tunable. Applied **after**
+    /// `World::issue_suit` and after §F7's kit (which fills the battery for
+    /// `all`), so it is the last word at both join and respawn; a respawn that
+    /// re-issued a full suit would reseal a check's subject mid-run. `0` is a
+    /// legal value — it is the one the knob exists for — so this is an
+    /// `Option`, not `dev_start_health`'s `0 = off`. Not in the replay header,
+    /// for `dev_flashlight`'s reason.
+    pub dev_start_battery: Option<f32>,
     /// Development only (`WEATHER=auto|off|fog|toxic|meteor|lava`): what the
     /// weather does in this room.
     ///
@@ -290,6 +303,7 @@ impl Default for Config {
             dev_poisoned: false,
             dev_flashlight: false,
             dev_smoke: false,
+            dev_start_battery: None,
             weather_mode: WeatherMode::Auto,
             bot_skill: BOT_SKILL_DEFAULT,
             dev_round_clock: 0.0,
@@ -464,6 +478,9 @@ impl Config {
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
             dev_flashlight: matches!(get("DEV_FLASHLIGHT").as_deref(), Some("1") | Some("true")),
             dev_smoke: matches!(get("DEV_SMOKE").as_deref(), Some("1") | Some("true")),
+            dev_start_battery: get("DEV_START_BATTERY")
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0),
             weather_mode: match get("WEATHER") {
                 Some(v) => parse_weather(&v).ok_or_else(|| ConfigError {
                     var: "WEATHER",
@@ -528,7 +545,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} replay_dir={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} weather={:?} \
+             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} dev_start_battery={:?} weather={:?} \
              dev_round_clock={} ready_timeout={} warmup_seconds={}",
             self.bind_addr,
             self.map_scale.as_str(),
@@ -549,6 +566,7 @@ impl Config {
             self.dev_poisoned,
             self.dev_flashlight,
             self.dev_smoke,
+            self.dev_start_battery,
             self.weather_mode,
             self.dev_round_clock,
             self.ready_timeout,
@@ -737,6 +755,36 @@ mod tests {
             .expect("ok")
             .summary()
             .contains("dev_flashlight=true"));
+    }
+
+    /// T22.09C's switch: `radiation-match` needs a flat suit in space on demand.
+    /// `0` must parse to `Some(0.0)` — the value the knob exists for — and a
+    /// value nothing could mean is off, not a panic.
+    #[test]
+    fn dev_start_battery_takes_zero_and_is_off_unless_asked_for() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").dev_start_battery,
+            None
+        );
+        assert_eq!(
+            from(&[("DEV_START_BATTERY", "0")])
+                .expect("ok")
+                .dev_start_battery,
+            Some(0.0)
+        );
+        for bad in ["-1", "nan", "inf", "flat"] {
+            assert_eq!(
+                from(&[("DEV_START_BATTERY", bad)])
+                    .expect("ok")
+                    .dev_start_battery,
+                None,
+                "{bad}"
+            );
+        }
+        assert!(from(&[("DEV_START_BATTERY", "0")])
+            .expect("ok")
+            .summary()
+            .contains("dev_start_battery=Some(0.0)"));
     }
 
     /// T21.18's switch: `smoke-shader` needs a real smoke cloud on demand.

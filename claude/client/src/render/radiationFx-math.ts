@@ -39,8 +39,15 @@ export const RADIATION_EDGE_MAX = 0.9
  *
  * `irradiated` wins over the rest because its source already folded in space and
  * alive; `space && alive` alone is a sealed suit.
+ *
+ * **Nothing outside a live round** (T22.09C F8). Radiation and the seal's drain are
+ * `Playing`-only in `World::step`, so in warmup and after the bell the sealed line
+ * ("uses energy") and the RADIATION glow would both be saying something false. Bit 7
+ * itself is not phase-gated — a flat suit in warmup *is* unsealed — so the gate is
+ * here, on the picture, not on the flag. The sandbox has no round and passes `true`.
  */
-export function suitState(space: boolean, alive: boolean, irradiated: boolean): SuitState {
+export function suitState(space: boolean, alive: boolean, irradiated: boolean, live: boolean): SuitState {
+  if (!live) return 'none'
   if (irradiated) return 'irradiated'
   return space && alive ? 'sealed' : 'none'
 }

@@ -1458,6 +1458,8 @@ impl World {
                 // Not the dying (F1): struck dead earlier in this tick, they
                 // are `alive` until `resolve_deaths`, and one radiation entry
                 // landing on them would relabel that death Radiation (R75).
+                // `p.alive` is not redundant: `!is_dying()` is true for the dead
+                // (`the_dead_are_neither_drained_nor_irradiated`, T22.09C F5).
                 for p in self.players.iter_mut().filter(|p| p.alive && !p.is_dying()) {
                     if let Some(amount) = p.radiation_tick(now, dt) {
                         entries.push((p.id, amount, DamageSource::Radiation));
@@ -12338,6 +12340,30 @@ mod radiation_tests {
                 assert!(hits.is_empty(), "{phase:?}: radiation events {hits:?}");
             }
         }
+    }
+
+    /// Review of T22.09A/B, F5 — **refuted, and the guard it questioned had no
+    /// test.** The nit read `p.alive && !p.is_dying()` as redundant because
+    /// `is_dying` includes `alive`; but `!is_dying()` is *true* for the dead, so
+    /// dropping `p.alive` irradiates corpses. Measured before this test: planting
+    /// `filter(|p| !p.is_dying())` left every radiation test green. A dead sealed
+    /// suit must not drain and a dead flat one must not accrue exposure; the
+    /// Playing arm of `radiation_and_the_seal_drain_are_playing_only` is the
+    /// control that the same world does both to the living.
+    #[test]
+    fn the_dead_are_neither_drained_nor_irradiated() {
+        let mut w = world(GravityMode::Space);
+        let far = w.round_time + 1000.0;
+        for p in w.players.iter_mut() {
+            p.alive = false;
+            p.respawn_at = far;
+        }
+        let b0 = battery(&w, BO);
+        let hits = run(&mut w, 3.0);
+        assert_eq!(battery(&w, BO), b0, "a dead sealed suit drained");
+        let exposure = w.player(ANA).expect("seated").radiation_exposure;
+        assert_eq!(exposure, 0.0, "a dead flat suit accrued exposure");
+        assert!(hits.is_empty(), "radiation events on the dead: {hits:?}");
     }
 
     /// R2, at the live site: `apply_damage_log` hands `apply_damage` the

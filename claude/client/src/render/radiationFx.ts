@@ -47,24 +47,27 @@ export class RadiationFx {
       box-shadow:inset 0 0 140px 36px rgba(${GLOW},0.9)`
 
     // Above §C8's bar cluster (`bars.ts`: `left:10px;bottom:56px`, three 20 px rows),
-    // so the line sits on the energy bar it is about.
+    // so the line sits on the energy bar it is about. **Wraps** inside the viewport
+    // less its 10 px margins (T22.09C F8): `nowrap` at a fixed size clipped the
+    // RADIATION line below ~550 px of width. It grows upward, off `bottom`.
     this.lineEl = doc.createElement('div')
     this.lineEl.dataset.fx = 'radiation-line'
     this.lineEl.style.cssText = `position:absolute;left:10px;bottom:124px;display:none;
       padding:3px 8px;border-radius:3px;background:rgba(0,0,0,0.6);
-      font:700 13px/1.3 ui-monospace,monospace;letter-spacing:1px;white-space:nowrap`
+      font:700 13px/1.3 ui-monospace,monospace;letter-spacing:1px;
+      box-sizing:border-box;max-width:calc(100vw - 20px);white-space:normal`
 
     this.root.append(this.edgeEl, this.lineEl)
     doc.body.append(this.root)
   }
 
   /**
-   * One frame. `period` is `RADIATION_LOG_INTERVAL`, so the glow crests with each
-   * damage number. Everything is re-derived from the inputs every call; the only
+   * One frame. `live` is "the round is in `Playing`" (F8). `period` is
+   * `RADIATION_LOG_INTERVAL`, so the glow crests with each damage number. Everything is re-derived from the inputs every call; the only
    * memory is the exposure clock, which exists to put the crest on the onset.
    */
-  update(dt: number, space: boolean, alive: boolean, irradiated: boolean, period: number): void {
-    const state = suitState(space, alive, irradiated)
+  update(dt: number, space: boolean, alive: boolean, irradiated: boolean, live: boolean, period: number): void {
+    const state = suitState(space, alive, irradiated, live)
     this.clock.update(dt, state)
     this.alpha = state === 'irradiated' ? edgeAlpha(this.clock.seconds, period) : 0
     this.edgeEl.style.opacity = String(this.alpha)

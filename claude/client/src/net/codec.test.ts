@@ -116,7 +116,7 @@ function mapInitFixture(opts: Partial<{
   return b
 }
 
-function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
+function snapshotFixture(n: number, trailing = 0, flags: number = FLAG.alive | FLAG.flashlight): ArrayBuffer {
   // Pinned to the constant, never a literal (§A19). This was `15`, and T11.08's
   // sixteenth byte turned six passing tests red for the right reason — but a
   // fixture that hardcodes the wire layout can also stay *green* against a
@@ -137,7 +137,7 @@ function snapshotFixture(n: number, trailing = 0): ArrayBuffer {
     v.setInt16(at, -44, true); at += 2
     v.setUint16(at, 40000, true); at += 2
     v.setUint8(at++, 137)
-    v.setUint8(at++, FLAG.alive | FLAG.flashlight)
+    v.setUint8(at++, flags)
     v.setUint8(at++, 128)
     v.setUint8(at++, i === 0 ? 255 : 3)
     v.setUint8(at++, 204) // vision: 0.8 of clear
@@ -323,6 +323,24 @@ describe('snapshot', () => {
     expect(flag(f, FLAG.grounded)).toBe(false)
     expect(flag(f, FLAG.shield)).toBe(false)
     expect(flag(f, FLAG.iframes)).toBe(false)
+    // Control for the row below: a live, unexposed player is not irradiated.
+    expect(flag(f, FLAG.irradiated)).toBe(false)
+    expect(flag(f, FLAG.poisoned)).toBe(false)
+  })
+
+  it('reads bit 7 as irradiated, and only as irradiated (T22.09C F1)', () => {
+    // **The wire byte, not `FLAG.irradiated`.** A fixture built from the constant moves with
+    // it, so `irradiated: 1 << 6` — colliding with poisoned — passed 987/987. Bit 7 is what
+    // `game-server/src/codec.rs` writes (`… << 7`), a protocol fact rather than a tunable.
+    const bit7 = 0b1000_0000
+    const f = decodeSnapshot(snapshotFixture(1, 0, FLAG.alive | bit7)).players[0]!.flags
+    expect(flag(f, FLAG.irradiated)).toBe(true)
+    expect(flag(f, FLAG.poisoned)).toBe(false)
+    expect(flag(f, FLAG.alive)).toBe(true)
+    // …and bit 6 alone is poisoned, never irradiated.
+    const g = decodeSnapshot(snapshotFixture(1, 0, FLAG.alive | 0b0100_0000)).players[0]!.flags
+    expect(flag(g, FLAG.poisoned)).toBe(true)
+    expect(flag(g, FLAG.irradiated)).toBe(false)
   })
 
   it('dequantises jetpack fuel and darkness within one part in 255', () => {

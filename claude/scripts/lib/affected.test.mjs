@@ -162,3 +162,27 @@ test('the real harness selects the standalone checks that import it', () => {
 test('the real sandbox helper selects exactly its two importers', () => {
   assert.deepEqual(affected(['scripts/checks/sim-clock.mjs'], real).e2e, ['wasd', 'm4-checkpoint'])
 })
+
+// T22.09C F4: `byFile` was a `Map` from file to *one* check, so a file registered by several
+// entries selected only the last — `radiation.mjs` ran `radiation-standard` alone, and a
+// scripts-only change to it never ran the space arm the file exists for.
+test('a check file registered by several entries selects every one of them', () => {
+  const ctx = fixture()
+  ctx.checks.push({ name: 'sky-canvas', file: 'scripts/checks/sky.mjs' })
+  ctx.imports.set('scripts/checks/sky.mjs', new Set(['scripts/checks/sim-clock.mjs']))
+  assert.deepEqual(affected(['scripts/checks/sky.mjs'], ctx).e2e, ['sky', 'sky-canvas'])
+  // …and through a helper, where the same lookup decides it.
+  assert.deepEqual(affected(['scripts/checks/sim-clock.mjs'], ctx).e2e, ['sky', 'wasd', 'sky-canvas'])
+})
+
+test('the real shared check files select all their entries', () => {
+  const want = {
+    'scripts/checks/radiation.mjs': ['radiation', 'radiation-standard'],
+    'scripts/checks/clouds.mjs': ['clouds', 'clouds-canvas'],
+    'scripts/checks/thrusters.mjs': ['thrusters', 'thrusters-canvas', 'thrusters-standard'],
+  }
+  for (const [file, names] of Object.entries(want)) {
+    const r = affected([file], real)
+    for (const n of names) assert.ok(r.e2e.includes(n), `${file} did not select ${n}: ${r.e2e}`)
+  }
+})

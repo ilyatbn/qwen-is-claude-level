@@ -317,6 +317,10 @@ export const CHECKS = [
   // gravity, none on a player killed mid-burn. Standalone: two real servers (the
   // second poisons everyone, for the death) and six clients.
   { name: 'thrusters-match', file: 'scripts/checks/thrusters-match.mjs', standalone: true },
+  // T22.09C F1: GameScene's bit-7 reader, which no sandbox run reaches — a flat suit
+  // (`DEV_START_BATTERY=0`) irradiated in a real space match, a full one sealed, and
+  // neither drawn in warmup. Standalone: two servers, one client each.
+  { name: 'radiation-match', file: 'scripts/checks/radiation-match.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.
