@@ -674,7 +674,8 @@ impl Bot {
                 // what would swallow the next source that *can* light one.
                 DamageSource::SelfInflicted { .. }
                 | DamageSource::Weather(_)
-                | DamageSource::Fall => None,
+                | DamageSource::Fall
+                | DamageSource::Radiation => None,
             };
             consider(p.pos, p.radius, lit_by);
         }
@@ -2599,7 +2600,10 @@ pub(crate) mod harness {
                         // Counted together because the balance report's question
                         // is "how many deaths did the map cause", not which part
                         // of it (§C15).
-                        DeathCause::Weather | DeathCause::Void => r.weather_deaths += 1,
+                        // Radiation too (T22.09A): the map's, not a player's.
+                        DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {
+                            r.weather_deaths += 1
+                        }
                     },
                     GameEvent::Damage {
                         amount, attacker, ..

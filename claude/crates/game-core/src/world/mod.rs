@@ -582,6 +582,8 @@ fn lifesteal_attacker(src: DamageSource, victim: PlayerId) -> Option<PlayerId> {
         // variant and not a `SelfInflicted` — so it can never be a projectile.
         // Named rather than left to a wildcard, as that task file asks.
         DamageSource::Fall => None,
+        // Space's radiation (T22.09A) has no player behind it at all.
+        DamageSource::Radiation => None,
     }
 }
 
@@ -872,6 +874,17 @@ pub struct World {
     meteor: Option<(u32, MeteorShower)>,
     lava: Option<(u32, LavaBurst)>,
     fog: Option<(u32, HeavyFog)>,
+    /// Who radiation's log entry actually landed on **this tick** (T22.09A,
+    /// `M22-RULINGS` R75) — the channel that carries the cause into
+    /// `resolve_deaths`, which `R20` found does not otherwise exist.
+    ///
+    /// **Transient, and so not hashed**: filled by `apply_damage_log`, taken
+    /// (emptied) by `resolve_deaths` in the same step, and cleared at the top
+    /// of every `step` besides. Nothing reads it across a tick boundary, which
+    /// `radiation_tests::the_radiation_list_never_survives_a_step` asserts.
+    /// Re-deriving the cause from "in space and unsealed" was rejected (R75):
+    /// every unsealed player is that, so a meteor kill would read radiation.
+    irradiated_this_tick: Vec<PlayerId>,
 }
 
 /// The map cache behind `World::for_test`: one generation per
@@ -1058,6 +1071,7 @@ impl World {
             meteor: None,
             lava: None,
             fog: None,
+            irradiated_this_tick: Vec::new(),
         }
     }
 
@@ -1071,11 +1085,26 @@ impl World {
         let mut p = PlayerState::new(id, pos, skin_id);
         // A mid-round joiner is not fair game the instant they load in.
         p.iframes_until = self.round_time + crate::constants::SPAWN_IFRAMES;
+        Self::issue_suit(self.gravity, &mut p);
         self.players.push(p);
         // Sorted by id, always — see the field comment.
         self.players.sort_by_key(|p| p.id);
         self.prev_input.push((id, Input::default()));
         self.prev_input.sort_by_key(|(i, _)| *i);
+    }
+
+    /// A fresh spacesuit: the battery full, in a suit mode (T22.09A, R24).
+    ///
+    /// **Both routes into a life call it** — `add_player` and the respawn in
+    /// `resolve_deaths` — the same pairing `grant_starting_kit` has for the
+    /// same reason. Restoring it on respawn is what stops the death spiral: the
+    /// first radiation death would otherwise guarantee the second. Here, not in
+    /// `PlayerState::respawn`, because only `World` knows the mode (R26); and
+    /// outside space it does nothing, so `respawn_keeps_the_battery_…` holds.
+    fn issue_suit(gravity: GravityMode, p: &mut PlayerState) {
+        if gravity.wears_suit() {
+            p.battery = crate::constants::BATTERY_MAX;
+        }
     }
 
     /// Where a joining player starts.
@@ -1308,6 +1337,9 @@ impl World {
     /// §2, its ten numbered sub-steps, in order.
     pub fn step(&mut self, dt: f32) {
         self.tick += 1;
+        // R75: the radiation cause list is one tick's; `resolve_deaths` takes
+        // it, and this makes sure a step that returned early cannot leak it.
+        self.irradiated_this_tick.clear();
         let warmup = self.phase == RoundPhase::Warmup;
         let playing = self.phase == RoundPhase::Playing;
 
@@ -1400,6 +1432,28 @@ impl World {
                             crate::constants::TOXIC_POISON_DPS * dt,
                             DamageSource::Weather(EffectKind::ToxicRain),
                         ));
+                    }
+                }
+            }
+            let bird_log: BirdLog = Default::default();
+            let animal_log: AnimalLog = Default::default();
+            self.apply_damage_log(&log, &bird_log, &animal_log, now);
+        }
+
+        // 8c. space's radiation (T22.09A, `M22-RULINGS` R6, R24, R25). The
+        // same shape as 8a, for the same reason: a per-player standing
+        // predicate, through the damage log because that is where the warmup
+        // gate, the `Damage` event and the death attribution live. **One entry
+        // per player per whole second, never per tick** (R25). `Playing` only:
+        // the suit does not drain while the round is not live, and after the
+        // bell nobody should die of the sky.
+        if playing && self.gravity.wears_suit() {
+            let log: DamageLog = Default::default();
+            {
+                let mut entries = log.borrow_mut();
+                for p in self.players.iter_mut().filter(|p| p.alive) {
+                    if let Some(amount) = p.radiation_tick(now, dt) {
+                        entries.push((p.id, amount, DamageSource::Radiation));
                     }
                 }
             }
@@ -2612,6 +2666,7 @@ impl World {
         // And the animals, on identical terms — same gate, same drop (T20.10).
         self.resolve_animal_kills(&animal_entries, now);
 
+        let suit = self.gravity.wears_suit();
         for (victim, amount, src) in entries {
             let tick = self.tick;
             let Some(p) = self.players.iter_mut().find(|p| p.id == victim) else {
@@ -2620,8 +2675,13 @@ impl World {
             // T21.01 needs two facts about the victim, and both have to be taken
             // inside this borrow.
             let health_before = p.health;
-            if !p.apply_damage(amount, src, now) {
+            if !p.apply_damage(amount, src, now, suit) {
                 continue;
+            }
+            // R75: only what *landed* names the cause — an entry refused by
+            // spawn i-frames must not label a death that something else causes.
+            if src == DamageSource::Radiation {
+                self.irradiated_this_tick.push(victim);
             }
             // **What landed, not what was rolled.** `apply_damage` scales the hit
             // by the victim's generator, so this is the health that actually came
@@ -2642,6 +2702,8 @@ impl World {
                 // credited to you or to whoever put you in the air is decided by
                 // `apply_damage`'s precedence rule and `killer()`, not here.
                 DamageSource::Fall => (Some(victim), DeathCause::SelfInflicted),
+                // Nobody's, like the weather — but its own name (R20).
+                DamageSource::Radiation => (None, DeathCause::Radiation),
             };
             // Vampire fangs (T21.01). **Here, and not in `apply_damage`**:
             // that is a method on the victim's own `PlayerState` and has no way
@@ -3143,6 +3205,8 @@ impl World {
     }
 
     fn resolve_deaths(&mut self, now: f32) {
+        // R75: taken, so the list cannot outlive the step that filled it.
+        let irradiated = std::mem::take(&mut self.irradiated_this_tick);
         let mut drops: Vec<(Vec2, Vec<crate::items::inventory::Stack>)> = Vec::new();
         let mut credits: Vec<PlayerId> = Vec::new();
         let mut scored = false;
@@ -3153,6 +3217,10 @@ impl World {
                 // `killer` still hands the credit to whoever put you there.
                 let direct = if self.is_in_the_void(&self.players[i]) {
                     DeathCause::Void
+                } else if irradiated.contains(&self.players[i].id) {
+                    // After the void, before the attacker (R75). `killer`
+                    // below still hands a recent shooter the credit.
+                    DeathCause::Radiation
                 } else {
                     match self.players[i].last_damaged_by {
                         Some((who, when)) if now - when <= crate::player::state::ASSIST_WINDOW => {
@@ -3179,7 +3247,7 @@ impl World {
                     }
                     DeathCause::Player(a) => Some(a),
                     DeathCause::SelfInflicted => Some(victim),
-                    DeathCause::Weather | DeathCause::Void => None,
+                    DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => None,
                 };
                 drops.push((pos, stacks));
                 let tick = self.tick;
@@ -3285,6 +3353,7 @@ impl World {
             }
             let pos = choice.pos;
             self.players[i].respawn(pos, now);
+            Self::issue_suit(self.gravity, &mut self.players[i]);
             let (id, tick) = (self.players[i].id, self.tick);
             self.events.push(GameEvent::Respawn {
                 tick,
@@ -4199,6 +4268,9 @@ impl World {
             // checkpoints are computed on both sides of the same run — so the
             // cost of folding it in is nil.
             h.update(&p.poisoned_until.to_le_bytes());
+            // T22.09A, `R74`. The radiation accumulator decides the tick a
+            // radiation entry lands on, and so when someone dies of it.
+            h.update(&p.radiation_exposure.to_le_bytes());
             h.update(&p.fire_ready_at.to_le_bytes());
             // §A34, and it is load-bearing: this timer decides whether a
             // projectile spawns (§C20's knockback exemption). Leaving a
@@ -4576,6 +4648,11 @@ mod state_hash_tests {
         w.players[0].poisoned_until += 0.5;
         changed.push(("poisoned_until", w.state_hash()));
 
+        // T22.09A, R74: the radiation accumulator.
+        let mut w = world();
+        w.players[0].radiation_exposure += 0.5;
+        changed.push(("radiation_exposure", w.state_hash()));
+
         let mut w = world();
         w.players[0].jetpack.fuel -= 0.5;
         changed.push(("jetpack fuel", w.state_hash()));
@@ -4745,6 +4822,10 @@ mod state_hash_coverage {
             // every point a hash is taken.
             pending: _,
             prev_input: _,
+            // `irradiated_this_tick` (T22.09A, R75) is filled and taken inside
+            // one `step` and cleared at its top, so it is empty at every point a
+            // hash is taken — `the_radiation_list_never_survives_a_step`.
+            irradiated_this_tick: _,
             // `weather_mode` is a development switch set once at construction
             // and never written again (`WeatherMode`'s own doc says why it is
             // not in the replay header either). It is an input like `seed`: two
@@ -11903,5 +11984,334 @@ mod warmup_seconds_tests {
             shipped > ended + SIM_DT,
             "control: the setter changed nothing"
         );
+    }
+}
+
+/// T22.09A — space's radiation, and the suit that seals it out (`M22-RULINGS`
+/// R2, R6, R20, R24, R25, R74, R75).
+///
+/// **The fixture is a standard map with the mode set to space before anyone
+/// joins**, not a generated space map: no asteroids means no field and no rim,
+/// so nothing but radiation moves health or battery, and a body stays where it
+/// spawned. `issue_suit` reads the mode at `add_player`, so the order matters.
+#[cfg(test)]
+mod radiation_tests {
+    use super::*;
+    use crate::constants::{
+        BATTERY_MAX, BATTERY_PACK_AMOUNT, RADIATION_DPS, RADIATION_LOG_INTERVAL,
+        RADIATION_SHIELD_COST, SIM_DT, SIM_HZ,
+    };
+
+    const ANA: PlayerId = 0;
+    const BO: PlayerId = 1;
+    /// Whole intervals, so "the rate" is a count of entries and not a tolerance.
+    const SECONDS: u32 = 10;
+
+    /// ana unsealed (battery flat), bo sealed (a fresh suit), both past their
+    /// spawn i-frames, in `Playing`, weather off and the ground swept.
+    fn world(gravity: GravityMode) -> World {
+        let mut w = World::for_test(4242, MapScale::Small);
+        w.weather_mode = WeatherMode::Off;
+        w.gravity = gravity;
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(ANA, 0, "ana".into());
+        w.add_player(BO, 0, "bo".into());
+        for p in w.players.iter_mut() {
+            p.iframes_until = 0.0;
+        }
+        if let Some(p) = w.player_mut(ANA) {
+            p.battery = 0.0;
+        }
+        let _ = w.drain_events();
+        w
+    }
+
+    fn sweep(w: &mut World) {
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+    }
+
+    /// Step `seconds`, returning every radiation `Damage` event and the tick it
+    /// landed on.
+    fn run(w: &mut World, seconds: f32) -> Vec<(u32, PlayerId, f32)> {
+        let mut hits = Vec::new();
+        for _ in 0..(seconds * SIM_HZ as f32).round() as u32 {
+            sweep(w);
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                if let GameEvent::Damage {
+                    tick,
+                    victim,
+                    amount,
+                    cause: DeathCause::Radiation,
+                    ..
+                } = e
+                {
+                    hits.push((tick, victim, amount));
+                }
+            }
+        }
+        hits
+    }
+
+    fn hp(w: &World, id: PlayerId) -> f32 {
+        w.player(id).expect("seated").health
+    }
+    fn battery(w: &World, id: PlayerId) -> f32 {
+        w.player(id).expect("seated").battery
+    }
+
+    /// The rate, **with a sealed control in the same world**: "ana lost health"
+    /// is satisfied by a world that damages everybody.
+    #[test]
+    fn an_unsealed_player_loses_radiation_dps_and_a_sealed_one_loses_none() {
+        let mut w = world(GravityMode::Space);
+        let (a0, b0) = (hp(&w, ANA), hp(&w, BO));
+        run(&mut w, SECONDS as f32);
+        let lost = a0 - hp(&w, ANA);
+        let want = RADIATION_DPS * SECONDS as f32;
+        assert!(
+            (lost - want).abs() < 1e-3,
+            "unsealed for {SECONDS} s lost {lost}, not RADIATION_DPS x {SECONDS} = {want}"
+        );
+        assert_eq!(hp(&w, BO), b0, "the sealed control took radiation damage");
+    }
+
+    /// Both ends of the economy: the seal costs `RADIATION_SHIELD_COST` a
+    /// second, and a battery pack buys it back — and buys ana out of the
+    /// radiation, which is the pack's whole point in this mode.
+    #[test]
+    fn a_sealed_suit_drains_and_a_battery_pack_restores_it() {
+        let mut w = world(GravityMode::Space);
+        assert_eq!(
+            battery(&w, BO),
+            BATTERY_MAX,
+            "bo's suit was not issued full"
+        );
+        run(&mut w, SECONDS as f32);
+        let drained = BATTERY_MAX - battery(&w, BO);
+        let want = RADIATION_SHIELD_COST * SECONDS as f32;
+        assert!(
+            (drained - want).abs() < 1e-2,
+            "sealed for {SECONDS} s spent {drained}, not {want}"
+        );
+        assert_eq!(
+            battery(&w, ANA),
+            0.0,
+            "an unsealed suit spent charge it did not have"
+        );
+
+        // The restore, on the unsealed one — from flat, so `add_battery`'s
+        // clamp at `BATTERY_MAX` cannot hide it: charged, then sealed.
+        if let Some(p) = w.player_mut(ANA) {
+            p.batteries = 1;
+        }
+        assert!(w.use_battery_pack(ANA).is_ok(), "ana could not use a pack");
+        assert_eq!(battery(&w, ANA), BATTERY_PACK_AMOUNT);
+        let a = hp(&w, ANA);
+        let hits = run(&mut w, 3.0);
+        assert_eq!(hp(&w, ANA), a, "a charged suit still let radiation through");
+        assert!(
+            hits.is_empty(),
+            "radiation events with both suits sealed: {hits:?}"
+        );
+    }
+
+    /// **The transition, not the two states**: a suit with two seconds of
+    /// charge holds for two seconds and then lets radiation in, and the first
+    /// entry lands one log interval after the battery reads zero.
+    #[test]
+    fn at_zero_battery_the_seal_fails_and_radiation_starts() {
+        let mut w = world(GravityMode::Space);
+        let grace = 2.0;
+        if let Some(p) = w.player_mut(BO) {
+            p.battery = RADIATION_SHIELD_COST * grace;
+        }
+        let b0 = hp(&w, BO);
+        let mut empty_at = None;
+        let mut first_hit = None;
+        for _ in 0..((grace + 3.0) * SIM_HZ as f32) as u32 {
+            sweep(&mut w);
+            w.step(SIM_DT);
+            if empty_at.is_none() && battery(&w, BO) == 0.0 {
+                empty_at = Some(w.tick);
+            }
+            for e in w.drain_events() {
+                if let GameEvent::Damage {
+                    tick, victim: BO, ..
+                } = e
+                {
+                    first_hit.get_or_insert(tick);
+                }
+            }
+            if empty_at.is_none() {
+                assert_eq!(hp(&w, BO), b0, "bo took damage with charge in the suit");
+            }
+        }
+        let (empty, hit) = (
+            empty_at.expect("the suit never ran flat"),
+            first_hit.expect("the flat suit never let radiation in"),
+        );
+        let interval = (RADIATION_LOG_INTERVAL * SIM_HZ as f32) as u32;
+        assert!(
+            hit >= empty && hit - empty <= interval + 1,
+            "flat at tick {empty}, first radiation at {hit}: want within one interval ({interval} ticks)"
+        );
+        assert!(hp(&w, BO) < b0, "control: no damage after the seal failed");
+    }
+
+    /// **Absent outside space, with the presence control**: the same fixture
+    /// and ana's same flat battery lose health in space and nothing elsewhere.
+    #[test]
+    fn there_is_no_radiation_outside_space() {
+        let mut space = world(GravityMode::Space);
+        let before = hp(&space, ANA);
+        run(&mut space, 3.0);
+        assert!(
+            hp(&space, ANA) < before,
+            "control: space did not irradiate ana"
+        );
+        for g in [GravityMode::Standard, GravityMode::Low] {
+            let mut w = world(g);
+            let (a, b, bb) = (hp(&w, ANA), hp(&w, BO), battery(&w, BO));
+            let hits = run(&mut w, 3.0);
+            assert!(hits.is_empty(), "{g:?}: radiation events {hits:?}");
+            assert_eq!(hp(&w, ANA), a, "{g:?}: an unsealed player lost health");
+            assert_eq!((hp(&w, BO), battery(&w, BO)), (b, bb), "{g:?}: bo moved");
+            assert_eq!(bb, 0.0, "{g:?}: a suit was issued outside space");
+        }
+    }
+
+    /// R25: one `Damage` event a second, not sixty — each worth a whole second.
+    #[test]
+    fn radiation_logs_one_damage_event_a_second() {
+        let mut w = world(GravityMode::Space);
+        let hits = run(&mut w, SECONDS as f32);
+        let ana: Vec<_> = hits.iter().filter(|h| h.1 == ANA).collect();
+        assert_eq!(
+            ana.len() as u32,
+            SECONDS,
+            "{SECONDS} s unsealed gave {} radiation events",
+            ana.len()
+        );
+        for (_, _, amount) in &ana {
+            assert_eq!(*amount, RADIATION_DPS * RADIATION_LOG_INTERVAL);
+        }
+        assert!(
+            hits.iter().all(|h| h.1 == ANA),
+            "the sealed bo was logged: {hits:?}"
+        );
+    }
+
+    /// R20/R75: a radiation death says so, and a recent shooter still gets the
+    /// kill — the control that shows the list is not simply outranking credit.
+    #[test]
+    fn a_radiation_death_is_named_radiation_and_credits_a_recent_shooter() {
+        let deaths = |credit: bool| {
+            let mut w = world(GravityMode::Space);
+            let now = w.round_time;
+            if let Some(p) = w.player_mut(ANA) {
+                p.health = RADIATION_DPS * RADIATION_LOG_INTERVAL * 0.5;
+                if credit {
+                    p.last_damaged_by = Some((BO, now));
+                }
+            }
+            let mut out = Vec::new();
+            for _ in 0..(2.0 * RADIATION_LOG_INTERVAL * SIM_HZ as f32) as u32 {
+                w.step(SIM_DT);
+                assert!(
+                    w.irradiated_this_tick.is_empty(),
+                    "R75: the radiation list survived a step"
+                );
+                for e in w.drain_events() {
+                    if let GameEvent::Death {
+                        victim: ANA, cause, ..
+                    } = e
+                    {
+                        out.push(cause);
+                    }
+                }
+            }
+            out
+        };
+        assert_eq!(
+            deaths(false),
+            vec![DeathCause::Radiation],
+            "radiation, unassisted"
+        );
+        assert_eq!(
+            deaths(true),
+            vec![DeathCause::Player(BO)],
+            "radiation, bo shot her"
+        );
+    }
+
+    /// R2, at the live site: `apply_damage_log` hands `apply_damage` the
+    /// mode's suit, so **a charged suit softens a weapon hit by
+    /// `SHIELD_DAMAGE_MULT`** exactly as a generator does — and a flat one, the
+    /// control in the same blast geometry, does not.
+    #[test]
+    fn a_charged_suit_softens_a_weapon_hit_and_a_flat_one_does_not() {
+        use crate::constants::SHIELD_DAMAGE_MULT;
+        use crate::items::registry::WEAPON_BAZOOKA;
+        let mut w = world(GravityMode::Space);
+        let now = w.round_time;
+        let mut lost = [0.0f32; 2];
+        for (k, id) in [ANA, BO].into_iter().enumerate() {
+            let (at, before) = {
+                let p = w.player(id).expect("seated");
+                (p.body.pos, p.health)
+            };
+            w.hit_player_for_test(at, WEAPON_BAZOOKA, id, now);
+            lost[k] = before - hp(&w, id);
+        }
+        let [flat, sealed] = lost;
+        assert!(
+            flat > 0.0,
+            "control: the blast did nothing to the flat suit"
+        );
+        assert!(
+            (sealed - flat * SHIELD_DAMAGE_MULT).abs() < 0.05,
+            "sealed lost {sealed}, flat {flat}: want flat x SHIELD_DAMAGE_MULT"
+        );
+    }
+
+    /// R24: the suit is full at join and **restored on respawn** in space —
+    /// what stops the first radiation death guaranteeing the second — and not
+    /// issued at all outside space.
+    #[test]
+    fn the_suit_is_full_at_join_and_at_respawn_in_space_only() {
+        for (g, want) in [
+            (GravityMode::Space, BATTERY_MAX),
+            (GravityMode::Standard, 0.0),
+        ] {
+            let mut w = World::for_test(4242, MapScale::Small);
+            w.weather_mode = WeatherMode::Off;
+            w.gravity = g;
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(ANA, 0, "ana".into());
+            assert_eq!(battery(&w, ANA), want, "{g:?}: at join");
+            if let Some(p) = w.player_mut(ANA) {
+                p.battery = 0.0;
+                p.iframes_until = 0.0;
+                p.health = 0.0;
+            }
+            let mut respawned = false;
+            for _ in 0..((crate::constants::RESPAWN_DELAY + 1.0) * SIM_HZ as f32) as u32 {
+                w.step(SIM_DT);
+                respawned |= w
+                    .drain_events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::Respawn { id: ANA, .. }));
+                if respawned {
+                    break;
+                }
+            }
+            assert!(respawned, "{g:?}: ana never respawned");
+            assert_eq!(battery(&w, ANA), want, "{g:?}: at respawn");
+        }
     }
 }

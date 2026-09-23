@@ -740,11 +740,34 @@ impl GameCore {
     /// the two must not be able to disagree — a second copy of "holds a generator
     /// and has charge" in TypeScript is exactly the divergence `docs/01` exists to
     /// prevent.
+    ///
+    /// **`suit = false`, as bit 3's encoder passes it** (T22.09A, `M22-RULINGS`
+    /// R26): this draws the generator's bubble, and the suit does not wear one.
+    /// The suit's seal is [`GameCore::irradiated`].
+    ///
+    /// **Still no clock** (R26's "fix the lie"): the predicate ignores `now`,
+    /// and giving this a `now` changes `Core.shieldActive`'s call in
+    /// `client/src/core/index.ts`, which is `T22.09B`'s Touch only, not this
+    /// task's. Filed there.
     pub fn shield_active(&self, id: u8) -> bool {
         self.players
             .iter()
             .find(|p| p.id == id)
-            .is_some_and(|p| p.stats.shield_active(0.0))
+            .is_some_and(|p| p.stats.shield_active(0.0, false))
+    }
+
+    /// Is space's radiation getting through to this player? (T22.09A, R6.)
+    ///
+    /// **It calls `PlayerState::irradiated`, the function snapshot bit 7 is
+    /// encoded from**, with this core's mode for the suit — so the sandbox and a
+    /// networked client cannot disagree about when to show it. The sandbox has
+    /// no `World::step`, so radiation never *damages* here; this is the
+    /// feedback's input only (T22.09B).
+    pub fn irradiated(&self, id: u8) -> bool {
+        self.players
+            .iter()
+            .find(|p| p.id == id)
+            .is_some_and(|p| p.stats.irradiated(0.0, self.gravity.wears_suit()))
     }
 
     // ---- metadata --------------------------------------------------------
@@ -961,7 +984,12 @@ impl GameCore {
                     dt,
                 );
             }
-            apply_hits(&mut self.players, &hits.borrow(), now);
+            apply_hits(
+                &mut self.players,
+                &hits.borrow(),
+                now,
+                self.gravity.wears_suit(),
+            );
         }
         // The sandbox has no birds, so the bullet-only slice is empty here.
         let outcomes = self
@@ -1121,7 +1149,12 @@ impl GameCore {
                         }
                         self.players[i].body.vel = vel;
                         if let (true, Some(src)) = (taken > 0.0, src) {
-                            self.players[i].stats.apply_damage(taken, src, now);
+                            self.players[i].stats.apply_damage(
+                                taken,
+                                src,
+                                now,
+                                self.gravity.wears_suit(),
+                            );
                             events.push(serde_json::json!({
                                 "bullet": { "id": pid, "x": at.x, "y": at.y,
                                             "hit": self.players[i].id, "damage": taken,
@@ -1188,7 +1221,9 @@ impl GameCore {
                 self.players[i].body.vel = vel;
                 if taken > 0.0 {
                     let src = DamageSource::SelfInflicted { weapon };
-                    self.players[i].stats.apply_damage(taken, src, now);
+                    self.players[i]
+                        .stats
+                        .apply_damage(taken, src, now, self.gravity.wears_suit());
                     hits_json.push(serde_json::json!({
                         "id": self.players[i].id,
                         "damage": taken,
@@ -1344,8 +1379,12 @@ impl GameCore {
         let poison = game_core::constants::TOXIC_POISON_DPS * dt;
         for p in self.players.iter_mut() {
             if p.stats.alive && p.stats.poisoned(now) {
-                p.stats
-                    .apply_damage(poison, DamageSource::Weather(EffectKind::ToxicRain), now);
+                p.stats.apply_damage(
+                    poison,
+                    DamageSource::Weather(EffectKind::ToxicRain),
+                    now,
+                    self.gravity.wears_suit(),
+                );
             }
         }
 
@@ -1360,7 +1399,12 @@ impl GameCore {
                 let mut targets = build_targets(&mut self.players, &hits);
                 l.tick(&mut self.map, &mut targets, lava_on, now, dt);
             }
-            apply_hits(&mut self.players, &hits.borrow(), now);
+            apply_hits(
+                &mut self.players,
+                &hits.borrow(),
+                now,
+                self.gravity.wears_suit(),
+            );
             for v in l.vents() {
                 vents.push(serde_json::json!({
                     "x": v.pos.x, "y": v.pos.y, "lean": v.lean,
@@ -2164,6 +2208,25 @@ mod tests {
         assert!(!core.load_mask(0, 0, &[0]));
         // A width that is not a multiple of 64 cannot describe a mask.
         assert!(!core.load_mask(100, 100, &[0]));
+    }
+
+    /// T22.09A: `irradiated` is the sandbox's bit 7 — a flat suit in space,
+    /// with the charged suit and the standard mode as its absences' controls —
+    /// and the suit never lights `shield_active`, the bubble's input (R26).
+    #[test]
+    fn irradiated_is_a_flat_suit_in_space_and_the_suit_draws_no_bubble() {
+        let mut core = GameCore::new();
+        core.generate(4242, 0, 0);
+        core.add_player(1, 500.0, 40.0);
+        assert!(!core.irradiated(1), "irradiated outside space");
+        assert!(core.set_gravity("space"));
+        assert!(core.irradiated(1), "a flat suit in space is not irradiated");
+        core.add_battery(1, game_core::constants::BATTERY_MAX);
+        assert!(!core.irradiated(1), "a charged suit let radiation in");
+        assert!(
+            !core.shield_active(1),
+            "the suit drew the generator's bubble"
+        );
     }
 
     #[test]
@@ -3934,11 +3997,19 @@ fn build_targets<'a>(players: &'a mut [LocalPlayer], hits: &HitLog) -> Vec<HitTa
 }
 
 /// Apply what `build_targets` recorded, through the real stats path.
-fn apply_hits(players: &mut [LocalPlayer], hits: &[(u8, f32)], now: f32) {
+///
+/// `suit` is the core's `GravityMode::wears_suit()` (T22.09A, R2): in space the
+/// suit absorbs as the server's does, so the sandbox cannot show a hit the
+/// networked game would have softened.
+fn apply_hits(players: &mut [LocalPlayer], hits: &[(u8, f32)], now: f32, suit: bool) {
     for (id, amount) in hits {
         if let Some(p) = players.iter_mut().find(|p| p.id == *id) {
-            p.stats
-                .apply_damage(*amount, DamageSource::Weather(EffectKind::ToxicRain), now);
+            p.stats.apply_damage(
+                *amount,
+                DamageSource::Weather(EffectKind::ToxicRain),
+                now,
+                suit,
+            );
         }
     }
 }

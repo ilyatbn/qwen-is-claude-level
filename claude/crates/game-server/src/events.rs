@@ -439,6 +439,10 @@ fn cause_name(c: DeathCause) -> &'static str {
         // and the kill feed have a sentence to write, and "killed by the weather"
         // for someone who dug through the floor is the wrong one.
         DeathCause::Void => "void",
+        // T22.09A, `M22-RULINGS` R20. Its own string for the reason `void` has
+        // one. **The client end fails silently** until T22.09B adds it to
+        // `GameScene`'s allowlist, which turns anything unlisted into `player`.
+        DeathCause::Radiation => "radiation",
     }
 }
 

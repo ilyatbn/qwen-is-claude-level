@@ -918,7 +918,12 @@ fn a_held_generator_reduces_damage_and_a_second_one_does_not_stack() {
     let mut p = PlayerState::new(0, Vec2::ZERO, 0);
     p.add_battery(registry_battery_max());
     p.inventory.add(registry::SHIELD_GENERATOR, 1);
-    p.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
+    p.apply_damage(
+        40.0,
+        DamageSource::Weather(EffectKind::ToxicRain),
+        1.0,
+        false,
+    );
     assert!(
         (p.health - (BASE_HEALTH - 40.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
         "health {}",
@@ -932,13 +937,23 @@ fn a_held_generator_reduces_damage_and_a_second_one_does_not_stack() {
     let mut q = PlayerState::new(0, Vec2::ZERO, 0);
     q.add_battery(registry_battery_max());
     q.inventory.add(registry::SHIELD_GENERATOR, 2);
-    q.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
+    q.apply_damage(
+        40.0,
+        DamageSource::Weather(EffectKind::ToxicRain),
+        1.0,
+        false,
+    );
     assert!((q.health - p.health).abs() < 0.01, "two generators stacked");
 
     // The control: same hit, no generator, no reduction and no charge spent.
     let mut r = PlayerState::new(0, Vec2::ZERO, 0);
     r.add_battery(registry_battery_max());
-    r.apply_damage(40.0, DamageSource::Weather(EffectKind::ToxicRain), 1.0);
+    r.apply_damage(
+        40.0,
+        DamageSource::Weather(EffectKind::ToxicRain),
+        1.0,
+        false,
+    );
     assert!((r.health - (BASE_HEALTH - 40.0)).abs() < 0.01);
     assert!(r.health < p.health, "the generator did nothing");
 }
@@ -969,13 +984,15 @@ fn iframes_block_damage_for_exactly_the_spawn_window() {
     assert!(!p.apply_damage(
         10.0,
         DamageSource::Weather(EffectKind::LavaBurst),
-        10.0 + SPAWN_IFRAMES - 0.1
+        10.0 + SPAWN_IFRAMES - 0.1,
+        false
     ));
     assert_eq!(p.health, BASE_HEALTH);
     assert!(p.apply_damage(
         10.0,
         DamageSource::Weather(EffectKind::LavaBurst),
-        10.0 + SPAWN_IFRAMES + 0.1
+        10.0 + SPAWN_IFRAMES + 0.1,
+        false
     ));
     assert_eq!(p.health, BASE_HEALTH - 10.0);
 }
@@ -1002,6 +1019,7 @@ fn a_self_kill_costs_the_victim_a_point_and_credits_nobody() {
             weapon: WEAPON_BAZOOKA,
         },
         1.0,
+        false,
     );
     assert!(me.health <= 0.0);
     let cause = me.killer(DeathCause::SelfInflicted, 1.0);
@@ -1023,6 +1041,7 @@ fn the_assist_window_credits_at_four_point_nine_and_not_at_five_point_one() {
             weapon: WEAPON_SMG,
         },
         100.0,
+        false,
     );
     assert_eq!(p.killer(DeathCause::Weather, 104.9), DeathCause::Player(3));
 
@@ -1034,6 +1053,7 @@ fn the_assist_window_credits_at_four_point_nine_and_not_at_five_point_one() {
             weapon: WEAPON_SMG,
         },
         100.0,
+        false,
     );
     assert_eq!(q.killer(DeathCause::Weather, 105.1), DeathCause::Weather);
 }

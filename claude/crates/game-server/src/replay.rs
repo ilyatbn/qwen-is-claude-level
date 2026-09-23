@@ -221,7 +221,18 @@ pub const HEADER_BYTES: usize = 46;
 /// The `gravity` note above still stands for the setting itself: it is an input
 /// carried in the header, and it is what the *field* is derived from rather than
 /// being hashed on its own.
-pub const REPLAY_VERSION: u16 = 15;
+///
+/// **16 (T22.09A, radiation — `M22-RULINGS` R77)**: the same silent-divergence
+/// shape as 15, ratified on 15's reasoning (R61). No new tag, no layout change.
+///
+///  - **`World::state_hash` gained `PlayerState::radiation_exposure`** (R74), so
+///    every checkpoint hash moves, in every mode — a standard round folds in a
+///    zero it did not fold before.
+///  - **A space round is a different simulation**: the suit starts full, drains
+///    a unit a second, radiation lands on the unsealed, and the battery pack
+///    spawns twice as often, so a v15 space recording diverges at its first
+///    initial item roll.
+pub const REPLAY_VERSION: u16 = 16;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

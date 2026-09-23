@@ -6,7 +6,8 @@ use crate::constants::{
     boots_fall_safe_speed, boots_jump_velocity_mult, BASE_HEALTH, BATTERY_MAX, BOOTS_SPEED_MULT,
     DEATH_POINTS, FALL_DAMAGE_PER_SPEED, FALL_SAFE_SPEED, HEALTH_CAP, HEALTH_SPEED_MIN,
     KILL_POINTS, LASER_BATTERY_DRAIN, LASER_SHIELD_MULT, LIFESTEAL_DAMAGE_PER_HP, OVERHEAL_DECAY,
-    RESPAWN_DELAY, SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
+    RADIATION_DPS, RADIATION_LOG_INTERVAL, RADIATION_SHIELD_COST, RESPAWN_DELAY,
+    SHIELD_DAMAGE_MULT, SHIELD_HIT_COST, SPAWN_IFRAMES, SPAWN_MIN_ENEMY_DIST,
     TOXIC_POISON_DURATION, WINGS_SPEED_MULT,
 };
 use crate::items::inventory::{Inventory, Stack};
@@ -74,6 +75,12 @@ pub enum DeathCause {
     /// Fell out of the world (§C15). A boundary, not damage — see
     /// `World::step_void` for why it does not go through the damage funnel.
     Void,
+    /// Space's radiation, on an unsealed suit (T22.09A, `M22-RULINGS` R20).
+    ///
+    /// Named by `World`'s per-tick list of who radiation hit (`R75`), not
+    /// re-derived from "in space and unsealed" — that would name a meteor
+    /// death radiation. Credits a recent attacker exactly as `Weather` does.
+    Radiation,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -100,6 +107,8 @@ pub struct PlayerState {
     // generator is *carried* now and pays per hit, so "is the shield up" is a
     // derived question with two inputs that are already state — the inventory and
     // the battery. A field beside them would be a third answer that can disagree.
+    // **The suit is not a field either** (`M22-RULINGS` R26): it is the mode,
+    // and the caller of `shield_active` supplies it.
     /// Shared by shields and energy weapons (§B5): every laser shot is a shield
     /// you are not going to have.
     pub battery: f32,
@@ -131,6 +140,18 @@ pub struct PlayerState {
     /// however the caller ticks. It is compared against the same `now` every
     /// other timer here uses.
     pub poisoned_until: f32,
+    /// Seconds of unsealed exposure to space's radiation not yet logged as
+    /// damage (T22.09A, `M22-RULINGS` R25, R74).
+    ///
+    /// **A field, against this struct's "derive, do not store" comments above,
+    /// because `R25` names it** — *"Reverse it by: the accumulator"* — and `R74`
+    /// rules it outranks them. It is not a second answer to anything: nothing
+    /// else knows how far into the current second of exposure a player is.
+    /// Radiation logs once per `RADIATION_LOG_INTERVAL`, never per tick, and
+    /// this is what counts to it. Hashed (`World::state_hash`); cleared by
+    /// `respawn`. **Kept across a seal**, so a suit flickering on and off at the
+    /// edge of an empty battery cannot dodge the tick by resetting it.
+    pub radiation_exposure: f32,
     /// Until when this player counts as **thrown** rather than walking (§C20).
     ///
     /// Stamped wherever an impulse is applied to them — `explode` and
@@ -180,6 +201,7 @@ impl PlayerState {
             respawn_at: 0.0,
             iframes_until: 0.0,
             poisoned_until: 0.0,
+            radiation_exposure: 0.0,
             knocked_until: 0.0,
             tombstone_skin_id: 0,
             hat_id: 0,
@@ -217,9 +239,69 @@ impl PlayerState {
     /// `now` is unused and kept: bit 3's encoder passes it, every caller has it,
     /// and a signature that loses it would have to grow it back the first time
     /// the rule wants a clock again.
-    pub fn shield_active(&self, now: f32) -> bool {
+    ///
+    /// # `suit`: the second source (T22.09A, `M22-RULINGS` R2, R26)
+    ///
+    /// **One predicate, two ways to satisfy it**: a generator in the bag, *or*
+    /// the spacesuit — and either way only while the battery has charge. `suit`
+    /// comes from the caller because `PlayerState` has no route to the mode, and
+    /// every production caller derives it from `GravityMode::wears_suit`.
+    ///
+    /// **The suit therefore also multiplies weapon damage by
+    /// `SHIELD_DAMAGE_MULT`, and that is a feature, not a side effect** (R2): a
+    /// spacesuit that softens a hit is the right reading of a spacesuit, and it
+    /// gives the battery a second reason to matter. Do not file it as a bug.
+    ///
+    /// **Bit 3 on the wire passes `suit = false`** (R26): the bubble means "is
+    /// carrying a generator", and under the suit every player in space would
+    /// wear one all round. The suit's seal shows as bit 7 instead.
+    ///
+    /// **Reverse it by** (R2): split this into `shield_absorbs()` and
+    /// `shield_seals()` and give the suit only the second.
+    pub fn shield_active(&self, now: f32, suit: bool) -> bool {
         let _ = now;
-        self.battery > 0.0 && self.holds_shield_generator()
+        self.battery > 0.0 && (suit || self.holds_shield_generator())
+    }
+
+    /// Is space's radiation getting through to this player right now?
+    /// (T22.09A, `M22-RULINGS` R6.) Snapshot bit 7, and `GameCore::irradiated`.
+    ///
+    /// **One function for both ends**, so the networked client and the sandbox
+    /// cannot disagree about when to show it. `suit` is the mode's
+    /// `wears_suit()`; outside space there is no radiation and this is false
+    /// whatever the battery says.
+    pub fn irradiated(&self, now: f32, suit: bool) -> bool {
+        suit && self.alive && !self.shield_active(now, true)
+    }
+
+    /// One tick of space's radiation (T22.09A, `M22-RULINGS` R24, R25). Returns
+    /// the damage to **log** this tick — `Some` once per whole
+    /// `RADIATION_LOG_INTERVAL` of unsealed exposure, `None` otherwise.
+    ///
+    /// Only `World::step`'s stage 8c calls it, and only in a suit mode, alive,
+    /// in `Playing` — so the seal is asked with `suit = true`.
+    ///
+    /// **Sealed, the battery pays `RADIATION_SHIELD_COST` a second**; unsealed,
+    /// exposure accumulates and nothing is spent. The damage is *returned*, not
+    /// applied: it has to go through `World::apply_damage_log`, where the warmup
+    /// gate, the `Damage` event and the death attribution live (R25).
+    ///
+    /// **Half a tick early, and that is not a tolerance on the rate.** Sixty
+    /// `f32` sums of `SIM_DT` land either side of 1.0, and a strict `>=` would
+    /// log some seconds on tick 61. Comparing at the tick *nearest* the whole
+    /// interval and then subtracting exactly one interval keeps the long-run
+    /// rate at `RADIATION_DPS` with no drift.
+    pub fn radiation_tick(&mut self, now: f32, dt: f32) -> Option<f32> {
+        if self.shield_active(now, true) {
+            self.battery = (self.battery - RADIATION_SHIELD_COST * dt).max(0.0);
+            return None;
+        }
+        self.radiation_exposure += dt;
+        if self.radiation_exposure + 0.5 * dt >= RADIATION_LOG_INTERVAL {
+            self.radiation_exposure -= RADIATION_LOG_INTERVAL;
+            return Some(RADIATION_DPS * RADIATION_LOG_INTERVAL);
+        }
+        None
     }
 
     /// Is a shield generator anywhere in the bag? (T20.08)
@@ -676,7 +758,9 @@ impl PlayerState {
     }
 
     /// Returns true when the damage was actually applied.
-    pub fn apply_damage(&mut self, amount: f32, src: DamageSource, now: f32) -> bool {
+    ///
+    /// `suit` is the mode's `GravityMode::wears_suit()` — see `shield_active`.
+    pub fn apply_damage(&mut self, amount: f32, src: DamageSource, now: f32, suit: bool) -> bool {
         if !self.alive || self.invulnerable(now) {
             return false;
         }
@@ -691,7 +775,7 @@ impl PlayerState {
             // Neither has a weapon, so neither can pierce a shield. A fall is
             // stopped by a generator exactly as a rocket is, which is the
             // answer that needs no new rule.
-            DamageSource::Weather(_) | DamageSource::Fall => false,
+            DamageSource::Weather(_) | DamageSource::Fall | DamageSource::Radiation => false,
         };
         // §B5 and T20.08: a held generator spends energy **per hit** and reduces
         // what gets through. This is the only place the shield costs anything.
@@ -703,7 +787,7 @@ impl PlayerState {
         // fraction paid keeps the boolean and the charge in agreement at both
         // costs, and degrades a dying generator smoothly instead of cutting it off
         // at a threshold nobody can see.
-        let mult = if self.shield_active(now) {
+        let mult = if self.shield_active(now, suit) {
             let full = if energy {
                 LASER_SHIELD_MULT
             } else {
@@ -758,7 +842,9 @@ impl PlayerState {
         match src {
             DamageSource::Player { id, .. } => self.last_damaged_by = Some((id, now)),
             DamageSource::SelfInflicted { .. } => self.last_damaged_by = Some((self.id, now)),
-            DamageSource::Weather(_) => {}
+            // Radiation names nobody, like the weather: nobody caused it, and a
+            // recent attacker's claim must survive it for `killer` to credit them.
+            DamageSource::Weather(_) | DamageSource::Radiation => {}
             // **A fall names you only when nobody else has a claim** (T20.11).
             //
             // Neither of the two obvious arms is right on its own. Writing
@@ -805,16 +891,20 @@ impl PlayerState {
             // Falling in under your own power still credits nobody, because
             // `last_damaged_by` is then empty and the fallthrough returns the
             // cause unchanged.
-            DeathCause::Weather | DeathCause::Void => match self.last_damaged_by {
-                Some((who, when)) if now - when <= ASSIST_WINDOW => {
-                    if who == self.id {
-                        DeathCause::SelfInflicted
-                    } else {
-                        DeathCause::Player(who)
+            // `Radiation` too (T22.09A): shot to 3 health and finished by the
+            // sky is the shooter's kill, by the same reason word for word.
+            DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {
+                match self.last_damaged_by {
+                    Some((who, when)) if now - when <= ASSIST_WINDOW => {
+                        if who == self.id {
+                            DeathCause::SelfInflicted
+                        } else {
+                            DeathCause::Player(who)
+                        }
                     }
+                    _ => direct,
                 }
-                _ => direct,
-            },
+            }
         }
     }
 
@@ -906,6 +996,8 @@ impl PlayerState {
         self.alive = true;
         self.iframes_until = now + SPAWN_IFRAMES;
         self.poisoned_until = 0.0;
+        // Per life, like the poison: a new body has had no exposure yet.
+        self.radiation_exposure = 0.0;
         self.last_damaged_by = None;
         // Nothing to clear for the flashlight or the shield: both are *items* now,
         // and `clear()` above took them with the rest of the inventory
@@ -1236,16 +1328,22 @@ mod battery_tests {
         p.add_battery(BATTERY_MAX);
         // A full battery and no generator is **not** a shield. The control that
         // stops every assertion below passing for a player who is simply charged.
-        assert!(!p.shield_active(0.0), "a battery alone shielded a player");
+        assert!(
+            !p.shield_active(0.0, false),
+            "a battery alone shielded a player"
+        );
 
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
-        assert!(p.shield_active(0.0), "carrying a generator did not shield");
+        assert!(
+            p.shield_active(0.0, false),
+            "carrying a generator did not shield"
+        );
 
         // **Not the active slot** — the brief is explicit. Selecting something
         // else must change nothing.
         p.inventory.select(0);
         assert!(
-            p.shield_active(0.0),
+            p.shield_active(0.0, false),
             "the generator only worked while it was selected"
         );
 
@@ -1255,7 +1353,42 @@ mod battery_tests {
             p.tick_stats(i as f32 * SIM_DT, SIM_DT);
         }
         assert_eq!(p.battery, BATTERY_MAX, "a held generator drained over time");
-        assert!(p.shield_active(10.0));
+        assert!(p.shield_active(10.0, false));
+    }
+
+    /// T22.09A, `M22-RULINGS` R2/R26: **the suit is the second source of the
+    /// one shield** — charged and in space, a player with no generator is
+    /// shielded, absorbs a weapon hit exactly as a generator does (R2 calls
+    /// that a feature), and is not irradiated. Flat, it is none of those.
+    #[test]
+    fn the_suit_is_a_shield_while_charged_and_nothing_when_flat() {
+        let mut p = player();
+        p.add_battery(BATTERY_MAX);
+        assert!(!p.holds_shield_generator(), "fixture: no generator");
+        // The control: the same charge outside space shields nothing.
+        assert!(
+            !p.shield_active(0.0, false),
+            "a charged bag shielded outside space"
+        );
+        assert!(!p.irradiated(0.0, false), "irradiated outside space");
+        assert!(p.shield_active(0.0, true), "a charged suit did not shield");
+        assert!(!p.irradiated(0.0, true), "a charged suit let radiation in");
+
+        p.apply_damage(20.0, ballistic_source(), 1.0, true);
+        assert!(
+            (p.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
+            "the suit did not absorb like a generator: health {}",
+            p.health
+        );
+
+        let mut q = player();
+        assert!(!q.shield_active(0.0, true), "a flat suit shielded");
+        assert!(
+            q.irradiated(0.0, true),
+            "a flat suit in space is not irradiated"
+        );
+        q.alive = false;
+        assert!(!q.irradiated(0.0, true), "a corpse is irradiated");
     }
 
     /// The brief, in one test: **25 % off each hit, one energy each time.**
@@ -1267,7 +1400,7 @@ mod battery_tests {
 
         let hits = 5;
         for _ in 0..hits {
-            p.apply_damage(20.0, ballistic_source(), 1.0);
+            p.apply_damage(20.0, ballistic_source(), 1.0, false);
         }
         // Both ends, against each other: energy spent versus hits absorbed.
         assert!(
@@ -1287,7 +1420,7 @@ mod battery_tests {
         let mut q = player();
         q.add_battery(BATTERY_MAX);
         for _ in 0..hits {
-            q.apply_damage(20.0, ballistic_source(), 1.0);
+            q.apply_damage(20.0, ballistic_source(), 1.0, false);
         }
         assert!(
             (q.health - (BASE_HEALTH - 20.0 * hits as f32)).abs() < 0.01,
@@ -1318,7 +1451,7 @@ mod battery_tests {
         let tick = crate::constants::TOXIC_POISON_DPS * SIM_DT;
         let ticks = (crate::constants::TOXIC_POISON_DURATION / SIM_DT) as usize;
         for _ in 0..ticks {
-            p.apply_damage(tick, ballistic_source(), 1.0);
+            p.apply_damage(tick, ballistic_source(), 1.0, false);
         }
         let stopped = tick * ticks as f32 * (1.0 - SHIELD_DAMAGE_MULT);
         let spent = BATTERY_MAX - p.battery;
@@ -1328,7 +1461,10 @@ mod battery_tests {
         );
         // And the reduction held for all of it, which is the thing the flat cost
         // broke: the generator must not run dry on a trickle.
-        assert!(p.shield_active(1.0), "a trickle exhausted a full battery");
+        assert!(
+            p.shield_active(1.0, false),
+            "a trickle exhausted a full battery"
+        );
         assert!(
             (p.health - (BASE_HEALTH - tick * ticks as f32 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
             "health {}",
@@ -1340,7 +1476,7 @@ mod battery_tests {
         let mut q = player();
         q.add_battery(BATTERY_MAX);
         q.inventory.add(registry::SHIELD_GENERATOR, 1);
-        q.apply_damage(20.0, ballistic_source(), 1.0);
+        q.apply_damage(20.0, ballistic_source(), 1.0, false);
         assert!(
             (BATTERY_MAX - q.battery - SHIELD_HIT_COST).abs() < 0.01,
             "a 20-damage hit cost {} energy, not {SHIELD_HIT_COST}",
@@ -1354,17 +1490,17 @@ mod battery_tests {
         let mut p = player();
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.add_battery(SHIELD_HIT_COST);
-        assert!(p.shield_active(0.0));
+        assert!(p.shield_active(0.0, false));
 
-        p.apply_damage(20.0, ballistic_source(), 1.0);
+        p.apply_damage(20.0, ballistic_source(), 1.0, false);
         assert_eq!(p.battery, 0.0);
         assert!(
-            !p.shield_active(0.0),
+            !p.shield_active(0.0, false),
             "a flat battery still read as shielded"
         );
 
         let before = p.health;
-        p.apply_damage(20.0, ballistic_source(), 1.0);
+        p.apply_damage(20.0, ballistic_source(), 1.0, false);
         assert!(
             (p.health - (before - 20.0)).abs() < 0.01,
             "damage at zero charge was still reduced"
@@ -1373,9 +1509,9 @@ mod battery_tests {
         // The control on the control: it comes back. Without this, "the shield
         // stops" would also pass for a generator that never worked again.
         p.add_battery(BATTERY_PACK_AMOUNT);
-        assert!(p.shield_active(0.0));
+        assert!(p.shield_active(0.0, false));
         let before = p.health;
-        p.apply_damage(20.0, ballistic_source(), 1.0);
+        p.apply_damage(20.0, ballistic_source(), 1.0, false);
         assert!((p.health - (before - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01);
     }
 
@@ -1385,7 +1521,7 @@ mod battery_tests {
         let mut p = player();
         p.add_battery(BATTERY_MAX);
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
-        p.apply_damage(20.0, energy_source(), 5.0);
+        p.apply_damage(20.0, energy_source(), 5.0, false);
         assert!(
             (p.health - (BASE_HEALTH - 20.0 * LASER_SHIELD_MULT)).abs() < 0.01,
             "energy did not pierce: health {}",
@@ -1403,7 +1539,7 @@ mod battery_tests {
         let mut q = player();
         q.add_battery(BATTERY_MAX);
         q.inventory.add(registry::SHIELD_GENERATOR, 1);
-        q.apply_damage(20.0, ballistic_source(), 5.0);
+        q.apply_damage(20.0, ballistic_source(), 5.0, false);
         assert!(
             (q.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01,
             "ballistic damage was not reduced: health {}",
@@ -1426,11 +1562,11 @@ mod battery_tests {
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.add_battery(LASER_BATTERY_DRAIN / 2.0);
         assert!(
-            p.shield_active(1.0),
+            p.shield_active(1.0, false),
             "bit 3 must be true if anything is absorbed"
         );
 
-        p.apply_damage(20.0, energy_source(), 1.0);
+        p.apply_damage(20.0, energy_source(), 1.0, false);
         // Half the cost paid, so half the reduction: the multiplier sits midway
         // between `LASER_SHIELD_MULT` and taking it whole.
         let want = 1.0 + (LASER_SHIELD_MULT - 1.0) * 0.5;
@@ -1441,7 +1577,7 @@ mod battery_tests {
         );
         assert_eq!(p.battery, 0.0, "the partial payment left charge behind");
         assert!(
-            !p.shield_active(1.0),
+            !p.shield_active(1.0, false),
             "bit 3 must be false once there is nothing left to spend"
         );
     }
@@ -1452,21 +1588,24 @@ mod battery_tests {
         let mut p = player();
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
         p.add_battery(LASER_BATTERY_DRAIN * 2.0);
-        assert!(p.shield_active(1.0));
+        assert!(p.shield_active(1.0, false));
 
-        p.apply_damage(5.0, energy_source(), 1.0);
-        assert!(p.shield_active(1.0), "one hit should not be enough here");
+        p.apply_damage(5.0, energy_source(), 1.0, false);
+        assert!(
+            p.shield_active(1.0, false),
+            "one hit should not be enough here"
+        );
 
-        p.apply_damage(5.0, energy_source(), 1.0);
+        p.apply_damage(5.0, energy_source(), 1.0, false);
         assert_eq!(p.battery, 0.0);
         assert!(
-            !p.shield_active(1.0),
+            !p.shield_active(1.0, false),
             "the shield outlived the charge running it"
         );
 
         // And the next hit lands at full strength.
         let before = p.health;
-        p.apply_damage(10.0, energy_source(), 1.0);
+        p.apply_damage(10.0, energy_source(), 1.0, false);
         assert!(
             (p.health - (before - 10.0)).abs() < 0.01,
             "damage after the shield died was still reduced"
@@ -1479,7 +1618,12 @@ mod battery_tests {
         let mut p = player();
         p.add_battery(BATTERY_MAX);
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
-        p.apply_damage(20.0, DamageSource::Weather(EffectKind::ToxicRain), 5.0);
+        p.apply_damage(
+            20.0,
+            DamageSource::Weather(EffectKind::ToxicRain),
+            5.0,
+            false,
+        );
         // One energy, the ordinary cost — not `LASER_BATTERY_DRAIN` (T20.08).
         assert!((p.battery - (BATTERY_MAX - SHIELD_HIT_COST)).abs() < 0.01);
         assert!((p.health - (BASE_HEALTH - 20.0 * SHIELD_DAMAGE_MULT)).abs() < 0.01);
@@ -1495,14 +1639,14 @@ mod battery_tests {
         p.add_battery(BATTERY_MAX);
         p.inventory.add(registry::SHIELD_GENERATOR, 1);
         assert!(
-            p.shield_active(0.0),
+            p.shield_active(0.0, false),
             "the fixture is not shielded to begin with"
         );
         p.respawn(Vec2::new(10.0, 10.0), 0.0);
         assert_eq!(p.battery, BATTERY_MAX, "respawn wiped the charge");
         // The generator went with the inventory, so the shield went with it
         // (T20.08) — one fact, not two.
-        assert!(!p.shield_active(0.0), "the shield survived death");
+        assert!(!p.shield_active(0.0, false), "the shield survived death");
         assert!(!p.holds_shield_generator());
     }
 }

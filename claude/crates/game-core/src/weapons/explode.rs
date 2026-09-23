@@ -51,6 +51,14 @@ pub enum DamageSource {
     /// attacker only when nobody else has a claim inside `ASSIST_WINDOW`, so
     /// blasting someone off a cliff still credits the blast (`docs/21` §4).
     Fall,
+    /// Space's ambient radiation, on an unsealed suit (T22.09A, `M22-RULINGS`
+    /// R6, R20, R25).
+    ///
+    /// **Not `Weather`**: that arm carries an `EffectKind`, radiation is not
+    /// scheduled, and falling back to it would have the kill feed say "died of
+    /// the weather" in a mode that has none. No weapon and no player, so it
+    /// pierces nothing and credits nobody; its death is `DeathCause::Radiation`.
+    Radiation,
 }
 
 /// Who a blast, ray, swing or cone hit.

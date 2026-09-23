@@ -205,7 +205,7 @@ fn run_under(seed: u64, hold: Option<ItemId>, seconds: f32, gravity: GravityMode
                 GameEvent::Death { cause, .. } => match cause {
                     DeathCause::Player(_) => r.combat_deaths += 1,
                     DeathCause::SelfInflicted => r.self_deaths += 1,
-                    DeathCause::Weather | DeathCause::Void => {}
+                    DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {}
                 },
                 GameEvent::Damage {
                     amount,
@@ -522,6 +522,164 @@ fn low_gravity_report() {
          across {} seeds and three arms — `World::gravity` reaches nothing the \
          bots or the weapons can feel",
         SEEDS.len()
+    );
+}
+
+/// One natural space round's radiation economy (T22.09A), for
+/// `space_radiation_report`.
+#[derive(Debug, Default, Clone)]
+struct SpaceRound {
+    radiation_deaths: u32,
+    other_deaths: u32,
+    radiation_damage: f32,
+    packs_spawned: u32,
+    packs_picked: u32,
+    /// Alive player-seconds, and how many of them were unsealed.
+    alive_s: f32,
+    unsealed_s: f32,
+}
+
+/// A natural round on a **generated** space map (`World::with_gravity`, so the
+/// asteroids, rim and field are the shipping ones), bots at the shipping seat
+/// count, `Playing` for `seconds`.
+fn run_space(seed: u64, seconds: f32) -> SpaceRound {
+    use game_core::constants::DEFAULT_MAP_GENERATOR;
+    use game_core::items::registry::BATTERY_PACK;
+    let mut w = World::with_gravity(
+        seed,
+        DEFAULT_MAP_SCALE,
+        0,
+        DEFAULT_MAP_GENERATOR,
+        GravityMode::Space,
+    );
+    w.set_phase(RoundPhase::Playing);
+    let mut bots = Vec::new();
+    for i in 0..BOTS {
+        let id = i as u8;
+        w.add_player(id, 0, format!("Bot {i}"));
+        bots.push(Bot::new(id, seed, i as u32, SKILL));
+    }
+    // The initial placement's packs, which were spawned before anyone could
+    // hear about them: counted off the ground rather than off an event.
+    let mut r = SpaceRound {
+        packs_spawned: w.items.iter().filter(|i| i.item == BATTERY_PACK).count() as u32,
+        ..Default::default()
+    };
+    let mut what: BTreeMap<u32, u16> = w.items.iter().map(|i| (i.id, i.item)).collect();
+    let _ = w.drain_events();
+    for t in 0..(seconds / SIM_DT) as u32 {
+        let now = t as f32 * SIM_DT;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            if inp.buttons & button::FIRE != 0 {
+                let _ = w.fire(b.player, now);
+            }
+            if let Some(slot) = b.wants_use() {
+                let _ = w.use_item(b.player, slot, now);
+            }
+        }
+        w.step(SIM_DT);
+        let now = w.round_time;
+        for p in w.players.iter().filter(|p| p.alive) {
+            r.alive_s += SIM_DT;
+            if p.irradiated(now, true) {
+                r.unsealed_s += SIM_DT;
+            }
+        }
+        for e in w.drain_events() {
+            match e {
+                GameEvent::Death { cause, .. } => match cause {
+                    DeathCause::Radiation => r.radiation_deaths += 1,
+                    _ => r.other_deaths += 1,
+                },
+                GameEvent::Damage {
+                    amount,
+                    cause: DeathCause::Radiation,
+                    ..
+                } => r.radiation_damage += amount,
+                GameEvent::ItemSpawn {
+                    world_item_id,
+                    item_id,
+                    ..
+                } => {
+                    what.insert(world_item_id, item_id);
+                    if item_id == BATTERY_PACK {
+                        r.packs_spawned += 1;
+                    }
+                }
+                GameEvent::ItemPickup { world_item_id, .. }
+                    if what.get(&world_item_id) == Some(&BATTERY_PACK) =>
+                {
+                    r.packs_picked += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    r
+}
+
+/// **T22.09A — the measurement `M22-RULINGS` R24 owes.** R24's four numbers
+/// (`RADIATION_DPS`, `RADIATION_SHIELD_COST`, a full suit at spawn and on
+/// respawn, the pack's doubled space weight) came from arithmetic: *"a player
+/// who ignores batteries dies of radiation about twice a round; a player who
+/// picks up two or three does not."* This runs the shipping round — `ROUND_
+/// SECONDS` less the warmup, bots at the shipping seat count, generated space
+/// maps — over the eight seeds and prints what the economy actually does.
+///
+/// `cargo test -p game-core --release --test balance space_radiation_report -- --ignored --nocapture`
+#[test]
+#[ignore = "measurement: 0.8 s in release, measured"]
+fn space_radiation_report() {
+    use game_core::constants::{RADIATION_DPS, RADIATION_SHIELD_COST, WARMUP_SECONDS};
+    let seconds = ROUND_SECONDS - WARMUP_SECONDS;
+    println!(
+        "\n== SPACE RADIATION — {} seeds x {BOTS} bots x {seconds} s, {RADIATION_DPS} dps, \
+         seal {RADIATION_SHIELD_COST}/s ==",
+        SEEDS.len()
+    );
+    println!(
+        "{:>9}{:>8}{:>8}{:>9}{:>8}{:>8}{:>10}",
+        "seed", "raddie", "other", "raddmg", "packs", "picked", "unsealed"
+    );
+    let rs: Vec<SpaceRound> = SEEDS
+        .iter()
+        .map(|&s| {
+            let r = run_space(s, seconds);
+            println!(
+                "{s:>9}{:>8}{:>8}{:>9.0}{:>8}{:>8}{:>9.1}%",
+                r.radiation_deaths,
+                r.other_deaths,
+                r.radiation_damage,
+                r.packs_spawned,
+                r.packs_picked,
+                100.0 * r.unsealed_s / r.alive_s.max(f32::EPSILON)
+            );
+            r
+        })
+        .collect();
+    let n = (SEEDS.len() * BOTS) as f32;
+    let sum = |f: fn(&SpaceRound) -> f32| rs.iter().map(f).sum::<f32>();
+    let rad = sum(|r| r.radiation_deaths as f32);
+    let unsealed = sum(|r| r.unsealed_s) / sum(|r| r.alive_s);
+    println!(
+        "per player per round: {:.2} radiation deaths, {:.2} other deaths, {:.2} packs spawned, \
+         {:.2} picked; unsealed {:.1}% of alive time",
+        rad / n,
+        sum(|r| r.other_deaths as f32) / n,
+        sum(|r| r.packs_spawned as f32) / n,
+        sum(|r| r.packs_picked as f32) / n,
+        100.0 * unsealed
+    );
+    // The control: a report that saw no sealed time or no unsealed time is
+    // measuring one half of the economy and calling it the whole.
+    assert!(
+        sum(|r| r.alive_s) > 0.0 && unsealed > 0.0 && unsealed < 1.0,
+        "the round saw only one side of the seal (unsealed {unsealed}) — blind"
     );
 }
 

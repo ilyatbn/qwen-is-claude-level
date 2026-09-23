@@ -359,7 +359,11 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // `space::engaging` as its engage input, so `active` is exactly a push
         // being paid for. The client points the plume off `vel`, sent above.
         flags |= u8::from(p.jetpack.active) << 2;
-        flags |= u8::from(p.shield_active(now)) << 3;
+        // **`suit = false`, always** (T22.09A, `M22-RULINGS` R26): bit 3 draws
+        // the generator's bubble, which means "is carrying a generator". With
+        // the suit counted every player in space would wear it all round. The
+        // suit's seal is bit 7's business.
+        flags |= u8::from(p.shield_active(now, false)) << 3;
         // **Derived, not stored** (T20.07). The flashlight is passive: carrying
         // one is the whole state, so bit 4 means "has one in the bag" and there is
         // no `flashlight_on` latch behind it to disagree. `count_of` rather than
@@ -377,6 +381,12 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         // `docs/40` §3 lists bits 6-7 as reserved: this is bit 6, and the
         // amendment naming it is owed.
         flags |= u8::from(p.poisoned(now)) << 6;
+        // T22.09A, `M22-RULINGS` R6/R26: **radiation is getting through** —
+        // space, alive, suit unsealed. The last reserved bit; the client's
+        // radiation feedback (T22.09B) reads it, and `docs/40` §3 owes the
+        // amendment naming it, as it does for bit 6. Derived by the same
+        // `PlayerState::irradiated` the sandbox's `GameCore::irradiated` calls.
+        flags |= u8::from(p.irradiated(now, world.gravity.wears_suit())) << 7;
         b.push(flags);
 
         b.push((p.jetpack.fuel / JETPACK_MAX_FUEL * 255.0).clamp(0.0, 255.0) as u8);
@@ -1146,6 +1156,53 @@ mod tests {
                 "bit {bit} should be the only one set"
             );
         }
+    }
+
+    /// **T22.09A: bit 7 is "radiation is getting through"** — space, alive,
+    /// suit flat — and **the suit never sets bit 3** (`M22-RULINGS` R26: the
+    /// bubble is the generator's). Each absence has its presence beside it: a
+    /// flat suit in space sets 7; the same flat player in a standard round and a
+    /// charged suit in space do not; a generator still sets 3 in space.
+    #[test]
+    fn bit_seven_is_irradiated_and_the_suit_draws_no_bubble() {
+        use game_core::constants::GravityMode;
+        let bits = |gravity: GravityMode, battery: f32, generator: bool| {
+            let mut w = world_with(0);
+            w.gravity = gravity;
+            w.add_player(0, 0, "ana".into());
+            if let Some(p) = w.player_mut(0) {
+                p.battery = battery;
+                p.inventory.clear();
+                if generator {
+                    p.inventory
+                        .add(game_core::items::registry::SHIELD_GENERATOR, 1);
+                }
+            }
+            let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
+            let f = s.players[0].flags;
+            (f & (1 << 7) != 0, f & (1 << 3) != 0)
+        };
+        let full = game_core::constants::BATTERY_MAX;
+        assert_eq!(
+            bits(GravityMode::Space, 0.0, false),
+            (true, false),
+            "flat suit in space"
+        );
+        assert_eq!(
+            bits(GravityMode::Standard, 0.0, false),
+            (false, false),
+            "outside space"
+        );
+        assert_eq!(
+            bits(GravityMode::Space, full, false),
+            (false, false),
+            "charged suit"
+        );
+        assert_eq!(
+            bits(GravityMode::Space, full, true),
+            (false, true),
+            "generator in space"
+        );
     }
 
     /// **T22.04: bit 2 is the thruster plume in space — on while a push is being

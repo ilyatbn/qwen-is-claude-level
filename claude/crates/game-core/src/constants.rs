@@ -1686,6 +1686,38 @@ pub const BATTERY_MAX: f32 = 100.0;
 pub const MAX_HEALS: u8 = 2;
 pub const MAX_BATTERIES: u8 = 4;
 pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
+
+// --- T22.09A: radiation and the suit (`M22-RULINGS` R6, R24, R25) ---
+//
+// **The exchange rate is the design** (R24): one energy buys one damage
+// avoided, and `BATTERY_MAX` equals `BASE_HEALTH`, so the suit battery is a
+// second health bar that radiation eats first. A full suit is `BATTERY_MAX /
+// RADIATION_SHIELD_COST` = 100 s of grace, a pack `BATTERY_PACK_AMOUNT /
+// RADIATION_SHIELD_COST` = 50 s more, and at zero the suit fails and radiation
+// starts on health at the same rate. **A starting point with a stated basis,
+// not a measurement** — `tests/balance.rs::space_radiation_report` is the
+// 8-seed run R24 owes, and its numbers are in the journal for T22.09A.
+
+/// Damage per second to a player in space whose suit is not sealed (R6: the
+/// owner's number, "1 damage per second"). Ambient and constant — `R6`.
+pub const RADIATION_DPS: f32 = 1.0;
+/// Battery per second a sealed suit spends keeping radiation out (R24).
+///
+/// **Equal to `RADIATION_DPS` on purpose**: one energy for one damage is the
+/// sentence a player learns by dying once. It is radiation's cost, not the
+/// shield's — T20.08 deleted the per-second shield drain and R24 rules that
+/// it stays deleted; a generator outside space still costs nothing a second.
+pub const RADIATION_SHIELD_COST: f32 = 1.0;
+/// Radiation is logged once per this many seconds, never once a tick (R25).
+///
+/// At `SIM_HZ` one entry per tick per player is 360 `Damage` events a second
+/// at `MAX_PLAYERS`, each a floating number, a red vignette and a hit sound on
+/// the client. One a second is the rate the owner described.
+pub const RADIATION_LOG_INTERVAL: f32 = 1.0;
+/// `BATTERY_PACK`'s natural spawn weight is multiplied by this in space (R24,
+/// R76). Its Spawn weight is 14 of 241 (5.81 %); doubled it is 28 of 255
+/// (≈ 11 %). **Spawn column only** — crates are a separate economy (R76).
+pub const BATTERY_PACK_SPACE_WEIGHT_MULT: u16 = 2;
 // `SHIELD_DURATION` and `SHIELD_DRAIN` are **gone** (T20.08). One was the timer's
 // length and the other its per-second cost, and there is no timer: a generator is
 // held, and it spends `SHIELD_HIT_COST` per hit. Left in place they would be
@@ -2880,6 +2912,19 @@ impl GravityMode {
             "space" => Some(GravityMode::Space),
             _ => None,
         }
+    }
+
+    /// Does this mode issue the spacesuit — and so the radiation it seals out?
+    /// (T22.09A, `M22-RULINGS` R2/R6/R26.)
+    ///
+    /// **The one place the mode becomes the `suit` bit.** `R26` has the callers
+    /// of `PlayerState::shield_active` supply it because `PlayerState` has no
+    /// route to the mode; every production caller asks this, so "is there a
+    /// suit" cannot be answered two ways. Radiation, the suit battery at spawn
+    /// and the pack's doubled spawn weight all key off it too — one mode, one
+    /// bit, and `Low` is not a space mode.
+    pub const fn wears_suit(self) -> bool {
+        matches!(self, GravityMode::Space)
     }
 
     pub const fn as_str(self) -> &'static str {

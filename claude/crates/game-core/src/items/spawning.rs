@@ -29,9 +29,36 @@ const PERIODIC_ATTEMPTS: u32 = 60;
 /// Crates spawn at least this far from either wall.
 pub const CRATE_WALL_MARGIN: i32 = 200;
 
-/// Roll an item id from a weight column.
+/// Roll an item id from a weight column, outside space.
 pub fn roll_item(rng: &mut ChaCha8Rng, col: WeightColumn) -> ItemId {
-    pick_weighted(rng, &crate::items::registry::weights(col)) as ItemId
+    roll_item_in(rng, col, false)
+}
+
+/// Roll an item id, knowing whether this is a space map (T22.09A, R24, R76).
+///
+/// **In space, `BATTERY_PACK`'s natural Spawn weight is multiplied by
+/// `BATTERY_PACK_SPACE_WEIGHT_MULT`** — the pack is the suit's ammunition
+/// against radiation, and at the standard 5.81 % a whole lobby saw 2.69 packs a
+/// round (R24). **Spawn column only**: crates and buried slots are separate
+/// economies (R76). The number of RNG draws is unchanged, so the stream stays
+/// aligned and a standard round rolls exactly what it always did.
+///
+/// **`space` is read off the map** (`Map::space_geometry`), not the gravity:
+/// `place_initial` runs inside `World::from_map`, before the world's gravity is
+/// assigned, and the space map is itself derived from the mode (R15) — so the
+/// map is the one signal every caller here already holds. `tick_crates` keys
+/// its sky-drop rule off the same test.
+pub fn roll_item_in(rng: &mut ChaCha8Rng, col: WeightColumn, space: bool) -> ItemId {
+    let mut w = crate::items::registry::weights(col);
+    if space && col == WeightColumn::Spawn {
+        if let Some(i) = crate::items::registry::ITEMS
+            .iter()
+            .position(|d| d.id == crate::items::registry::BATTERY_PACK)
+        {
+            w[i] *= crate::constants::BATTERY_PACK_SPACE_WEIGHT_MULT;
+        }
+    }
+    pick_weighted(rng, &w) as ItemId
 }
 
 /// Weapons spawn at a full stack — a single-rocket pickup would make weapons feel
@@ -137,7 +164,11 @@ pub fn place_initial(world: &mut WorldItems, map: &Map, seed: u64, now: f32) -> 
             // is the caller's own `world.len()`, not this loop's trip count.
             (None, None) => continue,
         };
-        let item = roll_item(&mut rng, WeightColumn::Spawn);
+        let item = roll_item_in(
+            &mut rng,
+            WeightColumn::Spawn,
+            map.space_geometry().is_some(),
+        );
         world.spawn(
             item,
             spawn_count(item),
@@ -324,7 +355,11 @@ impl SpawnSchedule {
             let Some(p) = resample_surface(map, &mut self.rng, players) else {
                 continue;
             };
-            let item = roll_item(&mut self.rng, WeightColumn::Spawn);
+            let item = roll_item_in(
+                &mut self.rng,
+                WeightColumn::Spawn,
+                map.space_geometry().is_some(),
+            );
             out.push(world.spawn(
                 item,
                 spawn_count(item),
@@ -398,6 +433,7 @@ impl SpawnSchedule {
         // deterministic while the landing tick depends on what players have blown
         // up, so rolling late would make the stream's consumption order depend on
         // the fight (`docs/32` §4).
+        // Not doubled in space: R76 keeps crates their own economy.
         let item = roll_item(&mut self.rng, WeightColumn::Crate);
         Some(world.spawn(
             item,
@@ -528,6 +564,55 @@ mod tests {
             match d.kind {
                 ItemKind::Weapon(_) => assert_eq!(n, d.max_stack, "{} short-changed", d.key),
                 _ => assert_eq!(n, 1, "{} should spawn as one", d.key),
+            }
+        }
+    }
+
+    /// T22.09A, `M22-RULINGS` R24/R76: in space the pack's **Spawn** share is
+    /// its weight times `BATTERY_PACK_SPACE_WEIGHT_MULT` over the re-summed
+    /// table; **Crate** and **Buried** roll exactly what they roll outside
+    /// space, draw for draw on one seed. The standard Spawn column is the
+    /// control that the doubling is space's and not the roll's.
+    #[test]
+    fn the_battery_pack_is_doubled_on_the_space_spawn_column_only() {
+        use crate::constants::BATTERY_PACK_SPACE_WEIGHT_MULT;
+        use crate::items::registry::{weights, BATTERY_PACK, ITEMS};
+        const N: usize = 100_000;
+        let share = |space: bool| {
+            let mut rng = substream(7, "items");
+            let hits = (0..N)
+                .filter(|_| roll_item_in(&mut rng, WeightColumn::Spawn, space) == BATTERY_PACK)
+                .count();
+            hits as f64 / N as f64
+        };
+        let i = ITEMS
+            .iter()
+            .position(|d| d.id == BATTERY_PACK)
+            .expect("pack");
+        let w = weights(WeightColumn::Spawn);
+        let total: f64 = w.iter().map(|&x| x as f64).sum();
+        let base = w[i] as f64;
+        let extra = base * (BATTERY_PACK_SPACE_WEIGHT_MULT as f64 - 1.0);
+        let want_space = (base + extra) / (total + extra);
+        let (std, space) = (share(false), share(true));
+        assert!((std - base / total).abs() < 0.005, "standard share {std}");
+        assert!(
+            (space - want_space).abs() < 0.005,
+            "space share {space}, want {want_space}"
+        );
+        assert!(
+            space > std * 1.5,
+            "control: space {space} is not ~double {std}"
+        );
+
+        for col in [WeightColumn::Crate, WeightColumn::Buried] {
+            let (mut a, mut b) = (substream(9, "items"), substream(9, "items"));
+            for _ in 0..10_000 {
+                assert_eq!(
+                    roll_item_in(&mut a, col, true),
+                    roll_item(&mut b, col),
+                    "{col:?}"
+                );
             }
         }
     }
