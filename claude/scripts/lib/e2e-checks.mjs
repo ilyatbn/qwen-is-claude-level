@@ -87,6 +87,11 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
     serial: true,
   },
+  // T22.04B F1: the same file under normal gravity — a firing jetpack draws **no**
+  // plume, on `debug()` and on the pixels against the hidden-plume frame. The two
+  // entries above are its presence control. `plumeOn(…, true)` planted at the live
+  // call left the whole suite green before this existed.
+  { name: 'thrusters-standard', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.
@@ -301,6 +306,11 @@ export const CHECKS = [
   { name: 'smoke-shader', file: 'scripts/checks/smoke-shader.mjs', standalone: true },
   { name: 'fire-shader', file: 'scripts/checks/fire-shader.mjs', standalone: true },
   { name: 'explosion-shader', file: 'scripts/checks/explosion-shader.mjs', standalone: true },
+  // T22.04B F2/F3: GameScene's plume wiring, which no sandbox run reaches — a remote's
+  // plume on the other client in space, none after the bell, none under standard
+  // gravity, none on a player killed mid-burn. Standalone: two real servers (the
+  // second poisons everyone, for the death) and six clients.
+  { name: 'thrusters-match', file: 'scripts/checks/thrusters-match.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

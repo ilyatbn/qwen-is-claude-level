@@ -27,6 +27,12 @@
  * the `thrusters-canvas` entry runs both too and asserts it never was — Canvas with
  * High Quality **on** is the combination a missing `webgl &&` would break.
  *
+ * ## And never outside space (T22.04B)
+ *
+ * `thrusters-standard` runs this file at `?gravity=standard` and takes
+ * `standardArm` instead: a firing jetpack, no plume on `debug()` and none on the
+ * pixels. The two entries above are its presence control.
+ *
  * ## The fuel, at both ends
  *
  * Thrusting drains the core's tank and draws a plume; letting go stops both. Each is
@@ -72,7 +78,14 @@ export default async function ({ page, shot, log }) {
   log(`renderer: ${isCanvas ? 'Canvas' : 'WebGL'}`)
 
   // R22: only a space map has rocks, and only a space match draws a plume.
+  const gravity = new URL(page.url()).searchParams.get('gravity')
   const rocks = await page.evaluate(() => window.__game.core.meta.asteroids.length)
+  if (gravity === 'standard') {
+    // T22.04B F1: the entry that asks for normal gravity gets the absence arm and
+    // nothing else. The rocks are its proof it is not a space map in disguise.
+    if (rocks !== 0) throw new Error(`?gravity=standard generated ${rocks} asteroids — this is a space map`)
+    return standardArm({ page, shot, log, k, dbg, waitFor, frames, isCanvas })
+  }
   if (rocks === 0) throw new Error('no asteroids — `?gravity=space` did not reach the scene')
 
   /**
@@ -214,6 +227,119 @@ export default async function ({ page, shot, log }) {
   for (const hq of [false, true]) {
     await arm({ key: 's', plumeSide: -1, hq })
     await arm({ key: 'w', plumeSide: 1, hq })
+  }
+  await page.evaluate(() => window.__game.setHighQuality(false))
+}
+
+/**
+ * T22.04B F1 — **under normal gravity a firing pack draws no plume.**
+ *
+ * The shipped jetpack pushes *up* whichever way the body moves, so a plume
+ * pointed off velocity would be backwards there; `plumeOn` keeps it to space.
+ * `plumeOn`'s unit test covers the pure function and nothing that calls it, and
+ * planting `plumeOn(alive, jetpack, true)` at `PlayerView.setState` left vitest
+ * and three e2e checks green (the T22.04 review).
+ *
+ * Both ends (§A39), and neither alone: the view says it drew nothing, **and** the
+ * strips above and below the body are unchanged between the frame as drawn and
+ * the same frozen instant with the plume hidden — a plume drawn with `drawn`
+ * misreported would still move a strip. The presence control is the space
+ * entries, `thrusters` and `thrusters-canvas`, which run this same photograph and
+ * require it to change.
+ */
+async function standardArm({ page, shot, log, k, dbg, waitFor, frames, isCanvas }) {
+  // Open air near the top of the map: the jetpack climbs, and a body on the
+  // ground under a standard map's sky is the one place the pack does not fire.
+  const spot = await page.evaluate(
+    ([bodyH, halfW, halfH]) => {
+      const core = window.__game.core
+      const pad = bodyH * 3
+      const clear = (x, y) => {
+        for (let dy = -pad; dy <= pad; dy += 4) {
+          for (let dx = -pad; dx <= pad; dx += 4) {
+            if (core.solidAt(Math.round(x + dx), Math.round(y + dy))) return false
+          }
+        }
+        return true
+      }
+      for (let y = halfH + pad; y < core.height - halfH - pad; y += bodyH) {
+        for (let x = core.width / 2; x < core.width - halfW - pad; x += bodyH) {
+          if (clear(x, y)) return { x, y }
+        }
+      }
+      return null
+    },
+    [k.PLAYER_H, k.VIEWPORT_W / 2 / k.CAMERA_ZOOM, k.VIEWPORT_H / 2 / k.CAMERA_ZOOM],
+  )
+  if (!spot) throw new Error('no open air three bodies clear on this map')
+  await page.evaluate(() => {
+    window.__game.setTime(0)
+    window.__game.setParallaxClock(0)
+  })
+  const strip = async (px, py, side) => {
+    const cy = py - k.PLAYER_H / 2
+    const near = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
+    const far = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
+    const a = await toScreen(page, px - k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * near)
+    const b = await toScreen(page, px + k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * far)
+    if (!a.onScreen || !b.onScreen) throw new Error('the body is not on screen')
+    const x = Math.round(Math.min(a.x, b.x))
+    const y = Math.round(Math.min(a.y, b.y))
+    return { x, y, w: Math.max(2, Math.round(Math.abs(b.x - a.x))), h: Math.max(2, Math.round(Math.abs(b.y - a.y))) }
+  }
+
+  for (const hq of [false, true]) {
+    const label = `standard gravity, jetpack held, High Quality ${hq ? 'on' : 'off'}`
+    const q = await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    if (q.setting !== hq) throw new Error(`${label}: High Quality would not change: ${JSON.stringify(q)}`)
+    await page.evaluate(([x, y]) => {
+      window.__game.place(x, y)
+      window.__game.watch(x, y)
+    }, [spot.x, spot.y])
+    await frames(3)
+    // Space, not W: under gravity the pack is the jump key held (`hud-bars`).
+    await page.keyboard.down('Space')
+    try {
+      await waitFor(() => window.__game.debug().player.moveState === 2, null, `${label}: the jetpack never fired`)
+      // A few frames of burning, so a plume that took a frame to appear has had it.
+      await frames(3)
+      await page.evaluate(() => window.__game.freeze(true))
+    } finally {
+      await page.keyboard.up('Space')
+    }
+    try {
+      const d = await dbg()
+      const p = d.player
+      // The presence half of the pair: the pack **is** firing in the frozen frame.
+      if (p.moveState !== 2) throw new Error(`${label}: frozen after the pack stopped (moveState ${p.moveState})`)
+      const above = await strip(p.x, p.y, -1)
+      const below = await strip(p.x, p.y, 1)
+      const aOn = await samplePatch(page, above)
+      const bOn = await samplePatch(page, below)
+      await shot(`thrusters-${isCanvas ? 'canvas' : 'webgl'}-standard-hq-${hq ? 'on' : 'off'}`)
+      await page.evaluate(() => window.__game.showThrusters(false))
+      await frames(2)
+      const aOff = await samplePatch(page, above)
+      const bOff = await samplePatch(page, below)
+      await page.evaluate(() => window.__game.showThrusters(true))
+      await frames(2)
+      const after = (await dbg()).plume
+      // Every failure at once: a plant should say which ends it reached.
+      const bad = []
+      if (d.plume?.drawn !== false) bad.push(`the view reports a plume drawn: ${JSON.stringify(d.plume)}`)
+      if (after?.drawn !== false) bad.push(`re-shown, the view reports a plume drawn: ${JSON.stringify(after)}`)
+      for (const [where, off, on] of [['above', aOff, aOn], ['below', bOff, bOn]]) {
+        try {
+          assertUnchanged(off, on, { label: `the strip ${where} the body, as drawn against plume hidden` })
+        } catch (e) {
+          bad.push(e.message)
+        }
+      }
+      if (bad.length) throw new Error(`${label}: a plume under normal gravity —\n  ${bad.join('\n  ')}`)
+      log(`${label}: no plume drawn, both strips unchanged against the hidden-plume frame`)
+    } finally {
+      await page.evaluate(() => window.__game.freeze(false))
+    }
   }
   await page.evaluate(() => window.__game.setHighQuality(false))
 }

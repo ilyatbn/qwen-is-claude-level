@@ -6740,3 +6740,11 @@ Plume in `PlayerView` via `render/thrusterPlume.ts`: drawn once along +x, rotate
 `thrusters` + `thrusters-canvas`: DOWN → strip above changes, below 0.0; UP the reverse; HQ off and on; shader iff WebGL+HQ.
 Falsified: velocity sign flip reds all arms; dropping `webgl &&` reds the Canvas HQ-on arm. **Open:** braking draws the plume
 on the wrong side (velocity ≠ thrust); fuel is asserted against the core, not `#jetpack-readout`; `LOOK.flame` comment inverted.
+
+## T22.04B — the plume in a real match, and never outside space (2026-09-23)
+`thrusters-standard` (F1: jetpack firing under gravity, no plume on `debug()` or pixels) + standalone `thrusters-match` (F2/F3, via new `GameScene.debug().plumes`): remote plume up on the other client, off on release, off after the bell with DOWN held, none in a standard round, none on a player poisoned dead mid-burn (second server, `DEV_POISONED`). Plants, each red (`gate-t2204b-plant*.txt`):
+F1 `plumeOn(…, true)` → *"the view reports a plume drawn … the strip below the body … moved 153.7"* and *"standard gravity, jetpack firing, and a plume is drawn: dee [true,true,…]"*.
+`this.gravity = st.gravity` dropped → *"ana's scene never drew his plume pointing up"* (+3 arms); local `space: false` → *"his own view never drew his plume pointing up"*; remote `space: false` → *"ana's scene never drew his plume pointing up"*, alone.
+`jetpack` without `&& meAlive` → *"fay is dead with thrust held and her own view still fires her plume"* — **green at first**: thrusting into her rock she died on a standing tick; she now burns away from it.
+**F4, correcting T22.04's entry:** "velocity sign flip reds all arms" was not measured — the check stops at its first failure, so that plant reached only "DOWN held, HQ off".
+Filed T22.04C (F5). F6: comment narrowed only — the shader sheath is still ~half the flat plume's width, and the fix is `shaders.ts`, outside Touch only.

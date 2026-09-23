@@ -2911,6 +2911,17 @@ export class GameScene extends Phaser.Scene {
             ...(self.localView ? [[self.me, self.localView.skin] as const] : []),
             ...[...self.remotes].map(([id, r]) => [id, r.view.skin] as const),
           ]),
+          /**
+           * T22.04B: what each body's thruster plume drew last frame, keyed by
+           * seat — read off the **views**, as `drawnSkins` is, so there is no
+           * second copy to disagree with the picture. It is the only window onto
+           * this scene's space wiring (`gravity` off `lobby_state`, `space:` and
+           * `jetpack:` at both `setState` calls); `thrusters-match` reads it.
+           */
+          plumes: Object.fromEntries([
+            ...(self.localView ? [[self.me, self.localView.plumeState] as const] : []),
+            ...[...self.remotes].map(([id, r]) => [id, r.view.plumeState] as const),
+          ]),
           // Items the server says exist, and items actually on screen. Two
           // numbers rather than one, because they were silently different for
           // three milestones: the mirror tracked them and nothing drew them.

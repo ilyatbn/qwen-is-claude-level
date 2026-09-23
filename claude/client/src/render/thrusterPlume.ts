@@ -14,7 +14,11 @@
  *
  * `webgl && isHighQuality()` — the predicate every shader in the client uses — is
  * the shader quad; everything else (WebGL with High Quality off, and Canvas with
- * either) is the flat shape. Both are the same box in the same place, and
+ * either) is the flat shape. Both are drawn in the same box in the same place —
+ * **the box, not the pixels**: the shader paints its sheath across about half the
+ * quad's width, so on screen it is visibly narrower than the flat shape
+ * (T22.04B F6, screenshotted side by side; widening it is `shaders.ts`'s
+ * `THRUST_FRAGMENT`, not this file). And
  * `scripts/checks/thrusters.mjs` photographs each path against its own control
  * frame, because T21.36 found the flat path is the half nobody checks.
  *
