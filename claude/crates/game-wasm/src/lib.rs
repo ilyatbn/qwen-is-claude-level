@@ -1728,6 +1728,10 @@ pub fn constants_json() -> String {
         SMOKE_RADIUS => c::SMOKE_RADIUS,
         FOV_SMOKE_MULT => c::FOV_SMOKE_MULT,
         SMOKE_SHADER_SCALE => c::SMOKE_SHADER_SCALE,
+        // T22.04: the thruster plume's size, so `thrusters` aims its patches off it.
+        THRUSTER_PLUME_LENGTH => c::THRUSTER_PLUME_LENGTH,
+        THRUSTER_PLUME_WIDTH => c::THRUSTER_PLUME_WIDTH,
+        THRUSTER_PLUME_MIN_SPEED => c::THRUSTER_PLUME_MIN_SPEED,
         SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,

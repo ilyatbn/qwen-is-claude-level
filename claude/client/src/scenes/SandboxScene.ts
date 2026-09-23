@@ -10,7 +10,7 @@
 
 import Phaser from 'phaser'
 import { C, Core, MapScale, ambientRain, strictConstants, type WeatherState } from '../core'
-import { DEFAULT_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
+import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
@@ -725,6 +725,9 @@ export class SandboxScene extends Phaser.Scene {
           player: self.core.playerState(0),
           aim: self.localInput?.aimAngle ?? 0,
           animState: self.player?.state ?? 'idle',
+          // T22.04, both ends (§A39): `player.moveState` is the pack the core
+          // says is firing; this is the plume the view says it drew.
+          plume: self.player?.plumeState ?? null,
           roundTime: self.roundTime,
           skyPhase: self.sky?.currentPhase ?? 'morning',
           // §C14. `cloudsDrawn` beside `clouds` separates "the round has clouds"
@@ -1133,6 +1136,7 @@ export class SandboxScene extends Phaser.Scene {
             iframes: false,
             wings: false,
             boots: false,
+            space: false,
           })
           return v
         })
@@ -1158,6 +1162,14 @@ export class SandboxScene extends Phaser.Scene {
       /** T21.31: force the ambient rain's intensity, `null` to hand it back to the schedule. */
       forceAmbient(v: number | null) {
         self.ambientOverride = v
+      },
+      /**
+       * T22.04, e2e only (§C2): hide the local player's thruster plume for a
+       * same-instant control frame. Freeze first. Returns what the view now reports.
+       */
+      showThrusters(on: boolean) {
+        self.player.setPlumeHidden(!on)
+        return self.player.plumeState
       },
       /** T21.31: pause the scene's update so a frame can be photographed twice. Rendering goes on. */
       freeze(on: boolean) {
@@ -1363,6 +1375,8 @@ export class SandboxScene extends Phaser.Scene {
         // boots made the "any bit" test mean two things.
         boots: ((this.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.boots) !== 0,
         wings: ((this.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.wings) !== 0,
+        // T22.04: the gravity this map was generated under (R22's parameter).
+        space: this.gravity === SPACE_GRAVITY,
       })
       this.crosshair.update(body.x, body.y, aim)
       // `watchPoint` is the e2e `watch` hook's, and only that (T21.31).

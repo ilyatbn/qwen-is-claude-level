@@ -104,6 +104,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { FogClock, LavaClock, ventLights } from '../render/weather-math'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
+import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 
 interface RemoteView {
   view: PlayerView
@@ -314,6 +315,12 @@ export class GameScene extends Phaser.Scene {
   private hasBoots = false
   /** T21.34. Off `MOVE_MOD.wings` in the snapshot — see where it is set. */
   private hasWings = false
+  /**
+   * T22.04: the match's gravity spelling, off `lobby_state` — the same value the
+   * mirror is handed there. Drawn with, and nothing else: the plume shows only in
+   * space (`thrusterPlume-math.ts::plumeOn`).
+   */
+  private gravity = DEFAULT_GRAVITY
   private jetReadout: HTMLDivElement | null = null
   /**
    * T21.24's optional FPS readout, and the meter behind it.
@@ -725,6 +732,7 @@ export class GameScene extends Phaser.Scene {
       // gravity and the local body rubber-bands on the first jump — the same
       // class of bug T20.19 and T21.02 each fixed once.
       this.core.setGravity(st.gravity)
+      this.gravity = st.gravity
       for (const p of st.players) {
         const had = this.scores.get(p.seat)
         this.scores.set(p.seat, {
@@ -1852,7 +1860,10 @@ export class GameScene extends Phaser.Scene {
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         alive: true,
         grounded: body.grounded,
-        jetpack: body.moveState === 2,
+        // `&& meAlive` for T22.04: `alive` above is a literal, and the mirror
+        // stops stepping a dead player, so without it a body killed mid-burn
+        // would go on drawing its thruster plume until the respawn.
+        jetpack: body.moveState === 2 && this.meAlive,
         // **`false` was hardcoded here** (T20.08), so the bubble has never
         // appeared on your own body — the same wired-to-nothing shape T20.07
         // found six of, one layer over. Every remote player has been drawing it
@@ -1869,6 +1880,7 @@ export class GameScene extends Phaser.Scene {
         // remote's boots come off.
         boots: this.hasBoots,
         wings: this.hasWings,
+        space: this.gravity === SPACE_GRAVITY,
       })
       this.crosshair.update(rp.x, rp.y, aim)
       // `watchPoint` is an e2e affordance, and only that (§C2). A supply crate
@@ -2221,6 +2233,7 @@ export class GameScene extends Phaser.Scene {
         iframes: flag(p.flags, FLAG.iframes),
         boots: flag(p.moveMods, MOVE_MOD.boots),
         wings: flag(p.moveMods, MOVE_MOD.wings),
+        space: this.gravity === SPACE_GRAVITY,
       })
     }
 

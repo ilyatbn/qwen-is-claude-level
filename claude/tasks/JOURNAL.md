@@ -6732,3 +6732,11 @@ nothing about whether the beam shader animates"*. **`fog-shader` needed a differ
 **The 0.783-vs-0.794 red is `fog-visible`, not `fog-shader`, and not a wall-clock pair**: `fogStrength` is computed live in `debug()` while
 `fogAlpha` is `weather.ts::lastFogAlpha` from the **last drawn frame**, compared at 0.01 while the ramp still climbs. Not fixed — not in scope.
 **Open:** `T22.00C` wants one shared helper in `harness.mjs`, which this task's Touch only forbids, so there are now five copies of `advanceFrames`.
+
+## T22.04 — the thruster burst, opposite the way you go (2026-09-23)
+Plume in `PlayerView` via `render/thrusterPlume.ts`: drawn once along +x, rotated per frame off **velocity**, shader under
+`webgl && HQ`, flat otherwise; space only. **No bit 7** — bit 2 already is "thrusting" in space; wire test pins idle and
+`Ended` off (red with T21.30's arm planted out). **No fuel constant** — T22.03 already charges `JETPACK_DRAIN`.
+`thrusters` + `thrusters-canvas`: DOWN → strip above changes, below 0.0; UP the reverse; HQ off and on; shader iff WebGL+HQ.
+Falsified: velocity sign flip reds all arms; dropping `webgl &&` reds the Canvas HQ-on arm. **Open:** braking draws the plume
+on the wrong side (velocity ≠ thrust); fuel is asserted against the core, not `#jetpack-readout`; `LOOK.flame` comment inverted.

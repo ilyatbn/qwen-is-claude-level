@@ -23,6 +23,14 @@ import { DEFAULT_MAP_GENERATOR, type MapGenerator, type MapScale } from '../core
  */
 export const DEFAULT_GRAVITY = 'standard'
 
+/**
+ * The zero-g spelling (T22.04), for the one client decision that turns on it:
+ * whether a firing pack draws the thruster plume. `core/index.test.ts` asserts it
+ * is a spelling `GravityMode::parse` accepts, for `DEFAULT_GRAVITY`'s reason — a
+ * typo here would compile, and no plume would ever draw.
+ */
+export const SPACE_GRAVITY = 'space'
+
 /** `?gravity=space`, or the default when it is absent. */
 export function gravityFromUrl(params: URLSearchParams): string {
   return params.get('gravity') ?? DEFAULT_GRAVITY

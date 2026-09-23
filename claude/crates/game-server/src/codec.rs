@@ -354,6 +354,10 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         let mut flags = 0u8;
         flags |= u8::from(p.alive);
         flags |= u8::from(p.body.grounded) << 1;
+        // **In space this bit is "the thrusters are firing"** (T22.04), and that
+        // is why there is no bit 7 for it: `apply_input` drives the one pack with
+        // `space::engaging` as its engage input, so `active` is exactly a push
+        // being paid for. The client points the plume off `vel`, sent above.
         flags |= u8::from(p.jetpack.active) << 2;
         flags |= u8::from(p.shield_active(now)) << 3;
         // **Derived, not stored** (T20.07). The flashlight is passive: carrying
@@ -1142,6 +1146,74 @@ mod tests {
                 "bit {bit} should be the only one set"
             );
         }
+    }
+
+    /// **T22.04: bit 2 is the thruster plume in space — on while a push is being
+    /// paid for, off while idle, and off the tick after the round ends.**
+    ///
+    /// The absence needs its presence beside it (`CLAUDE.md`), twice over: the
+    /// idle and `Ended` arms are each compared with a player holding the same
+    /// direction in `Playing`, whose bit is set. And the velocity the client aims
+    /// the plume with is asserted to point the way the push does — *down* — so
+    /// "the plume is above you" has both of its inputs on the wire.
+    #[test]
+    fn the_thruster_bit_is_off_when_idle_and_the_tick_after_the_round_ends() {
+        use game_core::constants::GravityMode;
+        let bit = |w: &World| {
+            let s = decode_snapshot(&encode_snapshot(w, 0, 0)).expect("decode");
+            (s.players[0].flags & (1 << 2) != 0, s.players[0].vy)
+        };
+        // Zero-g on an ordinary map, high in its open sky: nothing to stand on,
+        // no asteroid to pull, so the only thing moving the body is the push.
+        let drifting = || {
+            let mut w = world_with(1);
+            w.gravity = GravityMode::Space;
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = game_core::math::Vec2::new(400.0, 80.0);
+                p.body.vel = game_core::math::Vec2::ZERO;
+                p.body.grounded = false;
+            }
+            w
+        };
+        let hold = |w: &mut World, buttons: u8, ticks: u32| {
+            for t in 0..ticks {
+                w.queue_input(0, Input::new(w.tick + t + 1, buttons, 0));
+                w.step(SIM_DT);
+            }
+        };
+
+        let mut w = drifting();
+        hold(&mut w, button::DOWN, 10);
+        let (firing, vy) = bit(&w);
+        assert!(firing, "control: DOWN held in zero-g did not set bit 2");
+        assert!(
+            vy > 0,
+            "the body is not moving down (vy {vy}), so the plume would not be above it"
+        );
+
+        // Idle: the same drifter lets go. It keeps its velocity (R1) and stops paying.
+        hold(&mut w, 0, 1);
+        let (firing, vy) = bit(&w);
+        assert!(
+            !firing,
+            "an idle drifter still reports its thrusters firing"
+        );
+        assert!(
+            vy > 0,
+            "precondition: the idle drifter should still be drifting down"
+        );
+
+        // Ended: the same held direction, one tick after the bell.
+        let mut w = drifting();
+        hold(&mut w, button::DOWN, 10);
+        assert!(bit(&w).0, "control: the pre-bell arm was not firing");
+        w.set_phase(RoundPhase::Ended);
+        hold(&mut w, button::DOWN, 1);
+        assert!(
+            !bit(&w).0,
+            "DOWN still fires the thrusters after the round ended — a corpse on the \
+             results screen would be drawn burning (T21.30)"
+        );
     }
 
     #[test]

@@ -422,6 +422,10 @@ export interface Constants {
   SMOKE_RADIUS: number
   FOV_SMOKE_MULT: number
   SMOKE_SHADER_SCALE: number
+  /** T22.04 — the thruster plume, drawing only. */
+  THRUSTER_PLUME_LENGTH: number
+  THRUSTER_PLUME_WIDTH: number
+  THRUSTER_PLUME_MIN_SPEED: number
   SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number

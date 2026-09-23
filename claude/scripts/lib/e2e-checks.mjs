@@ -77,6 +77,16 @@ export const CHECKS = [
     file: 'scripts/checks/asteroid-gravity.mjs',
     url: '?sandbox=1&seed=4242&gravity=space',
   },
+  // T22.04: the thruster burst on the side opposite travel, photographed against its
+  // own control frame on both sides of the body, every render path. Space-only, so
+  // `?gravity=space` (R22). The Canvas twin is `serial` like the other Canvas checks.
+  { name: 'thrusters', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  {
+    name: 'thrusters-canvas',
+    file: 'scripts/checks/thrusters.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
+    serial: true,
+  },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.

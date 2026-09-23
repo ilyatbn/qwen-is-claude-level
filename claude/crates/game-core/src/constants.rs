@@ -174,6 +174,30 @@ pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
 pub const SPACE_JUMP_FUEL: f32 = JETPACK_DRAIN * SPACE_JUMP_BURN_SECONDS;
 
 // ---------------------------------------------------------------------------
+// The thruster plume (T22.04) — drawing only
+// ---------------------------------------------------------------------------
+//
+// **No new fuel constant.** T22.04 asked for *"one constant"* for the thrust
+// cost; `T22.03` had already landed it as `JETPACK_DRAIN`, charged through the
+// one `JetpackState` the space thrusters share with the jetpack
+// (`player::space::tests::thrusting_costs_fuel_walking_on_a_rock_does_not_and_gravity_is_free`).
+// A `SPACE_THRUST_DRAIN` equal to it would be a second author of the same rate.
+// The escape ceiling `T22.11` feared this number would set is against thrust
+// *acceleration* (`M22-RULINGS` R46, `SPACE_WELL_ACCEL_MAX`), not against fuel.
+
+/// T22.04: the plume's length from the edge of the body outward, px. Longer than
+/// the body, so the burst reads past the head it starts behind (the drawn sprite
+/// overshoots `PLAYER_H` and covers the nozzle end).
+pub const THRUSTER_PLUME_LENGTH: f32 = PLAYER_H * 1.4;
+/// T22.04: the plume's width at its base, px — one body width, so a sideways
+/// plume is no taller than the legs it comes out beside.
+pub const THRUSTER_PLUME_WIDTH: f32 = PLAYER_W;
+/// T22.04: below this speed, px/s, velocity has no direction worth drawing and
+/// the plume points down — see `thrusterPlume-math.ts::plumeDir`. One tick of the
+/// weakest thrust (`JETPACK_THRUST_DOWN * SIM_DT` = 15 px/s) clears it.
+pub const THRUSTER_PLUME_MIN_SPEED: f32 = 1.0;
+
+// ---------------------------------------------------------------------------
 // Aiming
 // ---------------------------------------------------------------------------
 

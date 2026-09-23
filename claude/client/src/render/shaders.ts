@@ -512,3 +512,53 @@ void main() {
   gl_FragColor = vec4(col, a);
 }
 `
+
+/**
+ * T22.04 — the suit thruster's plume under High Quality: a burst of energy
+ * streaming away from the body.
+ *
+ * **Drawing only**, and the flat path (`thrusterPlume.ts`) is the same event in
+ * the same place at the same size: the quad is exactly the flat plume's box, so
+ * the two render paths answer the same pixel assertion (`thrusters`) rather than
+ * sharing code (the T21.36 lesson).
+ *
+ * The quad runs along +x: `uv.x` 0 is the nozzle at the body's edge and 1 is the
+ * tip; the game object is rotated to the plume direction. A hot white-cyan core
+ * narrows as it leaves the nozzle, inside a blue sheath that frays into noise
+ * streaming outward — so it reads as *moving away from you*, which is the whole
+ * cue for which way the push is.
+ */
+export const THRUST_FRAGMENT = /* glsl */ `
+precision mediump float;
+
+uniform vec2 resolution;
+// Seconds - Phaser's own uniform, set at every render.
+uniform float time;
+// Per player, so two thrusting players do not flicker in step.
+uniform float seed;
+
+varying vec2 fragCoord;
+
+${FBM}
+
+// How fast the noise streams from the nozzle to the tip, quad lengths per second.
+const float FLOW = 3.2;
+
+void main() {
+  vec2 uv = fragCoord / resolution.xy;
+  float x = uv.x;
+  float y = (uv.y - 0.5) * 2.0;
+  float n = fbm3(vec2(x * 5.0 - time * FLOW * 5.0 + seed, y * 2.2 + seed * 1.3));
+  // The sheath: widest at the nozzle, tapering to a ragged point.
+  float hw = mix(1.0, 0.3, x) * (0.85 + 0.3 * n);
+  float sheath = (1.0 - smoothstep(hw * 0.55, hw, abs(y))) * (1.0 - smoothstep(0.55, 1.0, x + 0.25 * (n - 0.5)));
+  // The core: a hot thread that is gone by half way.
+  float core = (1.0 - smoothstep(0.0, 0.32 * (1.0 - x), abs(y))) * (1.0 - smoothstep(0.1, 0.55, x));
+  vec3 blue = vec3(0.24, 0.62, 1.0);
+  vec3 hot = vec3(0.88, 0.98, 1.0);
+  float a = clamp(sheath * 0.85 + core, 0.0, 1.0);
+  vec3 col = mix(blue * (0.8 + 0.4 * n), hot, clamp(core * 1.2, 0.0, 1.0));
+  // Premultiplied, for the reason FOG_FRAGMENT is.
+  gl_FragColor = vec4(col * a, a);
+}
+`

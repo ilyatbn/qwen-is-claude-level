@@ -185,6 +185,7 @@ export class SkinsScene extends Phaser.Scene {
       boots: false,
       wings: false,
       iframes: false,
+      space: false,
     })
     // `setState` positions the container in world space; the preview is not in
     // the world, so put it back where the layout wants it.

@@ -44,6 +44,8 @@ import {
 import type { Appearance } from '../ui/skins'
 import { bakeTintedAtlas } from './canvasTint'
 import { hasWebGL } from './shaders'
+import { ThrusterPlume } from './thrusterPlume'
+import { plumeOn } from './thrusterPlume-math'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -72,6 +74,13 @@ export interface PlayerFlags {
    * and off the same move-mods byte, so a remote's wings show as well as yours.
    */
   wings: boolean
+  /**
+   * T22.04: the match is zero-g. **Required**, for `hatId`'s reason: a scene that
+   * forgot it would compile and never draw a plume. With `jetpack` it decides the
+   * thruster plume (`thrusterPlume-math.ts::plumeOn`) — there is no thrusting bit
+   * on the wire, because bit 2 already is one in space.
+   */
+  space: boolean
 }
 
 /** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
@@ -154,6 +163,10 @@ export class PlayerView {
   private readonly boots: Phaser.GameObjects.Image | null
   /** T21.34. Built always, shown per frame — see `PlayerFlags.wings`. */
   private readonly wings: Phaser.GameObjects.Image | null
+  /** T22.04. Built always, shown per frame — see `ThrusterPlume`. */
+  private readonly plume: ThrusterPlume
+  /** The drawn body's centre, in container units — where the plume's nozzle is measured from. */
+  private readonly bodyCentreY: number
   private readonly nameLabel: Phaser.GameObjects.Text
   private readonly skinId: number
   /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
@@ -322,6 +335,9 @@ export class PlayerView {
       this.weapon,
       this.nameLabel,
     ])
+    // The sprite hangs from `anchorY`, so its centre is that far above the origin.
+    this.bodyCentreY = (0.5 - anchorY) * drawn
+    this.plume = new ThrusterPlume(scene, this.container, hasWebGL(scene))
   }
 
   setState(
@@ -377,6 +393,16 @@ export class PlayerView {
     // T21.34. Toggled, never rebuilt.
     this.wings?.setVisible(flags.wings)
     this.wings?.setFlipX(left)
+    // T22.04. Toggled, never rebuilt — and off velocity, so it turns with the body.
+    this.plume.update(
+      plumeOn(flags.alive, flags.jetpack, flags.space),
+      vx,
+      vy,
+      0,
+      this.bodyCentreY,
+      c.PLAYER_W / 2,
+      c.PLAYER_H / 2,
+    )
 
     // i-frames flash; dead is drawn faded rather than removed, so the corpse still
     // reads as a player during the respawn delay.
@@ -418,6 +444,16 @@ export class PlayerView {
 
   get state(): AnimState {
     return this.animState
+  }
+
+  /** T22.04: what the plume drew last frame, for a check to count at both ends. */
+  get plumeState(): { drawn: boolean; shader: boolean; dir: { x: number; y: number } } {
+    return this.plume.state
+  }
+
+  /** T22.04, e2e only (§C2): hide the plume for a same-instant control frame. */
+  setPlumeHidden(on: boolean): void {
+    this.plume.setHidden(on)
   }
 
   setName(name: string): void {

@@ -1,0 +1,219 @@
+/**
+ * T22.04 — **the thruster burst is drawn on the side opposite the way you go.**
+ *
+ * The owner: *"if i move down, you can see a burst of energy coming from above the
+ * player."* That is a claim about the picture, so it is asserted on the rendered
+ * canvas (`docs/72` §C2), never on `debug()`:
+ *
+ *  - **subject region** — the strip just past the body on the side the plume must
+ *    be: *above* for DOWN held, *below* for UP held;
+ *  - **control region** — the mirror-image strip on the other side, which must not
+ *    change;
+ *  - **control frame** — the same frozen instant with the plume hidden
+ *    (`showThrusters(false)`), so the only difference between the two photographs is
+ *    the plume.
+ *
+ * **The velocity is the control on the rule itself.** DOWN and UP are both run, so a
+ * plume drawn on a fixed side — or drawn *along* the velocity, the backwards version
+ * the task file warns *"looks fine in a still"* — fails one of the two arms. The
+ * patches are aimed off the body and `PLAYER_H`, never off the plume's own reported
+ * direction, which would agree with itself whatever it drew.
+ *
+ * ## Every render path, because the two are different code
+ *
+ * `webgl && isHighQuality()` picks the shader, so there are three paths, not four:
+ * (WebGL, HQ on) = shader, (WebGL, HQ off) = flat, (Canvas, either) = flat. The
+ * WebGL entry runs both settings and asserts the shader was used exactly when asked;
+ * the `thrusters-canvas` entry runs both too and asserts it never was — Canvas with
+ * High Quality **on** is the combination a missing `webgl &&` would break.
+ *
+ * ## The fuel, at both ends
+ *
+ * Thrusting drains the core's tank and draws a plume; letting go stops both. Each is
+ * asserted beside the other (§A39), and the idle arm is timed in rendered frames so
+ * a loaded box gives it more simulation, not less.
+ */
+import { deadlineMs } from '../lib/deadline.mjs'
+import { samplePatch, assertChanged, assertUnchanged, toScreen } from './pixels.mjs'
+
+/** Frames of letting go in which the tank must not fall. Half a second at 60 fps. */
+const IDLE_FRAMES = 30
+
+export default async function ({ page, shot, log }) {
+  const dbg = () => page.evaluate(() => window.__game.debug())
+  const waitFor = async (fn, arg, why, seconds = 20) => {
+    try {
+      await page.waitForFunction(fn, arg, { timeout: deadlineMs(seconds, why) })
+    } catch (e) {
+      if (String(e).includes('Timeout')) throw new Error(`${why} (waited ${seconds}s)`)
+      throw e
+    }
+  }
+  const frames = (n) =>
+    page.evaluate(
+      (count) =>
+        new Promise((resolve) => {
+          let left = count
+          const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
+          requestAnimationFrame(tick)
+        }),
+      n,
+    )
+
+  const k = await page.evaluate(() => window.__game.constants())
+  await waitFor(() => !!window.__game.debug().player, null, 'the sandbox never produced a local player')
+
+  // **Which renderer this entry is, asked of the canvas** (`canvas-renderer`'s rule):
+  // a WebGL canvas has no 2d context, so a check that silently ran WebGL under the
+  // Canvas entry would say so here instead of passing against the bug.
+  const wantCanvas = new URL(page.url()).searchParams.get('renderer') === 'canvas'
+  const isCanvas = await page.evaluate(() => !!document.querySelector('canvas')?.getContext('2d'))
+  if (isCanvas !== wantCanvas) throw new Error(`asked for ${wantCanvas ? 'Canvas' : 'WebGL'}, got the other`)
+  log(`renderer: ${isCanvas ? 'Canvas' : 'WebGL'}`)
+
+  // R22: only a space map has rocks, and only a space match draws a plume.
+  const rocks = await page.evaluate(() => window.__game.core.meta.asteroids.length)
+  if (rocks === 0) throw new Error('no asteroids — `?gravity=space` did not reach the scene')
+
+  /**
+   * Open space, clear for three bodies in every direction, as far from any well as
+   * this map allows, and where the camera can centre. Searched in the page for
+   * `asteroid-gravity`'s reason: thousands of `solidAt` calls.
+   */
+  const spot = await page.evaluate(
+    ([bodyW, bodyH, halfW, halfH]) => {
+      const core = window.__game.core
+      const pad = bodyH * 3
+      const clear = (x, y) => {
+        for (let dy = -pad; dy <= pad; dy += 4) {
+          for (let dx = -pad; dx <= pad; dx += 4) {
+            if (core.solidAt(Math.round(x + dx), Math.round(y + dy))) return false
+          }
+        }
+        return true
+      }
+      let best = null
+      for (let y = halfH + pad; y < core.height - halfH - pad; y += bodyH) {
+        for (let x = halfW + pad; x < core.width - halfW - pad; x += bodyH) {
+          const f = core.fieldAccelAt(x, y)
+          const mag = Math.hypot(f[0], f[1])
+          if (best && mag >= best.mag) continue
+          if (!clear(x, y)) continue
+          best = { x, y, mag }
+        }
+      }
+      return best
+    },
+    [k.PLAYER_W, k.PLAYER_H, k.VIEWPORT_W / 2 / k.CAMERA_ZOOM, k.VIEWPORT_H / 2 / k.CAMERA_ZOOM],
+  )
+  if (!spot) throw new Error('no open space three bodies clear anywhere on this map')
+  log(`open space at (${spot.x}, ${spot.y}), field ${spot.mag.toFixed(0)} px/s²`)
+
+  // The same light in every photograph: the day clock and the ridges pinned.
+  await page.evaluate(() => {
+    window.__game.setTime(0)
+    window.__game.setParallaxClock(0)
+  })
+
+  /**
+   * The strip just past the drawn body on one side, in screen space.
+   *
+   * Centred on the **drawn** body — `PlayerView` hangs the sprite at
+   * `y - PLAYER_H / 2` in this scene (`asteroid-gravity` records it) — and running
+   * from a tenth to three fifths of a plume length past the body's edge, which is
+   * where the plume is brightest and the body never reaches.
+   */
+  const strip = async (px, py, side) => {
+    const cy = py - k.PLAYER_H / 2
+    const near = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
+    const far = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
+    const a = await toScreen(page, px - k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * near)
+    const b = await toScreen(page, px + k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * far)
+    if (!a.onScreen || !b.onScreen) throw new Error('the body is not on screen')
+    const x = Math.round(Math.min(a.x, b.x))
+    const y = Math.round(Math.min(a.y, b.y))
+    return { x, y, w: Math.max(2, Math.round(Math.abs(b.x - a.x))), h: Math.max(2, Math.round(Math.abs(b.y - a.y))) }
+  }
+
+  /** One arm: hold `key`, freeze, photograph with and without the plume. */
+  const arm = async ({ key, plumeSide, hq }) => {
+    const label = `${key === 's' ? 'DOWN' : 'UP'} held, High Quality ${hq ? 'on' : 'off'}`
+    const q = await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    if (q.setting !== hq) throw new Error(`${label}: High Quality would not change: ${JSON.stringify(q)}`)
+    await page.evaluate(([x, y]) => {
+      window.__game.place(x, y)
+      window.__game.watch(x, y)
+    }, [spot.x, spot.y])
+    await frames(3)
+    const fuel0 = (await dbg()).player.fuel
+
+    await page.keyboard.down(key)
+    try {
+      // Until the pack is firing **and** the body has speed the way it was pushed,
+      // so the plume has a velocity to point off.
+      await waitFor(
+        ([down, min]) => {
+          const p = window.__game.debug().player
+          return p.moveState === 2 && (down ? p.vy > min * 4 : p.vy < -min * 4)
+        },
+        [key === 's', k.THRUSTER_PLUME_MIN_SPEED],
+        `${label}: the thrusters never fired`,
+      )
+      await page.evaluate(() => window.__game.freeze(true))
+    } finally {
+      await page.keyboard.up(key)
+    }
+    try {
+      const d = await dbg()
+      const p = d.player
+      // Both ends (§A39): the core says it is burning, and paying for it; the view
+      // says it drew, and with the path this renderer and setting must use.
+      if (!(p.fuel < fuel0)) throw new Error(`${label}: the tank did not fall while thrusting (${fuel0} -> ${p.fuel})`)
+      if (!d.plume?.drawn) throw new Error(`${label}: the pack is firing and the view drew no plume: ${JSON.stringify(d.plume)}`)
+      const wantShader = hq && !isCanvas
+      if (d.plume.shader !== wantShader) {
+        throw new Error(`${label}: plume drawn ${d.plume.shader ? 'by the shader' : 'flat'}, expected ${wantShader ? 'the shader' : 'flat'}`)
+      }
+
+      const subjectRect = await strip(p.x, p.y, plumeSide)
+      const controlRect = await strip(p.x, p.y, -plumeSide)
+      const sOn = await samplePatch(page, subjectRect)
+      const cOn = await samplePatch(page, controlRect)
+      await shot(`thrusters-${isCanvas ? 'canvas' : 'webgl'}-${key === 's' ? 'down' : 'up'}-hq-${hq ? 'on' : 'off'}`)
+      const hidden = await page.evaluate(() => window.__game.showThrusters(false))
+      if (hidden.drawn) throw new Error(`${label}: the plume would not hide for the control frame`)
+      await frames(2)
+      const sOff = await samplePatch(page, subjectRect)
+      const cOff = await samplePatch(page, controlRect)
+      await page.evaluate(() => window.__game.showThrusters(true))
+
+      const where = plumeSide < 0 ? 'above' : 'below'
+      const r = assertChanged(sOff, sOn, {
+        label: `${label}: the strip ${where} the body, plume against no plume`,
+        control: { before: cOff, after: cOn },
+      })
+      assertUnchanged(cOff, cOn, { label: `${label}: the strip on the travelling side` })
+      log(`${label}: ${where} moved ${r.delta.toFixed(1)}, the other side ${r.controlDelta.toFixed(1)}`)
+    } finally {
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+
+    // **Letting go costs nothing and draws nothing.** The presence arm above is the
+    // control: the same body, one moment earlier, was burning and drawn.
+    await frames(2)
+    const idle0 = await dbg()
+    await frames(IDLE_FRAMES)
+    const idle1 = await dbg()
+    if (idle1.player.moveState === 2) throw new Error(`${label}: the pack still fires with nothing held`)
+    if (idle1.plume?.drawn) throw new Error(`${label}: the plume is still drawn with nothing held`)
+    if (idle1.player.fuel < idle0.player.fuel) {
+      throw new Error(`${label}: the tank fell while idle (${idle0.player.fuel} -> ${idle1.player.fuel})`)
+    }
+  }
+
+  for (const hq of [false, true]) {
+    await arm({ key: 's', plumeSide: -1, hq })
+    await arm({ key: 'w', plumeSide: 1, hq })
+  }
+  await page.evaluate(() => window.__game.setHighQuality(false))
+}

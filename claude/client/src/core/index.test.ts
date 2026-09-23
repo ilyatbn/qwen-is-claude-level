@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Core, DEFAULT_MAP_GENERATOR, MapGenerator, MapScale, C } from './index'
-import { DEFAULT_GRAVITY } from '../scenes/sceneParams'
+import { DEFAULT_GRAVITY, SPACE_GRAVITY } from '../scenes/sceneParams'
 import { MOVE_MOD } from '../net/codec'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -114,6 +114,14 @@ describe('Core', () => {
     expect(core.generateForGravity(4242n, MapScale.Small, DEFAULT_MAP_GENERATOR, DEFAULT_GRAVITY)).toBe(
       true,
     )
+  })
+
+  /** T22.04: the plume is drawn only when the match's spelling equals this one. */
+  it('accepts the zero-g spelling the thruster plume keys on', () => {
+    expect(C().GRAVITY_MODES).toContain(SPACE_GRAVITY)
+    expect(core.setGravity(SPACE_GRAVITY)).toBe(true)
+    // Put it back: the tests below share this core and predict under standard.
+    expect(core.setGravity(DEFAULT_GRAVITY)).toBe(true)
   })
 
   it('refuses an unknown gravity spelling rather than guessing a map', () => {
