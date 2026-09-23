@@ -1,0 +1,1248 @@
+//! Sub-stepped movement resolution.
+//!
+//! **The sub-step cap is a correctness guarantee, not an optimisation.** No step
+//! ever exceeds `MAX_SUBSTEP_PX` (1 px), so a body can never skip over a 1-px wall
+//! regardless of speed or tick rate. `MAX_SUBSTEPS` (64) bounds the worst case: a
+//! body moving faster than 64 px per tick moves slower than requested rather than
+//! tunnelling. That trade is correct — a capped speed is recoverable, a body on the
+//! wrong side of a wall is not.
+//!
+//! See `docs/20-player-movement.md` §2.
+
+use crate::constants::{
+    GravityMode, GRAVITY, MAX_FALL_SPEED, MAX_SUBSTEPS, MAX_SUBSTEP_PX, STEP_DOWN, STEP_UP, WALL_W,
+};
+use crate::map::Map;
+use crate::math::Vec2;
+use crate::physics::body::Body;
+use crate::physics::collide::{aabb_overlaps_solid, ground_probe, is_on_ground, step_up_clearance};
+
+/// Split a displacement into steps of at most `MAX_SUBSTEP_PX`, capped at
+/// `MAX_SUBSTEPS`. Always at least one step, so a zero delta never divides by zero.
+///
+/// When the cap binds, the **step size stays at 1 px and the body travels less far**
+/// than asked. Dividing the full delta by the capped count instead would produce
+/// 140-px steps for a fast body and tunnel it straight through a wall — which is
+/// precisely the failure this whole mechanism exists to prevent. Moving slower than
+/// requested is recoverable; ending up on the far side of a wall is not.
+/// **Every moving thing in this crate must call this.** Bodies (M2) and
+/// projectiles (M4) each tunnelled through a 1 px wall on their first attempt for
+/// the identical reason: the split was re-derived locally, dividing the delta by
+/// the *capped* step count, which makes a "sub-step" arbitrarily large once the cap
+/// binds. The rule is that the cap bounds distance travelled, not step size — so
+/// when it binds the body moves LESS FAR rather than in bigger jumps.
+///
+/// `no_other_substep_derivation_exists` in the tests below is the guard against a
+/// third occurrence.
+pub fn substeps(delta: Vec2) -> (u32, Vec2) {
+    let dist = delta.x.abs().max(delta.y.abs());
+    let ideal = (dist / MAX_SUBSTEP_PX).ceil().max(1.0);
+    let per = delta / ideal;
+    let steps = (ideal as u32).min(MAX_SUBSTEPS);
+    (steps, per)
+}
+
+/// Move horizontally by `dx`, resolving collisions and climbing small steps.
+/// Returns true if the body was blocked (and `vel.x` zeroed).
+pub fn move_x(map: &Map, body: &mut Body, dx: f32) -> bool {
+    if dx == 0.0 {
+        return false;
+    }
+    let (steps, per) = substeps(Vec2::new(dx, 0.0));
+
+    // Step-up must not fire while airborne, or a player climbs sheer walls by
+    // holding a direction into them.
+    let may_step_up = body.grounded || body.in_coyote_time();
+
+    for _ in 0..steps {
+        let before = body.pos;
+        body.pos.x += per.x;
+
+        if !aabb_overlaps_solid(map, body.aabb()) {
+            continue;
+        }
+
+        if may_step_up {
+            if let Some(lift) = step_up_clearance(map, body.aabb(), STEP_UP) {
+                body.pos.y -= lift as f32;
+                continue;
+            }
+        }
+
+        // A wall. Undo and stop — continuing would let step-up be retried each
+        // sub-step and walk the body up a sheer face one pixel at a time.
+        body.pos = before;
+        body.vel.x = 0.0;
+        return true;
+    }
+    false
+}
+
+/// Move vertically by `dy`. Sets `grounded` on a downward hit. Returns true if
+/// blocked.
+pub fn move_y(map: &Map, body: &mut Body, dy: f32) -> bool {
+    if dy == 0.0 {
+        return false;
+    }
+    let (steps, per) = substeps(Vec2::new(0.0, dy));
+    let downward = dy > 0.0;
+
+    for _ in 0..steps {
+        let before = body.pos;
+        body.pos.y += per.y;
+
+        if !aabb_overlaps_solid(map, body.aabb()) {
+            continue;
+        }
+
+        body.pos = before;
+        body.vel.y = 0.0;
+        if downward {
+            body.grounded = true;
+        }
+        // Upward hits are ceilings: velocity zeroed, nothing else.
+        return true;
+    }
+    false
+}
+
+/// After both axes: snap a body that walked off a slope back down, so downhill
+/// walking does not become a series of tiny falls.
+pub fn ground_snap(map: &Map, body: &mut Body, was_grounded: bool) {
+    if !was_grounded || body.grounded || body.vel.y < 0.0 {
+        return;
+    }
+    if aabb_overlaps_solid(map, body.aabb()) {
+        return;
+    }
+    if let Some(drop) = ground_probe(map, body.aabb(), STEP_DOWN) {
+        body.pos.y += drop as f32;
+        body.grounded = true;
+    }
+}
+
+/// Gravity with terminal velocity.
+///
+/// Clamped on the way **down only**. Upward velocity is not clamped, so a strong
+/// knockback still launches properly.
+pub fn apply_gravity(body: &mut Body, gravity_scale: f32, dt: f32) {
+    if gravity_scale == 0.0 {
+        return;
+    }
+    body.vel.y += GRAVITY * gravity_scale * dt;
+    if body.vel.y > MAX_FALL_SPEED {
+        body.vel.y = MAX_FALL_SPEED;
+    }
+}
+
+/// Clamp the body inside the world (`docs/70-amendments-v2.md` §A1).
+///
+/// The arena is bounded and reaching its edge stops you. The `WALL_W` columns are
+/// indestructible so collision already handles the sides in practice, but the clamp
+/// is what guarantees it after a knockback or a jetpack burn — and the ceiling at
+/// `y = 0` has no terrain behind it at all, so without this a jetpack simply leaves
+/// the world.
+pub fn clamp_to_world(map: &Map, body: &mut Body) {
+    let half_w = body.size.x / 2.0;
+    let min_x = WALL_W as f32 + half_w;
+    let max_x = map.mask.w as f32 - WALL_W as f32 - half_w;
+
+    if body.pos.x < min_x {
+        body.pos.x = min_x;
+        body.vel.x = body.vel.x.max(0.0);
+    } else if body.pos.x > max_x {
+        body.pos.x = max_x;
+        body.vel.x = body.vel.x.min(0.0);
+    }
+
+    // Hard ceiling: the body's top edge may not pass y = 0.
+    let min_y = body.size.y / 2.0;
+    if body.pos.y < min_y {
+        body.pos.y = min_y;
+        body.vel.y = body.vel.y.max(0.0);
+    }
+}
+
+/// **What accelerates this body this tick, and under which contact rules.**
+///
+/// `M22-RULINGS` R10: one struct, one seam. Before this, `integrate` took a
+/// `gravity_scale` and a `zero_g` flag and there was nowhere to put a force that
+/// does not point down. Now there is exactly one answer to *"what accelerates
+/// this body"* and it is this value.
+///
+/// **No `Default`, and no `Forces::none()`** (`M22-RULINGS` R45). The precedent
+/// and its reasoning are in [`crate::player::MoveMods::NONE`]'s doc four files
+/// away: *"a `Default` is what a caller reaches for when it does not know what to
+/// pass"*, and a caller that did not know what to pass is how a field-free world
+/// ships while the whole suite stays green. Every constructor here **names** what
+/// it gives you — [`Forces::gravity`] is ordinary gravity, [`Forces::falling`] is
+/// a non-player body under a match setting — so a `Forces` with no field is
+/// something a caller said, not something it defaulted into.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Forces {
+    /// The scalar path, unchanged: `vel.y` only, clamped by `MAX_FALL_SPEED` on
+    /// the way down only, and early-returning at exactly `0.0`.
+    pub gravity_scale: f32,
+    /// The summed attractor field, px/s². Filled at T22.11B by
+    /// `world::attractors::field_at`, through `player::Env`; still `Vec2::ZERO`
+    /// on every path but a player in space, which is what keeps the scalar path
+    /// bit-identical. It is applied **beside** `apply_gravity` and not inside it,
+    /// because that function returns early at scale `0.0` — which is every player
+    /// in space, i.e. precisely where the field is the only thing moving anyone.
+    pub accel: Vec2,
+    /// The mode's terminal **speed**: a clamp on `|vel|`, not on `vel.y`.
+    /// `MAX_FALL_SPEED` is neither reused nor renamed for this — it clamps one
+    /// axis downward only, and a magnitude clamp is a different statement.
+    ///
+    /// `None` on every path but space, where T22.11B made it
+    /// `Some(SPACE_MAX_SPEED)`.
+    ///
+    /// **`M22-RULINGS` R10 and R45 say that `no_tunnelling_at_ten_times_\
+    /// terminal_velocity_through_integrate` goes red if a `max_speed` leaks
+    /// onto the standard-gravity path. Measured at T22.11A, it does not, and
+    /// nothing else reliably does either.** Two plants, each run against the
+    /// whole `game-core` lib suite:
+    ///
+    /// - `Forces::gravity` carrying `Some(MAX_FALL_SPEED)` — **1062 passed, 0
+    ///   failed.** `apply_gravity` has already clamped `vel.y` to
+    ///   `MAX_FALL_SPEED` by the time the magnitude clamp runs, so on that path
+    ///   the clamp is an exact no-op. The named tripwire never sees 9000 px/s at
+    ///   all; it sees 900.
+    /// - `Forces::gravity` carrying `Some(MAX_FALL_SPEED / 2.0)` — **1061
+    ///   passed, 1 failed**, and the one was
+    ///   `a_landing_reports_the_speed_it_was_falling_at`, not the tripwire. The
+    ///   tripwire asserts an *upper* bound on how far the body got
+    ///   (`feet_y() <= 301.0`), and a clamp can only make a body travel less.
+    ///
+    /// So the guard three documents name is an absence with no control, and the
+    /// real detector is a landing-speed assertion that nobody had noticed. The
+    /// honest statement is: **a `max_speed` at or above `MAX_FALL_SPEED` is
+    /// invisible to this repository on the scalar path.** `T22.11B`, which is
+    /// what first gives this field a value, needs an assertion of its own on the
+    /// space path — and it cannot borrow this one.
+    ///
+    /// **T22.11B brought its own, and these are their names.** R50 asks for them
+    /// to be recorded here, because here is where the next reader looks:
+    ///
+    /// - `world::attractors::tests::space_clamps_a_bodys_speed_on_the_vector_path`
+    ///   drives a body at 9000 px/s through `apply_input` under
+    ///   `GravityMode::Space`, where `gravity_scale` is `0.0` and `apply_gravity`
+    ///   has returned without touching `vel.y`, and asserts **the speed itself** —
+    ///   not a distance, and not an upper bound a clamp can only help. Its control
+    ///   is the same body under standard gravity, which keeps its 9000: without
+    ///   that, "the speed is under the cap" is satisfied by a tick that lost the
+    ///   velocity for any reason at all.
+    /// - `world::attractors::tests::space_max_speed_carries_its_basis` pins
+    ///   `SPACE_MAX_SPEED` against a measured basis rather than against itself.
+    /// - `the_space_terminal_speed_is_not_inert_against_the_substep_cap`, below in
+    ///   this file, is the third of R10's named interactions: above
+    ///   `MAX_SUBSTEPS * MAX_SUBSTEP_PX / SIM_DT` a terminal speed clamps nothing
+    ///   the sub-stepper had not already bounded. It lives here because
+    ///   `substep_guard::no_other_substep_derivation_exists` reads this crate's
+    ///   source and lets only this file name those two constants.
+    ///
+    /// **It clamps one tick late for three production writers and that is not a
+    /// tighter guarantee than it looks.** `player::jetpack::apply_thrust`,
+    /// `weapons::explode` and `weapons::melee` all write `body.vel` outside
+    /// `integrate`, so a body they launch past the cap keeps that speed until the
+    /// next tick's `integrate` pulls it back. The real answer is a shared
+    /// `Body::add_velocity` that all four writers go through; it is bigger than
+    /// the task that introduced this field, and it is written here so the next
+    /// reader does not assume the clamp is at the write.
+    pub max_speed: Option<f32>,
+    /// Which **contact** rules apply — `M22-RULINGS` R4, and the argument R44
+    /// sanctioned as temporary until it landed in this struct.
+    ///
+    /// **Deliberately not derived from `gravity_scale == 0.0`, and the two are
+    /// genuinely independent.** T21.03's wings hand this function a scale of
+    /// `0.0` under perfectly ordinary gravity; a winged player must keep the
+    /// ordinary contact rules, or hovering one pixel over a floor would report
+    /// them as standing on it. There is no derivation available that answers
+    /// both, which is why this is a field and not a computation.
+    pub zero_g: bool,
+}
+
+impl Forces {
+    /// Ordinary gravity at `gravity_scale`: no field, no speed cap, ordinary
+    /// contact rules.
+    ///
+    /// **This is the fixture constructor, and it has no production callers** —
+    /// corrected at T22.11B, because it said *"this is what every caller that used
+    /// to pass a bare `f32` passes now"* and that is false. Measured
+    /// (`grep -rn 'Forces::gravity' crates/`): every use is inside this file's
+    /// `#[cfg(test)] mod tests`. The four non-player steppers call
+    /// [`Forces::falling`], and `player::apply_input` writes a struct literal
+    /// because R10 forbids forwarding a `Forces` it would partly overwrite. So
+    /// nothing in production constructs this.
+    ///
+    /// That matters beyond the sentence: it is a second reason R50's conclusion
+    /// holds. The `max_speed` plants recorded on [`Forces::max_speed`] were made
+    /// here, so they could only ever reach tests — no production body was ever
+    /// going to see them, whatever the tripwire asserted.
+    ///
+    /// It is still the reason `a_resting_body_is_bit_identical_after_600_ticks` is
+    /// a control rather than a formality: `accel: ZERO` adds nothing and
+    /// `max_speed: None` clamps nothing, so the arithmetic on this path is the
+    /// arithmetic that was there before.
+    pub const fn gravity(gravity_scale: f32) -> Self {
+        Forces {
+            gravity_scale,
+            accel: Vec2::ZERO,
+            max_speed: None,
+            zero_g: false,
+        }
+    }
+
+    /// A **non-player** body — a mine, a dropped item, a tombstone, an animal —
+    /// under the match's gravity setting.
+    ///
+    /// `M22-RULINGS` R14 and R30 together. R30 is the live half: these four all
+    /// passed a literal `1.0`, so a dropped weapon fell at twice the speed of the
+    /// player who dropped it in every low-gravity match since `T22.02`. R14 is
+    /// the space half: in space every non-player body floats where it is put,
+    /// **which means a scale of `0.0` and the zero-g contact rules** — the
+    /// sentence the four call sites have carried since `T22.03`.
+    ///
+    /// **Not `Forces::gravity(mode.scale())`**, although that is what it reduces
+    /// to on the first field: the contact rules have to move with the scale, and
+    /// spelling it out at four call sites is four chances to move one and not the
+    /// other.
+    ///
+    /// **Nothing attracts these bodies** (R14): `accel` stays `ZERO` here even
+    /// after `T22.11B` fills it for players. A rocket curving around a rock is a
+    /// balance change nobody asked for, and loot drifting into one is loot
+    /// deletion.
+    pub const fn falling(mode: GravityMode) -> Self {
+        Forces {
+            gravity_scale: mode.scale(),
+            accel: Vec2::ZERO,
+            max_speed: None,
+            zero_g: matches!(mode, GravityMode::Space),
+        }
+    }
+}
+
+/// The full per-tick movement step.
+///
+/// The order is part of the contract:
+/// 1. record `was_grounded`;
+/// 2. clear `grounded` — it must be re-established this tick, not inherited, which
+///    is what makes walking off a ledge register immediately and coyote time mean
+///    anything;
+/// 3. gravity;
+/// 4. X then Y — X first, so a body sliding into a slope climbs it before gravity
+///    pulls it into the face;
+/// 5. ground snap;
+/// 6. world clamp;
+/// 7. airborne bookkeeping.
+///
+/// **Returns the landing impact** (T20.11): the downward speed at the moment the
+/// body touched down, or `0.0` on any tick that is not a landing. Also written to
+/// `body.landing_impact`; the return is a read-back of that field, for a caller
+/// that has the return value in hand and should not have to know where it lives.
+///
+/// ## The naive detector is exactly inverted, and this is why
+///
+/// A caller cannot compute this itself from what `integrate` leaves behind,
+/// because the two ways a body becomes grounded have **opposite** velocity
+/// semantics:
+///
+///  - `move_y` — a real landing — sets `vel.y = 0.0` **and then** `grounded`, so
+///    the tick ends at `vel.y == 0`;
+///  - `ground_snap` — walking downhill, which must never hurt — sets `grounded`
+///    and **does not touch `vel.y`**, so the tick ends at one tick of gravity,
+///    small but **nonzero**.
+///
+/// So "grounded went true this tick, read `vel.y`" reads **zero on every real
+/// landing and nonzero on every downhill step**. It does not merely leak into
+/// `ground_snap`; it reads *only* `ground_snap`. The impact has to be captured
+/// before `move_y` runs, which is what happens below, and `ground_snap` cannot
+/// produce one because it only fires when `was_grounded` was already true.
+///
+/// ## `Forces` is the one answer to "what accelerates this body"
+///
+/// `M22-RULINGS` R10 and R44. This function was `(map, body, gravity_scale,
+/// zero_g, dt)` — five parameters, with R44 sanctioning the fifth as temporary
+/// and naming its end: *"`T22.11` folds `zero_g` into `Forces`/`Env`"*. It did,
+/// and this is four. One struct replaced two arguments, which is the same move
+/// `MoveMods` made on `apply_input` and the same one `MoveStep` makes there now.
+///
+/// **The field is applied beside `apply_gravity`, not inside it.**
+/// `apply_gravity` early-returns at `gravity_scale == 0.0` and that is every
+/// player in space, so a field applied inside it would be dead exactly where it
+/// is the only thing that moves anyone. `apply_gravity` therefore keeps its
+/// early return, its `vel.y`, its `MAX_FALL_SPEED` clamp and its three tests
+/// untouched — the cheapest part of R10 and the reason this refactor is
+/// bit-identical on the scalar path.
+///
+/// `Forces::zero_g` answers a different question from `Forces::gravity_scale` —
+/// *"what counts as standing on something, and does a walker get snapped to a
+/// slope"* — and the two arms below are the whole of it. See the field's own doc
+/// for why it cannot be derived from the scale.
+pub fn integrate(map: &Map, body: &mut Body, forces: Forces, dt: f32) -> f32 {
+    let was_grounded = body.grounded;
+    body.grounded = false;
+    body.landing_impact = 0.0;
+
+    apply_gravity(body, forces.gravity_scale, dt);
+
+    // **The vector field, beside the scalar and downstream of nothing that
+    // skips it** (`M22-RULINGS` R10). `accel` is `Vec2::ZERO` on every path but a
+    // player in space — `Forces::gravity`, `Forces::falling` and `Env::field_free`
+    // all name it so — which is why this line leaves
+    // `a_resting_body_is_bit_identical_after_600_ticks` unmoved. T22.11B is what
+    // gives it a value, through `world::attractors::env_at`.
+    body.vel += forces.accel * dt;
+
+    // **A clamp on `|vel|`, which `MAX_FALL_SPEED` is not.** `None` on every
+    // path but space, and `None` is what the ten-times-terminal-velocity
+    // tunnelling test above is really asserting about `Forces::gravity`. Note it
+    // is one tick late for the three writers that touch `body.vel` outside this
+    // function — see `Forces::max_speed`.
+    if let Some(max) = forces.max_speed {
+        body.vel = body.vel.clamp_len(max);
+    }
+
+    move_x(map, body, body.vel.x * dt);
+
+    // Captured **before** `move_y`, which is the whole trick: this is the speed
+    // the body is actually travelling at when it meets the ground, and `move_y`
+    // is about to overwrite it with zero.
+    let falling_at = body.vel.y;
+    let blocked = move_y(map, body, body.vel.y * dt);
+    // `move_y` sets `grounded` only on a *downward* block, so `body.grounded`
+    // here distinguishes a floor from a ceiling without a second flag; and
+    // `!was_grounded` is what makes this a landing rather than a body resting on
+    // the floor, which is blocked downward on every tick of its life.
+    if blocked && body.grounded && !was_grounded {
+        body.landing_impact = falling_at.max(0.0);
+    }
+
+    if forces.zero_g {
+        // **R4 — contact from below grounds you, with or without downward
+        // velocity.** `move_y` can only ground a body that was *moving* down:
+        // it returns at `dy == 0.0` before it probes anything at all. With no
+        // gravity a body drifting sideways onto the top of a rock has
+        // `vel.y == 0.0` exactly, so without this it never lands — it stands on
+        // nothing for the rest of the round, permanently on air control with
+        // `try_jump` dead once coyote time expires. Standing on rocks is the
+        // picture the whole mode is for.
+        //
+        // `is_on_ground` rather than a bare one-pixel probe: it refuses a body
+        // that is *inside* the rock, which would otherwise be reported as
+        // standing on it and never resolve. That refusal is why the probe is
+        // safe to run every tick.
+        //
+        // **Contact on any other side does not reach here** (R4): `move_x`
+        // zeroes `vel.x` on a wall and `move_y` zeroes `vel.y` on a ceiling,
+        // and neither touches `grounded`. You are held against a wall, not
+        // standing on a floor.
+        //
+        // **And `ground_snap` is off** (R4). It exists to keep a walker glued
+        // to a downhill slope and there is no walking downhill here; left on, a
+        // player who drifts off the edge of an asteroid is pulled back down
+        // onto its contour `STEP_DOWN` px at a time and re-grounded, which is
+        // the mode quietly refusing to let go of you.
+        if !body.grounded && is_on_ground(map, body.aabb()) {
+            body.grounded = true;
+        }
+    } else {
+        ground_snap(map, body, was_grounded);
+    }
+    clamp_to_world(map, body);
+
+    if body.grounded {
+        body.airborne_ticks = 0;
+    } else {
+        body.airborne_ticks = body.airborne_ticks.saturating_add(1);
+    }
+    body.landing_impact
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::{GRAVITY, PLAYER_H, PLAYER_W, SIM_DT, STEP_DOWN, WALK_SPEED};
+    use crate::map::Mask;
+    use crate::physics::collide::tests::{floor_at, test_map};
+
+    const W: u32 = 512;
+    const H: u32 = 512;
+
+    fn body_resting_on(floor_y: i32, x: f32) -> Body {
+        let mut b = Body::new(Vec2::new(x, floor_y as f32 - PLAYER_H / 2.0));
+        b.grounded = true;
+        b
+    }
+
+    // ---- landing impact (T20.11) ----------------------------------------
+    //
+    // `integrate` is the only place that can measure this, because `move_y`
+    // destroys `vel.y` on the way past. These tests pin the number and, more
+    // importantly, pin the **two paths apart**: a real landing and a downhill
+    // snap both end the tick grounded, and the obvious way to tell them apart
+    // reads exactly the wrong one.
+
+    /// A staircase descending to the right: `drop_per` px every `run` columns.
+    fn slope_down(top: i32, run: i32, drop_per: i32) -> impl FnOnce(&mut Mask) {
+        move |m: &mut Mask| {
+            let cols = m.w as i32;
+            for x in 0..cols {
+                let y = top + (x / run) * drop_per;
+                for fy in y.min(m.h as i32 - 1)..m.h as i32 {
+                    m.set(x, fy);
+                }
+            }
+        }
+    }
+
+    /// Drop a body from `h` px up and return the impact `integrate` reported.
+    fn drop_from(h: f32) -> (f32, u32) {
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - h));
+        for t in 0..600 {
+            let got = integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            if got > 0.0 {
+                return (got, t);
+            }
+        }
+        (0.0, u32::MAX)
+    }
+
+    #[test]
+    fn a_landing_reports_the_speed_it_was_falling_at() {
+        // Against the closed form, not against a recorded number: `v = sqrt(2gh)`
+        // with one tick of discretisation slack either side. A hardcoded 537
+        // would go stale the day `GRAVITY` moves.
+        for h in [64.0f32, 128.0, 256.0] {
+            let want = (2.0 * GRAVITY * h).sqrt();
+            let (got, _) = drop_from(h);
+            let slack = GRAVITY * SIM_DT;
+            assert!(
+                (got - want).abs() <= slack,
+                "a {h} px drop reported {got:.1} px/s against {want:.1} +/- {slack:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_impact_is_reported_on_exactly_one_tick_and_is_zero_on_the_others() {
+        // The control the test above needs: a number that is correct on the
+        // landing tick and *also* nonzero while falling would make every
+        // airborne tick a landing.
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
+        let mut reports = 0;
+        let mut airborne_reports = 0;
+        for _ in 0..600 {
+            let before = b.grounded;
+            let got = integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            if got > 0.0 {
+                reports += 1;
+                if before {
+                    airborne_reports += 1;
+                }
+            }
+            assert_eq!(got, b.landing_impact, "the return disagreed with the field");
+        }
+        assert_eq!(reports, 1, "one fall reported {reports} landings");
+        assert_eq!(airborne_reports, 0);
+        assert_eq!(
+            b.landing_impact, 0.0,
+            "the last tick still claims a landing"
+        );
+    }
+
+    #[test]
+    fn a_body_resting_on_the_floor_never_reports_a_landing() {
+        // It is blocked downward on **every** tick of its life, so a detector
+        // that only looked at `move_y` returning true would charge it rent.
+        let map = test_map(W, H, floor_at(400));
+        let mut b = body_resting_on(400, 256.0);
+        for _ in 0..120 {
+            assert_eq!(integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT), 0.0);
+        }
+    }
+
+    #[test]
+    fn walking_downhill_reports_no_landing_although_it_is_descending() {
+        // **The `ground_snap` path**, which must never hurt. The control is the
+        // descent itself: without it this passes for a body that walked into a
+        // wall and never went anywhere, which is what a first draft of this test
+        // actually did on a generated map.
+        let map = test_map(W, H, slope_down(300, 8, STEP_DOWN - 2));
+        let mut b = body_resting_on(300, 16.0);
+        let y0 = b.pos.y;
+        let x0 = b.pos.x;
+        let mut reports = 0;
+        for _ in 0..240 {
+            b.vel.x = WALK_SPEED;
+            if integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT) > 0.0 {
+                reports += 1;
+            }
+        }
+        assert!(
+            b.pos.x - x0 > PLAYER_W * 4.0,
+            "the body only travelled {:.0} px, so it never walked downhill",
+            b.pos.x - x0
+        );
+        assert!(
+            b.pos.y - y0 > PLAYER_H,
+            "the body only descended {:.0} px",
+            b.pos.y - y0
+        );
+        assert_eq!(reports, 0, "walking downhill reported {reports} landing(s)");
+    }
+
+    /// **The naive detector is inverted, and this is the proof.**
+    ///
+    /// The obvious rule — *"the body is on the ground and still moving down, so it
+    /// just hit something"* — is `grounded && vel.y > 0` at the end of a tick.
+    /// Measured, it is exactly backwards:
+    ///
+    ///  - on a **real landing** `move_y` sets `vel.y = 0.0` and *then* `grounded`,
+    ///    so the tick ends at `vel.y == 0` and the rule is **false**;
+    ///  - while **walking downhill** `ground_snap` sets `grounded` and never
+    ///    touches `vel.y`, so the tick ends at one tick of gravity and the rule is
+    ///    **true**.
+    ///
+    /// Zero damage on every fall, damage on every downhill step. Locked here so
+    /// nobody re-derives it the wrong way round — and note that the edge-triggered
+    /// variant (*"grounded went true this tick"*) is no better in the other
+    /// direction: a downhill walker is grounded at the end of every tick, so the
+    /// edge never fires at all and `ground_snap` is invisible to it.
+    #[test]
+    fn the_obvious_detector_reads_exactly_the_wrong_one() {
+        let flat = test_map(W, H, floor_at(400));
+        let mut falling = Body::new(Vec2::new(256.0, 400.0 - PLAYER_H / 2.0 - 200.0));
+        let mut landing_says = None;
+        for _ in 0..600 {
+            let real = integrate(&flat, &mut falling, Forces::gravity(1.0), SIM_DT) > 0.0;
+            if real {
+                landing_says = Some(falling.grounded && falling.vel.y > 0.0);
+                break;
+            }
+        }
+        assert_eq!(
+            landing_says,
+            Some(false),
+            "the naive rule fired on a real landing — then it is not inverted after all"
+        );
+
+        let hill = test_map(W, H, slope_down(300, 8, STEP_DOWN - 2));
+        let mut walking = body_resting_on(300, 16.0);
+        let mut naive_fired = 0;
+        let mut real_landings = 0;
+        for _ in 0..240 {
+            walking.vel.x = WALK_SPEED;
+            if integrate(&hill, &mut walking, Forces::gravity(1.0), SIM_DT) > 0.0 {
+                real_landings += 1;
+            }
+            if walking.grounded && walking.vel.y > 0.0 {
+                naive_fired += 1;
+            }
+        }
+        assert_eq!(real_landings, 0, "walking downhill is not a landing");
+        assert!(
+            naive_fired > 0,
+            "the naive rule never fired walking downhill — then this test is not \
+             demonstrating the inversion and the slope is wrong"
+        );
+    }
+
+    // ---- substeps --------------------------------------------------------
+
+    #[test]
+    fn substep_counts() {
+        assert_eq!(substeps(Vec2::new(0.5, 0.0)).0, 1);
+        assert_eq!(substeps(Vec2::new(10.0, 0.0)).0, 10);
+        assert_eq!(substeps(Vec2::new(-10.0, 0.0)).0, 10);
+        assert_eq!(substeps(Vec2::new(1000.0, 0.0)).0, MAX_SUBSTEPS);
+        assert_eq!(substeps(Vec2::ZERO).0, 1, "must never divide by zero");
+
+        let (n, per) = substeps(Vec2::new(10.0, 0.0));
+        assert!((per.x - 1.0).abs() < 1e-6, "per-step should be 1 px");
+        assert!((per.x * n as f32 - 10.0).abs() < 1e-4);
+
+        // When the cap binds, the STEP stays 1 px and the distance is truncated.
+        // Dividing the delta by the capped count would give 15.6 px steps here.
+        let (n, per) = substeps(Vec2::new(1000.0, 0.0));
+        assert_eq!(n, MAX_SUBSTEPS);
+        assert!(per.x.abs() <= MAX_SUBSTEP_PX + 1e-6, "step of {} px", per.x);
+        assert!((per.x * n as f32).abs() <= MAX_SUBSTEPS as f32 + 1.0);
+
+        // Every input, however extreme, yields a sub-MAX_SUBSTEP_PX step.
+        for d in [0.1f32, 1.0, 63.0, 64.0, 65.0, 1e4, 1e6] {
+            for v in [Vec2::new(d, 0.0), Vec2::new(0.0, d), Vec2::new(d, d)] {
+                let (_, per) = substeps(v);
+                assert!(
+                    per.x.abs() <= MAX_SUBSTEP_PX + 1e-6 && per.y.abs() <= MAX_SUBSTEP_PX + 1e-6,
+                    "delta {v:?} gave a step of {per:?}"
+                );
+            }
+        }
+    }
+
+    // ---- move_x ----------------------------------------------------------
+
+    #[test]
+    fn moving_in_open_air_covers_the_full_distance() {
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(100.0, 100.0));
+        assert!(!move_x(&map, &mut b, 20.0));
+        assert!((b.pos.x - 120.0).abs() < 1e-3, "at {}", b.pos.x);
+    }
+
+    #[test]
+    fn a_twenty_px_wall_stops_the_body_against_it() {
+        let map = test_map(W, H, |m| {
+            floor_at(200)(m);
+            for y in 180..200 {
+                m.set_run(y, 300, 320);
+            }
+        });
+        // Walk in at a realistic per-tick step rather than one 200 px jump: the
+        // substep cap deliberately truncates a single huge move to 64 px.
+        let mut b = body_resting_on(200, 200.0);
+        b.vel.x = WALK_SPEED;
+        let mut blocked = false;
+        for _ in 0..200 {
+            if move_x(&map, &mut b, WALK_SPEED * SIM_DT) {
+                blocked = true;
+                break;
+            }
+        }
+        assert!(blocked, "should be blocked");
+        assert_eq!(b.vel.x, 0.0);
+
+        // Against the wall, not 5 px short and not embedded.
+        let gap = 300.0 - (b.pos.x + PLAYER_W / 2.0);
+        assert!((0.0..=1.5).contains(&gap), "stopped {gap} px from the wall");
+        assert!(!aabb_overlaps_solid(&map, b.aabb()), "embedded in the wall");
+    }
+
+    #[test]
+    fn a_four_px_step_is_climbed_and_a_seven_px_step_is_not() {
+        let map = test_map(W, H, |m| {
+            floor_at(200)(m);
+            for y in 196..200 {
+                m.set_run(y, 300, 511);
+            }
+        });
+        let mut b = body_resting_on(200, 290.0);
+        b.vel.x = WALK_SPEED;
+        let start_vx = b.vel.x;
+        assert!(!move_x(&map, &mut b, 20.0), "a 4 px step should be climbed");
+        assert!(
+            (b.pos.y - (196.0 - PLAYER_H / 2.0)).abs() < 1.5,
+            "y {}",
+            b.pos.y
+        );
+        assert_eq!(b.vel.x, start_vx, "climbing must not cost speed");
+
+        let map7 = test_map(W, H, |m| {
+            floor_at(200)(m);
+            for y in 193..200 {
+                m.set_run(y, 300, 511);
+            }
+        });
+        let mut b = body_resting_on(200, 290.0);
+        b.vel.x = WALK_SPEED;
+        assert!(move_x(&map7, &mut b, 20.0), "a 7 px step is a wall");
+        assert_eq!(b.vel.x, 0.0);
+    }
+
+    #[test]
+    fn step_up_does_not_fire_while_airborne() {
+        // Otherwise a player climbs sheer walls by holding a direction into them.
+        let map = test_map(W, H, |m| {
+            floor_at(200)(m);
+            for y in 196..200 {
+                m.set_run(y, 300, 511);
+            }
+        });
+        let mut b = body_resting_on(200, 290.0);
+        b.grounded = false;
+        b.airborne_ticks = 100; // well past coyote time
+        assert!(move_x(&map, &mut b, 20.0), "airborne must be blocked");
+    }
+
+    #[test]
+    fn moving_left_mirrors_every_case() {
+        let map = test_map(W, H, |m| {
+            floor_at(200)(m);
+            for y in 180..200 {
+                m.set_run(y, 100, 120);
+            }
+        });
+        let mut b = body_resting_on(200, 250.0);
+        b.vel.x = -WALK_SPEED;
+        let mut blocked = false;
+        for _ in 0..200 {
+            if move_x(&map, &mut b, -WALK_SPEED * SIM_DT) {
+                blocked = true;
+                break;
+            }
+        }
+        assert!(blocked);
+        assert_eq!(b.vel.x, 0.0);
+        let gap = (b.pos.x - PLAYER_W / 2.0) - 121.0;
+        assert!((0.0..=1.5).contains(&gap), "stopped {gap} px from the wall");
+    }
+
+    #[test]
+    fn no_horizontal_tunnelling_through_a_one_px_wall() {
+        for dir in [1.0f32, -1.0] {
+            let wall_x = if dir > 0.0 { 300 } else { 100 };
+            let map = test_map(W, H, move |m| {
+                floor_at(200)(m);
+                for y in 150..200 {
+                    m.set(wall_x, y);
+                }
+            });
+            let mut b = body_resting_on(200, 200.0);
+            b.vel.x = dir * 10.0 * WALK_SPEED;
+            for _ in 0..400 {
+                let dx = b.vel.x * SIM_DT;
+                move_x(&map, &mut b, dx);
+            }
+            // Never on the far side of the wall.
+            if dir > 0.0 {
+                assert!(
+                    b.pos.x + PLAYER_W / 2.0 <= wall_x as f32 + 1.0,
+                    "tunnelled right to {}",
+                    b.pos.x
+                );
+            } else {
+                assert!(
+                    b.pos.x - PLAYER_W / 2.0 >= wall_x as f32,
+                    "tunnelled left to {}",
+                    b.pos.x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_embedded_body_does_not_burrow_further() {
+        let map = test_map(W, H, |m| {
+            for y in 0..H as i32 {
+                m.set_run(y, 0, W as i32 - 1);
+            }
+        });
+        let mut b = Body::new(Vec2::new(200.0, 200.0));
+        let before = b.pos;
+        assert!(move_x(&map, &mut b, 20.0));
+        assert_eq!(b.pos, before);
+    }
+
+    // ---- move_y ----------------------------------------------------------
+
+    #[test]
+    fn falling_onto_a_floor_grounds_the_body() {
+        let map = test_map(W, H, floor_at(300));
+        let mut b = Body::new(Vec2::new(100.0, 100.0));
+        b.vel.y = 500.0;
+        let mut blocked = false;
+        for _ in 0..300 {
+            if move_y(&map, &mut b, 500.0 * SIM_DT) {
+                blocked = true;
+                break;
+            }
+        }
+        assert!(blocked, "never reached the floor");
+        assert!(b.grounded);
+        assert_eq!(b.vel.y, 0.0);
+        assert!((b.feet_y() - 300.0).abs() <= 1.5, "feet at {}", b.feet_y());
+    }
+
+    #[test]
+    fn hitting_a_ceiling_zeroes_velocity_without_grounding() {
+        let map = test_map(W, H, |m| {
+            floor_at(400)(m);
+            for y in 100..120 {
+                m.set_run(y, 0, W as i32 - 1);
+            }
+        });
+        // Head starts at 186; the ceiling's underside is y = 119, so the head has
+        // 67 px to travel. Step it in tick-sized moves.
+        let mut b = Body::new(Vec2::new(100.0, 200.0));
+        b.vel.y = -500.0;
+        let mut blocked = false;
+        for _ in 0..60 {
+            if move_y(&map, &mut b, -500.0 * SIM_DT) {
+                blocked = true;
+                break;
+            }
+        }
+        assert!(blocked, "never reached the ceiling, head at {}", b.head_y());
+        assert_eq!(b.vel.y, 0.0);
+        assert!(!b.grounded, "a ceiling must not ground the body");
+        assert!(!aabb_overlaps_solid(&map, b.aabb()));
+    }
+
+    #[test]
+    fn no_vertical_tunnelling_through_a_one_px_floor() {
+        for dir in [1.0f32, -1.0] {
+            let surface = if dir > 0.0 { 300 } else { 100 };
+            let map = test_map(W, H, move |m| {
+                m.set_run(surface, 0, W as i32 - 1);
+            });
+            let mut b = Body::new(Vec2::new(100.0, 200.0));
+            b.vel.y = dir * 10.0 * MAX_FALL_SPEED;
+            for _ in 0..400 {
+                let dy = b.vel.y * SIM_DT;
+                move_y(&map, &mut b, dy);
+            }
+            if dir > 0.0 {
+                assert!(
+                    b.feet_y() <= surface as f32 + 1.0,
+                    "fell through to {}",
+                    b.pos.y
+                );
+            } else {
+                assert!(b.head_y() >= surface as f32, "rose through to {}", b.pos.y);
+            }
+        }
+    }
+
+    // ---- gravity ---------------------------------------------------------
+
+    #[test]
+    fn gravity_clamps_downward_only() {
+        let mut b = Body::new(Vec2::ZERO);
+        for _ in 0..600 {
+            apply_gravity(&mut b, 1.0, SIM_DT);
+        }
+        assert_eq!(b.vel.y, MAX_FALL_SPEED, "terminal velocity after 10 s");
+
+        // Upward velocity is untouched, so knockback still launches.
+        let mut b = Body::new(Vec2::ZERO);
+        b.vel.y = -3000.0;
+        apply_gravity(&mut b, 1.0, SIM_DT);
+        assert!(b.vel.y < -2900.0);
+    }
+
+    #[test]
+    fn gravity_scale_zero_leaves_velocity_alone() {
+        let mut b = Body::new(Vec2::ZERO);
+        b.vel.y = 42.0;
+        apply_gravity(&mut b, 0.0, SIM_DT);
+        assert_eq!(b.vel.y, 42.0);
+    }
+
+    // ---- integrate -------------------------------------------------------
+
+    #[test]
+    fn a_resting_body_is_bit_identical_after_600_ticks() {
+        // A drift of 0.001 px per tick is a real bug that an approximate assertion
+        // would hide.
+        let map = test_map(W, H, floor_at(300));
+        let mut b = body_resting_on(300, 100.0);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT); // settle
+        let settled = b.pos;
+
+        for tick in 0..600 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            assert_eq!(b.pos, settled, "drifted at tick {tick}");
+            assert!(b.grounded, "lost grounding at tick {tick}");
+        }
+    }
+
+    #[test]
+    fn a_dropped_body_lands_and_stops() {
+        let map = test_map(W, H, floor_at(300));
+        let mut b = Body::new(Vec2::new(100.0, 100.0));
+        for _ in 0..300 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        }
+        assert!(b.grounded);
+        assert_eq!(b.vel.y, 0.0);
+        assert!((b.feet_y() - 300.0).abs() <= 1.5);
+    }
+
+    #[test]
+    fn walking_down_a_thirty_degree_slope_stays_grounded_every_tick() {
+        // The ground-snap test, and the one that matters most: without the snap,
+        // every downhill step is a brief fall and `grounded` flickers, which breaks
+        // jump input.
+        let map = test_map(1024, 512, |m| {
+            for x in 0..1024 {
+                let surface = 200 + (x as f32 * 0.577) as i32;
+                for y in surface..512 {
+                    m.set(x, y);
+                }
+            }
+        });
+        // The surface at x = 60 is 200 + 60*0.577, not 200.
+        let start_x = 60.0f32;
+        let surface = 200 + (start_x * 0.577) as i32;
+        let mut b = body_resting_on(surface, start_x);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        assert!(b.grounded, "precondition: not standing on the slope");
+
+        // Stop before the slope runs off the bottom of the map: at 0.577 rise per
+        // px it reaches y = 512 at x ~ 540.
+        for tick in 0..150 {
+            b.vel.x = WALK_SPEED;
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            assert!(
+                b.grounded,
+                "went airborne at tick {tick}, x = {}, y = {}",
+                b.pos.x, b.pos.y
+            );
+            assert!(b.pos.x < 450.0, "walked past the usable slope");
+        }
+        assert!(b.pos.x > 300.0, "did not actually travel: x = {}", b.pos.x);
+    }
+
+    #[test]
+    fn walking_off_a_ledge_becomes_airborne_immediately() {
+        let map = test_map(W, H, |m| {
+            for y in 300..H as i32 {
+                m.set_run(y, 0, 250);
+            }
+        });
+        let mut b = body_resting_on(300, 200.0);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        assert!(b.grounded, "precondition");
+
+        let mut went_airborne = None;
+        for tick in 0..120 {
+            b.vel.x = WALK_SPEED;
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            if !b.grounded {
+                went_airborne = Some(tick);
+                break;
+            }
+        }
+        let tick = went_airborne.expect("never left the ledge");
+        assert!(
+            b.airborne_ticks >= 1,
+            "airborne_ticks did not start counting"
+        );
+        assert!(
+            b.pos.x > 250.0 - PLAYER_W,
+            "left the ledge too early at tick {tick}"
+        );
+    }
+
+    #[test]
+    fn a_step_taller_than_step_down_makes_the_body_airborne() {
+        let map = test_map(W, H, |m| {
+            for y in 300..H as i32 {
+                m.set_run(y, 0, 250);
+            }
+            // The lower level is 20 px below, more than STEP_DOWN.
+            for y in 320..H as i32 {
+                m.set_run(y, 251, W as i32 - 1);
+            }
+        });
+        let mut b = body_resting_on(300, 240.0);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+
+        let mut saw_airborne = false;
+        for _ in 0..60 {
+            b.vel.x = WALK_SPEED;
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            if !b.grounded {
+                saw_airborne = true;
+            }
+        }
+        assert!(saw_airborne, "a 20 px drop should not be snapped down");
+    }
+
+    #[test]
+    fn a_body_in_a_tight_gap_does_not_oscillate() {
+        // Floor at 300, ceiling exactly PLAYER_H + 1 above it.
+        let map = test_map(W, H, |m| {
+            floor_at(300)(m);
+            for y in 0..(300 - PLAYER_H as i32 - 1) {
+                m.set_run(y, 0, W as i32 - 1);
+            }
+        });
+        let mut b = body_resting_on(300, 100.0);
+        integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+
+        let mut flips = 0;
+        let mut last = b.grounded;
+        for _ in 0..600 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+            if b.grounded != last {
+                flips += 1;
+                last = b.grounded;
+            }
+        }
+        assert_eq!(flips, 0, "grounded flickered {flips} times in a tight gap");
+    }
+
+    #[test]
+    fn no_tunnelling_at_ten_times_terminal_velocity_through_integrate() {
+        let map = test_map(W, H, |m| m.set_run(300, 0, W as i32 - 1));
+        let mut b = Body::new(Vec2::new(100.0, 100.0));
+        b.vel.y = 10.0 * MAX_FALL_SPEED;
+        for _ in 0..10 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        }
+        assert!(b.feet_y() <= 301.0, "tunnelled to y = {}", b.pos.y);
+    }
+
+    /// **R10's third `max_speed` interaction: the sub-step cap already bounds
+    /// speed, so a terminal speed above it is inert.**
+    ///
+    /// `MAX_SUBSTEPS` (64) x `MAX_SUBSTEP_PX` (1 px) per tick is a hard bound on
+    /// how far a body travels in one tick whatever its velocity says — this
+    /// module's own doc calls it *"a correctness guarantee, not an optimisation"*.
+    /// Divided by `SIM_DT` that is an effective 3840 px/s per axis, and a
+    /// `max_speed` above it clamps nothing that was not already bounded.
+    ///
+    /// **It lives in this file and not beside the constant it is about** because
+    /// `substep_guard::no_other_substep_derivation_exists` reads this crate's
+    /// source and forbids every file but `resolve.rs` and `constants.rs` from
+    /// naming these two constants. That guard is right; the assertion moved.
+    ///
+    /// The second half is the one with teeth: the cap is not merely a number this
+    /// test compares against, it is a distance a body actually cannot exceed, so
+    /// the body below is driven at twice `SPACE_MAX_SPEED` with no clamp at all
+    /// and measured. Without it this is arithmetic about two constants.
+    #[test]
+    fn the_space_terminal_speed_is_not_inert_against_the_substep_cap() {
+        let per_tick = MAX_SUBSTEPS as f32 * MAX_SUBSTEP_PX;
+        let cap = per_tick / SIM_DT;
+        assert!(
+            crate::constants::SPACE_MAX_SPEED < cap,
+            "SPACE_MAX_SPEED {} is at or above the {cap} px/s the sub-stepper \
+             already imposes, so the clamp is inert and the mode has no terminal \
+             speed at all",
+            crate::constants::SPACE_MAX_SPEED
+        );
+
+        // And `cap` is a real distance bound, not a number in a comment: an
+        // unclamped body at twice the terminal speed still moves only `per_tick`.
+        let map = test_map(W, H, |_| {});
+        let mut b = Body::new(Vec2::new(200.0, 150.0));
+        b.vel = Vec2::new(2.0 * crate::constants::SPACE_MAX_SPEED, 0.0);
+        let before = b.pos.x;
+        integrate(&map, &mut b, Forces::gravity(0.0), SIM_DT);
+        assert!(
+            (b.pos.x - before) <= per_tick + 0.001,
+            "an unclamped body at {} px/s travelled {} px in one tick, and the \
+             sub-step cap says at most {per_tick}",
+            b.vel.x,
+            b.pos.x - before
+        );
+    }
+
+    // ---- world limits (docs/70-amendments-v2.md A1) -----------------------
+
+    #[test]
+    fn the_body_cannot_leave_the_world_sideways() {
+        let map = test_map(W, H, floor_at(300));
+        let half = PLAYER_W / 2.0;
+
+        let mut b = body_resting_on(300, 100.0);
+        b.vel.x = -5000.0;
+        for _ in 0..60 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        }
+        assert!(
+            b.pos.x >= WALL_W as f32 + half - 0.001,
+            "escaped left to {}",
+            b.pos.x
+        );
+        assert!(b.vel.x >= 0.0, "velocity into the wall was not cleared");
+
+        let mut b = body_resting_on(300, 400.0);
+        b.vel.x = 5000.0;
+        for _ in 0..60 {
+            integrate(&map, &mut b, Forces::gravity(1.0), SIM_DT);
+        }
+        assert!(
+            b.pos.x <= W as f32 - WALL_W as f32 - half + 0.001,
+            "escaped right to {}",
+            b.pos.x
+        );
+        assert!(b.vel.x <= 0.0);
+    }
+
+    #[test]
+    fn a_jetpack_cannot_leave_the_world_through_the_ceiling() {
+        let map = test_map(W, H, floor_at(400));
+        let mut b = Body::new(Vec2::new(100.0, 200.0));
+        b.vel.y = -5000.0;
+        for _ in 0..120 {
+            integrate(&map, &mut b, Forces::gravity(0.35), SIM_DT);
+        }
+        assert!(
+            b.head_y() >= -0.001,
+            "left the world through the ceiling: head at {}",
+            b.head_y()
+        );
+        assert!(
+            b.vel.y >= 0.0,
+            "upward velocity was not cleared at the ceiling"
+        );
+    }
+
+    #[test]
+    fn the_world_clamp_does_not_disturb_a_body_in_open_space() {
+        let map = test_map(W, H, floor_at(300));
+        let mut b = Body::new(Vec2::new(200.0, 150.0));
+        b.vel = Vec2::new(50.0, -20.0);
+        let before = b;
+        clamp_to_world(&map, &mut b);
+        assert_eq!(b, before);
+    }
+}
+
+#[cfg(test)]
+mod substep_guard {
+    /// Nothing outside this module may derive its own sub-step count.
+    ///
+    /// This has been the same bug twice — M2's bodies and M4's projectiles both
+    /// tunnelled through a 1 px wall because the split was recomputed file-locally.
+    /// A comment asking people not to is not a guard; this is. It reads the crate's
+    /// own source, so a third re-derivation fails the suite rather than shipping
+    /// and being found by a tunnelling test that may not exist for that mover.
+    #[test]
+    fn no_other_substep_derivation_exists() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // `resolve.rs` is where the one derivation lives, and
+                // `constants.rs` is where the values are declared.
+                let name = path.file_name().and_then(|f| f.to_str());
+                if name == Some("resolve.rs") || name == Some("constants.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read file");
+                for (i, line) in text.lines().enumerate() {
+                    let l = line.trim();
+                    if l.starts_with("//") {
+                        continue;
+                    }
+                    if l.contains("MAX_SUBSTEP_PX") || l.contains("MAX_SUBSTEPS") {
+                        offenders.push(format!("{}:{}: {l}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "sub-step constants used outside physics::resolve — call substeps() \
+             instead. Dividing a delta by the capped count is how bodies and \
+             projectiles each tunnelled through a 1 px wall:\n{}",
+            offenders.join("\n")
+        );
+    }
+}

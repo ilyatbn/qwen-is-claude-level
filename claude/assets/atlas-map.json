@@ -1,0 +1,90 @@
+{
+  "_comment": [
+    "Which vendor PNGs go into which atlas, under which frame name.",
+    "",
+    "Frame names are OURS, not Kenney's (docs/51 \u00a74). That indirection is the",
+    "whole point: swapping art packs is an edit to this file, and skins.json",
+    "never learns where a pixel came from.",
+    "",
+    "Paths are relative to assets/vendor/kenney/. A missing source is reported",
+    "and skipped \u2014 the atlas still builds, and the frame falls back to a",
+    "procedural placeholder at runtime (docs/50 \u00a78)."
+  ],
+  "chars": {
+    "_note": "Five colour/character variants of one rig, which is exactly the prefix scheme in docs/50 \u00a72. Kenney gives a 2-frame walk cycle, so walk is a/b rather than a..d.",
+    "_variants": {
+      "adventurer": "platformer-characters/PNG/Adventurer/Poses/adventurer_",
+      "female": "platformer-characters/PNG/Female/Poses/female_",
+      "soldier": "platformer-characters/PNG/Soldier/Poses/soldier_",
+      "player": "platformer-characters/PNG/Player/Poses/player_",
+      "zombie": "platformer-characters/PNG/Zombie/Poses/zombie_"
+    },
+    "_poses": {
+      "idle": "idle.png",
+      "walk_a": "walk1.png",
+      "walk_b": "walk2.png",
+      "jump": "jump.png",
+      "fall": "fall.png",
+      "jetpack_a": "climb1.png",
+      "jetpack_b": "climb2.png",
+      "hurt": "hurt.png",
+      "dead": "duck.png",
+      "stand": "stand.png"
+    }
+  },
+  "decor": {
+    "_note": "Decoration kinds are theme*6 + 0..5 (crates/game-core/src/map/meta.rs), so grassland is 0-5, desert 6-11, frost 12-17. Frame names are ours; a theme with no art for a kind simply skips it (docs/50 \u00a76).",
+    "decor_0": "pixel-platformer/Tiles/tile_0124.png",
+    "decor_1": "pixel-platformer/Tiles/tile_0125.png",
+    "decor_2": "pixel-platformer/Tiles/tile_0096.png",
+    "decor_3": "pixel-platformer/Tiles/tile_0098.png",
+    "decor_4": "pixel-platformer/Tiles/tile_0007.png",
+    "decor_5": "pixel-platformer/Tiles/tile_0128.png",
+    "decor_6": "pixel-platformer/Tiles/tile_0127.png",
+    "decor_7": "pixel-platformer/Tiles/tile_0008.png",
+    "decor_8": "pixel-platformer/Tiles/tile_0068.png",
+    "decor_9": "pixel-platformer/Tiles/tile_0084.png",
+    "decor_10": "pixel-platformer/Tiles/tile_0007.png",
+    "decor_11": "pixel-platformer/Tiles/tile_0110.png",
+    "decor_12": "pixel-platformer/Tiles/tile_0153.png",
+    "decor_13": "pixel-platformer/Tiles/tile_0154.png",
+    "decor_14": "pixel-platformer/Tiles/tile_0145.png",
+    "decor_15": "pixel-platformer/Tiles/tile_0126.png",
+    "decor_16": "pixel-platformer/Tiles/tile_0008.png",
+    "decor_17": "pixel-platformer/Tiles/tile_0146.png"
+  },
+  "items": {
+    "_note": "Frames named for ItemDef.sprite (crates/game-core/src/items/registry.rs), which has been populated since T4.01 and unreadable by the client until item_registry_json() exported it. A missing frame falls back to a tinted box and logs once (docs/50 \u00a78).",
+    "item_medkit": "pixel-platformer/Tiles/tile_0044.png",
+    "item_shield": "pixel-platformer/Tiles/tile_0067.png",
+    "item_flashlight": "pixel-platformer/Tiles/tile_0129.png",
+    "weapon_bazooka": "pixel-platformer/Tiles/tile_0065.png",
+    "weapon_grenade": "pixel-platformer/Tiles/tile_0151.png",
+    "weapon_smg": "pixel-platformer/Tiles/tile_0066.png",
+    "crate": "pixel-platformer/Tiles/tile_0026.png",
+    "crate_open": "pixel-platformer/Tiles/tile_0028.png"
+  },
+  "fx": {
+    "_note": "Transparent variants, not the black-background ones: the lightmap multiplies and additive blending both want real alpha.",
+    "explosion_a": "particle-pack/PNG (Transparent)/flame_01.png",
+    "explosion_b": "particle-pack/PNG (Transparent)/flame_04.png",
+    "explosion_c": "particle-pack/PNG (Transparent)/flame_06.png",
+    "fire_a": "particle-pack/PNG (Transparent)/fire_01.png",
+    "fire_b": "particle-pack/PNG (Transparent)/fire_02.png",
+    "smoke_a": "particle-pack/PNG (Transparent)/smoke_01.png",
+    "smoke_b": "particle-pack/PNG (Transparent)/smoke_05.png",
+    "smoke_c": "particle-pack/PNG (Transparent)/smoke_09.png",
+    "spark_a": "particle-pack/PNG (Transparent)/spark_01.png",
+    "spark_b": "particle-pack/PNG (Transparent)/spark_04.png",
+    "muzzle_a": "particle-pack/PNG (Transparent)/muzzle_01.png",
+    "muzzle_b": "particle-pack/PNG (Transparent)/muzzle_04.png",
+    "star_a": "particle-pack/PNG (Transparent)/star_01.png",
+    "circle_soft": "particle-pack/PNG (Transparent)/circle_05.png",
+    "dirt_a": "particle-pack/PNG (Transparent)/dirt_01.png",
+    "dirt_b": "particle-pack/PNG (Transparent)/dirt_03.png",
+    "trace_a": "particle-pack/PNG (Transparent)/trace_01.png",
+    "light_a": "particle-pack/PNG (Transparent)/light_01.png",
+    "flare_a": "particle-pack/PNG (Transparent)/flare_01.png",
+    "scorch_a": "particle-pack/PNG (Transparent)/scorch_01.png"
+  }
+}

@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# The tests the gate never runs.  T20.17
+#
+#   ./scripts/ignored.sh            run the whole manifest, in release
+#   ./scripts/ignored.sh --list     print the manifest and exit
+#
+# `scripts/check.sh` is `cargo test --workspace` with no `--release` and no
+# `-- --ignored`, and there is no CI, so **nothing in this repository has ever
+# run these**. `balance.rs`'s control eroded from 1/8 of margin to 0 across nine
+# milestones in exactly that silence: the comment claiming the margin was the
+# only record of it, and a comment is not re-validated by anything.
+#
+# **What it costs, measured rather than assumed: 352 s** for the thirteen this
+# was written against, on an idle box with the release build already warm, twice,
+# identically. The `#[ignore]` reasons say "minutes in release" and "measurement:
+# minutes"; only `thousand_seed_playability_sweep` is still minutes (244 s of the
+# 352). The two `capacity.rs` ones are 52 s.
+#
+# **`balance.rs` was five measurements at 39 s and is now six at 35.8 s** (T20.26
+# added the rate floor; T20.16 reshaped the acceptance test and cut it from 6.7 s
+# to 3.7 s). Measured, not adjusted: the total above is left at its own
+# measurement rather than arithmetic on top of it, because 352 s was taken in one
+# run and a number assembled from two is not the same claim.
+#
+# **The cost that justified excluding them is largely no longer real** —
+# what keeps this out of `check.sh` is not the six minutes, it is that these need
+# `--release` and the gate builds debug, so wiring it in would add a second full
+# build of the workspace to every run. A gate people avoid running gates nothing.
+#
+# **So this relies on somebody running it**, and that is stated plainly rather
+# than dressed up: it is a milestone-boundary ritual, not a mechanism. What it
+# does buy over the status quo is that it is one command with a **verdict**
+# instead of five `--ignored` invocations copy-pasted out of doc comments and
+# read by eye — and that `scripts/verify-repo.mjs` is in the gate and fails if a
+# new `#[ignore]` is ever added without being named here.
+#
+# **What turns it green** is the measurements passing. There is no other way —
+# unlike a companion test that pins the numbers a doc comment claims, which goes
+# green again the moment somebody edits the comment. That is not hypothetical
+# here: the erosion this task exists for was a *doc comment* drifting away from
+# the truth while the code stayed put, and a companion pinned to the comment
+# would have stayed green through all nine milestones.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# The manifest: NAME|WHERE|CLASS.
+#
+# **Names, not counts.** The survey that booked this task recorded
+# `map_sweep.rs — 1` instead of the test's name, and the strongest guard in the
+# set — 1000 seeds over three scales — sat unclassified for a round because a
+# digit cannot be greped for, classified, or noticed as miscategorised.
+#
+# CLASS is `guard` if the test **can fail** and `report` if it cannot. Measured
+# per body, not by counting `assert`s: `thousand_seed_playability_sweep` fails
+# through `panic!` and contains no `assert` at all, while `density_report` and
+# `item_population_report` are named "report" and carry four failable assertions
+# and one. `low_gravity_report` is the same shape — it lands here as a `guard`
+# for its `fought > 0.0` control and its `moved` claim, and its name is the only
+# thing about it that says "report".
+#
+# **No counts are written in this header, deliberately.** It used to say "run all
+# seventeen" and "fourteen of the seventeen are guards — the three `report` rows
+# are ...". Every one of those three numbers was correct when written and wrong
+# one commit later, because `verify-repo.mjs` checks **membership** — that no
+# `#[ignore]` exists without a row here — and nothing checks a sentence. The
+# counts are now derived from `MANIFEST` by `--list`, which is the only form of
+# them that cannot go stale. Run `./scripts/ignored.sh --list` for the tally.
+MANIFEST=(
+  "thousand_seed_playability_sweep|game-core tests/map_sweep.rs|guard"
+  "fifty_medium_seeds_pass_without_the_safe_preset|game-core src/map/gen/mod.rs|guard"
+  "medium_generation_is_under_a_second|game-core src/map/gen/mod.rs|guard"
+  "solid_fraction_sweep_medium|game-core src/map/gen/silhouette.rs|guard"
+  "large_scale_generation_cost|game-core src/map/gen/silhouette.rs|guard"
+  "kill_chain|game-core src/bots/mod.rs|report"
+  "balance_report|game-core tests/balance.rs|report"
+  "density_report|game-core tests/balance.rs|guard"
+  "encounter_report|game-core tests/balance.rs|report"
+  "item_population_report|game-core tests/balance.rs|guard"
+  "low_gravity_report|game-core tests/balance.rs|guard"
+  "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
+  "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
+  # T22.05A, the space map. The first is a tuning gate in `gen/mod.rs`'s shape;
+  # the other three are measurements that print and assert nothing, which is why
+  # they are `report` — the density sweep, R17's "measure what the existing
+  # predicate says before asserting it is meaningless", and the enclosed-air
+  # figure T22.04 needs for the backdrop.
+  "a_hundred_space_seeds_pass_without_the_safe_preset|game-core src/map/gen/space.rs|guard"
+  "density_and_gap_report|game-core src/map/gen/space.rs|report"
+  "what_the_walking_predicate_says_about_a_space_map|game-core src/map/gen/space.rs|report"
+  "every_pixel_of_air_inside_the_rim_reads_as_enclosed|game-core src/map/gen/space.rs|report"
+  # T22.05B. The basis `SPACE_OPEN_SPACE_TRIES` is derived from: the share of
+  # uniform draws inside the rim ellipse's bounding box that land in open space.
+  # A report rather than a guard because the gate on it is
+  # `random_open_space_finds_a_point_on_every_seed`, which re-derives the same
+  # rate and asserts the miss probability; this one prints the grid rate beside
+  # it, which that test does not measure.
+  "the_open_space_hit_rate|game-core src/map/gen/space.rs|report"
+  "how_many_rooms_fit|game-server tests/capacity.rs|guard"
+  "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
+  # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.
+  "a_lobby_room_has_no_bots|game-server tests/lobby.rs|guard"
+  "a_second_client_joins_a_private_room_by_its_code|game-server tests/lobby.rs|guard"
+  # Parked as flaky on 2026-09-21 (T22.01), not for cost — see tasks/flaky-test.md.
+  "a_seventh_client_is_told_the_room_is_full|game-server tests/integration.rs|guard"
+  # Parked as flaky on 2026-09-21 (T22.03), not for cost — see tasks/flaky-test.md.
+  # The third `AlreadyClosed` in this one file.
+  "lobby_state_names_everyone_in_the_room_including_yourself|game-server tests/lobby.rs|guard"
+)
+
+# Tests whose recorded verdict is not `ok`. **Empty, and that is the finding.**
+#
+# **`the_shipping_configuration_produces_a_fight` was the entry here, and T20.16
+# retired the reason.** Recorded as it stood, because the history is the argument
+# for the reshaping: this file used to say the test was documented as knowingly
+# red, passing at HEAD, shipping **7/8** against a control of **6/8** — a margin
+# of one seed, on a control that varied map scale *and* seat count at once. That
+# number then moved again on its own: at `177108b` the shipping side reads
+# **8/8**, having been 7/8 two commits of ordinary work earlier. A statistic that
+# drifts a seat inside one milestone cannot carry a one-seed claim.
+#
+# It now compares the shipping seat count against **two seats on the same map** —
+# one axis, one pair against fifteen — and the control produces **0 encounters on
+# all eight seeds** against the shipping 447. The floors are aggregate and print
+# the margin they clear, so this runner shows erosion approaching instead of the
+# next person finding it exhausted.
+#
+# **Recorded as measured, not as remembered.** Nothing here was loosened to get
+# green: the old floors were replaced by strictly harder ones, and planting
+# `FOV_DAY` 320 -> 80 turns the new test red on the seeds that regressed while the
+# old floors, run on the same planted build, both still passed. Recording `ok`
+# means this script fires the day it goes red again, which is the mechanism the
+# task exists for; a stale `FAILED` would have shipped a runner that is red on
+# day one and therefore ignored.
+EXPECTED_RED=()
+
+if [ "${1:-}" = "--list" ]; then
+  printf '%-52s %-34s %s\n' NAME WHERE CLASS
+  for row in "${MANIFEST[@]}"; do
+    IFS='|' read -r name where class <<<"$row"
+    printf '%-52s %-34s %s\n' "$name" "$where" "$class"
+  done
+  # Derived, never written down: the header used to carry these numbers in prose
+  # and they were stale the first time a row was added.
+  guards=0; reports=0; other=0
+  for row in "${MANIFEST[@]}"; do
+    IFS='|' read -r _ _ class <<<"$row"
+    case "$class" in
+      guard) guards=$((guards + 1)) ;;
+      report) reports=$((reports + 1)) ;;
+      *) other=$((other + 1)) ;;
+    esac
+  done
+  printf '\n%d tests: %d guard, %d report' "${#MANIFEST[@]}" "$guards" "$reports"
+  [ "$other" -gt 0 ] && printf ', %d UNCLASSIFIED' "$other"
+  printf '; %d expected red\n' "${#EXPECTED_RED[@]}"
+  [ "$other" -gt 0 ] && exit 1
+  exit 0
+fi
+
+LOG="${IGNORED_LOG:-$ROOT/target/ignored-run.log}"
+mkdir -p "$(dirname "$LOG")"
+
+echo "running ${#MANIFEST[@]} ignored tests in release; ~6 min once the build is warm"
+echo "full output: $LOG"
+# `--no-fail-fast`, paid for by this script's own falsification: without it cargo
+# stops after the first failing binary, and a planted density regression left
+# three manifest entries reporting DID-NOT-RUN. One red measurement must not hide
+# the state of the other twelve — that is the whole complaint against the silence
+# this script exists to end.
+cargo test --release --workspace --no-fail-fast -- --ignored --nocapture >"$LOG" 2>&1
+echo "cargo exited $?"
+
+# Verdicts come from the harness's own lines, not from cargo's exit code: one
+# expected failure would otherwise hide twelve real ones behind a single 101.
+declare -A VERDICT=()
+while read -r name result; do
+  VERDICT["${name##*::}"]="$result"
+done < <(grep -aoE '^test [A-Za-z0-9_:]+ \.\.\. (ok|FAILED)' "$LOG" \
+         | sed -E 's/^test ([A-Za-z0-9_:]+) \.\.\. (ok|FAILED)$/\1 \2/')
+
+fail=0
+printf '\n%-52s %-7s %s\n' NAME CLASS VERDICT
+for row in "${MANIFEST[@]}"; do
+  IFS='|' read -r name where class <<<"$row"
+  got="${VERDICT[$name]:-DID-NOT-RUN}"
+  want=ok
+  for r in "${EXPECTED_RED[@]}"; do [ "$r" = "$name" ] && want=FAILED; done
+  note=""
+  if [ "$got" != "$want" ]; then
+    fail=1
+    if [ "$got" = DID-NOT-RUN ]; then
+      note="  <-- the manifest names it and the run did not reach it"
+    elif [ "$want" = FAILED ]; then
+      note="  <-- recorded as red and it PASSED; the recorded verdict is stale"
+    else
+      note="  <-- REGRESSION"
+    fi
+  fi
+  printf '%-52s %-7s %s%s\n' "$name" "$class" "$got" "$note"
+done
+
+# Count at both ends: a run that executed tests this manifest does not name is
+# as wrong as a manifest naming tests the run never reached.
+for name in "${!VERDICT[@]}"; do
+  known=0
+  for row in "${MANIFEST[@]}"; do
+    IFS='|' read -r n _ _ <<<"$row"
+    [ "$n" = "$name" ] && known=1
+  done
+  if [ "$known" = 0 ]; then
+    echo "unlisted ignored test ran: $name -- add it to the manifest and classify it"
+    fail=1
+  fi
+done
+
+echo
+if [ "$fail" = 0 ]; then
+  echo "ignored suite: as recorded (${#MANIFEST[@]} tests, ${#EXPECTED_RED[@]} recorded red)"
+else
+  echo "ignored suite: NOT as expected -- see the marked rows above and $LOG"
+fi
+exit "$fail"

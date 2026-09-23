@@ -1,0 +1,1015 @@
+{
+  "frames": {
+    "character_adventurer_idle": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_walk_a": {
+      "frame": {
+        "x": 82,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_walk_b": {
+      "frame": {
+        "x": 164,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_jump": {
+      "frame": {
+        "x": 246,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_fall": {
+      "frame": {
+        "x": 328,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_jetpack_a": {
+      "frame": {
+        "x": 410,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_jetpack_b": {
+      "frame": {
+        "x": 492,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_hurt": {
+      "frame": {
+        "x": 574,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_dead": {
+      "frame": {
+        "x": 656,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_adventurer_stand": {
+      "frame": {
+        "x": 738,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_idle": {
+      "frame": {
+        "x": 820,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_walk_a": {
+      "frame": {
+        "x": 902,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_walk_b": {
+      "frame": {
+        "x": 984,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_jump": {
+      "frame": {
+        "x": 1066,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_fall": {
+      "frame": {
+        "x": 1148,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_jetpack_a": {
+      "frame": {
+        "x": 1230,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_jetpack_b": {
+      "frame": {
+        "x": 1312,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_hurt": {
+      "frame": {
+        "x": 1394,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_dead": {
+      "frame": {
+        "x": 1476,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_female_stand": {
+      "frame": {
+        "x": 1558,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_idle": {
+      "frame": {
+        "x": 1640,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_walk_a": {
+      "frame": {
+        "x": 1722,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_walk_b": {
+      "frame": {
+        "x": 1804,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_jump": {
+      "frame": {
+        "x": 1886,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_fall": {
+      "frame": {
+        "x": 0,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_jetpack_a": {
+      "frame": {
+        "x": 82,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_jetpack_b": {
+      "frame": {
+        "x": 164,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_hurt": {
+      "frame": {
+        "x": 246,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_dead": {
+      "frame": {
+        "x": 328,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_soldier_stand": {
+      "frame": {
+        "x": 410,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_idle": {
+      "frame": {
+        "x": 492,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_walk_a": {
+      "frame": {
+        "x": 574,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_walk_b": {
+      "frame": {
+        "x": 656,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_jump": {
+      "frame": {
+        "x": 738,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_fall": {
+      "frame": {
+        "x": 820,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_jetpack_a": {
+      "frame": {
+        "x": 902,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_jetpack_b": {
+      "frame": {
+        "x": 984,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_hurt": {
+      "frame": {
+        "x": 1066,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_dead": {
+      "frame": {
+        "x": 1148,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_player_stand": {
+      "frame": {
+        "x": 1230,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_idle": {
+      "frame": {
+        "x": 1312,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_walk_a": {
+      "frame": {
+        "x": 1394,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_walk_b": {
+      "frame": {
+        "x": 1476,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_jump": {
+      "frame": {
+        "x": 1558,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_fall": {
+      "frame": {
+        "x": 1640,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_jetpack_a": {
+      "frame": {
+        "x": 1722,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_jetpack_b": {
+      "frame": {
+        "x": 1804,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_hurt": {
+      "frame": {
+        "x": 1886,
+        "y": 112,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_dead": {
+      "frame": {
+        "x": 0,
+        "y": 224,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    },
+    "character_zombie_stand": {
+      "frame": {
+        "x": 82,
+        "y": 224,
+        "w": 80,
+        "h": 110
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 80,
+        "h": 110
+      },
+      "sourceSize": {
+        "w": 80,
+        "h": 110
+      }
+    }
+  },
+  "meta": {
+    "app": "scripts/build-atlas.mjs",
+    "version": "1.0",
+    "image": "chars.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 2048,
+      "h": 512
+    },
+    "scale": "1"
+  }
+}

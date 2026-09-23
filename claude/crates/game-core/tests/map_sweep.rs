@@ -1,0 +1,312 @@
+//! The 1000-seed playability sweep. `#[ignore]`d — it is far too slow for
+//! `cargo test`, and `check.sh` does not run it.
+//!
+//! ```sh
+//! cargo test -p game-core --release --test map_sweep -- --ignored --nocapture
+//! ```
+//!
+//! If this fails on tuning grounds, that is a signal the generation parameters
+//! need adjusting — report it rather than loosening the assertion.
+
+use game_core::constants::{
+    MapScale, GUN_PLATFORMS, GUN_PLATFORM_W, MIN_TRAVERSABLE_FRACTION, PAD_ART_W, PLAYER_H,
+    PLAYER_W, SKY_MARGIN, SPAWN_COUNT_MIN, STANDING_GROUND_FILL_DEPTH, TELEPORT_PADS,
+};
+use game_core::map::gen::silhouette::borders_hold;
+use game_core::map::{generate, Map};
+use game_core::math::Point;
+
+/// Surface points with rock above them: cave floors, ledges under overhangs.
+/// The fraction of these inside the largest traversable component is the direct
+/// quality metric for the cave system — an unreachable cave is decoration.
+fn underground_stats(map: &Map, component: &[usize]) -> (usize, usize) {
+    let in_main: std::collections::HashSet<usize> = component.iter().copied().collect();
+    let mut total = 0;
+    let mut reachable = 0;
+    for (i, p) in map.meta.surface_points.iter().enumerate() {
+        // Rock directly above, anywhere between the sky margin and the point.
+        let mut covered = false;
+        let mut y = p.y - PLAYER_H as i32 - 1;
+        while y > SKY_MARGIN as i32 {
+            if map.mask.get(p.x, y) {
+                covered = true;
+                break;
+            }
+            y -= 1;
+        }
+        if !covered {
+            continue;
+        }
+        total += 1;
+        if in_main.contains(&i) {
+            reachable += 1;
+        }
+    }
+    (total, reachable)
+}
+
+/// The deepest air under any column of a thing drawn `w` wide on `pos`, measured
+/// here rather than through `meta.rs::stands_on_ground` so the sweep counts the
+/// finished map at the other end from the code that fills it (T21.28).
+fn worst_gap(map: &Map, pos: Point, w: i32) -> i32 {
+    let x0 = pos.x - w / 2;
+    (x0..x0 + w)
+        .map(|col| {
+            let mut d = 0;
+            while pos.y + 1 + d < map.mask.h as i32 && !map.mask.get(col, pos.y + 1 + d) {
+                d += 1;
+            }
+            d
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+struct Stats {
+    attempts: [usize; 16],
+    /// T21.28: pads and platforms still over air past the fill's reach — the
+    /// placements that fell back to the unfiltered set — and the maps with any.
+    perched: usize,
+    standing: usize,
+    maps_fell_back: usize,
+    /// T21.28: decorations chosen where their widest base is not seated — only on a
+    /// map with no seated surface point at all — and the maps where that happened.
+    decor_unseated: usize,
+    decor_maps_fell_back: usize,
+    /// T21.40: maps by how many pads (index 0..=TELEPORT_PADS) and platforms
+    /// (0..=GUN_PLATFORMS) they got, counted off the finished map.
+    pads_per_map: [usize; TELEPORT_PADS + 1],
+    platforms_per_map: [usize; GUN_PLATFORMS + 1],
+    /// The first few (seed, pads) short of `TELEPORT_PADS`, so a unit test can name
+    /// maps that really fall short rather than guess.
+    short_examples: Vec<(u64, usize)>,
+    safe_preset: usize,
+    fractions: Vec<f32>,
+    underground_total: usize,
+    underground_reachable: usize,
+    failures: Vec<String>,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Stats {
+            attempts: [0; 16],
+            perched: 0,
+            standing: 0,
+            maps_fell_back: 0,
+            decor_unseated: 0,
+            decor_maps_fell_back: 0,
+            pads_per_map: [0; TELEPORT_PADS + 1],
+            platforms_per_map: [0; GUN_PLATFORMS + 1],
+            short_examples: Vec::new(),
+            safe_preset: 0,
+            fractions: Vec::new(),
+            underground_total: 0,
+            underground_reachable: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    fn report(&self, label: &str) {
+        let mut f = self.fractions.clone();
+        f.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let pct = |q: f32| f[((f.len() as f32 - 1.0) * q) as usize];
+        println!(
+            "{label}: n={} attempts={:?} safe_preset={} fraction min={:.3} p05={:.3} \
+             p50={:.3} max={:.3} cave_reachable={:.1}% ({}/{})",
+            f.len(),
+            &self.attempts[..5],
+            self.safe_preset,
+            f.first().copied().unwrap_or(0.0),
+            pct(0.05),
+            pct(0.50),
+            f.last().copied().unwrap_or(0.0),
+            100.0 * self.underground_reachable as f32 / self.underground_total.max(1) as f32,
+            self.underground_reachable,
+            self.underground_total,
+        );
+        println!(
+            "{label}: T21.28 standing things={} perched past the fill (fell back)={} maps that fell back={}",
+            self.standing, self.perched, self.maps_fell_back
+        );
+        println!(
+            "{label}: T21.28 decorations unseated={} maps whose decorations fell back={}",
+            self.decor_unseated, self.decor_maps_fell_back
+        );
+        let short = self.pads_per_map[..TELEPORT_PADS].iter().sum::<usize>();
+        println!(
+            "{label}: T21.40 maps by pad count 0..={TELEPORT_PADS}: {:?} (short of target {short}, none {}, exactly one {})",
+            self.pads_per_map, self.pads_per_map[0], self.pads_per_map[1]
+        );
+        println!(
+            "{label}: T21.40 maps by platform count 0..={GUN_PLATFORMS}: {:?}",
+            self.platforms_per_map
+        );
+        println!(
+            "{label}: T21.40 first maps short of {TELEPORT_PADS} pads (seed, pads): {:?}",
+            self.short_examples
+        );
+    }
+}
+
+#[test]
+#[ignore = "1000 seeds; run explicitly with --release --ignored"]
+fn thousand_seed_playability_sweep() {
+    // ~333 per scale, so the sweep covers all three as the task specifies.
+    const PER_SCALE: u64 = 333;
+
+    let mut overall = Stats::new();
+    for scale in MapScale::ALL {
+        let mut stats = Stats::new();
+        for i in 0..PER_SCALE {
+            let seed = i.wrapping_mul(2_654_435_761).wrapping_add(17);
+            let map = generate(seed, scale);
+            // The REAL validated component, shipped in MapMeta since §A10. Passing
+            // every index here — which is what this did before — makes
+            // `in_main.contains(&i)` always true, so the "cave reachability" figure
+            // degenerates into the surface fraction under another name and cannot
+            // tell "all caves reachable" from "every cave sealed".
+            let component: Vec<usize> = map
+                .meta
+                .largest_component
+                .iter()
+                .map(|&i| i as usize)
+                .collect();
+
+            stats.attempts[(map.meta.attempts as usize).min(15)] += 1;
+            overall.attempts[(map.meta.attempts as usize).min(15)] += 1;
+            stats.fractions.push(map.meta.traversable_fraction);
+            overall.fractions.push(map.meta.traversable_fraction);
+            if map.meta.used_safe_preset {
+                stats.safe_preset += 1;
+                overall.safe_preset += 1;
+            }
+
+            let (ug_total, ug_reach) = underground_stats(&map, &component);
+            stats.underground_total += ug_total;
+            stats.underground_reachable += ug_reach;
+            overall.underground_total += ug_total;
+            overall.underground_reachable += ug_reach;
+
+            let mut fail =
+                |why: String| stats.failures.push(format!("seed {seed} {scale:?}: {why}"));
+
+            if map.meta.traversable_fraction < MIN_TRAVERSABLE_FRACTION {
+                fail(format!(
+                    "traversable fraction {:.3} below {MIN_TRAVERSABLE_FRACTION}",
+                    map.meta.traversable_fraction
+                ));
+            }
+            if map.meta.spawn_points.len() < SPAWN_COUNT_MIN {
+                fail(format!("only {} spawn points", map.meta.spawn_points.len()));
+            }
+            if map.meta.attempts > 3 {
+                fail(format!("{} attempts", map.meta.attempts));
+            }
+            if map.meta.used_safe_preset {
+                fail("used the safe preset".to_string());
+            }
+            // Guards the metric itself: if largest_component were ever "every index"
+            // again, this fires rather than quietly inflating the cave figure.
+            let expected = (map.meta.traversable_fraction * map.meta.surface_points.len() as f32)
+                .round() as usize;
+            if component.len().abs_diff(expected) > 1 {
+                fail(format!(
+                    "largest_component has {} points but the fraction implies {expected}",
+                    component.len()
+                ));
+            }
+            if !borders_hold(&map.mask) {
+                fail("borders broken".to_string());
+            }
+            if let Err((cx, cy, stored, actual)) = map.coarse.verify(&map.mask) {
+                fail(format!(
+                    "coarse cell ({cx},{cy}) is {stored}, should be {actual}"
+                ));
+            }
+            for s in &map.meta.spawn_points {
+                if !game_core::map::gen::surface::is_standable(&map.mask, s.x, s.y) {
+                    fail(format!("spawn {s:?} is not standable"));
+                    break;
+                }
+            }
+            // T21.28: the fill must not have buried anything a body is placed on.
+            for p in &map.meta.surface_points {
+                if !game_core::map::gen::surface::is_standable(&map.mask, p.x, p.y) {
+                    fail(format!(
+                        "surface point {p:?} is not standable after the fill"
+                    ));
+                    break;
+                }
+            }
+            // And every pad and platform stands on ground under its drawn base, or
+            // is over a drop deeper than the fill may reach — counted, not hidden.
+            let standing = map
+                .meta
+                .teleport_pads
+                .iter()
+                .map(|p| (p.pos, PAD_ART_W))
+                .chain(
+                    map.meta
+                        .gun_platforms
+                        .iter()
+                        .map(|g| (g.pos, GUN_PLATFORM_W)),
+                );
+            let pads = map.meta.teleport_pads.len().min(TELEPORT_PADS);
+            if pads < TELEPORT_PADS && stats.short_examples.len() < 6 {
+                stats.short_examples.push((seed, pads));
+            }
+            stats.pads_per_map[pads] += 1;
+            overall.pads_per_map[pads] += 1;
+            let plats = map.meta.gun_platforms.len().min(GUN_PLATFORMS);
+            stats.platforms_per_map[plats] += 1;
+            overall.platforms_per_map[plats] += 1;
+            let mut fell_back = false;
+            for (pos, w) in standing {
+                let worst = worst_gap(&map, pos, w);
+                stats.standing += 1;
+                overall.standing += 1;
+                if worst > STANDING_GROUND_FILL_DEPTH {
+                    stats.perched += 1;
+                    overall.perched += 1;
+                    fell_back = true;
+                    // T21.40: the owner's rule — nothing placed unseated, ever.
+                    stats.failures.push(format!(
+                        "seed {seed} {scale:?}: {pos:?} perched {worst} px past the fill's reach"
+                    ));
+                } else if worst > 0 {
+                    stats.failures.push(format!(
+                        "seed {seed} {scale:?}: {pos:?} hangs {worst} px, inside the fill's reach"
+                    ));
+                }
+            }
+            if fell_back {
+                stats.maps_fell_back += 1;
+                overall.maps_fell_back += 1;
+            }
+            let unseated = map
+                .meta
+                .decorations
+                .iter()
+                .filter(|d| !game_core::map::meta::decoration_seated(&map.mask, d.pos))
+                .count();
+            stats.decor_unseated += unseated;
+            overall.decor_unseated += unseated;
+            if unseated > 0 {
+                stats.decor_maps_fell_back += 1;
+                overall.decor_maps_fell_back += 1;
+            }
+            let _ = (PLAYER_W, PLAYER_H);
+        }
+
+        stats.report(&format!("{scale:?}"));
+        if !stats.failures.is_empty() {
+            for f in stats.failures.iter().take(20) {
+                println!("  FAIL {f}");
+            }
+            panic!("{} seeds failed at {scale:?}", stats.failures.len());
+        }
+    }
+
+    overall.report("ALL");
+}
