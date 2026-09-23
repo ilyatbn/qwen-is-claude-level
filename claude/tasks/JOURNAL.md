@@ -6794,3 +6794,9 @@ Checks: `space-sky`/`-canvas` (sandbox: each body located by its own hidden-body
 Plants, each red: bodies frozen; `sceneDarkness` space arm; `setSuppressed` no-op; stars ignore seed; drift 0; `GameScene` sky seed from `core.meta.seed` (*"seeded 1, the wire seed is 4242"* — the 2026-09-16 finding still holds); `GameScene` `sceneDarkness(false…)`; Rust arm removed (unit test + match).
 Done-when: vitest 1005/1005; `e2e space-sky` 3/3; `--changed HEAD --fast` all passed (game-core 1092/0/10); clippy 0; mapped e2e 22/22. `rooms.rs::a_room_with_a_human_in_it_is_never_reaped` went red once (`AlreadyClosed`, R40 family), green alone 4.2 s; recorded in `flaky-test.md`.
 Stale task-file claims and five decisions are in the task file. Size: ~540 lines of non-test code, past the ~400 guide; all of it one coherent change.
+
+## PAUSED by the owner — 2026-09-23 (coordinator)
+Stopped at a clean boundary: tree clean, nothing running, last code commit `8858cab` (T22.06). **Next up, in order:**
+T22.06B (the backdrop review's fixes — file written, not started), then T22.08A/B (solar flares; rulings R78–R85 +
+forward sweep in `tasks/M22/T22.08-RULINGS-AND-SWEEP.md`, binding). A batch gate is owed for T22.06 + T22.06B.
+M23 (the art refactor) is fully specified in `tasks/M23/` and starts after M22 (R16); owner to confirm F5–F7.
