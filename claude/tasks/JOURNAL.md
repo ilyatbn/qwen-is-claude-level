@@ -6829,3 +6829,11 @@ F1 `DEV_PROBE` → `debug_effects` (server's own `flare_elapsed`); match bracket
 Plants red: +0.5 origin → probe arm (coverage stayed green); old clock → "backwards 20 times in 120"; no record_seed → "effect 0 re-announced differently"; start tick +1 → "a joiner would be told something a watcher was not"; no refutation / no smoothing → vitest reds.
 Done-when: cargo 1599/0/25, vitest 1024, clippy/fmt 0; e2e `solar-flare-match` + `-`/`-canvas`/`-standard` 4/4; `terrain-render` green alone (flaked once beside another check). `--changed HEAD --fast` exit 0. Logs `gate-t2208d-*.txt`.
 Caught by running a neighbour: `q !== null` on the sandbox's absent `flare` took the whole sandbox down — every sandbox check would have been red.
+
+## PAUSED by the owner — 2026-09-23 late (coordinator)
+Batch gate on `9d915ba` (T22.06, T22.06B, T22.08A, T22.08C, T22.08B, T22.08D): **EXIT=1, 1116 s — browser 72/73, the one red
+is `rematch`**: *"the CONTROL frame is frozen too (delta 0.0 … the box stalled, so the leaver's frame proves nothing)"* — its own
+control fired, i.e. the check reports a stalled box, not a rematch bug; **not yet investigated or re-run alone**. vitest
+1024/1024, Rust all green. **Next, in order:** re-run `rematch` alone on an idle box; if green, record the gate as green-with-one-
+stall; then the harsh review of `9d915ba` (T22.08D) is owed (its pointers are in its journal entry); then T22.10 (vortex),
+T22.12 (black hole), T22.03B (bots in space), T22.04C, T22.00C/G. `terrain-render` is fixed but still parked — owner's call.
