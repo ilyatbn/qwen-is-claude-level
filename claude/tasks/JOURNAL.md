@@ -6754,3 +6754,5 @@ Death arm: a `control:` fail if fay died with `moveState !== 2`, before the abse
 `BELL_LEAD_S` 1.5 → 3, and the after-the-bell fuel read replaced by a **pre-burn** assertion `fuel ≥ BELL_LEAD_S·JETPACK_DRAIN +
 JETPACK_MIN_FUEL_TO_ENGAGE` (read 5.00); plus ana's view of bo's plume out after the bell. `e2e --only thrusters-match`: 1/1, 15 ok, 50.3 s.
 Noted in T22.00C: `openAtMenu`/`privateMatch` have three copies; `thrusters-match.mjs` (400 lines) splits its death stack when they move.
+**Follow-up, same day:** the new "ana's view out after the bell" read went red once in `--changed` (plume still lit) and green before —
+a single read of a *remote* timed off bo's frames races the interpolation buffer. Now waited on, on ana's page, 5 s, as arm 2's release is. Re-run 1/1.

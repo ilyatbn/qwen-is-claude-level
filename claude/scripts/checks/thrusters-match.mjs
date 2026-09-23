@@ -249,6 +249,12 @@ try {
         const rang = await waitOn(bo, () => window.__game.debug().phase === 'ended', null, BELL_LEAD_S + 15, 'bell')
         await frames(bo, SETTLE_FRAMES)
         const after = await dbg(bo)
+        // **Waited on, on ana's own page, not read once.** A remote is drawn off
+        // the interpolation buffer, which renders a moment behind the newest
+        // snapshot — so a single read taken off *bo's* frame count raced it:
+        // measured, one run green and the next red with the plume still lit.
+        // Arm 2's release is waited on the same way and for the same reason.
+        const anaOut = await waitOn(ana, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'remote off after bell')
         const anaAfter = await plumeOf(ana, bo)
         await bo.page.screenshot({ path: join(shotsDir, 'thrusters-match-bell.png') })
         if (!rang) fail(`the round never ended: ${JSON.stringify(brief(after, bo))}`)
@@ -256,7 +262,7 @@ try {
           if (after.plumes?.[bo.id]?.drawn !== false) {
             fail(`the round is over and bo's plume still fires, DOWN held: ${JSON.stringify(brief(after, bo))}`)
           } else ok(`the bell rang with DOWN held: bo's own plume is out`)
-          if (anaAfter?.drawn !== false) fail(`the round is over and ana still draws bo's plume: ${JSON.stringify(anaAfter)}`)
+          if (!anaOut) fail(`the round is over and ana still draws bo's plume: ${JSON.stringify(anaAfter)}`)
           else ok("and ana's view of it is out too")
         }
       }
