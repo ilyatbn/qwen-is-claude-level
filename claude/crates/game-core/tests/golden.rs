@@ -209,7 +209,9 @@ fn compute_weather() -> String {
     const ROUND: f32 = 1200.0;
     let mut out = String::new();
     out.push_str("# seed tick kind effect-seed — standard mode, 1200 s round\n");
-    out.push_str("# recorded at 9535325^ (before the solar flare); regenerate only on an\n");
+    out.push_str(
+        "# regenerated at 4dfc5a5 (T22.12D, R94: rounds counted in ticks); regenerate only on an\n",
+    );
     out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
     for seed in [1u64, 4242, 90210] {
         let mut w = World::with_gravity(

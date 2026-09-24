@@ -514,6 +514,16 @@ try {
 
   // --- 6. frozen at the bell ----------------------------------------------------------
   await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: deadlineMs(ROUND_S + 10, 'the bell') })
+  // T22.12E F2: **the wire's `ends_tick` is the tick the server rang the bell on**, in
+  // integers. `World::step` sets `Ended` last, so the `ended` `round_state` carries the
+  // last `Playing` tick and the first tick stepped in `Ended` is one past it — what
+  // `bell_seq` assumes of `ends_tick`. A `+2` in `events.rs::round_state_payload` is red here.
+  {
+    const bh = (await dbg()).blackHole
+    if (typeof bh.bellEndsTick !== 'number' || typeof bh.endedAtTick !== 'number') fail(`bell tick: not both heard (ends_tick ${bh.bellEndsTick}, ended at ${bh.endedAtTick})`)
+    else if (bh.endedAtTick !== bh.bellEndsTick) fail(`bell tick: the playing round_state said ends_tick ${bh.bellEndsTick}, the server rang the bell on tick ${bh.endedAtTick} (first Ended tick ${bh.endedAtTick + 1}) — off by ${bh.bellEndsTick - bh.endedAtTick}`)
+    else ok(`bell tick: ends_tick ${bh.bellEndsTick} is the tick the server rang the bell on; the first tick stepped in Ended is ${bh.endedAtTick + 1}`)
+  }
   await frames(page, 10)
   // F3: every placement so far (arm 2's, arm 5b's) reached the page as a relocation.
   const relocs = (await dbg()).blackHole.relocations

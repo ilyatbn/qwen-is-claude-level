@@ -67,6 +67,9 @@ export function voteSecondsLeft(timeLeft: number): number {
  * walked back by the tick difference. The result equals the server's
  * `phase_started_at + ENDED_SECONDS` exactly.
  *
+ * (T22.12E F4: the time left is `ends_tick − stateTick` whole ticks, so the
+ * deadline is the snapshot's round time plus `ends_tick − serverTick` ticks.)
+ *
  * `serverTick <= 0` means no snapshot has landed yet — the `round_state` a
  * client is sent as part of its own join arrives before the first one. There is
  * nothing to correct against then, and the `welcome` that precedes it was built
@@ -87,13 +90,18 @@ export function phaseDeadline(
   serverRoundTime: number,
   serverTick: number,
   stateTick: number,
-  timeLeft: number,
+  endsTick: number | null,
   simDt: number,
 ): number {
+  // T22.12E F4: **from `ends_tick`, one rule** (R94) — the integer last tick of
+  // the phase, which the bell reads too — not the float `time_left` beside it.
+  // The deadline is the anchor's round time plus the whole ticks from the anchor
+  // to `ends_tick`. `null` (the lobby) has no deadline: "now".
+  const ends = endsTick ?? stateTick
   // A restarted round: the anchor belongs to a world that no longer exists.
-  if (stateTick < serverTick) return timeLeft
-  const correction = serverTick > 0 ? (stateTick - serverTick) * simDt : 0
-  return serverRoundTime + correction + timeLeft
+  if (stateTick < serverTick) return (ends - stateTick) * simDt
+  if (serverTick <= 0) return serverRoundTime + (ends - stateTick) * simDt
+  return serverRoundTime + (ends - serverTick) * simDt
 }
 
 /**

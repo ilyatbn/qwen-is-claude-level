@@ -339,16 +339,7 @@ impl World {
                 })
             })
             .map(|dir| hole + dir * dist)?;
-        let p = self.player_mut(id)?;
-        p.body = crate::physics::body::Body::new(at);
-        let tick = self.tick;
-        self.events.push(GameEvent::Relocate {
-            tick,
-            id,
-            x: at.x,
-            y: at.y,
-        });
-        Some(at)
+        self.dev_relocate(id, at)
     }
 
     /// R8.3: it eats exactly one asteroid, on arrival, and never again. The rock
@@ -586,6 +577,41 @@ mod tests {
         } else {
             h | v
         }
+    }
+
+    /// T22.12E: both dev placers announce their move, on **the first tick whose state
+    /// holds it** — `tick + 1`, since a dev command runs after tick `tick`'s snapshot
+    /// went out. The prediction skips a relocation a snapshot at or past that tick
+    /// already carried (`Predictor.relocate`), so the tick is load-bearing: at `tick`
+    /// it would skip a move the snapshot it compares never saw. `dev_place_inward_of`
+    /// had no event at all before this.
+    #[test]
+    fn dev_relocations_are_announced_on_the_first_tick_that_holds_them() {
+        let (mut w, _hole) = hole_world(4242);
+        let geo = w.map.space_geometry().expect("space");
+        let breach = w
+            .dev_breach_toward(Vec2::new(geo.cx - 100.0, geo.cy - 50.0))
+            .expect("a breach");
+        w.drain_events();
+        let t = w.tick;
+        let near = w
+            .dev_place_near_black_hole(0, 0.8 * BLACK_HOLE_REACH)
+            .expect("placed near the hole");
+        let inward = w.dev_place_inward_of(0, breach).expect("placed inward");
+        assert_eq!(
+            w.player(0).expect("ana").body.pos,
+            inward,
+            "the move itself"
+        );
+        let said: Vec<_> = w
+            .drain_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                GameEvent::Relocate { tick, id, x, y } => Some((tick, id, Vec2::new(x, y))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, vec![(t + 1, 0, near), (t + 1, 0, inward)]);
     }
 
     fn hole_world(seed: u64) -> (World, Vec2) {

@@ -273,7 +273,7 @@ try {
 
   // --- 2. no rubber-band while it pulls; 3. the trip ------------------------------------
   // Sampled every drawn frame from the moment the prediction has the placed body (the
-  // placement itself arrives as one snapshot correction) until the trip.
+  // placement's `relocate` event, T22.12E; before it, one snapshot correction) until the trip.
   const series = await page.evaluate(
     ([budgetMs, placed, near]) =>
       new Promise((resolve) => {
@@ -285,7 +285,7 @@ try {
           const d = window.__game.debug()
           const p = d.player && { x: d.player.x, y: d.player.y }
           const atPlace = p && Math.hypot(p.x - placed.x, p.y - placed.y) < near
-          if (out.length || atPlace) out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, trips: d.vortex.myTrips.length, p })
+          if (out.length || atPlace) out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, trips: d.vortex.myTrips.length, settled: d.vortex.settled, p })
           if (d.vortex.myTrips.length > 0 || performance.now() - t0 > budgetMs) resolve(out)
           else requestAnimationFrame(tick)
         }
@@ -308,7 +308,16 @@ try {
   // step past the ticks is inputs the server skipped — a rubber-band from the
   // transport, not from the pull, and the report has to be able to say so.
   let ackStep = null
+  // T22.12E: the placement is announced (`relocate`, `World::dev_relocate`), so the page
+  // has the placed body **before** the snapshot that carries it — and that snapshot acks
+  // an input from before the move (385 px at the ack, measured). The predictor marks it
+  // the relocation's (`settled`); so does this, and it says how many it left out.
+  let excluded = 0
   for (let i = 1; i < pull.length; i++) {
+    if (pull[i].settled !== pull[i - 1].settled) {
+      excluded++
+      continue
+    }
     if (pull[i].c !== pull[i - 1].c) {
       corrections++
       worst = Math.max(worst, pull[i].jump)
@@ -325,7 +334,7 @@ try {
   }
   const secs = first ? (lastBefore.tick - first.tick) / k.SIM_HZ : 0
   const rubber = Math.max(worst, worstAck)
-  const summary = `worst error at an acked input (lastAckErrorPx) ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, in ${secs.toFixed(2)} s of pull; largest ack step ${ackStep ? `${ackStep.seqs} seqs in ${ackStep.ticks} ticks` : 'none measured'}; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} corrections in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
+  const summary = `worst error at an acked input (lastAckErrorPx) ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, in ${secs.toFixed(2)} s of pull (${excluded} snapshot${excluded === 1 ? '' : 's'} left out as the placement's or a hitch's); largest ack step ${ackStep ? `${ackStep.seqs} seqs in ${ackStep.ticks} ticks` : 'none measured'}; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} corrections in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
   // Which half moved, so a red names its cause rather than always the vortex list.
   // **The ack's step first**: a skipped input also makes the prediction at the ack
   // wrong (the server's state lacks it), so an ack error alone cannot tell the two
@@ -342,6 +351,8 @@ try {
   else if (d2.vortex.myTrips.length === 0) fail(`the vortex never took the player in ${TRIP_BUDGET_S} s (moved ${travelled.toFixed(0)} px): ${JSON.stringify({ first, last: lastBefore })}`)
   else if (travelled < k.VORTEX_CAPTURE_R / 4) fail(`control: the player moved only ${travelled.toFixed(0)} px before the trip — nothing was pulled, so no correction proves nothing`)
   else if (acked === 0) fail(`control: no snapshot acknowledged a predicted input during ${secs.toFixed(2)} s of pull, so the error was never measured`)
+  // T22.12E: leaving snapshots out is how a guard goes blind — more than a third is not the placement.
+  else if (excluded > Math.max(1, acked / 3)) fail(`control: ${excluded} snapshots left out as settled against ${acked} measured — the pull was mostly not measured`)
   else if (rubber > k.RECONCILE_EPSILON_PX) fail(`rubber-band: ${summary} — over RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX}: ${blame}`)
   else ok(`no rubber-band while the vortex pulled the player ${travelled.toFixed(0)} px: ${summary} (bound RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX})`)
 

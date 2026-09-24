@@ -6953,3 +6953,11 @@ from the step count; `round_state.ends_tick`; integer `bell_seq`. 240/300/600 s 
 F1: arm 5b (0.97×reach, 1.6 s, 150 ms latency, `bellErrorPx`): 0.48 px; setBell deleted red 4.76 px (0.5 s/no latency could
 not fail). F3: `relocate` event + short relocations settle (44.49 → 0.00 px). F4 past-reach assert (wells×4 red). F6, F7.
 `--changed 4ab7a8f --fast`: Rust 1666/0/25, vitest 1088; e2e (all mapped) 73/73; net smoke 25/25 (`gate-t2212d-*.txt`).
+
+## T22.12E — what the tick review found (builder, 2026-09-24)
+F1: `Predictor.relocate(x, y, tick)` — skips a move a snapshot at/past `tick` already carried, else compares with the
+prediction at that tick (vitests red at a345d45: a genuine 20 px error was settled). Relocation `tick` = first tick holding
+the move (`World::dev_relocate`, dev = tick+1; plant red). F2: server test wire `ends_tick` == `phase_ends_tick`, e2e
+`endedAtTick === bellEndsTick`; `+2` plant red in both (bell px arm stayed green, 1.43). F4 deadline from `ends_tick`.
+F5 doc + lobby via `world.tick =`. F6 debug_assert. Nits; `dev_place_inward_of` announced → `breach-vortex` skips settled.
+`--changed a345d45 --fast`: Rust 1668/0/25, vitest 1091; black-hole + breach-vortex ok (`gate-t2212e-*.txt`).

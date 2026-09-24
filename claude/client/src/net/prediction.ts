@@ -628,13 +628,26 @@ export class Predictor {
    * misprediction. Past the reconcile gate, and not far enough to snap, it is left
    * to that snapshot (which may already have come) but that correction is the
    * relocation's: kept out of the maxima, like the one after a snap.
+   *
+   * **Measured at the event's `tick`, not now** (T22.12E F1). `tick` is the first
+   * server tick whose state holds the move (the event's own tick for a pad or a
+   * trip, stepped then; one past it for a dev placement, made between ticks). A
+   * snapshot at or past it already reconciled the move into the prediction, so
+   * there is nothing to mark — and comparing with the current prediction, a lead
+   * ahead, made a *moving* body look unexplained and hid the next correction, a
+   * genuine misprediction included. Before its snapshot, the arrival is compared
+   * with the prediction **at that tick** (the seq that ran on it, `lastTick + seq −
+   * ack` as `bellErrorPx` keys it), so a move the core predicted itself (a vortex
+   * trip) marks nothing either; the current prediction only when there is none.
    */
-  relocate(x: number, y: number): boolean {
+  relocate(x: number, y: number, tick: number): boolean {
     const s = this.state
     if (!s) return false
+    if (this.lastTick !== null && Number.isFinite(tick) && this.lastTick >= tick) return false
     const d = Math.hypot(s.x - x, s.y - y)
     if (d <= SNAP_PX) {
-      if (d > C().RECONCILE_EPSILON_PX) this.unsettled = true
+      const then = this.predictionAt(tick) ?? s
+      if (Math.hypot(then.x - x, then.y - y) > C().RECONCILE_EPSILON_PX) this.unsettled = true
       return false
     }
     this.core.setPlayerState(this.localId, { ...s, x, y, vx: 0, vy: 0, grounded: false })
@@ -643,6 +656,12 @@ export class Predictor {
     // T22.10E F-4: the next snapshot may still ack an input from before the trip.
     this.unsettled = true
     return true
+  }
+
+  /** Where the prediction left the body at server tick `tick`, if a pending seq ran on it. */
+  private predictionAt(tick: number): Kinematics | undefined {
+    if (this.lastTick === null || !Number.isFinite(tick)) return undefined
+    return this.predicted.get(this.stats.lastAck + (tick - this.lastTick))
   }
 
   /** Ease the rendered position toward the simulation. */

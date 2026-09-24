@@ -44,6 +44,8 @@ describe('shouldShowResults', () => {
 describe('the countdown is a deadline, not a stopwatch (§C25)', () => {
   const SIM_DT = 1 / 60
   const ENDED_SECONDS = 20
+  /** The window in ticks (60 Hz): `ends_tick` is `stateTick + ENDED` at the bell. */
+  const ENDED = ENDED_SECONDS / SIM_DT
 
   it('falls as the server clock advances, sampled at several points', () => {
     // The bug: `round_state` is emitted once at the Playing -> Ended transition
@@ -51,7 +53,7 @@ describe('the countdown is a deadline, not a stopwatch (§C25)', () => {
     // client holding `time_left` renders the same number for twenty seconds.
     // The deadline is fixed once and the remaining time is derived from the
     // server's round time, which every snapshot resyncs.
-    const deadline = phaseDeadline(100, 6000, 6000, ENDED_SECONDS, SIM_DT)
+    const deadline = phaseDeadline(100, 6000, 6000, 6000 + ENDED, SIM_DT)
     expect(deadline).toBeCloseTo(120, 6)
 
     // Sampled at several points, not just at the start — a stopwatch that runs
@@ -63,7 +65,7 @@ describe('the countdown is a deadline, not a stopwatch (§C25)', () => {
   })
 
   it('reaches zero exactly at the deadline and never goes negative', () => {
-    const deadline = phaseDeadline(0, 60, 60, ENDED_SECONDS, SIM_DT)
+    const deadline = phaseDeadline(0, 60, 60, 60 + ENDED, SIM_DT)
     expect(secondsUntil(deadline, 20)).toBeCloseTo(0, 6)
     expect(voteSecondsLeft(secondsUntil(deadline, 20))).toBe(0)
     // Past it: the server has already moved on, and a negative countdown on
@@ -77,8 +79,20 @@ describe('the countdown is a deadline, not a stopwatch (§C25)', () => {
     // ticks between them are the server's, so the deadline is 20 s after 100.05
     // — not after 100. Without the correction the countdown is early by exactly
     // the age of the snapshot, which is the drift §B4 exists to remove.
-    const d = phaseDeadline(100, 6000, 6003, ENDED_SECONDS, SIM_DT)
+    const d = phaseDeadline(100, 6000, 6003, 6003 + ENDED, SIM_DT)
     expect(d).toBeCloseTo(120 + 3 * SIM_DT, 6)
+  })
+
+  // T22.12E F4: the deadline is `ends_tick`'s, so every `round_state` of one phase
+  // (the once-a-second rebroadcasts carry the same `ends_tick` at later ticks) puts
+  // it at the same instant — exactly, not to a float tolerance.
+  it('is the same instant from every round_state of the phase (ends_tick, one rule)', () => {
+    const ends = 6000 + 300 * 60
+    const seen = [6003, 6060, 6120, 9000].map((t) => phaseDeadline(100, 6000, t, ends, SIM_DT))
+    expect(new Set(seen).size).toBe(1)
+    expect(seen[0]).toBeCloseTo(400, 6)
+    // Control: a different `ends_tick` moves it by exactly its ticks.
+    expect(phaseDeadline(100, 6000, 6003, ends + 2, SIM_DT) - seen[0]!).toBeCloseTo(2 * SIM_DT, 9)
   })
 
   it('skips the correction before the first snapshot has landed', () => {
@@ -86,14 +100,14 @@ describe('the countdown is a deadline, not a stopwatch (§C25)', () => {
     // snapshot: `lastServerTick` is still 0. Applying `(stateTick - 0) * SIM_DT`
     // there would push the deadline a hundred seconds into the future on a
     // six-thousand-tick-old room, and the countdown would never move.
-    expect(phaseDeadline(100, 0, 6000, ENDED_SECONDS, SIM_DT)).toBeCloseTo(120, 6)
+    expect(phaseDeadline(100, 0, 6000, 6000 + ENDED, SIM_DT)).toBeCloseTo(120, 6)
   })
 
   it('is not the raw `time_left` field', () => {
     // The control for the whole fix: the old behaviour is `time_left` held
     // constant, and this asserts the new value diverges from it as time passes.
     const timeLeft = ENDED_SECONDS
-    const deadline = phaseDeadline(0, 60, 60, timeLeft, SIM_DT)
+    const deadline = phaseDeadline(0, 60, 60, 60 + timeLeft / SIM_DT, SIM_DT)
     const afterFiveSeconds = secondsUntil(deadline, 5)
     expect(afterFiveSeconds).toBeCloseTo(15, 6)
     expect(afterFiveSeconds).not.toBeCloseTo(timeLeft, 6)
@@ -231,6 +245,8 @@ describe('phaseDeadline across a restart', () => {
   // transpiles rather than type-checks. `npm run typecheck` is in the gate.
   const SIM_DT = 1 / 60
   const ENDED_SECONDS = 20
+  /** The window in ticks (60 Hz): `ends_tick` is `stateTick + ENDED` at the bell. */
+  const ENDED = ENDED_SECONDS / SIM_DT
 
   /**
    * The second round, and every round after it.
@@ -245,16 +261,16 @@ describe('phaseDeadline across a restart', () => {
   it('discards the previous round\'s anchor when the server clock resets', () => {
     // Round one ran its full length after a long lobby: a big tick, a big
     // round time. Then `round_state { tick: 1, warmup, 10 }` arrives.
-    const stale = phaseDeadline(240, 15000, 1, 10, SIM_DT)
+    const stale = phaseDeadline(240, 15000, 1, 1 + 10 / SIM_DT, SIM_DT)
     expect(stale).toBeCloseTo(10, 5)
     // And the control: within one round the correction still applies, or this
     // would be satisfied by a build that ignored the anchor entirely.
-    const sameRound = phaseDeadline(100, 6000, 6060, 20, SIM_DT)
+    const sameRound = phaseDeadline(100, 6000, 6060, 6060 + 20 / SIM_DT, SIM_DT)
     expect(sameRound).toBeCloseTo(100 + 1 + 20, 5)
   })
 
   it('reads a full window at the start of the restarted round', () => {
-    const deadline = phaseDeadline(240, 15000, 1, ENDED_SECONDS, SIM_DT)
+    const deadline = phaseDeadline(240, 15000, 1, 1 + ENDED, SIM_DT)
     // The first snapshot of the new world puts round time back at ~0.
     expect(secondsUntil(deadline, 0)).toBeCloseTo(ENDED_SECONDS, 5)
     expect(voteSecondsLeft(secondsUntil(deadline, 0))).toBe(ENDED_SECONDS)

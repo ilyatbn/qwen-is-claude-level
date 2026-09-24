@@ -366,12 +366,18 @@ describe('a hurt player is predicted at the hurt speed (T20.19)', () => {
  * inputs replayed since.
  */
 describe('relocate', () => {
+  /**
+   * T22.12E F1's fixtures walk right from the spawn: 150 px/s, and a wall stops the
+   * body at seq 21 on this map (measured), so every tick they read is before it.
+   */
+  const LEAD = 20
+
   it('snaps sim and render to the arrival, at rest', () => {
     const p = new Predictor(core, 0)
     for (let i = 1; i <= 3; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
     const s = core.playerState(0)!
     const to = { x: s.x + 600, y: s.y - 200 }
-    expect(p.relocate(to.x, to.y)).toBe(true)
+    expect(p.relocate(to.x, to.y, 3)).toBe(true)
     const after = core.playerState(0)!
     expect([after.x, after.y, after.vx, after.vy]).toEqual([to.x, to.y, 0, 0])
     expect(p.renderPos).toEqual(to)
@@ -387,7 +393,7 @@ describe('relocate', () => {
       p.reconcile({ tick: 1, lastInputSeq: 1, state: core.playerState(0)! })
       p.pushInput(inp(2, 0), DT)
       const s = core.playerState(0)!
-      if (told) expect(p.relocate(s.x + short, s.y)).toBe(false)
+      if (told) expect(p.relocate(s.x + short, s.y, 2)).toBe(false)
       const settled = p.stats.settled
       p.reconcile({ tick: 2, lastInputSeq: 2, state: { ...s, x: s.x + short, vx: 0, vy: 0 } })
       return { corrected: p.stats.corrections, settled: p.stats.settled - settled, maxAck: p.stats.maxAckErrorPx }
@@ -402,11 +408,71 @@ describe('relocate', () => {
     expect(untold.maxAck).toBeCloseTo(short, 3)
   })
 
+  /**
+   * T22.12E F1: a moving body, 30 inputs pushed; the snapshot for tick 20 (acking
+   * seq 20, which ran on it) is reconciled **first** and already carries the move,
+   * then the relocation event for tick 20 arrives. The current prediction is ten
+   * inputs ahead, so measured there the move looks unexplained — and the next
+   * correction, a **genuine** misprediction, was marked the relocation's and left
+   * out of the maxima. Control: the same event arriving *before* its snapshot, for
+   * a move the prediction did not make, is still the relocation's.
+   */
+  it('a snapshot that already carried the relocation leaves the next misprediction counted', () => {
+    const wrong = C().RECONCILE_EPSILON_PX * 10
+    const run = (eventTick: number, lastSnap: number) => {
+      reset()
+      const p = new Predictor(core, 0)
+      const at = new Map<number, PlayerState>()
+      for (let i = 1; i <= LEAD; i++) {
+        p.pushInput(inp(i, BTN.RIGHT), DT)
+        at.set(i, core.playerState(0)!)
+      }
+      p.reconcile({ tick: lastSnap, lastInputSeq: lastSnap, state: at.get(lastSnap)! })
+      const arrive = at.get(10)!
+      expect(p.relocate(arrive.x + (eventTick > lastSnap ? wrong : 0), arrive.y, eventTick)).toBe(false)
+      const settled = p.stats.settled
+      const s14 = at.get(14)!
+      p.reconcile({ tick: 14, lastInputSeq: 14, state: { ...s14, x: s14.x + wrong } })
+      return { settled: p.stats.settled - settled, maxAck: p.stats.maxAckErrorPx }
+    }
+    const seen = run(10, 10)
+    expect(seen.settled).toBe(0)
+    expect(seen.maxAck).toBeCloseTo(wrong, 3)
+    // Control: the event first (tick 10, last snapshot 9), a move the prediction lacked.
+    const first = run(10, 9)
+    expect(first.settled).toBe(1)
+    expect(first.maxAck).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
+  })
+
+  /**
+   * T22.12E F1: the event arrives before its snapshot, and the prediction **made**
+   * the move (a vortex trip the core predicted): at the event's tick it is already
+   * there, so nothing is the relocation's, and a genuine error after it counts. The
+   * current prediction, eight inputs on, is what the old branch compared.
+   */
+  it('a relocation the prediction already made at its tick marks nothing', () => {
+    const wrong = C().RECONCILE_EPSILON_PX * 10
+    const p = new Predictor(core, 0)
+    const at = new Map<number, PlayerState>()
+    for (let i = 1; i <= LEAD; i++) {
+      p.pushInput(inp(i, BTN.RIGHT), DT)
+      at.set(i, core.playerState(0)!)
+    }
+    p.reconcile({ tick: 8, lastInputSeq: 8, state: at.get(8)! })
+    const arrive = at.get(12)!
+    expect(Math.hypot(core.playerState(0)!.x - arrive.x, 0)).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+    expect(p.relocate(arrive.x, arrive.y, 12)).toBe(false)
+    const settled = p.stats.settled
+    p.reconcile({ tick: 12, lastInputSeq: 12, state: { ...arrive, x: arrive.x + wrong } })
+    expect(p.stats.settled - settled).toBe(0)
+    expect(p.stats.maxAckErrorPx).toBeCloseTo(wrong, 3)
+  })
+
   it('does nothing when the prediction is already there (the snapshot came first)', () => {
     const p = new Predictor(core, 0)
     p.pushInput(inp(1, BTN.RIGHT), DT)
     const s = core.playerState(0)!
-    expect(p.relocate(s.x + 3, s.y)).toBe(false)
+    expect(p.relocate(s.x + 3, s.y, 1)).toBe(false)
     expect(core.playerState(0)!.x).toBe(s.x)
   })
 })
@@ -587,7 +653,7 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
     for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
     const s = core.playerState(0)!
     // Past the render's snap distance (`prediction.ts::SNAP_PX`, 64), or it is no relocation.
-    expect(p.relocate(s.x, s.y - 100)).toBe(true)
+    expect(p.relocate(s.x, s.y - 100, 3)).toBe(true)
     const r = core.playerState(0)!
     p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...r, x: r.x + off() } })
     expect(p.stats.corrections).toBe(1)

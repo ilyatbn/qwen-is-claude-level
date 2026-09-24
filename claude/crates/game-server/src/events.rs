@@ -1100,6 +1100,42 @@ mod tests {
         assert_eq!(scores.len(), 2);
     }
 
+    /// T22.12E F2: **the wire's `ends_tick` is the world's.** A client derives the
+    /// bell and every countdown from it, and nothing compared the two: a `+2` in
+    /// `round_state_payload` stayed green in Rust and in `black-hole`. Built by the
+    /// production builder (`World::round_state_event`) in every phase, at a world
+    /// tick that is not the phase's start, with `time_left` held to the same ticks
+    /// (and to `phase_time_left`). Lobby: both `null`.
+    #[test]
+    fn round_state_payload_carries_the_worlds_ends_tick_in_every_phase() {
+        use game_core::constants::{SIM_DT, SIM_HZ};
+        let mut w = World::new(4242, MapScale::Small);
+        w.add_player(0, 0, "a".into());
+        w.set_phase(RoundPhase::Lobby);
+        let lobby = payload_of(&w.round_state_event(), &w);
+        assert!(
+            lobby["ends_tick"].is_null() && lobby["time_left"].is_null(),
+            "{lobby}"
+        );
+        let mut seen = Vec::new();
+        for phase in [RoundPhase::Warmup, RoundPhase::Playing, RoundPhase::Ended] {
+            w.set_phase(phase);
+            // Off the phase's first tick, so `ends_tick − tick` is not the length.
+            for _ in 0..(SIM_HZ / 2 + 7) {
+                w.step(SIM_DT);
+            }
+            assert_eq!(w.phase, phase, "premise: still in {phase:?}");
+            let p = payload_of(&w.round_state_event(), &w);
+            let ends = w.phase_ends_tick().expect("a timed phase");
+            assert_eq!(p["ends_tick"], serde_json::json!(ends), "{phase:?}: {p}");
+            let left = game_core::world::ticks_to_seconds(ends - w.tick);
+            assert_eq!(p["time_left"], serde_json::json!(left), "{phase:?}: {p}");
+            assert_eq!(left, w.phase_time_left(), "{phase:?}");
+            seen.push(phase);
+        }
+        assert_eq!(seen.len(), 3, "premise: every timed phase was checked");
+    }
+
     /// The seed is on `round_state` so a bug report carries a reproducible map
     /// (`docs/61` §8). As a string, because a u64 seed loses precision in JSON.
     #[test]

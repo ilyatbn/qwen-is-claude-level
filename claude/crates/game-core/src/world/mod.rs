@@ -414,7 +414,9 @@ pub enum GameEvent {
     /// vortex, so its own event rather than a `Teleport` whose pad fields mean
     /// "not a pad". The client relocates on it as on the other two
     /// (`GameScene.onRelocated`); without it the prediction counted the move as
-    /// a 44 px error. Only a `DEV_PROBE=1` server emits it.
+    /// a 44 px error. Only a `DEV_PROBE=1` server emits it. `tick` is the first
+    /// tick whose state holds the move, one past the tick it was made after
+    /// (`World::dev_relocate`, T22.12E).
     Relocate {
         tick: u32,
         id: PlayerId,
@@ -976,8 +978,11 @@ pub struct World {
     /// or the dev `start_clock_at`) plus `clock_ticks` simulated steps, in seconds
     /// (`ticks_to_seconds`, in `f64`, so the value at tick `k` is the correctly
     /// rounded `k / SIM_HZ`). An `f32` `+= SIM_DT` ran 0.1 s slow over 600 s.
-    /// `clock_ticks` counts `step`s only — `tick_idle` (the lobby) moves `tick` and
-    /// not the round clock, so the two are separate counters.
+    /// `clock_ticks` counts `step`s only, and is **not** `tick`: `room.rs` sets
+    /// `world.tick = self.lobby_tick` when it installs the first world (so the room's
+    /// clock never goes backwards at match start), and a new world's round clock
+    /// starts at 0 there. So the two are separate counters (T22.12E F5; `tick_idle`,
+    /// which the first version of this comment named, has no production caller).
     clock_origin: f32,
     clock_ticks: u32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
@@ -1564,6 +1569,9 @@ impl World {
     ///
     /// The lag warning already had to be re-based around a frozen lobby clock
     /// (T13.06.1); that was the first symptom of the same thing.
+    ///
+    /// **No production caller** (T22.12E F5): a lobby room has no world, and
+    /// `room.rs` keeps its own `lobby_tick`, assigned to `world.tick` at install.
     pub fn tick_idle(&mut self) {
         self.tick += 1;
     }
@@ -1571,6 +1579,9 @@ impl World {
     /// Advance one tick. **The ordering contract** — `docs/41-server-loop-rooms.md`
     /// §2, its ten numbered sub-steps, in order.
     pub fn step(&mut self, dt: f32) {
+        // T22.12E F6: the round clock is derived from the step count (R94), which
+        // is only the elapsed time if every step is `SIM_DT` long.
+        debug_assert_eq!(dt, crate::constants::SIM_DT, "World::step is a fixed step");
         self.tick += 1;
         // R75: the radiation cause list is one tick's; `resolve_deaths` takes
         // it, and this makes sure a step that returned early cannot leak it.
@@ -3290,8 +3301,30 @@ impl World {
                 })
             })
             .find(|&p| clear_run(p))?;
+        self.dev_relocate(id, at)
+    }
+
+    /// **The dev placers' one move** (T22.12D F3, T22.12E): put player `id` at rest
+    /// at `at` and announce it as a relocation, so the asker's prediction takes it as
+    /// a move, not a misprediction. Both `dev_place_near_black_hole` and
+    /// `dev_place_inward_of` call it — the second had no event (T22.12D's report).
+    ///
+    /// The event's `tick` is **the first tick whose state holds the move**: a dev
+    /// command runs between ticks, after tick `self.tick`'s snapshot went out, so
+    /// that is `self.tick + 1`. A pad or a trip happens inside a step and carries the
+    /// tick it was stepped on; both then read "a snapshot at or past `tick` has it",
+    /// which is what `Predictor.relocate` and `RemoteInterpolator.cut` assume.
+    #[doc(hidden)]
+    pub fn dev_relocate(&mut self, id: PlayerId, at: Vec2) -> Option<Vec2> {
         let p = self.player_mut(id)?;
         p.body = crate::physics::body::Body::new(at);
+        let tick = self.tick + 1;
+        self.events.push(GameEvent::Relocate {
+            tick,
+            id,
+            x: at.x,
+            y: at.y,
+        });
         Some(at)
     }
 
@@ -13789,14 +13822,15 @@ mod round_ticks_tests {
         secs as u32 * SIM_HZ
     }
 
-    /// A fresh world, `lobby` idle ticks in, with a `round` s round.
+    /// A fresh world installed `lobby` ticks into its room's life, with a `round` s
+    /// round — **the production path** (T22.12E F5): `room.rs` installs the first
+    /// world with `world.tick = self.lobby_tick`, the one assignment copied here, so
+    /// `tick` starts past 0 while the round clock does not.
     fn world(round: f32, lobby: u32) -> World {
         let mut w = World::for_test(4242, MapScale::Small);
         w.weather_mode = WeatherMode::Off;
         w.set_round_seconds(round);
-        for _ in 0..lobby {
-            w.tick_idle();
-        }
+        w.tick = lobby;
         w
     }
 
@@ -13862,7 +13896,8 @@ mod round_ticks_tests {
     /// The bell a client predicts from the **round-start** `round_state` (the one
     /// `set_phase(Playing)` sends) is the tick the server rings it on — for every
     /// length, and with the round starting at several points of the world's tick
-    /// count (idle lobby ticks move `tick` without the round clock).
+    /// count (a room installs its world at its lobby tick, which moves `tick` and
+    /// not the round clock).
     #[test]
     fn the_bell_predicted_at_round_start_is_the_servers() {
         const ACK_OFFSET: u32 = 1000;

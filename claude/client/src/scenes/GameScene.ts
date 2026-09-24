@@ -451,6 +451,12 @@ export class GameScene extends Phaser.Scene {
    * predicting the hole's pull from there.
    */
   private bellEndsTick: number | null = null
+  /**
+   * T22.12E F2: the tick of the `round_state` that said `ended` — the tick the
+   * server rang the bell on (`World::step` sets `Ended` last), so `bellEndsTick`
+   * must equal it exactly. Debug only: the `black-hole` check compares the two.
+   */
+  private endedAtTick: number | null = null
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
@@ -715,6 +721,7 @@ export class GameScene extends Phaser.Scene {
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
     this.bellEndsTick = null
+    this.endedAtTick = null
     this.core?.setBell(null)
     this.vortexFx?.clear()
     this.blackHoleFx?.clear()
@@ -868,6 +875,7 @@ export class GameScene extends Phaser.Scene {
       // from the next snapshot (`onSnapshot`). Only `Playing`'s clock ends at the
       // bell; `Ended` keeps the last one (the phase gate already holds there).
       const endsTick = p['ends_tick']
+      if (this.phase === 'ended' && before === 'playing') this.endedAtTick = stateTick
       if (this.phase === 'playing' && typeof endsTick === 'number') this.bellEndsTick = endsTick
       else if (this.phase !== 'ended') {
         this.bellEndsTick = null
@@ -894,11 +902,12 @@ export class GameScene extends Phaser.Scene {
       // §C25. Converted to a deadline on the server's own clock the moment the
       // phase is announced, because no further `round_state` is coming: the
       // `Ended` branch of `round.rs` emits none.
+      // T22.12E F4: from `ends_tick`, the integer the bell reads (one rule).
       this.phaseEndsAt = phaseDeadline(
         this.serverRoundTime,
         this.lastServerTick,
         stateTick,
-        this.timeLeft,
+        typeof endsTick === 'number' ? endsTick : null,
         C().SIM_DT,
       )
       this.observed.phases.add(this.phase)
@@ -1772,7 +1781,7 @@ export class GameScene extends Phaser.Scene {
     else if (ev === 'teleport') this.observed.teleports++
     else this.observed.relocations++
     if (id === this.me) {
-      const snapped = this.predictor?.relocate(x, y) ?? false
+      const snapped = this.predictor?.relocate(x, y, Number(p['tick'] ?? Number.NaN)) ?? false
       if (ev === 'vortex_trip') this.observed.myTrips.push({ x, y, snapped })
     } else {
       this.interp.cut(id, Number(p['tick'] ?? this.lastServerTick))
@@ -3690,6 +3699,8 @@ export class GameScene extends Phaser.Scene {
             relocations: self.observed.relocations,
             // T22.12D (R94): the last `Playing` `round_state`'s `ends_tick`.
             bellEndsTick: self.bellEndsTick,
+            // T22.12E F2: the tick the server's `ended` `round_state` carried.
+            endedAtTick: self.endedAtTick,
           },
           vortex: {
             list: self.mirror.vortices.map((v) => ({ ...v })),
