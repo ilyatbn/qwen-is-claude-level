@@ -139,6 +139,13 @@ export class Predictor {
   private lastAim = 0
   /** A repeated ack was seen (lost time, T22.10F); the next new ack is its residue. */
   private afterHitch = false
+  /**
+   * T22.10F: the newest seq pushed while the phase takes input, its held buttons,
+   * and the newest seq the local body was **stood in** for — see `standIn`.
+   */
+  private lastPushed = 0
+  private lastButtons = 0
+  private stoodIn = 0
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -166,6 +173,13 @@ export class Predictor {
       return
     }
     this.neutral = null
+    this.lastPushed = Math.max(this.lastPushed, input.seq)
+    this.lastButtons = input.buttons
+    // T22.10F: the server already ran this seq as a stand-in and will discard it
+    // (it still steers the server's next stand-in, so it is sent), and the local
+    // body already ran the same stand-in (`standIn`) — applying it again would
+    // count the tick twice.
+    if (input.seq <= this.stoodIn) return
     this.pending.push({ input, dt })
     this.core.applyInput(this.localId, input.seq, input.buttons, input.aim, dt)
     this.stats.pending = this.pending.length
@@ -189,6 +203,7 @@ export class Predictor {
       return
     }
     this.neutral = null
+    const explained = this.standIn(snap.lastInputSeq)
     const at = this.predicted.get(snap.lastInputSeq)
     // T22.10E F-4: **an ack gap** — the server acknowledged seqs this predictor
     // never pushed. The seq runs on through the results screen while nothing is
@@ -196,7 +211,7 @@ export class Predictor {
     // corrects is the round change, not a misprediction.
     const prevAck = this.stats.lastAck
     const pushedSince = this.pending.filter((q) => q.input.seq > prevAck && q.input.seq <= snap.lastInputSeq).length
-    if (prevAck > 0 && pushedSince < snap.lastInputSeq - prevAck) this.unsettled = true
+    if (prevAck > 0 && !explained && pushedSince < snap.lastInputSeq - prevAck) this.unsettled = true
     // T22.10F: **a repeated ack while the phase takes input is time this client
     // lost.** The server steps every player every tick (R89); a stand-in claims the
     // next seq only within `MAX_FRAME_TICKS` of the newest this client sent, so once
@@ -345,6 +360,35 @@ export class Predictor {
     n.at.set(snap.tick, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
     for (let i = 0; i < ahead; i++) this.stepNeutral(n, snap.lastInputSeq, this.lastAim, dt)
     this.corrected(was, err, ackErr, local.alive !== snap.state.alive)
+  }
+
+  /**
+   * T22.10F: **the local body stands in exactly as the server does.** The fixed step
+   * produces a frame's inputs at the frame's end, for ticks the server has already
+   * run — and under R89 it ran them, as stand-ins with the newest held input, and
+   * acks them. A snapshot acking seqs this client has not pushed yet is therefore
+   * the normal case on a slow page (every frame at 15 fps), not a gap: comparing it
+   * with the state at the last pushed seq read the stand-in ticks as an error,
+   * installed the server's state, and then applied the late inputs on top — a tick
+   * counted twice and corrected back, on every snapshot (145 corrections in one
+   * `crates` run). So the local body runs the same stand-ins — the last pushed
+   * buttons and aim — labelled with those seqs, and the gate compares like with
+   * like; the late inputs are skipped when they are pushed. Only within
+   * `MAX_FRAME_TICKS` of the last pushed seq, the server's own claim ceiling (a
+   * wider gap is a rematch or lost time). Returns whether it stood in.
+   */
+  private standIn(ack: number): boolean {
+    const from = Math.max(this.lastPushed, this.stoodIn)
+    if (this.lastPushed === 0 || ack <= from) return false
+    if (ack - this.lastPushed > Math.ceil(C().MAX_FRAME_DT * C().SIM_HZ)) return false
+    const dt = C().SIM_DT
+    for (let seq = from + 1; seq <= ack; seq++) {
+      this.core.applyInput(this.localId, seq, this.lastButtons, this.lastAim, dt)
+      const s = this.state
+      if (s) this.predicted.set(seq, { x: s.x, y: s.y, vx: s.vx, vy: s.vy })
+    }
+    this.stoodIn = ack
+    return true
   }
 
   /** Enter the no-input prediction (T22.10E F-3): nothing kept is worth replaying. */

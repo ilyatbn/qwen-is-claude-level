@@ -656,6 +656,28 @@ describe('a stood-in tick (T22.10F)', () => {
     expect(hitch(BTN.RIGHT)).toEqual({ first: 0, total: 0 })
   })
 
+  // The slow page's normal case: a frame's inputs are produced at its end, after
+  // the server has already stood in for the first of them and acked it.
+  it('stands in locally for acked seqs not yet pushed, and skips them when they come', () => {
+    const p = new Predictor(core, 0)
+    for (let s = 1; s <= 4; s++) p.pushInput(inp(s, BTN.RIGHT), DT)
+    for (let s = 1; s <= 4; s++) mirror.applyInput(0, s, BTN.RIGHT, 0, DT)
+    p.reconcile({ tick: 4, lastInputSeq: 4, state: mirror.playerState(0)! })
+    // The server stands in for 5 and 6 (held RIGHT) and acks 6 before 5..8 arrive.
+    for (const s of [5, 6]) mirror.applyInput(0, s, BTN.RIGHT, 0, DT)
+    p.reconcile({ tick: 6, lastInputSeq: 6, state: mirror.playerState(0)! })
+    expect(p.stats.corrections).toBe(0)
+    // The frame's inputs arrive: 5 and 6 are discarded by the server, 7 and 8 run.
+    for (let s = 5; s <= 8; s++) p.pushInput(inp(s, BTN.RIGHT), DT)
+    expect(p.stats.pending).toBe(2)
+    for (const s of [7, 8]) mirror.applyInput(0, s, BTN.RIGHT, 0, DT)
+    p.reconcile({ tick: 8, lastInputSeq: 8, state: mirror.playerState(0)! })
+    expect(p.stats.corrections).toBe(0)
+    expect(Math.hypot(core.playerState(0)!.x - mirror.playerState(0)!.x, core.playerState(0)!.y - mirror.playerState(0)!.y)).toBeLessThan(1e-3)
+    // The control: the body moved, so a tick counted twice or skipped would show.
+    expect(mirror.playerState(0)!.x - core.meta.spawn_points[0]!.x).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+  })
+
   it('corrects once when it did', () => {
     // The control for the case above: the stood-in tick is visible to the gate —
     // at the stood-in ack or, while one tick's difference is still under the

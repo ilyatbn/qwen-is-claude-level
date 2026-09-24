@@ -1061,11 +1061,18 @@ if (!seen) {
     // (no bots in the room, and `itemPickups` moved), which is a threshold read
     // off one run rather than off the fixture.
     const radius = k.PICKUP_RADIUS
-    const reachable = radius + k.JETPACK_MAX_SPEED * (APPROACH_POLL_MS / 1000)
+    //
+    // **Plus one client frame** (T22.10F). Since R89 the server steps every tick,
+    // standing in for inputs not yet arrived, while the client simulates a frame's
+    // ticks at that frame's end — so the body a check reads off the client trails
+    // the server's by up to a frame of travel (`MAX_FRAME_DT` at most). It used to
+    // lead it: the server waited for the inputs. Measured: 72, 73, 73 px in three
+    // runs against a one-poll bound of 62.
+    const reachable = radius + k.JETPACK_MAX_SPEED * (APPROACH_POLL_MS / 1000 + k.MAX_FRAME_DT)
     if (!(gone.tookItFrom <= reachable)) {
       fail(
         `the crate vanished while our player was ${gone.tookItFrom.toFixed(0)} px away ` +
-          `(PICKUP_RADIUS ${radius}, reachable in one ${APPROACH_POLL_MS} ms poll is ` +
+          `(PICKUP_RADIUS ${radius}, reachable in one ${APPROACH_POLL_MS} ms poll and a frame is ` +
           `${reachable.toFixed(0)}) — somebody else took it, so this proved nothing ` +
           'about walking to a crate',
       )
