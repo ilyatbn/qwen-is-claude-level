@@ -1766,15 +1766,8 @@ fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_j
             .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w))),
     );
     // T22.12C (R93): a telegraph in progress, as `black_hole_warn` announced it.
-    if let Some(at) = w.black_hole_warned_at() {
-        let e = game_core::world::GameEvent::BlackHoleWarn {
-            tick,
-            x: at.x,
-            y: at.y,
-            arrives_in: w
-                .black_hole_due_at()
-                .map_or(0.0, |t| (t - w.round_time).max(0.0)),
-        };
+    // Built by `World::black_hole_warn_event`, the live telegraph's own (T22.12D F7).
+    if let Some(e) = w.black_hole_warn_event() {
         out.push((crate::events::name_of(&e), crate::events::payload_of(&e, w)));
     }
     // T22.12: the black hole, as `black_hole` announced it — the client's

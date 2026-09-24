@@ -219,6 +219,8 @@ function freshObserved() {
      */
     vortexTrips: 0,
     teleports: 0,
+    /** T22.12D F3: dev placements (`relocate`), a relocation of the third source. */
+    relocations: 0,
     myTrips: [] as Array<{ x: number; y: number; snapped: boolean }>,
     /** e2e only (`DEV_PROBE=1`): the server's answer to the last `debug_breach`. */
     lastBreach: null as unknown,
@@ -443,11 +445,12 @@ export class GameScene extends Phaser.Scene {
   /** T22.12B: the black hole, drawn from `mirror.blackHole`. */
   private blackHoleFx!: BlackHoleFx
   /**
-   * T22.12C F5: the last `Playing` `round_state`'s tick and time left — where the
-   * bell falls. Each snapshot turns it into an input seq for the core
-   * (`Core.setBell`), which stops predicting the hole's pull from there.
+   * T22.12C F5: the last `Playing` `round_state`'s `ends_tick` (T22.12D, R94) —
+   * the last tick stepped in `Playing`, so where the bell falls. Each snapshot
+   * turns it into an input seq for the core (`Core.setBell`), which stops
+   * predicting the hole's pull from there.
    */
-  private bellClock: { stateTick: number; timeLeft: number } | null = null
+  private bellEndsTick: number | null = null
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
@@ -711,7 +714,7 @@ export class GameScene extends Phaser.Scene {
     this.mirror?.clearVortices()
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
-    this.bellClock = null
+    this.bellEndsTick = null
     this.core?.setBell(null)
     this.vortexFx?.clear()
     this.blackHoleFx?.clear()
@@ -864,9 +867,10 @@ export class GameScene extends Phaser.Scene {
       // hole's pull on the input seq the server steps in `Ended`, which it learns
       // from the next snapshot (`onSnapshot`). Only `Playing`'s clock ends at the
       // bell; `Ended` keeps the last one (the phase gate already holds there).
-      if (this.phase === 'playing') this.bellClock = { stateTick, timeLeft: this.timeLeft }
+      const endsTick = p['ends_tick']
+      if (this.phase === 'playing' && typeof endsTick === 'number') this.bellEndsTick = endsTick
       else if (this.phase !== 'ended') {
-        this.bellClock = null
+        this.bellEndsTick = null
         this.core.setBell(null)
       }
       // A restart hands us a brand-new `World`, so the server's tick and round
@@ -876,7 +880,7 @@ export class GameScene extends Phaser.Scene {
       if (stateTick < this.lastServerTick) {
         this.lastServerTick = stateTick
         if (this.phase !== 'playing') {
-          this.bellClock = null
+          this.bellEndsTick = null
           this.core.setBell(null)
         }
         // T22.10B: a new world has no holes; the core must stop pulling toward
@@ -1196,6 +1200,8 @@ export class GameScene extends Phaser.Scene {
     // only as a large reconcile error, and a remote glided across the map.
     this.conn.on('teleport', (raw) => this.onRelocated(raw, 'teleport'))
     this.conn.on('vortex_trip', (raw) => this.onRelocated(raw, 'vortex_trip'))
+    // T22.12D F3: a dev hook's placement (`DEV_PROBE=1` only) is a relocation too.
+    this.conn.on('relocate', (raw) => this.onRelocated(raw, 'relocate'))
     this.conn.on('debug_breach', (raw) => {
       this.observed.lastBreach = raw
     })
@@ -1702,7 +1708,9 @@ export class GameScene extends Phaser.Scene {
     if (mine && this.predictor) {
       // T22.12C F5: before the reconcile replays, so a replayed input past the bell
       // is stepped without the hole's pull, as the server stepped it.
-      if (this.bellClock) this.core.setBell({ ...this.bellClock, ack: s.lastInputSeq, snapTick: s.tick })
+      if (this.bellEndsTick !== null) {
+        this.core.setBell({ endsTick: this.bellEndsTick, ack: s.lastInputSeq, snapTick: s.tick })
+      }
       this.predictor.reconcile({
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
         tick: s.tick,
@@ -1748,19 +1756,21 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * The server moved player `id` to `(x, y)` at `tick` — a pad (`teleport`) or a
-   * breach vortex (`vortex_trip`). **The one handler for both** (T22.10B): the
-   * arrival is the same event with two sources. You: the predictor snaps (sim and
-   * render). Anyone else: their interpolation steps across the trip instead of
-   * gliding through the map for a snapshot interval.
+   * breach vortex (`vortex_trip`), or a dev hook (`relocate`, T22.12D F3). **One
+   * handler for all three** (T22.10B): the arrival is the same event with three
+   * sources. You: the predictor snaps (sim and render). Anyone else: their
+   * interpolation steps across the trip instead of gliding through the map for a
+   * snapshot interval.
    */
-  private onRelocated(raw: unknown, ev: 'teleport' | 'vortex_trip'): void {
+  private onRelocated(raw: unknown, ev: 'teleport' | 'vortex_trip' | 'relocate'): void {
     const p = asRecord(raw)
     const id = Number(p['id'] ?? -1)
     const x = Number(p['x'])
     const y = Number(p['y'])
     if (!Number.isFinite(x) || !Number.isFinite(y)) return
     if (ev === 'vortex_trip') this.observed.vortexTrips++
-    else this.observed.teleports++
+    else if (ev === 'teleport') this.observed.teleports++
+    else this.observed.relocations++
     if (id === this.me) {
       const snapped = this.predictor?.relocate(x, y) ?? false
       if (ev === 'vortex_trip') this.observed.myTrips.push({ x, y, snapped })
@@ -3094,6 +3104,10 @@ export class GameScene extends Phaser.Scene {
        * The answer lands in `debug().blackHole.lastProbe`; the hole arrives as a real one
        * does, through `black_hole` and the carve stream.
        */
+      /** e2e only (T22.12D F1): hear the server `ms` late (every event, in order). */
+      netDelay(ms: number) {
+        self.conn.setInboundDelay(ms)
+      },
       debugBlackHole(dist?: number, warn?: boolean) {
         self.observed.lastBlackHole = null
         self.conn.sendRaw('debug_black_hole', {
@@ -3672,6 +3686,10 @@ export class GameScene extends Phaser.Scene {
             lastProbe: self.observed.lastBlackHole,
             asteroids: self.core.meta.asteroids.map((a) => ({ x: a.x, y: a.y })),
             checksums: { ...self.mirror.stats },
+            // T22.12D F3: dev placements heard as relocations.
+            relocations: self.observed.relocations,
+            // T22.12D (R94): the last `Playing` `round_state`'s `ends_tick`.
+            bellEndsTick: self.bellEndsTick,
           },
           vortex: {
             list: self.mirror.vortices.map((v) => ({ ...v })),
@@ -3690,6 +3708,8 @@ export class GameScene extends Phaser.Scene {
             snaps: self.predictor?.stats.snaps ?? 0,
             settled: self.predictor?.stats.settled ?? 0,
             worstJump: self.predictor?.stats.worstJump ?? null,
+            // T22.12D F1: the bell's own error (NaN → null until measured).
+            bellErrorPx: Number.isFinite(self.predictor?.stats.bellErrorPx) ? self.predictor?.stats.bellErrorPx : null,
           },
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte

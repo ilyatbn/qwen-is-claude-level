@@ -485,13 +485,13 @@ impl GameCore {
     }
 
     /// T22.12C F5: where the bell falls in **input seqs** — from a `Playing`
-    /// `round_state` (`state_tick`, `time_left`) and a snapshot (`ack` ran on
-    /// `snap_tick`), through `black_hole::bell_seq`, the one derivation. Called by
-    /// `GameScene` on every snapshot before the reconcile replays, so a replayed
+    /// `round_state`'s integer `ends_tick` (T22.12D, R94) and a snapshot (`ack` ran
+    /// on `snap_tick`), through `black_hole::bell_seq`, the one derivation. Called
+    /// by `GameScene` on every snapshot before the reconcile replays, so a replayed
     /// input past the bell is stepped as the server stepped it: without the pull.
-    pub fn set_bell(&mut self, state_tick: u32, time_left: f32, ack: u32, snap_tick: u32) {
+    pub fn set_bell(&mut self, ends_tick: u32, ack: u32, snap_tick: u32) {
         self.bell_seq = Some(game_core::world::black_hole::bell_seq(
-            state_tick, time_left, ack, snap_tick,
+            ends_tick, ack, snap_tick,
         ));
     }
 
@@ -4090,9 +4090,10 @@ mod tests {
     /// "hears" `ended` `HEARD_AFTER` ticks late. Measured at the moment it hears:
     /// **with the bell seq the two agree exactly; without it they are this far apart**
     /// — the bell correction every player in the pull used to take. The round clock
-    /// is sampled twice (at the round's start and half a second before the bell), since
-    /// `time_left / SIM_DT` is a float and `round` has to land on the same tick both
-    /// times.
+    /// is sampled twice (at the round's start and half a second before the bell) —
+    /// since T22.12D an integer `ends_tick`, which must read the same both times; the
+    /// round lengths players choose are `game-core`'s
+    /// `round_ticks_tests::the_bell_predicted_at_round_start_is_the_servers`.
     #[test]
     fn the_bell_seq_stops_the_pull_on_the_servers_ended_tick() {
         use game_core::constants::{BLACK_HOLE_REACH, SIM_HZ, SNAPSHOT_QUANTUM};
@@ -4123,18 +4124,18 @@ mod tests {
             core.add_player(1, start.x, start.y);
             let _ = w.drain_events();
             // The round clock as a `Playing` `round_state` carries it.
-            let mut clock = (w.tick, w.phase_time_left());
+            let mut clock = w.phase_ends_tick().expect("playing");
             let (mut seq, mut ended_at) = (1000u32, None::<u32>);
             loop {
                 seq += 1;
                 w.queue_input(1, Input::new(seq, 0, 0));
                 w.step(SIM_DT);
                 if sample_late && w.phase == RoundPhase::Playing && w.phase_time_left() > 0.5 {
-                    clock = (w.tick, w.phase_time_left());
+                    clock = w.phase_ends_tick().expect("playing");
                 }
                 if use_bell {
                     // A snapshot of this tick: `seq` ran on it.
-                    core.set_bell(clock.0, clock.1, seq, w.tick);
+                    core.set_bell(clock, seq, w.tick);
                 }
                 core.apply_input(1, seq, 0, 0, SIM_DT);
                 if w.phase == RoundPhase::Ended && ended_at.is_none() {

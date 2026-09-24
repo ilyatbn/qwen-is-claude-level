@@ -2588,12 +2588,13 @@ impl Room {
                 // long as it stayed connected — "Play again does nothing" — while
                 // the room had quietly become a lobby. The world is gone by now,
                 // so the room task flushes this through `flush_lobby_events`,
-                // stamped with the seed just adopted; `time_left` is `INFINITY`,
-                // what `JoinInfo` already says for a lobby.
+                // stamped with the seed just adopted; no deadline (`ends_tick`
+                // `None`, so `time_left` goes out `null`, what `JoinInfo`'s
+                // `INFINITY` says for a lobby).
                 events.push(game_core::world::GameEvent::RoundState {
                     tick: self.tick(),
                     phase: game_core::world::RoundPhase::Lobby,
-                    time_left: f32::INFINITY,
+                    ends_tick: None,
                 });
                 // And the roster, which a lobby broadcasts on change and a match
                 // does not: the bots just left it.

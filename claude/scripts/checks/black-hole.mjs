@@ -34,6 +34,13 @@
  * 5. **coverage in both of GameScene's render paths**: the accretion ring painted in
  *    its own colour and the disc black, against the same frozen instant with the layer
  *    hidden, plus a control point clear of the glow (§C2). Screenshots in the shots dir;
+ * 5b. **the bell for a body in the pull** (T22.12D F1): placed at `BELL_PLACE × REACH`
+ *    `BELL_LEAD_S` before the round's `ends_tick`, what the page had predicted for its
+ *    body when it heard the bell, against the server's state at that tick
+ *    (`bellErrorPx`, keyed by tick — the anchoring correction's jump is not a
+ *    like-for-like number), is within the ack bound: `Core.setBell` stopped the pull on
+ *    the server's `Ended` tick. Deleting the `setBell` call in
+ *    `GameScene.onSnapshot` is red here (planted). Controls: alive at the bell, and pulled;
  * 6. **frozen at the bell** (R8.4, F9): after `Ended` it is still drawn, a player put at
  *    rest in its reach is **not pulled** (against arm 2's travel as the control), and a
  *    player put inside the horizon is not killed.
@@ -62,6 +69,27 @@ const MIN_ON_SCREEN = 0.5
 const DISC_MAX = 10
 /** How long the pull may take to deliver the placed player to the horizon, s. */
 const PULL_BUDGET_S = 10
+/**
+ * Arm 5b: where, as a fraction of the reach, and how long before the bell the body is
+ * placed. **Not the review's ~0.5 s** — computed (a stepped fall from 0.97 × reach,
+ * the hole's linear pull): 0.5 s in, the pull is 52 px/s², so a prediction that kept
+ * pulling for the few ticks until the page hears `ended` would be ~0.2 px off, under the
+ * bound, and the arm could not fail. At 1.6 s it is ~430 px/s², and the body reaches
+ * the horizon at 1.9 s — 0.3 s after the bell (the probe's latency only shortens the
+ * lead). The placement `game-wasm`'s `the_bell_seq_stops_the_pull_on_the_servers_ended_tick`
+ * uses (2.22 px off there without the bell seq, 0.000 with it).
+ */
+const BELL_PLACE = 0.97
+const BELL_LEAD_S = 1.6
+/**
+ * Arm 5b hears the server this late (`__game.netDelay`): on localhost the page hears the
+ * bell within a tick or two, and a prediction that kept pulling for that long is ~0.3 px
+ * off — measured with `setBell` deleted, under the bound, so the arm could not fail. At
+ * 100 ms (`game-wasm`'s bell test's `HEARD_AFTER`, 6 ticks) the plant read 2.50 px against
+ * the 2.18 px bound — too thin a margin to gate on; 150 ms, a common real latency, is
+ * the value used.
+ */
+const BELL_HEAR_LATE_MS = 150
 const FRAME_BUDGET_MS = 20_000
 /** The overlay's patch (`void.mjs`'s): it dims the whole centre when up. */
 const OVERLAY = { x: 440, y: 250, w: 400, h: 220 }
@@ -453,9 +481,44 @@ try {
   }
   await page.evaluate(() => window.__game.setHighQuality(false))
 
+  // --- 5b. the bell for a body in the pull (T22.12D F1) --------------------------------
+  {
+    const endsTick = (await dbg()).blackHole.bellEndsTick
+    const placeTick = endsTick - Math.round(BELL_LEAD_S * k.SIM_HZ)
+    if (typeof endsTick !== 'number') fail(`bell: the page holds no ends_tick from a playing round_state: ${endsTick}`)
+    else if ((await dbg()).lastServerTick > placeTick) fail(`bell: the arms before ran past ${BELL_LEAD_S} s before the bell (server tick ${(await dbg()).lastServerTick}, bell ${endsTick}) — lengthen ROUND_S`)
+    else {
+      await page.waitForFunction((t) => window.__game.debug().lastServerTick >= t, placeTick, { timeout: deadlineMs(ROUND_S + 10, 'the bell lead'), polling: 'raf' })
+      const deaths3 = (await dbg()).observed.deaths.length
+      await page.evaluate((ms) => window.__game.netDelay(ms), BELL_HEAR_LATE_MS)
+      const at = await probe(page, BELL_PLACE * k.BLACK_HOLE_REACH)
+      await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: deadlineMs(BELL_LEAD_S + 10, 'the bell'), polling: 'raf' })
+      const atBell = (await dbg()).player
+      await page.waitForFunction(() => window.__game.debug().vortex.bellErrorPx !== null, null, { timeout: deadlineMs(5, 'the first snapshot after the bell') }).catch(() => {})
+      // The record runs to the page's lead; later snapshots in it overwrite the number.
+      await frames(page, 30)
+      await page.evaluate(() => window.__game.netDelay(0))
+      await frames(page, 10)
+      const db = await dbg()
+      const err = db.vortex.bellErrorPx
+      const pulled = at.placed && atBell ? Math.hypot(atBell.x - at.placed.x, atBell.y - at.placed.y) : 0
+      const died = db.observed.deaths.length > deaths3
+      if (!at.placed) fail('bell: no clear side to place the player in the pull')
+      else if (died) fail(`bell: control — the hole took the player before the bell (placed ${BELL_LEAD_S} s ahead at ${BELL_PLACE} × reach)`)
+      else if (pulled < (BELL_PLACE * k.BLACK_HOLE_REACH - k.BLACK_HOLE_HORIZON_R) / 4) fail(`bell: control — the body moved only ${pulled.toFixed(1)} px before the bell, so nothing pulled it`)
+      else if (typeof err !== 'number') fail('bell: no prediction for the first snapshot after the bell was measured (bellErrorPx null)')
+      else if (err > bound) fail(`bell: when the page heard the bell its prediction was ${err.toFixed(2)} px off the server's (> ${bound.toFixed(2)} px) — it kept pulling past the server's Ended tick (is Core.setBell told?)`)
+      else ok(`bell: when the page heard the bell its prediction agreed with the server's to ${err.toFixed(2)} px (≤ ${bound.toFixed(2)} px) for a body pulled ${pulled.toFixed(0)} px toward the hole`)
+    }
+  }
+
   // --- 6. frozen at the bell ----------------------------------------------------------
   await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: deadlineMs(ROUND_S + 10, 'the bell') })
   await frames(page, 10)
+  // F3: every placement so far (arm 2's, arm 5b's) reached the page as a relocation.
+  const relocs = (await dbg()).blackHole.relocations
+  if (relocs < 2) fail(`F3: ${relocs} dev placements heard as relocations, 2 made`)
+  else ok(`F3: the dev placements reached the page as relocations (${relocs})`)
   // F9: **not pulled** after the bell. Put at rest well inside the reach — where arm 2's
   // pull carried the body toward the horizon — and watched for a second: nothing may move
   // it (the hole is frozen, and R91 keeps the wells muted inside its reach).

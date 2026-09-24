@@ -116,6 +116,22 @@ export class Connection {
   private _state: ConnectionState = 'closed'
   private readonly opts: ConnectionOptions
   private stateCbs: Array<(s: ConnectionState) => void> = []
+  /**
+   * T22.12D F1, **e2e only** (`__game.netDelay`): hold every inbound event this long
+   * before its handlers run — one delay for all, so the order is kept. A localhost
+   * page hears the bell within a tick or two, too soon for a prediction that kept
+   * pulling past it to be measurably wrong; `black-hole`'s bell arm listens a
+   * realistic 100 ms late. 0 (the default) delivers inline, as before.
+   */
+  private inboundDelayMs = 0
+  /**
+   * The held events, oldest first, drained in order by one timer — **not** a timer
+   * each: a fractional delay is truncated to whole milliseconds, so two timers set a
+   * fraction apart can fire in the wrong order (measured: a snapshot tick running six
+   * backwards).
+   */
+  private readonly held: Array<{ cb: EventHandler; payload: unknown; due: number }> = []
+  private heldTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: ConnectionOptions = {}) {
     this.opts = opts
@@ -182,7 +198,7 @@ export class Connection {
 
     // Attach every registered handler, plus the ones we own.
     for (const [event, list] of this.handlers) {
-      for (const h of list) socket.on(event, (...a: unknown[]) => h(a[0]))
+      for (const h of list) socket.on(event, (...a: unknown[]) => this.deliver(h, a[0]))
     }
     // The latch listens whether or not anybody has subscribed yet — which is the
     // whole point, since the case it exists for is nobody having subscribed.
@@ -250,11 +266,39 @@ export class Connection {
    * with half its fields still unbuilt. The microtask runs once `create()` has
    * returned, which is the state the handler was written against.
    */
+  /** e2e only (T22.12D F1): see `inboundDelayMs`. Set it back to 0 once drained. */
+  setInboundDelay(ms: number): void {
+    this.inboundDelayMs = Math.max(0, ms)
+  }
+
+  private deliver(cb: EventHandler, payload: unknown): void {
+    if (this.inboundDelayMs === 0 && this.held.length === 0) {
+      cb(payload)
+      return
+    }
+    const last = this.held.at(-1)?.due ?? 0
+    this.held.push({ cb, payload, due: Math.max(last, performance.now() + this.inboundDelayMs) })
+    this.drainHeld()
+  }
+
+  /** Deliver every held event that is due, in order; re-arm for the next. */
+  private drainHeld(): void {
+    const now = performance.now()
+    while (this.held.length && this.held[0]!.due <= now) {
+      const h = this.held.shift()!
+      h.cb(h.payload)
+    }
+    if (this.heldTimer !== null) clearTimeout(this.heldTimer)
+    this.heldTimer = null
+    const next = this.held[0]
+    if (next) this.heldTimer = setTimeout(() => this.drainHeld(), Math.ceil(next.due - now))
+  }
+
   on(event: string, cb: EventHandler): void {
     const list = this.handlers.get(event) ?? []
     list.push(cb)
     this.handlers.set(event, list)
-    if (this.socket) this.socket.on(event, (...a: unknown[]) => cb(a[0]))
+    if (this.socket) this.socket.on(event, (...a: unknown[]) => this.deliver(cb, a[0]))
     if (LATCHED_EVENTS.has(event) && this.latched.has(event)) {
       const payload = this.latched.get(event)
       queueMicrotask(() => cb(payload))

@@ -70,8 +70,22 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    line** (R90). **Within its reach the asteroid wells do not pull** (R91). A black-hole death **drops nothing**
    (R92). Frozen and still drawn after the bell — and with the wells muted inside its reach, nothing there pulls
    then; the death is named the hole's only while it pulls (F9). Shown on the minimap (R93). Respawns, mid-round
-   joins and vortex trips never inside its reach. **The round ends on the tick nearest its deadline**
-   (`phase_time_left() ≤ SIM_DT/2`, T22.12C F5) so a client can derive the bell tick from `round_state`.
+   joins and vortex trips never inside its reach. *(T22.12C's "the round ends on the tick nearest its deadline,
+   `phase_time_left() ≤ SIM_DT/2`" is superseded by point 9.)* A client derives the bell from `round_state`'s
+   `ends_tick` (point 9): the first input seq stepped in `Ended` is `ack + ends_tick − snap_tick + 1`.
+
+## Round phases in ticks (T22.12D, R94)
+9. **docs/41 §2–3 (round lifecycle) and docs/40 `round_state`:** every phase is **counted in ticks**. A phase of
+   `s` seconds (`WARMUP_SECONDS`, the round length, `ENDED_SECONDS`) begins on the tick `set_phase` runs and is
+   stepped for exactly round(`s` × `SIM_HZ`) ticks — a 240 / 300 / 600 s round is 14400 / 18000 / 36000 `Playing`
+   ticks (it was 14401 / 18002 / 36006: an `f32` sum reaching a float deadline). Warmup, Playing and the Ended vote
+   window all end by that one rule. `round_state` gains **`ends_tick`** (integer, the last tick stepped in the phase;
+   `null` in `lobby`), and `time_left` is derived from it (`(ends_tick − tick) / SIM_HZ`; `null` in `lobby`, as
+   before). **The round clock is derived from the step count**, not summed: `round_time` at `k` steps is `k /
+   SIM_HZ` correctly rounded (plus the dev `DEV_ROUND_CLOCK` origin). What moved with it: the day/night cycle and
+   the weather schedule by the old drift (−6 … +1 ticks inside 600 s; the golden weather table regenerated), the
+   Ended window 1201 → 1200 ticks. `REPLAY_VERSION` 22. Dev-only: a `relocate {tick, id, x, y}` event (Everyone)
+   for the black-hole dev hook's placement (T22.12D F3).
 
 ## Other M22 points already recorded elsewhere
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).

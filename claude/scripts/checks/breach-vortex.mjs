@@ -230,9 +230,11 @@ try {
   const k = await page.evaluate(() => window.__game.constants())
   const dbg = () => page.evaluate(() => window.__game.debug())
   await page.waitForFunction(() => window.__game.debug().phase === 'playing', null, { timeout: deadlineMs(WARMUP_S + 30, 'the round to start') })
-  // The noise floor, measured: corrections while nothing pulls. The snapshot's i16
-  // positions alone put a resting body up to ~1.4 px off, so a few corrections just
-  // past RECONCILE_EPSILON_PX happen with no vortex at all.
+  // The noise floor, measured: corrections while nothing pulls — the baseline the
+  // pull arm is read against. (Its first reason, the snapshot's `i16` whole-pixel
+  // positions putting a resting body up to ~1.4 px off, is gone since T22.10H: the
+  // wire rounds to SNAPSHOT_QUANTUM, 1/8 px — T22.12D F6. The floor is still measured,
+  // not assumed zero.)
   const sampleWindow = (frameCount) =>
     page.evaluate(
       (n) =>

@@ -77,6 +77,8 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::BlackHoleWarn { .. }
         | GameEvent::VortexClose { .. }
         | GameEvent::VortexTrip { .. }
+        // T22.12D F3: a dev placement, seen by everyone as any relocation is.
+        | GameEvent::Relocate { .. }
         | GameEvent::TombstoneSpawn { .. }
         | GameEvent::TombstoneDespawn { .. }
         | GameEvent::Score { .. }
@@ -126,6 +128,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::BlackHoleWarn { .. } => "black_hole_warn",
         GameEvent::VortexClose { .. } => "vortex_close",
         GameEvent::VortexTrip { .. } => "vortex_trip",
+        GameEvent::Relocate { .. } => "relocate",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
         GameEvent::TombstoneDespawn { .. } => "tombstone_despawn",
         GameEvent::Score { .. } => "score",
@@ -389,6 +392,7 @@ pub fn payload_with_votes(
         GameEvent::VortexTrip {
             id, vortex, x, y, ..
         } => json!({"tick": tick, "id": id, "vortex": vortex, "x": x, "y": y}),
+        GameEvent::Relocate { id, x, y, .. } => json!({"tick": tick, "id": id, "x": x, "y": y}),
         GameEvent::Teleport {
             id,
             from_pad,
@@ -452,8 +456,8 @@ pub fn payload_with_votes(
             json!({"tick": tick, "day_phase": format!("{day_phase:?}").to_lowercase()})
         }
         GameEvent::RoundState {
-            phase, time_left, ..
-        } => round_state_payload(tick, *phase, *time_left, world.seed, votes),
+            phase, ends_tick, ..
+        } => round_state_payload(tick, *phase, *ends_tick, world.seed, votes),
         GameEvent::RoundEnd { .. } => json!({"tick": tick, "reason": "round_over"}),
     }
 }
@@ -495,17 +499,24 @@ fn cause_name(c: DeathCause) -> &'static str {
 ///
 /// `votes` (T21.38 R4) is **omitted** when `None`, as `lobby_state` omits its
 /// absent fields: a vote exists only while the round is `Ended`.
+///
+/// **`ends_tick`** (T22.12D, R94) is the last tick the phase is stepped in —
+/// integer, so a client derives the bell exactly (`black_hole::bell_seq`) — and
+/// `time_left` is derived from it, never sent separately; both `null` in `Lobby`
+/// (`time_left` was `INFINITY`, which JSON writes as `null`: unchanged).
 fn round_state_payload(
     tick: u32,
     phase: RoundPhase,
-    time_left: f32,
+    ends_tick: Option<u32>,
     seed: u64,
     votes: Option<VoteTally>,
 ) -> serde_json::Value {
+    let time_left = ends_tick.map(|e| game_core::world::ticks_to_seconds(e.saturating_sub(tick)));
     let mut v = serde_json::json!({
         "tick": tick,
         "phase": phase.as_str(),
         "time_left": time_left,
+        "ends_tick": ends_tick,
         "seed": seed.to_string(),
     });
     if let Some(t) = votes {
@@ -674,7 +685,7 @@ pub fn flush_lobby_events(
         let GameEvent::RoundState {
             tick,
             phase,
-            time_left,
+            ends_tick,
         } = e
         else {
             tracing::warn!(
@@ -685,7 +696,7 @@ pub fn flush_lobby_events(
             continue;
         };
         // A lobby has no vote.
-        let payload = round_state_payload(*tick, *phase, *time_left, seed, None);
+        let payload = round_state_payload(*tick, *phase, *ends_tick, seed, None);
         for sid in sessions.sids() {
             if sessions.queue_or_emit(sid, "round_state", &payload) {
                 if let Some(s) = io.get_socket(sid) {
@@ -1048,7 +1059,7 @@ mod tests {
             GameEvent::RoundState {
                 tick: 42,
                 phase: RoundPhase::Playing,
-                time_left: 10.0,
+                ends_tick: Some(642),
             },
         ];
         for e in cases {
@@ -1098,7 +1109,7 @@ mod tests {
             &GameEvent::RoundState {
                 tick: 1,
                 phase: RoundPhase::Playing,
-                time_left: 1.0,
+                ends_tick: Some(61),
             },
             &w,
         );
@@ -1114,7 +1125,7 @@ mod tests {
         let e = GameEvent::RoundState {
             tick: 1,
             phase: RoundPhase::Ended,
-            time_left: 12.0,
+            ends_tick: Some(721),
         };
         let p = payload_with_votes(&e, &w, Some(VoteTally { yes: 2, humans: 3 }));
         assert_eq!(p["votes"]["yes"], 2);

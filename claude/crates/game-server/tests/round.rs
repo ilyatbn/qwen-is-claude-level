@@ -623,9 +623,17 @@ fn the_vote_tally_exists_only_while_the_round_is_ended() {
 fn round_states(evs: &[game_core::world::GameEvent]) -> Vec<(RoundPhase, f32)> {
     evs.iter()
         .filter_map(|e| match e {
+            // `time_left` as the wire derives it from `ends_tick` (T22.12D).
             game_core::world::GameEvent::RoundState {
-                phase, time_left, ..
-            } => Some((*phase, *time_left)),
+                tick,
+                phase,
+                ends_tick,
+            } => Some((
+                *phase,
+                ends_tick.map_or(f32::INFINITY, |e| {
+                    game_core::world::ticks_to_seconds(e.saturating_sub(*tick))
+                }),
+            )),
             _ => None,
         })
         .collect()

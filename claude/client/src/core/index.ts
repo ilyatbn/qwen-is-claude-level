@@ -910,13 +910,13 @@ export class Core {
 
   /**
    * T22.12C F5: where the bell falls, in input seqs — from the last `Playing`
-   * `round_state` (`stateTick`, `timeLeft`) and this snapshot (`ack` ran on
-   * `snapTick`); `null` clears it. The derivation is Rust's
-   * (`black_hole::bell_seq`); from that seq on the prediction stops pulling toward
-   * the hole, as the server did on its `Ended` tick.
+   * `round_state`'s integer `endsTick` (T22.12D, R94: the last tick stepped in
+   * `Playing`) and this snapshot (`ack` ran on `snapTick`); `null` clears it. The
+   * derivation is Rust's (`black_hole::bell_seq`); from that seq on the prediction
+   * stops pulling toward the hole, as the server did on its `Ended` tick.
    */
-  setBell(bell: { stateTick: number; timeLeft: number; ack: number; snapTick: number } | null): void {
-    if (bell) this.inner.set_bell(bell.stateTick, bell.timeLeft, bell.ack, bell.snapTick)
+  setBell(bell: { endsTick: number; ack: number; snapTick: number } | null): void {
+    if (bell) this.inner.set_bell(bell.endsTick, bell.ack, bell.snapTick)
     else this.inner.clear_bell()
   }
 

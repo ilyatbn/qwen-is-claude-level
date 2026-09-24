@@ -238,11 +238,7 @@ impl RoundController {
             RoundPhase::Playing => {
                 if now - self.last_state_at >= ROUND_STATE_INTERVAL {
                     self.last_state_at = now;
-                    events.push(GameEvent::RoundState {
-                        tick: world.tick,
-                        phase: world.phase,
-                        time_left: world.phase_time_left(),
-                    });
+                    events.push(world.round_state_event());
                 }
             }
             RoundPhase::Ended => {
@@ -251,7 +247,8 @@ impl RoundController {
                 // button and a yes is not withdrawn — so nobody waits the rest of
                 // the window out for it. Decided from recorded commands only, so
                 // a replay restarts on the same tick.
-                let window_closed = world.phase_time_left() <= 0.0;
+                // Counted in ticks, by the rule that ends every phase (T22.12D, R94).
+                let window_closed = world.phase_over();
                 if !self.resolved && (window_closed || self.restart_wins(humans)) {
                     self.resolved = true;
                     self.announced_tally = None;
@@ -270,11 +267,7 @@ impl RoundController {
                 let tally = self.tally(humans);
                 if !self.resolved && self.announced_tally != Some(tally) {
                     self.announced_tally = Some(tally);
-                    events.push(GameEvent::RoundState {
-                        tick: world.tick,
-                        phase: world.phase,
-                        time_left: world.phase_time_left(),
-                    });
+                    events.push(world.round_state_event());
                 }
             }
             RoundPhase::Warmup => {}
@@ -470,6 +463,30 @@ mod tests {
         assert_eq!(r.tick_lobby(0, SIM_DT).1, RoundOutcome::Start);
         // Once, not forever: the flag is consumed.
         assert_eq!(r.tick_lobby(0, SIM_DT).1, RoundOutcome::Continue);
+    }
+
+    /// T22.12D (R94): the vote window closes on **exactly** its `ENDED_SECONDS · SIM_HZ`-th
+    /// tick — the tick rule every phase ends by (`World::phase_over`), not an `f32`
+    /// clock reaching zero (which closed it one tick late, measured). A silent human,
+    /// so only the window can resolve it; the tick before is the control.
+    #[test]
+    fn the_ended_window_closes_on_its_last_tick() {
+        use game_core::constants::{ENDED_SECONDS, SIM_HZ};
+        assert_eq!(ENDED_SECONDS.fract(), 0.0, "premise: whole seconds");
+        let window = ENDED_SECONDS as u32 * SIM_HZ;
+        let mut w = world_in(RoundPhase::Ended);
+        let mut r = RoundController::new(1);
+        for _ in 0..window - 1 {
+            w.step(SIM_DT);
+        }
+        let (_, before) = r.tick(&mut w, 1, SIM_DT);
+        assert_eq!(before, RoundOutcome::Continue, "closed a tick early");
+        w.step(SIM_DT);
+        let (_, at) = r.tick(&mut w, 1, SIM_DT);
+        assert!(
+            matches!(at, RoundOutcome::ToLobby { .. }),
+            "the window did not close on tick {window}: {at:?}"
+        );
     }
 
     #[test]

@@ -39,7 +39,7 @@
 
 use crate::constants::{
     BLACK_HOLE_HORIZON_R, BLACK_HOLE_LATEST, BLACK_HOLE_REACH, BLACK_HOLE_TELEGRAPH,
-    BLACK_HOLE_WINDOW, SIM_DT,
+    BLACK_HOLE_WINDOW,
 };
 use crate::math::Vec2;
 use crate::rng::{range_f32, substream};
@@ -149,18 +149,17 @@ pub fn clearance(hole: Option<Vec2>, centre: Vec2) -> f32 {
 ///
 /// The server stops the pull on its `Ended` tick; a client hears `ended` a trip
 /// later and, until then, predicted the pull on inputs the server stepped without
-/// it. Derived from what the client already holds: a `Playing` `round_state` —
-/// `state_tick` and `time_left` — puts the bell at the end of tick
-/// `state_tick + round(time_left / SIM_DT)` (`World::step` changes phase last, so
-/// that tick still pulled); and a snapshot says seq `ack` ran on tick `snap_tick`,
-/// one seq a tick after it (R89: one step per player per tick). So the first seq
-/// stepped in `Ended` is `ack + (bell − snap_tick) + 1`. `round`, not `ceil`: the
-/// round clock is a float sum and `time_left` can land a hair either side of a
-/// whole tick — one tick of error is ~0.2 px of pull, measured by
-/// `game-wasm`'s `the_bell_seq_stops_the_pull_on_the_servers_ended_tick`.
-pub fn bell_seq(state_tick: u32, time_left: f32, ack: u32, snap_tick: u32) -> u32 {
-    let bell = i64::from(state_tick) + (time_left / SIM_DT).round() as i64;
-    (i64::from(ack) + bell - i64::from(snap_tick) + 1).clamp(0, i64::from(u32::MAX)) as u32
+/// it. Derived from what the client already holds, **in integers** (T22.12D, R94): a
+/// `Playing` `round_state`'s `ends_tick` is the last tick stepped in `Playing`
+/// (`World::phase_ends_tick`; `World::step` changes phase last, so that tick still
+/// pulled); and a snapshot says seq `ack` ran on tick `snap_tick`, one seq a tick
+/// after it (R89: one step per player per tick). So the first seq stepped in `Ended`
+/// is `ack + ends_tick − snap_tick + 1`. (T22.12C derived the bell from an `f32`
+/// `time_left`, which a round counted by a float sum missed by 1/2/6 ticks on
+/// 240/300/600 s rounds.)
+pub fn bell_seq(ends_tick: u32, ack: u32, snap_tick: u32) -> u32 {
+    (i64::from(ack) + i64::from(ends_tick) - i64::from(snap_tick) + 1).clamp(0, i64::from(u32::MAX))
+        as u32
 }
 
 impl World {
@@ -199,7 +198,7 @@ impl World {
             return;
         }
         if self.black_hole == BlackHole::Unrolled {
-            self.black_hole = roll(self.seed, self.phase_started_at, self.round_ends_at());
+            self.black_hole = roll(self.seed, self.phase_started_at(), self.round_ends_at());
         }
         if let BlackHole::Due { at, pick } = self.black_hole {
             if now >= at - BLACK_HOLE_TELEGRAPH {
@@ -240,13 +239,25 @@ impl World {
     /// long until it opens, for everyone.
     fn warn_black_hole(&mut self, at: f32, index: u32, pos: Vec2) {
         self.black_hole = BlackHole::Warned { at, index, pos };
-        let tick = self.tick;
-        self.events.push(GameEvent::BlackHoleWarn {
-            tick,
+        if let Some(e) = self.black_hole_warn_event() {
+            self.events.push(e);
+        }
+    }
+
+    /// **The one `black_hole_warn`** (T22.12D F7): this tick, the spot, and how long
+    /// until it opens — for the live telegraph and the join catch-up
+    /// (`session.rs`) alike, so a joiner's countdown cannot drift from a watcher's.
+    /// `None` unless the hole is telegraphed and not yet here.
+    pub fn black_hole_warn_event(&self) -> Option<GameEvent> {
+        let BlackHole::Warned { at, pos, .. } = self.black_hole else {
+            return None;
+        };
+        Some(GameEvent::BlackHoleWarn {
+            tick: self.tick,
             x: pos.x,
             y: pos.y,
             arrives_in: (at - self.round_time).max(0.0),
-        });
+        })
     }
 
     /// Bring the hole now, eating the asteroid nearest `near` — the tests' and the
@@ -294,6 +305,10 @@ impl World {
     /// `dist` from the hole, on a side whose straight run in to the horizon is clear
     /// of rock — so the pull drags them from a known spot. Nearest the side they are
     /// already on first. `None` without a hole, a player, or a clear side.
+    ///
+    /// **Announced as a relocation** (T22.12D F3, `GameEvent::Relocate`), so the
+    /// asker's prediction snaps there like a pad or a vortex trip instead of
+    /// counting the move as an error.
     pub fn dev_place_near_black_hole(
         &mut self,
         id: crate::player::state::PlayerId,
@@ -326,6 +341,13 @@ impl World {
             .map(|dir| hole + dir * dist)?;
         let p = self.player_mut(id)?;
         p.body = crate::physics::body::Body::new(at);
+        let tick = self.tick;
+        self.events.push(GameEvent::Relocate {
+            tick,
+            id,
+            x: at.x,
+            y: at.y,
+        });
         Some(at)
     }
 
@@ -576,25 +598,53 @@ mod tests {
         (w, hole)
     }
 
-    /// Run ana for up to `secs` holding thrust away from the hole; stops once she is
-    /// past the reach. Whether she died of it, and how far out she got alive.
-    fn escape(w: &mut World, hole: Vec2, secs: f32) -> (bool, f32) {
-        let mut furthest: f32 = 0.0;
+    /// How long a flight keeps thrusting once past the reach (T22.12D F4): the wells
+    /// switch back on **abruptly** at `REACH` (R91 mutes them inside it), so "past the
+    /// reach" is only an escape if the wells there do not drag the body back in.
+    const PAST_REACH_TICKS: u32 = crate::constants::SIM_HZ / 2;
+
+    /// What one flight did: died of the hole; how far out it got alive; and, once
+    /// past `REACH + 8`, the nearest it came back to the hole over the next
+    /// [`PAST_REACH_TICKS`] with the wells back on.
+    struct Flight {
+        died: bool,
+        furthest: f32,
+        nearest_after: Option<f32>,
+    }
+
+    /// Run ana for up to `secs` holding thrust away from the hole; once she is past
+    /// the reach (+8 px), keep thrusting [`PAST_REACH_TICKS`] more and track the
+    /// nearest she comes back.
+    fn escape(w: &mut World, hole: Vec2, secs: f32) -> Flight {
+        let mut f = Flight {
+            died: false,
+            furthest: 0.0,
+            nearest_after: None,
+        };
+        let mut past = 0;
         for _ in 0..(secs / SIM_DT) as usize {
             let pos = w.player(0).expect("ana").body.pos;
             step(w, away(hole, pos));
             let p = w.player(0).expect("ana");
+            let d = (p.body.pos - hole).len();
             if p.alive {
-                furthest = furthest.max((p.body.pos - hole).len());
+                f.furthest = f.furthest.max(d);
             }
             if deaths(&w.drain_events()).contains(&DeathCause::BlackHole) {
-                return (true, furthest);
+                f.died = true;
+                return f;
             }
-            if furthest > crate::constants::BLACK_HOLE_REACH + 8.0 {
-                break;
+            if let Some(n) = f.nearest_after.as_mut() {
+                *n = n.min(d);
+                past += 1;
+                if past >= PAST_REACH_TICKS {
+                    break;
+                }
+            } else if f.furthest > crate::constants::BLACK_HOLE_REACH + 8.0 {
+                f.nearest_after = Some(d);
             }
         }
-        (false, furthest)
+        f
     }
 
     /// **R90 + R91: the horizon is the whole rule** — from one pixel outside it, at
@@ -634,6 +684,7 @@ mod tests {
         let mut flights = 0;
         let mut trapped = Vec::new();
         let mut wells_inside = 0;
+        let (mut fell_back, mut worst_after) = (Vec::new(), f32::INFINITY);
         for seed in 0..13u64 {
             for k in 0..SIDES {
                 let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
@@ -658,12 +709,20 @@ mod tests {
                     wells_inside += usize::from(wells != Vec2::ZERO);
                 }
                 place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
-                let (died, furthest) = escape(&mut w, hole, JETPACK_MAX_FUEL);
+                let f = escape(&mut w, hole, JETPACK_MAX_FUEL);
                 flights += 1;
-                if died || furthest <= BLACK_HOLE_REACH {
+                if f.died || f.furthest <= BLACK_HOLE_REACH {
                     trapped.push(format!(
-                        "seed {seed} side {k}: died {died}, {furthest:.1} px"
+                        "seed {seed} side {k}: died {}, {:.1} px",
+                        f.died, f.furthest
                     ));
+                }
+                // F4 (T22.12D): past the reach the wells are back — still out.
+                match f.nearest_after {
+                    Some(n) if n > BLACK_HOLE_REACH => {
+                        worst_after = worst_after.min(n);
+                    }
+                    _ => fell_back.push(format!("seed {seed} side {k}: {:?} px", f.nearest_after)),
                 }
             }
         }
@@ -676,6 +735,18 @@ mod tests {
             "{} of {flights} flights from just outside the horizon did not get past the \
              reach: {trapped:?}",
             trapped.len()
+        );
+        assert!(
+            fell_back.is_empty(),
+            "{} of {flights} flights past the reach came back inside it within {} ticks, the \
+             wells switched back on (nearest after passing): {fell_back:?}",
+            fell_back.len(),
+            PAST_REACH_TICKS
+        );
+        eprintln!(
+            "escape: {flights} flights, nearest any came back to the hole in the \
+             {PAST_REACH_TICKS} ticks after passing the reach: {worst_after:.1} px (reach \
+             {BLACK_HOLE_REACH})"
         );
     }
 

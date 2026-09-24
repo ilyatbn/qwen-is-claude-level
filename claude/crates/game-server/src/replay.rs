@@ -269,7 +269,14 @@ pub const HEADER_BYTES: usize = 46;
 /// it drops nothing (R92), and it is telegraphed first (R93: a new hashed state,
 /// `BlackHole::Warned`, and a window scaled on short rounds). A v20 space recording
 /// diverges at the telegraph. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 21;
+///
+/// **22 (T22.12D, R94: rounds counted in ticks)**: the round clock is derived from
+/// the step count, not an `f32` sum, and every phase ends on its deadline tick — so
+/// `round_time` differs in the last bits from the first tick (it is hashed), weather
+/// and the day/night cycle move by the old drift (−6..+1 ticks over 600 s), and a
+/// 240/300/600 s round ends 1/2/6 ticks sooner. Every v21 recording diverges. No new
+/// tag, no layout change.
+pub const REPLAY_VERSION: u16 = 22;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

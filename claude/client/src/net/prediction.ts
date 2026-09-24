@@ -67,6 +67,21 @@ export interface PredictorStats {
    * the ack and the server's speed there. Null until a counted correction.
    */
   worstJump: WorstJump | null
+  /**
+   * T22.12D F1: **the bell's own error** — where this client had predicted its body
+   * when it heard the bell, against where the server says it was at that tick. The
+   * predictions made before the page heard `ended` are keyed by the server tick each
+   * seq ran on (R89: one seq per tick, `ack` on the snapshot's tick), the neutral ticks
+   * after it continue the count until the anchoring snapshot, and the **latest**
+   * snapshot whose tick falls in that record is the comparison (snapshots come every
+   * `SIM_HZ / SNAPSHOT_HZ` ticks, so within that many of its end) — like for like,
+   * which the anchoring correction's jump is not (it
+   * compares "now", a lead ahead, with the snapshot). A prediction that kept pulling
+   * past the server's `Ended` tick (`Core.setBell` not told) carries the extra pull of
+   * every tick until the page heard. A diagnostic only: nothing is corrected by it.
+   * NaN until a bell is measured.
+   */
+  bellErrorPx: number
 }
 
 /** The context of the correction behind `maxEasedJumpPx` (T22.10G). */
@@ -118,7 +133,16 @@ type Kinematics = { x: number; y: number; vx: number; vy: number }
  * state stands for (`null` until a snapshot anchors it); `at` is the state after
  * each labelled local tick, `predicted`'s counterpart.
  */
-type Neutral = { label: number | null; at: Map<number, Kinematics> }
+type Neutral = {
+  label: number | null
+  at: Map<number, Kinematics>
+  /**
+   * T22.12D F1 (`bellErrorPx`): the local states keyed by the server tick they stand
+   * for, recorded until the anchoring snapshot (`frozen` after it); `label`, the newest
+   * recorded. Null once a snapshot passes it, or when no ack anchored the count.
+   */
+  bell: { at: Map<number, Kinematics>; label: number; frozen: boolean } | null
+}
 
 export class Predictor {
   private readonly core: Core
@@ -141,6 +165,7 @@ export class Predictor {
     lastAck: 0,
     settled: 0,
     worstJump: null,
+    bellErrorPx: Number.NaN,
   }
   /** This reconcile's context, for `stats.worstJump` (T22.10G). */
   private step: Omit<WorstJump, 'px' | 'ackErrorPx'> | null = null
@@ -387,6 +412,12 @@ export class Predictor {
     // so this correction installs the server's post-bell state over inputs it dropped —
     // the bell's event, like a relocation, not a misprediction; kept out of the maxima.
     if (n.label === null) this.unsettled = true
+    if (n.bell) {
+      n.bell.frozen = true
+      const b = n.bell.at.get(snap.tick)
+      if (b) this.stats.bellErrorPx = Math.hypot(b.x - snap.state.x, b.y - snap.state.y)
+      if (snap.tick >= n.bell.label) n.bell = null
+    }
     this.stats.lastAck = snap.lastInputSeq
     // `ackStep` 0 marks a results-screen correction in `worstJump`.
     this.step = {
@@ -465,9 +496,21 @@ export class Predictor {
     // Every input pending was predicted from, and none will ever be acked: the
     // server dropped its queue at the bell (T21.30).
     this.pending.length = 0
+    // T22.12D F1: before they go, the predictions keyed by the tick each seq ran on.
+    let bell: Neutral['bell'] = null
+    if (this.lastTick !== null && this.stats.lastAck > 0 && this.predicted.size > 0) {
+      const at = new Map<number, Kinematics>()
+      let label = -Infinity
+      for (const [seq, k] of this.predicted) {
+        const t = this.lastTick + (seq - this.stats.lastAck)
+        at.set(t, k)
+        label = Math.max(label, t)
+      }
+      bell = { at, label, frozen: false }
+    }
     this.predicted.clear()
     this.stats.pending = 0
-    this.neutral = { label: null, at: new Map() }
+    this.neutral = { label: null, at: new Map(), bell }
     return this.neutral
   }
 
@@ -478,6 +521,10 @@ export class Predictor {
     if (s && !this.started) {
       this.render = { x: s.x, y: s.y }
       this.started = true
+    }
+    if (n.bell && !n.bell.frozen && s) {
+      n.bell.label++
+      n.bell.at.set(n.bell.label, { x: s.x, y: s.y, vx: s.vx, vy: s.vy })
     }
     if (n.label === null || !s) return
     n.label++
@@ -574,10 +621,22 @@ export class Predictor {
    * prediction is already there — a snapshot reconciled it first — so an event
    * arriving second cannot undo the replay of inputs sent since. Returns whether
    * it snapped.
+   *
+   * **A short relocation is still the event's** (T22.12D F3): the dev hook's
+   * placement moves the body tens of pixels (44 in `black-hole`), under `SNAP_PX`,
+   * so it did not snap — and the snapshot after it counted the move as a 44 px
+   * misprediction. Past the reconcile gate, and not far enough to snap, it is left
+   * to that snapshot (which may already have come) but that correction is the
+   * relocation's: kept out of the maxima, like the one after a snap.
    */
   relocate(x: number, y: number): boolean {
     const s = this.state
-    if (!s || Math.hypot(s.x - x, s.y - y) <= SNAP_PX) return false
+    if (!s) return false
+    const d = Math.hypot(s.x - x, s.y - y)
+    if (d <= SNAP_PX) {
+      if (d > C().RECONCILE_EPSILON_PX) this.unsettled = true
+      return false
+    }
     this.core.setPlayerState(this.localId, { ...s, x, y, vx: 0, vy: 0, grounded: false })
     this.render = { x, y }
     this.stats.snaps++

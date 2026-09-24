@@ -409,6 +409,18 @@ pub enum GameEvent {
         tick: u32,
         id: u32,
     },
+    /// T22.12D F3: a **dev hook** put player `id` at `(x, y)`, at rest
+    /// (`World::dev_place_near_black_hole`) — a relocation with no pad and no
+    /// vortex, so its own event rather than a `Teleport` whose pad fields mean
+    /// "not a pad". The client relocates on it as on the other two
+    /// (`GameScene.onRelocated`); without it the prediction counted the move as
+    /// a 44 px error. Only a `DEV_PROBE=1` server emits it.
+    Relocate {
+        tick: u32,
+        id: PlayerId,
+        x: f32,
+        y: f32,
+    },
     /// T22.10: vortex `vortex` took player `id` and put them at `(x, y)` — a
     /// `Teleport` in all but its source, which is why it is its own event rather
     /// than `from_pad` carrying a value that means "not a pad".
@@ -471,10 +483,14 @@ pub enum GameEvent {
         tick: u32,
         day_phase: DayPhase,
     },
+    /// The phase, and **the last tick it is stepped in** (T22.12D, R94): `ends_tick`,
+    /// `None` in `Lobby`, which has no deadline. Built by one function,
+    /// `World::round_state_event`; the wire's `time_left` is derived from it
+    /// (`ticks_to_seconds(ends_tick − tick)`), so the two cannot disagree.
     RoundState {
         tick: u32,
         phase: RoundPhase,
-        time_left: f32,
+        ends_tick: Option<u32>,
     },
     RoundEnd {
         tick: u32,
@@ -518,6 +534,7 @@ impl GameEvent {
             | GameEvent::BlackHoleWarn { tick, .. }
             | GameEvent::VortexClose { tick, .. }
             | GameEvent::VortexTrip { tick, .. }
+            | GameEvent::Relocate { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
             | GameEvent::TombstoneDespawn { tick, .. }
             | GameEvent::Score { tick }
@@ -825,6 +842,25 @@ pub enum WeatherMode {
     Always(EffectKind),
 }
 
+/// Seconds as whole ticks, to the nearest — **the one rule every round phase's
+/// length goes through** (T22.12D, R94): `World::phase_ends_tick` for `Warmup`,
+/// `Playing` and `Ended` alike. In `f64`, so a whole number of seconds is exactly
+/// `secs · SIM_HZ`.
+pub fn seconds_to_ticks(secs: f32) -> u32 {
+    (f64::from(secs.max(0.0)) * f64::from(crate::constants::SIM_HZ)).round() as u32
+}
+
+/// Whole ticks as seconds — correctly rounded to `f32` (`f64` division), so
+/// `ticks_to_seconds(k)` does not drift with `k` the way an `f32` sum does.
+pub fn ticks_to_seconds(ticks: u32) -> f32 {
+    (f64::from(ticks) / f64::from(crate::constants::SIM_HZ)) as f32
+}
+
+/// The round clock after `ticks` steps from `origin` (R94: derived, not summed).
+fn clock_seconds(origin: f32, ticks: u32) -> f32 {
+    (f64::from(origin) + f64::from(ticks) / f64::from(crate::constants::SIM_HZ)) as f32
+}
+
 pub struct World {
     pub map: Map,
     /// **Kept sorted by id and iterated directly.** Never a `HashMap`: two players
@@ -931,7 +967,19 @@ pub struct World {
     /// arrives, so the expected seq starts `INPUT_BACKLOG_TARGET` behind the
     /// newest sent — the lead the buffer exists for. See `apply_inputs`.
     input_wait: Vec<(PlayerId, usize)>,
-    phase_started_at: f32,
+    /// The world tick the current phase began on (T22.12D, R94) — `set_phase`
+    /// records it, and the phase is stepped for exactly `seconds_to_ticks(its
+    /// duration)` ticks after it (`phase_ends_tick`). It replaced an `f32` round-time
+    /// anchor whose deadline the float sum reached late: a 600 s round ran 36006 ticks.
+    phase_started_tick: u32,
+    /// **`round_time` is derived from these, not summed** (R94): `clock_origin` (0,
+    /// or the dev `start_clock_at`) plus `clock_ticks` simulated steps, in seconds
+    /// (`ticks_to_seconds`, in `f64`, so the value at tick `k` is the correctly
+    /// rounded `k / SIM_HZ`). An `f32` `+= SIM_DT` ran 0.1 s slow over 600 s.
+    /// `clock_ticks` counts `step`s only — `tick_idle` (the lobby) moves `tick` and
+    /// not the round clock, so the two are separate counters.
+    clock_origin: f32,
+    clock_ticks: u32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
     round_seconds: f32,
     /// `Warmup` duration. Defaults to `WARMUP_SECONDS`; the server's
@@ -1156,7 +1204,9 @@ impl World {
             prev_input: Vec::new(),
             newest_input: Vec::new(),
             input_wait: Vec::new(),
-            phase_started_at: 0.0,
+            phase_started_tick: 0,
+            clock_origin: 0.0,
+            clock_ticks: 0,
             last_day_phase: cycle_at(0.0).phase,
             toxic: None,
             meteor: None,
@@ -1367,8 +1417,9 @@ impl World {
     /// the world had anchored at 0 moves with the clock:
     /// - the effect scheduler;
     /// - the item and crate schedule;
-    /// - the initial items' `spawned_at`;
-    /// - the phase anchor.
+    /// - the initial items' `spawned_at`.
+    ///
+    /// (The phase anchor is a tick since T22.12D, so the shift does not move it.)
     ///
     /// Otherwise the first tick would roll a burst of effects and spawns to
     /// catch up, and despawn every starting item past `WORLD_ITEM_TTL`.
@@ -1381,8 +1432,8 @@ impl World {
             self.players.is_empty() && self.round_time == 0.0,
             "start_clock_at is for a fresh world"
         );
+        self.clock_origin = t;
         self.round_time = t;
-        self.phase_started_at += t;
         self.last_day_phase = cycle_at(t).phase;
         self.effects.rebase(t);
         self.spawn_schedule.rebase(t);
@@ -1412,13 +1463,19 @@ impl World {
     /// once a second during `Playing`; the second half would normally have
     /// covered this, and `RoundController::last_state_at` meant it did not.
     pub fn announce_phase(&mut self) {
-        let tick = self.tick;
-        let (phase, time_left) = (self.phase, self.phase_time_left());
-        self.events.push(GameEvent::RoundState {
-            tick,
-            phase,
-            time_left,
-        });
+        let e = self.round_state_event();
+        self.events.push(e);
+    }
+
+    /// **The one `round_state`** (T22.12D, R94): this tick, the phase, and the tick
+    /// it ends on. `set_phase`, `announce_phase` and the round controller's
+    /// rebroadcasts all build it here, so every copy carries the same deadline.
+    pub fn round_state_event(&self) -> GameEvent {
+        GameEvent::RoundState {
+            tick: self.tick,
+            phase: self.phase,
+            ends_tick: self.phase_ends_tick(),
+        }
     }
 
     /// Move to `phase`, announcing the transition. A no-op if already there.
@@ -1430,34 +1487,61 @@ impl World {
             return false;
         }
         self.phase = phase;
-        self.phase_started_at = self.round_time;
+        self.phase_started_tick = self.tick;
         let tick = self.tick;
-        self.events.push(GameEvent::RoundState {
-            tick,
-            phase,
-            time_left: self.phase_time_left(),
-        });
+        let e = self.round_state_event();
+        self.events.push(e);
         if phase == RoundPhase::Ended {
             self.events.push(GameEvent::RoundEnd { tick });
         }
         true
     }
 
-    pub fn phase_time_left(&self) -> f32 {
+    /// **The last tick the current phase is stepped in** (T22.12D, R94): the tick it
+    /// began on plus its length in whole ticks, through [`seconds_to_ticks`] — the
+    /// one rule `Warmup`, `Playing` and the `Ended` vote window (`round.rs`) all end
+    /// by. `World::step` changes phase last, so the phase is stepped on ticks
+    /// `start + 1 ..= ends` — exactly `seconds · SIM_HZ` of them. `None` in `Lobby`.
+    pub fn phase_ends_tick(&self) -> Option<u32> {
         let d = match self.phase {
-            RoundPhase::Lobby => return f32::INFINITY,
+            RoundPhase::Lobby => return None,
             RoundPhase::Warmup => self.warmup_seconds,
             RoundPhase::Playing => self.round_seconds,
             RoundPhase::Ended => ENDED_SECONDS,
         };
-        (self.phase_started_at + d - self.round_time).max(0.0)
+        Some(self.phase_started_tick + seconds_to_ticks(d))
     }
 
-    /// When `Playing` ends, in round-time seconds. The effect scheduler needs it so
-    /// it never starts something that would still be running at the end.
+    /// Ticks of this phase still to step; `None` in `Lobby`.
+    pub fn phase_ticks_left(&self) -> Option<u32> {
+        self.phase_ends_tick().map(|e| e.saturating_sub(self.tick))
+    }
+
+    /// Whether the current phase's time is up — `Warmup` and `Playing` hand over on
+    /// it (`step`), the `Ended` window closes on it (`round.rs`). Never in `Lobby`.
+    pub fn phase_over(&self) -> bool {
+        self.phase_ticks_left() == Some(0)
+    }
+
+    /// Seconds left in this phase, **derived from the ticks** (R94); infinite in
+    /// `Lobby`. Exactly 0 when [`World::phase_over`].
+    pub fn phase_time_left(&self) -> f32 {
+        self.phase_ticks_left()
+            .map_or(f32::INFINITY, ticks_to_seconds)
+    }
+
+    /// The round time the current phase began at — derived: `tick` and the round
+    /// clock advance together within a phase.
+    pub(crate) fn phase_started_at(&self) -> f32 {
+        self.round_time - ticks_to_seconds(self.tick.saturating_sub(self.phase_started_tick))
+    }
+
+    /// When `Playing` ends, in round-time seconds — the round time of its last
+    /// tick, from the tick deadline. The effect scheduler needs it so it never
+    /// starts something that would still be running at the end.
     fn round_ends_at(&self) -> f32 {
         match self.phase {
-            RoundPhase::Playing => self.phase_started_at + self.round_seconds,
+            RoundPhase::Playing => self.round_time + self.phase_time_left(),
             _ => f32::INFINITY,
         }
     }
@@ -1494,8 +1578,11 @@ impl World {
         let warmup = self.phase == RoundPhase::Warmup;
         let playing = self.phase == RoundPhase::Playing;
 
-        // 1. round time and the day/night cycle.
-        self.round_time += dt;
+        // 1. round time and the day/night cycle. **Derived from the step count**
+        // (T22.12D, R94), not `+= dt`: every caller steps by `SIM_DT`, and the sum
+        // drifted 0.1 s slow over a 600 s round.
+        self.clock_ticks += 1;
+        self.round_time = clock_seconds(self.clock_origin, self.clock_ticks);
         let now = self.round_time;
         let day = cycle_at(now).phase;
         if day != self.last_day_phase {
@@ -1688,16 +1775,14 @@ impl World {
         }
 
         // Phase advance last, so a tick is never half in two phases.
-        if warmup && self.phase_time_left() <= 0.0 {
+        // **Counted in ticks** (T22.12D, R94): the phase ends on its deadline tick,
+        // `phase_ends_tick`, which `round_state` carries — so a client derives the
+        // bell (`black_hole::bell_seq`) as an integer. (T22.12C compared an `f32`
+        // round-time sum against a float deadline with half a tick of slack, which
+        // fixed ties only: 240/300/600 s rounds ran 14401/18002/36006 ticks.)
+        if warmup && self.phase_over() {
             self.set_phase(RoundPhase::Playing);
-        } else if playing && self.phase_time_left() <= crate::constants::SIM_DT / 2.0 {
-            // **The tick nearest the deadline, not the first past it** (T22.12C F5).
-            // A round is a whole number of ticks, so the deadline always falls on a
-            // tie, and `round_time` is an `f32` sum: `<= 0.0` ended a 1.5 s round
-            // on tick 91 (1.4999998 s summed) where 90 was meant. A client deriving
-            // the bell from the round clock (`black_hole::bell_seq`) cannot see that
-            // last-bit error; half a tick of slack puts the bell on the nearest tick,
-            // which `round(time_left / SIM_DT)` finds exactly.
+        } else if playing && self.phase_over() {
             self.set_phase(RoundPhase::Ended);
         }
     }
@@ -4786,7 +4871,9 @@ impl World {
         h.update(&self.wind.to_le_bytes());
         h.update(&self.carve_seq.to_le_bytes());
         h.update(&[self.phase as u8, self.last_day_phase as u8]);
-        h.update(&self.phase_started_at.to_le_bytes());
+        h.update(&self.phase_started_tick.to_le_bytes());
+        h.update(&self.clock_origin.to_le_bytes());
+        h.update(&self.clock_ticks.to_le_bytes());
         h.update(&self.round_seconds.to_le_bytes());
 
         // §C16, and §A34's rule applies: birds drop items, so a client whose
@@ -5456,12 +5543,14 @@ mod state_hash_coverage {
             wind: _,
             rng: _,
             carve_seq: _,
-            phase_started_at: _,
+            phase_started_tick: _,
+            clock_origin: _,
+            clock_ticks: _,
             round_seconds: _,
             // Set once at construction by a development switch and never written
             // again, like `weather_mode`. Not hashed, so a recorded replay's footer
             // does not move. What it changes, *when* `Playing` begins, is in the
-            // hash through `phase` and `phase_started_at`.
+            // hash through `phase` and `phase_started_tick`.
             warmup_seconds: _,
             last_day_phase: _,
             toxic: _,
@@ -13663,6 +13752,156 @@ mod solar_flare_tests {
         assert!(
             peak >= 2,
             "control: only {peak} meteor(s) ever airborne — this measures nothing"
+        );
+    }
+}
+
+/// T22.12D (R94): **every round phase is counted in ticks** — a phase of `s`
+/// seconds lasts exactly `s · SIM_HZ` ticks, and the bell a client derives from the
+/// round-start `round_state` is the server's, for every round length a player can
+/// choose and wherever in the world's tick count the round starts.
+///
+/// The expected counts are integer arithmetic on the constants (`secs · SIM_HZ`,
+/// whole seconds asserted), not the implementation's own rounding.
+#[cfg(test)]
+mod round_ticks_tests {
+    use super::*;
+    use crate::constants::{
+        ROUND_SECONDS_MAX, ROUND_SECONDS_MIN, ROUND_SECONDS_STEP, SIM_DT, SIM_HZ,
+    };
+
+    /// The three round lengths R94 names — the setting's first two steps and its top.
+    fn lengths() -> [f32; 3] {
+        [
+            ROUND_SECONDS_MIN,
+            ROUND_SECONDS_MIN + ROUND_SECONDS_STEP,
+            ROUND_SECONDS_MAX,
+        ]
+    }
+
+    /// Whole seconds, as ticks, in integers.
+    fn ticks_of(secs: f32) -> u32 {
+        assert_eq!(
+            secs.fract(),
+            0.0,
+            "premise: {secs} s is a whole number of seconds"
+        );
+        secs as u32 * SIM_HZ
+    }
+
+    /// A fresh world, `lobby` idle ticks in, with a `round` s round.
+    fn world(round: f32, lobby: u32) -> World {
+        let mut w = World::for_test(4242, MapScale::Small);
+        w.weather_mode = WeatherMode::Off;
+        w.set_round_seconds(round);
+        for _ in 0..lobby {
+            w.tick_idle();
+        }
+        w
+    }
+
+    /// Step until `phase` is left; how many steps ran in it.
+    fn run_out(w: &mut World, phase: RoundPhase, cap: u32) -> u32 {
+        let mut n = 0;
+        while w.phase == phase {
+            w.step(SIM_DT);
+            n += 1;
+            assert!(n <= cap, "{phase:?} never ended in {cap} ticks");
+        }
+        n
+    }
+
+    #[test]
+    fn every_phase_lasts_exactly_its_seconds_in_ticks() {
+        let mut measured = Vec::new();
+        for round in lengths() {
+            let mut w = world(round, 0);
+            let warmup = run_out(&mut w, RoundPhase::Warmup, 2 * ticks_of(WARMUP_SECONDS));
+            let playing = run_out(&mut w, RoundPhase::Playing, 2 * ticks_of(round));
+            assert_eq!(
+                w.phase,
+                RoundPhase::Ended,
+                "premise: the round rang its bell"
+            );
+            measured.push((round, warmup, playing));
+        }
+        let wrong: Vec<_> = measured
+            .iter()
+            .filter(|&&(round, warmup, playing)| {
+                warmup != ticks_of(WARMUP_SECONDS) || playing != ticks_of(round)
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "(round s, warmup ticks, playing ticks) off the constants — warmup should be {}, \
+             playing round·{SIM_HZ}: {wrong:?}",
+            ticks_of(WARMUP_SECONDS)
+        );
+    }
+
+    /// The `Ended` window counts in ticks too: `phase_ticks_left` reaches 0 exactly
+    /// `ENDED_SECONDS · SIM_HZ` ticks after the bell (the vote window reads it,
+    /// `round.rs`).
+    #[test]
+    fn the_ended_window_is_exactly_its_seconds_in_ticks() {
+        let mut w = world(ROUND_SECONDS_MAX, 0);
+        w.set_phase(RoundPhase::Ended);
+        let mut n = 0;
+        while !w.phase_over() {
+            w.step(SIM_DT);
+            n += 1;
+            assert!(n <= 2 * ticks_of(ENDED_SECONDS), "the window never closed");
+        }
+        assert_eq!(
+            n,
+            ticks_of(ENDED_SECONDS),
+            "the Ended window lasted {n} ticks"
+        );
+    }
+
+    /// The bell a client predicts from the **round-start** `round_state` (the one
+    /// `set_phase(Playing)` sends) is the tick the server rings it on — for every
+    /// length, and with the round starting at several points of the world's tick
+    /// count (idle lobby ticks move `tick` without the round clock).
+    #[test]
+    fn the_bell_predicted_at_round_start_is_the_servers() {
+        const ACK_OFFSET: u32 = 1000;
+        let mut wrong = Vec::new();
+        let mut checked = 0;
+        for round in lengths() {
+            for lobby in [0, 1, 37, 2 * SIM_HZ + 13] {
+                let mut w = world(round, lobby);
+                let _ = run_out(&mut w, RoundPhase::Warmup, 2 * ticks_of(WARMUP_SECONDS));
+                let start = w
+                    .drain_events()
+                    .into_iter()
+                    .find_map(|e| match e {
+                        GameEvent::RoundState {
+                            phase: RoundPhase::Playing,
+                            ends_tick,
+                            ..
+                        } => ends_tick,
+                        _ => None,
+                    })
+                    .expect("the round start announced itself");
+                // A snapshot on the round's first tick: seq `tick + ACK_OFFSET` ran on it.
+                w.step(SIM_DT);
+                let (ack, snap) = (w.tick + ACK_OFFSET, w.tick);
+                let predicted = crate::world::black_hole::bell_seq(start, ack, snap);
+                let _ = run_out(&mut w, RoundPhase::Playing, 2 * ticks_of(round));
+                // The first tick stepped in `Ended` is the next one; its seq:
+                let actual = w.tick + 1 + ACK_OFFSET;
+                checked += 1;
+                if predicted != actual {
+                    wrong.push((round, lobby, predicted as i64 - actual as i64));
+                }
+            }
+        }
+        assert_eq!(checked, 12, "premise: every length and offset ran");
+        assert!(
+            wrong.is_empty(),
+            "(round s, lobby ticks, predicted − actual bell seq) — the bell derived at round \
+             start missed the server's: {wrong:?}"
         );
     }
 }

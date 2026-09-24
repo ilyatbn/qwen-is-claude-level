@@ -377,6 +377,31 @@ describe('relocate', () => {
     expect(p.renderPos).toEqual(to)
   })
 
+  // T22.12D F3: the dev hook's placement is tens of pixels — under the snap distance.
+  it('a relocation too short to snap still makes the next correction its own, not a misprediction', () => {
+    const short = C().RECONCILE_EPSILON_PX * 20
+    const run = (told: boolean) => {
+      reset()
+      const p = new Predictor(core, 0)
+      p.pushInput(inp(1, 0), DT)
+      p.reconcile({ tick: 1, lastInputSeq: 1, state: core.playerState(0)! })
+      p.pushInput(inp(2, 0), DT)
+      const s = core.playerState(0)!
+      if (told) expect(p.relocate(s.x + short, s.y)).toBe(false)
+      const settled = p.stats.settled
+      p.reconcile({ tick: 2, lastInputSeq: 2, state: { ...s, x: s.x + short, vx: 0, vy: 0 } })
+      return { corrected: p.stats.corrections, settled: p.stats.settled - settled, maxAck: p.stats.maxAckErrorPx }
+    }
+    const told = run(true)
+    expect(told.corrected).toBe(1)
+    expect(told.settled).toBe(1)
+    expect(told.maxAck).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
+    // Control: the same move unannounced is a counted misprediction of that size.
+    const untold = run(false)
+    expect(untold.settled).toBe(0)
+    expect(untold.maxAck).toBeCloseTo(short, 3)
+  })
+
   it('does nothing when the prediction is already there (the snapshot came first)', () => {
     const p = new Predictor(core, 0)
     p.pushInput(inp(1, BTN.RIGHT), DT)
