@@ -6929,3 +6929,11 @@ check (DEV_PROBE, solo Space): hole + eaten rock agree at both ends, checksum ag
 respawn outside reach, cannot escape from 0.9 × capture holding thrust away, ring/disc on pixels both paths, frozen at the bell.
 Runs: vitest 4/4; black-hole 1/1; `--changed 5a2496e --fast` EXIT=0 (vitest 1085); 7 related checks 7/7 (`gate-t2212b.txt`).
 Shots: shots/black-hole-{match-flat,match-shader,death,ended}.png — looked at; shader seam fixed after the first look.
+
+## T22.10H — positions to an eighth of a pixel (builder, 2026-09-24)
+`SNAPSHOT_QUANTUM` 1/8: snapshot pos/vel are `i32` eighths, rounded (were `i16` whole px, truncated); player 20 → 28 B;
+health stays floored (`speed_multiplier` floors). REPLAY unchanged (no snapshots in replays). Slacks derived: black-hole
+ε+√2·q, thrusters-match after-bell ε+√2·q·(1+3)/2. Plants red: truncation, rounded health, TS q=1. Ack error (worst/client):
+radiation-match 2.12–2.61 → 1.40–2.24, breach-vortex pull arm 1.00–1.09 → 0.10–0.13, black-hole pull 1.26 → 0.19–0.34.
+`--changed HEAD`: Rust 1653/0/25, vitest 1086, e2e 72/73 — black-hole's pull sampler raced the probe (red 1/2 at base
+too); now started before the probe, 4-check runs 2/2 green; net smoke 25/25 (`gate-t2210h-*.txt`).

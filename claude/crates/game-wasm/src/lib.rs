@@ -1766,6 +1766,9 @@ pub fn constants_json() -> String {
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
+        // T22.10H: position/velocity quantum — `codec.ts::decodeSnapshot` multiplies
+        // by it, and check tolerances that charge for the wire's rounding derive from it.
+        SNAPSHOT_QUANTUM => c::SNAPSHOT_QUANTUM,
         SNAPSHOT_HZ => c::SNAPSHOT_HZ,
         INTERP_DELAY_MS => c::INTERP_DELAY_MS,
         RECONCILE_EPSILON_PX => c::RECONCILE_EPSILON_PX,

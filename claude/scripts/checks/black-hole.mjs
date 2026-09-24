@@ -116,10 +116,16 @@ async function probe(page, dist) {
  * Sample every drawn frame from the moment the prediction has the placed body until the
  * local player dies (or the budget runs out). Each sample carries the predictor's
  * counters, so the caller can read the corrections made while it was pulled.
+ *
+ * **Started before the probe is sent, and it reads the placement in-page** (T22.10H):
+ * it used to start after three Playwright round-trips (the probe's reply, the hole's
+ * arrival, a debug read), by which time the pull had already carried the body past
+ * `near` on a loaded box — "the prediction never reached the placed body", red 1 of 2
+ * at T22.10H's base and 3 of 3 after it in parallel runs (two 4-way, one `--changed` gate), 0 of 1 alone.
  */
-function pullSeries(page, placed, near, budgetMs) {
+function pullSeries(page, near, budgetMs) {
   return page.evaluate(
-    ([budget, at, r]) =>
+    ([budget, r]) =>
       new Promise((resolve) => {
         const out = []
         const t0 = performance.now()
@@ -128,9 +134,10 @@ function pullSeries(page, placed, near, budgetMs) {
         const deaths0 = window.__game.debug().observed.deaths.length
         const tick = () => {
           const d = window.__game.debug()
+          const at = d.blackHole.lastProbe?.placed ?? null
           const p = d.player && { x: d.player.x, y: d.player.y }
-          const dead = d.observed.deaths.length > deaths0
-          const atPlace = p && Math.hypot(p.x - at.x, p.y - at.y) < r
+          const dead = at !== null && d.observed.deaths.length > deaths0
+          const atPlace = p && at && Math.hypot(p.x - at.x, p.y - at.y) < r
           if (!dead && (out.length || atPlace)) {
             out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, p })
           }
@@ -139,7 +146,7 @@ function pullSeries(page, placed, near, budgetMs) {
         }
         requestAnimationFrame(tick)
       }),
-    [budgetMs, placed, near],
+    [budgetMs, near],
   )
 }
 
@@ -232,6 +239,8 @@ try {
   // 5 snapshots in 0.25 s).
   const placeAt = 0.9 * k.BLACK_HOLE_REACH
   const deaths0 = (await dbg()).observed.deaths.length
+  // The first probe of the page: `lastProbe` is still null, so the sampler waits for it.
+  const pulled = pullSeries(page, k.BLACK_HOLE_CAPTURE_R / 4, PULL_BUDGET_S * 1000)
   const first = await probe(page, placeAt)
   await page.waitForFunction(() => window.__game.debug().blackHole.hole !== null, null, { timeout: deadlineMs(10, 'black_hole'), polling: 'raf' })
   const d1 = await dbg()
@@ -247,26 +256,24 @@ try {
   if (!first.placed) throw new Error(`the server found no clear side ${placeAt} px from the hole: ${JSON.stringify(first)}`)
 
   // --- 2. no rubber-band while pulled; 3. the named death -----------------------------
-  // **The bound is RECONCILE_EPSILON_PX plus one snapshot's truncation (√2), and why.**
-  // Snapshot positions are `as i16` (whole px, docs/77-owed point 6): a prediction that
-  // re-anchored on one truncated state is compared at the next ack against another, and
-  // the hole's field is steep enough that the difference does not stay under ε alone.
-  // Measured in Rust (the truncated re-anchor stepped beside the exact body, idle, from
-  // 0.9 × reach to the horizon, 4 trials): the drift grows 0.43 → 0.81, 1.07 → 1.64 px
-  // before the horizon — plus up to √2 at the compare. In the browser, told: 1.45 and
-  // 2.31 px at the ack, one 2.97 px correction; **untold** (`Core.setBlackHole` planted
-  // to null): 5.36 px at the ack, 9 corrections up to 14.01 px — red against this bound.
+  // **The bound is RECONCILE_EPSILON_PX plus the wire's rounding, and why.**
+  // A prediction that re-anchored on one snapshot's state is compared at the next ack
+  // against another, and each is within half a `SNAPSHOT_QUANTUM` per axis of the
+  // server's float (T22.10H: rounded `i32` eighths) — so the two roundings are worth up
+  // to √2 · SNAPSHOT_QUANTUM between them. That slack is derived from the constant, never
+  // a literal. **History:** before T22.10H positions were `as i16` whole px, truncated,
+  // and this slack was a whole √2 px — the truncated re-anchor, stepped beside the exact
+  // body in the hole's steep field, drifted 0.43 → 0.81 and 1.07 → 1.64 px before the
+  // horizon (Rust, 4 trials); told: 1.45 / 2.31 px at the ack; **untold**
+  // (`Core.setBlackHole` planted to null): 5.36 px, 9 corrections up to 14.01 px.
   // **The jump is reported, not bounded**: a correction's jump is the ack error carried
-  // through the pending replay at ~700 px/s, so it has no basis of its own — told runs
-  // measured 0, 2.97 and 3.38 px (the last 0.03 under ε + √2: a coin flip, so not a
-  // gate). What separates a told client from an untold one is **how often** it is
-  // corrected: told 0/5, 1/8, 1/9 of the acked snapshots; untold 9/9. So the arm gates
-  // the ack error (basis above) and the correction rate (a third).
-  // The vortex never needed the slack: its pull is weaker and slower. A finer wire
-  // quantum is the coordinator's (T22.10G ruled it out of scope); this is not weakening
-  // ε, it is not charging the prediction for the wire's rounding.
-  const bound = k.RECONCILE_EPSILON_PX + Math.SQRT2
-  const { out: series, dead } = await pullSeries(page, first.placed, k.BLACK_HOLE_CAPTURE_R / 4, PULL_BUDGET_S * 1000)
+  // through the pending replay at speed, so it has no basis of its own. What separates a
+  // told client from an untold one is also **how often** it is corrected: told 0/5, 1/8,
+  // 1/9 of the acked snapshots; untold 9/9 — so the arm gates the ack error (basis above)
+  // and the correction rate (a third). This is not weakening ε; it is not charging the
+  // prediction for the wire's rounding.
+  const bound = k.RECONCILE_EPSILON_PX + Math.SQRT2 * k.SNAPSHOT_QUANTUM
+  const { out: series, dead } = await pulled
   let worst = 0
   let corrections = 0
   let worstAck = 0
@@ -288,9 +295,9 @@ try {
   else if (!dead) fail(`the hole never took the idle player in ${PULL_BUDGET_S} s: ${summary}`)
   else if (travelled < k.BLACK_HOLE_CAPTURE_R / 2) fail(`control: the player moved only ${travelled.toFixed(0)} px before dying — nothing was pulled`)
   else if (acked === 0) fail(`control: no snapshot acked a predicted input during the pull, so the error was never measured`)
-  else if (worstAck > bound) fail(`rubber-band while the hole pulled: ${summary} — the ack error is over ${bound.toFixed(2)} px (RECONCILE_EPSILON_PX + one snapshot's truncation; is the client told the hole?)`)
+  else if (worstAck > bound) fail(`rubber-band while the hole pulled: ${summary} — the ack error is over ${bound.toFixed(2)} px (RECONCILE_EPSILON_PX + √2 · SNAPSHOT_QUANTUM; is the client told the hole?)`)
   else if (corrections * 3 > acked) fail(`rubber-band while the hole pulled: ${summary} — corrected at more than a third of the acked snapshots (is the client told the hole?)`)
-  else ok(`no rubber-band while the hole pulled the player in: ${summary} (ack error ≤ ${bound.toFixed(2)} px = RECONCILE_EPSILON_PX + √2; corrections ≤ a third of the acks)`)
+  else ok(`no rubber-band while the hole pulled the player in: ${summary} (ack error ≤ ${bound.toFixed(2)} px = RECONCILE_EPSILON_PX + √2 · SNAPSHOT_QUANTUM; corrections ≤ a third of the acks)`)
 
   await page.waitForFunction(() => window.__game.debug().death.visible, null, { timeout: deadlineMs(6, 'the death overlay') }).catch(() => {})
   const dd = await dbg()

@@ -8,7 +8,7 @@
 
 use game_core::constants::{
     BATTERY_MAX, CHUNK_SIZE, HEALTH_CAP, INPUT_REDUNDANCY, JETPACK_MAX_FUEL, SNAPSHOT_FOOTER_BYTES,
-    SNAPSHOT_HEADER_BYTES, SNAPSHOT_PLAYER_BYTES,
+    SNAPSHOT_HEADER_BYTES, SNAPSHOT_PLAYER_BYTES, SNAPSHOT_QUANTUM,
 };
 use game_core::map::{rle, Map};
 use game_core::player::input::Input;
@@ -316,8 +316,14 @@ fn scale_byte(s: game_core::constants::MapScale) -> u8 {
 // snapshot — 20 Hz
 // ---------------------------------------------------------------------------
 
-/// `SNAPSHOT_HEADER_BYTES + n*SNAPSHOT_PLAYER_BYTES + SNAPSHOT_FOOTER_BYTES`
-/// — 8 + 15n + 4, so 102 bytes for six players.
+/// `SNAPSHOT_HEADER_BYTES + n*SNAPSHOT_PLAYER_BYTES + SNAPSHOT_FOOTER_BYTES` —
+/// see `SNAPSHOT_PLAYER_BYTES` for the per-player size and a six-player total
+/// (this said "8 + 15n + 4, so 102" long after the wire had grown past it; the
+/// constants are the answer, not a number spelled here).
+///
+/// **Position and velocity are `i32` counts of `SNAPSHOT_QUANTUM`, rounded**
+/// (T22.10H) — they were `i16` whole px and px/s, truncated toward zero, which put
+/// every snapshot up to 1 px (and 1 px/s) off per axis, always toward the origin.
 ///
 /// **`docs/40-net-protocol.md` §3's totals do not match its own field lists**, in
 /// two places; see `SNAPSHOT_PLAYER_BYTES` for the arithmetic. This follows the
@@ -343,11 +349,18 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
         b.push(p.id);
         // Clamp rather than wrap. A wrapped velocity teleports a player across the
         // map, and a wrapped position puts them inside the opposite wall.
-        b.extend_from_slice(&clamp_i16(p.body.pos.x).to_le_bytes());
-        b.extend_from_slice(&clamp_i16(p.body.pos.y).to_le_bytes());
-        b.extend_from_slice(&clamp_i16(p.body.vel.x).to_le_bytes());
-        b.extend_from_slice(&clamp_i16(p.body.vel.y).to_le_bytes());
+        b.extend_from_slice(&quantize(p.body.pos.x).to_le_bytes());
+        b.extend_from_slice(&quantize(p.body.pos.y).to_le_bytes());
+        b.extend_from_slice(&quantize(p.body.vel.x).to_le_bytes());
+        b.extend_from_slice(&quantize(p.body.vel.y).to_le_bytes());
         b.extend_from_slice(&p.aim.to_le_bytes());
+        // **Health stays truncated, on purpose** (T22.10H): the one physics reader
+        // of it, `PlayerState::speed_multiplier`, takes `health.floor()` — so the
+        // client, re-installed with this byte, computes exactly the server's speed.
+        // Rounding would send 50 for a server's 49.6 and move the client a
+        // hundredth faster than the server (T20.19/T20.21's rubber-band, reborn).
+        // A finer quantum buys nothing while that floor stands: the bar is whole
+        // hit points too.
         b.push(p.health.clamp(0.0, HEALTH_CAP) as u8);
 
         let now = world.round_time;
@@ -441,8 +454,15 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
     b
 }
 
-fn clamp_i16(v: f32) -> i16 {
-    v.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+/// `v` in whole [`SNAPSHOT_QUANTUM`]s, **rounded** (half away from zero), clamped
+/// to `i32` — `as` saturates, and a NaN goes out as 0 rather than as garbage.
+fn quantize(v: f32) -> i32 {
+    (v / SNAPSHOT_QUANTUM).round() as i32
+}
+
+/// The decoder's half of [`quantize`] — the one place a wire count becomes px.
+fn dequantize(q: i32) -> f32 {
+    q as f32 * SNAPSHOT_QUANTUM
 }
 
 /// Decoded snapshot, for the Rust-side round-trip tests. The real consumer is the
@@ -459,10 +479,11 @@ pub struct SnapshotView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotPlayer {
     pub id: PlayerId,
-    pub x: i16,
-    pub y: i16,
-    pub vx: i16,
-    pub vy: i16,
+    /// px and px/s, dequantised here (T22.10H) — multiples of `SNAPSHOT_QUANTUM`.
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
     pub aim: u16,
     pub health: u8,
     pub flags: u8,
@@ -491,10 +512,10 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
     for _ in 0..n {
         players.push(SnapshotPlayer {
             id: r.u8()?,
-            x: r.i16()?,
-            y: r.i16()?,
-            vx: r.i16()?,
-            vy: r.i16()?,
+            x: dequantize(r.i32()?),
+            y: dequantize(r.i32()?),
+            vx: dequantize(r.i32()?),
+            vy: dequantize(r.i32()?),
             aim: r.u16()?,
             health: r.u8()?,
             flags: r.u8()?,
@@ -598,12 +619,12 @@ impl<'a> Reader<'a> {
         let s = self.take(2)?;
         Ok(u16::from_le_bytes([s[0], s[1]]))
     }
-    fn i16(&mut self) -> Result<i16, CodecError> {
-        Ok(self.u16()? as i16)
-    }
     fn u32(&mut self) -> Result<u32, CodecError> {
         let s = self.take(4)?;
         Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    }
+    fn i32(&mut self) -> Result<i32, CodecError> {
+        Ok(self.u32()? as i32)
     }
     /// A buffer longer than the layout implies is rejected: it means the sender and
     /// this decoder disagree about the format, and guessing is worse than saying so.
@@ -1086,14 +1107,122 @@ mod tests {
     /// looks fast for a frame.
     #[test]
     fn an_out_of_range_velocity_is_clamped_not_wrapped() {
+        // Past `i32` at `SNAPSHOT_QUANTUM` (T22.10H): no body moves this fast, so
+        // this is the saturation guard, not a game case.
         let mut w = world_with(1);
         if let Some(p) = w.player_mut(0) {
-            p.body.vel.x = 90_000.0;
-            p.body.vel.y = -90_000.0;
+            p.body.vel.x = 1.0e12;
+            p.body.vel.y = -1.0e12;
         }
         let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
-        assert_eq!(s.players[0].vx, i16::MAX, "sign must survive");
-        assert_eq!(s.players[0].vy, i16::MIN);
+        assert_eq!(
+            s.players[0].vx,
+            i32::MAX as f32 * SNAPSHOT_QUANTUM,
+            "sign must survive"
+        );
+        assert_eq!(s.players[0].vy, i32::MIN as f32 * SNAPSHOT_QUANTUM);
+    }
+
+    /// T22.10H: **position and velocity round-trip to within half a quantum per
+    /// axis, at the extremes** — both ends of the largest map with the void beyond
+    /// it, the fastest a space body flies and the fastest anything falls, both
+    /// signs, and fractions between quanta. The old wire (`as i16`, whole px)
+    /// fails every fractional row by up to a whole px.
+    #[test]
+    fn position_and_velocity_round_trip_within_half_a_quantum_at_the_extremes() {
+        use game_core::constants::{
+            MAP_LARGE_H, MAP_LARGE_W, MAX_FALL_SPEED, SNAPSHOT_QUANTUM as Q, SPACE_MAX_SPEED,
+        };
+        let (w_px, h_px) = (MAP_LARGE_W as f32, MAP_LARGE_H as f32);
+        let positions = [
+            0.0,
+            Q / 3.0,
+            -Q / 3.0,
+            123.456,
+            -w_px,
+            w_px,
+            w_px + 0.3,
+            2.0 * w_px - 0.01,
+            h_px - 1.0 / 3.0,
+        ];
+        let speeds = [
+            0.0,
+            0.2,
+            -0.2,
+            SPACE_MAX_SPEED,
+            -SPACE_MAX_SPEED,
+            MAX_FALL_SPEED - 0.07,
+            -3000.0 - 0.9,
+        ];
+        let mut w = world_with(1);
+        for &x in &positions {
+            for &v in &speeds {
+                if let Some(p) = w.player_mut(0) {
+                    p.body.pos = game_core::math::Vec2::new(x, -x);
+                    p.body.vel = game_core::math::Vec2::new(v, -v);
+                }
+                let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
+                let p = &s.players[0];
+                for (name, got, want) in [
+                    ("x", p.x, x),
+                    ("y", p.y, -x),
+                    ("vx", p.vx, v),
+                    ("vy", p.vy, -v),
+                ] {
+                    assert!(
+                        (got - want).abs() <= Q / 2.0,
+                        "{name} {want} came back {got}: more than half a quantum ({}) off",
+                        Q / 2.0
+                    );
+                    assert_eq!(got, (got / Q).round() * Q, "{name}: not a whole quantum");
+                }
+            }
+        }
+    }
+
+    /// T22.10H: **rounded, not truncated** — the old wire's error was always toward
+    /// zero, so a body on either side of the origin read short of where it was. Three
+    /// quarters of a quantum past a multiple goes *up* to the next one on both signs;
+    /// a quarter stays. With `as` (truncation) the first arm reads `k·Q`.
+    #[test]
+    fn a_position_is_rounded_to_the_nearest_quantum_not_toward_zero() {
+        use game_core::constants::SNAPSHOT_QUANTUM as Q;
+        let mut w = world_with(1);
+        for k in [0.0f32, 7.0, 1000.0] {
+            for sign in [1.0f32, -1.0] {
+                for (frac, want) in [(0.75, k + 1.0), (0.25, k)] {
+                    let x = sign * (k + frac) * Q;
+                    if let Some(p) = w.player_mut(0) {
+                        p.body.pos.x = x;
+                        p.body.vel.x = x;
+                    }
+                    let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
+                    assert_eq!(s.players[0].x, sign * want * Q, "x {x}");
+                    assert_eq!(s.players[0].vx, sign * want * Q, "vx {x}");
+                }
+            }
+        }
+    }
+
+    /// T22.10H: **health is truncated, and that is the parity rule, not a leftover**:
+    /// `speed_multiplier` reads `health.floor()`, so the byte must be the floor for a
+    /// client re-installed with it to walk at the server's speed. Rounding would put
+    /// 49.6 on the wire as 50 — the control row shows the two differ there.
+    #[test]
+    fn health_goes_out_as_the_floor_speed_multiplier_reads() {
+        let mut w = world_with(1);
+        for h in [49.6f32, 49.4, 0.9, 99.99] {
+            if let Some(p) = w.player_mut(0) {
+                p.health = h;
+            }
+            let s = decode_snapshot(&encode_snapshot(&w, 0, 0)).expect("decode");
+            assert_eq!(s.players[0].health as f32, h.floor(), "health {h}");
+        }
+        assert_ne!(
+            49.6f32.round(),
+            49.6f32.floor(),
+            "control: rounding would differ"
+        );
     }
 
     #[test]
@@ -1247,7 +1376,7 @@ mod tests {
         let (firing, vy) = bit(&w);
         assert!(firing, "control: DOWN held in zero-g did not set bit 2");
         assert!(
-            vy > 0,
+            vy > 0.0,
             "the body is not moving down (vy {vy}), so the plume would not be above it"
         );
 
@@ -1259,7 +1388,7 @@ mod tests {
             "an idle drifter still reports its thrusters firing"
         );
         assert!(
-            vy > 0,
+            vy > 0.0,
             "precondition: the idle drifter should still be drifting down"
         );
 

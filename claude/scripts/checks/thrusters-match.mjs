@@ -414,14 +414,18 @@ try {
             `${seen.post.length} corrections in ${AFTER_BELL_S} s after the bell (the first ${first?.toFixed(2) ?? '-'} px), ` +
             `worst later jump ${worst.toFixed(2)} px, pending up to ${seen.pendingMax}` +
             (seen.hitches ? `; ${seen.hitches} lost-time re-anchors not counted` : '')
-          // **Twice the gate's epsilon, not the epsilon** (T22.10F). Once bo really
-          // moves after the bell (T22.10E review (b); ~480 px/s measured) the wire's
-          // velocity, truncated to whole px/s (`codec.rs::encode_snapshot`), drifts a
-          // re-anchored free-flying body by up to √2 px/s from the server's, so the
-          // gate fires when that drift passes the epsilon — a correction a hair past
-          // it (2.11 and 2.58 px measured, `gate-t2210f-after2-thr*.txt`) is the gate
-          // working, not a rubber-band. F-3's failure this guards was 11–41 px.
-          const eps = 2 * K.get('RECONCILE_EPSILON_PX')
+          // **The gate's epsilon plus the wire's rounding over the watch** (T22.10H).
+          // Once bo really moves after the bell (~480 px/s measured) a re-anchored
+          // free-flying body drifts from the server's by the velocity's rounding —
+          // ≤ √2 · SNAPSHOT_QUANTUM / 2 px/s — for AFTER_BELL_S, on top of the
+          // position's own ≤ √2 · SNAPSHOT_QUANTUM / 2. **History:** this was 2 × ε
+          // (T22.10F) while the wire truncated to whole px/s, which drifted up to
+          // √2 px/s: corrections of 2.11 and 2.58 px were the gate working, and one
+          // run at T22.10H's base measured 4.34 px against that 4. At an eighth the
+          // drift is a third of a pixel over the watch, and two runs measured 0
+          // corrections. F-3's failure this guards was 11–41 px.
+          const q = K.get('SNAPSHOT_QUANTUM')
+          const eps = K.get('RECONCILE_EPSILON_PX') + (Math.SQRT2 * q * (1 + AFTER_BELL_S)) / 2
           if (seen.frames < 10) fail(`control: only ${seen.frames} frames watched after the bell: ${summary}`)
           else if (!(seen.pendingPre > 0)) {
             // The pending half needs a predictor that was keeping inputs: one
@@ -429,7 +433,7 @@ try {
             fail(`control: bo's predictor kept no inputs before the bell, so none after proves nothing: ${summary}`)
           }
           else if (worst > eps || seen.pendingMax > Math.ceil(K.get('MAX_FRAME_DT') * K.get('SIM_HZ'))) {
-            fail(`the results screen rubber-bands bo's own body: ${summary} (bound RECONCILE_EPSILON_PX ${eps})`)
+            fail(`the results screen rubber-bands bo's own body: ${summary} (bound ${eps.toFixed(2)} px = RECONCILE_EPSILON_PX + the wire's rounding over ${AFTER_BELL_S} s)`)
           } else ok(`no rubber-band after the bell (bo drifted ${seen.travelled.toFixed(1)} px; ${seen.pendingPre} pending before it): ${summary}`)
         }
       }

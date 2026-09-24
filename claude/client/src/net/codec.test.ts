@@ -117,7 +117,15 @@ function mapInitFixture(opts: Partial<{
   return b
 }
 
-function snapshotFixture(n: number, trailing = 0, flags: number = FLAG.alive | FLAG.flashlight): ArrayBuffer {
+/** T22.10H: the wire's position/velocity counts — `i32` quanta, not px. */
+type Motion = { x: number; y: number; vx: number; vy: number }
+
+function snapshotFixture(
+  n: number,
+  trailing = 0,
+  flags: number = FLAG.alive | FLAG.flashlight,
+  motion: (i: number) => Motion = (i) => ({ x: 1000 + i, y: -500 - i, vx: 33, vy: -44 }),
+): ArrayBuffer {
   // Pinned to the constant, never a literal (§A19). This was `15`, and T11.08's
   // sixteenth byte turned six passing tests red for the right reason — but a
   // fixture that hardcodes the wire layout can also stay *green* against a
@@ -132,10 +140,11 @@ function snapshotFixture(n: number, trailing = 0, flags: number = FLAG.alive | F
   v.setUint8(at++, n)
   for (let i = 0; i < n; i++) {
     v.setUint8(at++, i)
-    v.setInt16(at, 1000 + i, true); at += 2
-    v.setInt16(at, -500 - i, true); at += 2
-    v.setInt16(at, 33, true); at += 2
-    v.setInt16(at, -44, true); at += 2
+    const m = motion(i)
+    v.setInt32(at, m.x, true); at += 4
+    v.setInt32(at, m.y, true); at += 4
+    v.setInt32(at, m.vx, true); at += 4
+    v.setInt32(at, m.vy, true); at += 4
     v.setUint16(at, 40000, true); at += 2
     v.setUint8(at++, 137)
     v.setUint8(at++, flags)
@@ -292,10 +301,12 @@ describe('snapshot', () => {
     expect(s.players).toHaveLength(3)
     const p = s.players[1]!
     expect(p.id).toBe(1)
-    expect(p.x).toBe(1001)
-    expect(p.y).toBe(-501)
-    expect(p.vx).toBe(33)
-    expect(p.vy).toBe(-44)
+    // Counts of `SNAPSHOT_QUANTUM`, dequantised by the decoder (T22.10H).
+    const q = C().SNAPSHOT_QUANTUM
+    expect(p.x).toBe(1001 * q)
+    expect(p.y).toBe(-501 * q)
+    expect(p.vx).toBe(33 * q)
+    expect(p.vy).toBe(-44 * q)
     expect(p.aim).toBe(40000)
     expect(p.health).toBe(137)
     expect(p.vision).toBeCloseTo(204 / 255, 5)
@@ -306,6 +317,28 @@ describe('snapshot', () => {
     // the caller to shift — a field that means two things is a bug waiting.
     expect(p.heals).toBe(1)
     expect(p.batteries).toBe(3)
+  })
+
+  // T22.10H: the extremes — both `i32` ends (sign kept, no wrap), the largest
+  // map's far edge in eighths (past what an `i16` of eighths holds), and a
+  // fraction. The quantum is Rust's own constant, through `constants_json`.
+  it('decodes position and velocity as i32 quanta at the extremes', () => {
+    const q = C().SNAPSHOT_QUANTUM
+    // The first count an `i16` cannot hold: 4096 px, the largest map's width.
+    const far = 0x8000
+    const rows: Motion[] = [
+      { x: 0x7fffffff, y: -0x80000000, vx: -0x80000000, vy: 0x7fffffff },
+      { x: far, y: -far, vx: 3 * far, vy: -1 },
+      { x: 5, y: -3, vx: 0, vy: 1 },
+    ]
+    const s = decodeSnapshot(snapshotFixture(rows.length, 0, FLAG.alive, (i) => rows[i]!))
+    rows.forEach((m, i) => {
+      const p = s.players[i]!
+      expect([p.x, p.y, p.vx, p.vy]).toEqual([m.x * q, m.y * q, m.vx * q, m.vy * q])
+    })
+    expect(s.players[1]!.x).toBe(far * q)
+    expect(s.players[2]!.x).toBe(5 * q)
+    expect(s.lastInputSeq).toBe(9999)
   })
 
   it('decodes the teleport charge as a fraction', () => {

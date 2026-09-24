@@ -307,6 +307,8 @@ export interface Constants {
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number
+  /** T22.10H: snapshot position (px) and velocity (px/s) quantum; see constants.rs. */
+  SNAPSHOT_QUANTUM: number
   SNAPSHOT_HZ: number
   INTERP_DELAY_MS: number
   RECONCILE_EPSILON_PX: number

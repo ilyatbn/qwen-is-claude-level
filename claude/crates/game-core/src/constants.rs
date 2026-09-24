@@ -1455,7 +1455,39 @@ pub const MASK_CHECKSUM_INTERVAL: f32 = 5.0;
 /// T21.03's unicorn wings — with T21.08's spacesuit behind them. Spending the
 /// last reserved bit on the first of them would have made the second a wire
 /// break instead of a field addition.
-pub const SNAPSHOT_PLAYER_BYTES: usize = 20;
+///
+/// **28 with T22.10H**: position and velocity went from four `i16` of whole px
+/// (truncated) to four `i32` counted in [`SNAPSHOT_QUANTUM`]s (rounded) — +8.
+/// Six players: 8 + 6·28 + 4 = 180 bytes before base64, 240 after, 4.8 KB/s at
+/// `SNAPSHOT_HZ` — still far inside `docs/40` §4.
+pub const SNAPSHOT_PLAYER_BYTES: usize = 28;
+/// **The snapshot's position and velocity quantum** (T22.10H): px for a position,
+/// px/s for a velocity. The codec sends `round(v / SNAPSHOT_QUANTUM)` and the
+/// decoder (`codec.rs::decode_snapshot`, `codec.ts::decodeSnapshot`) multiplies
+/// back, so one rounded value is within **half a quantum per axis** of the
+/// server's `f32` — and any check that charges the prediction for the wire's
+/// rounding (`scripts/checks/black-hole.mjs`) derives its slack from this, not a
+/// literal. One constant for both, the way the old wire had one (whole px, px/s).
+///
+/// **Why an eighth, and why `i32`** — the range arithmetic:
+/// - an `i16` of eighths spans ±4095.875: short of `MAP_LARGE_W` (4096) before a
+///   single pixel of void margin, so a position cannot be `i16` at this quantum;
+///   `i32` spans ±268 435 455.875 px, which no map approaches (`dimensions_are_sane`
+///   caps a side at 8192).
+/// - an `i16` of eighths of a px/s would span ±4095.875 px/s — above
+///   `SPACE_MAX_SPEED` (1350) and `MAX_FALL_SPEED` (900), but upward velocity is not
+///   clamped (`apply_gravity`: knockback still launches) and knockback stacks, so a
+///   velocity could clamp where the body did not. `i32` costs 4 bytes a player and
+///   never clamps a velocity the simulation can produce.
+/// - `1/8` is exact in binary, so `v / SNAPSHOT_QUANTUM` is a multiply by 8 with no
+///   rounding of its own, and every multiple of it up to 2²¹ px is exact in `f32`.
+///
+/// Why finer at all (`docs/77-owed` point 6): a free-flying body re-anchored on a
+/// truncated whole-px/s velocity drifted past `RECONCILE_EPSILON_PX` within ~1.5 s,
+/// and whole-px positions cost the black hole's check √2 px of slack.
+pub const SNAPSHOT_QUANTUM: f32 = 1.0 / 8.0;
+const _: () = assert!(MAP_LARGE_W as f32 / SNAPSHOT_QUANTUM > i16::MAX as f32);
+const _: () = assert!(8192.0 / SNAPSHOT_QUANTUM < i32::MAX as f32);
 /// Header bytes before the player array: tick, round_time_ds, darkness, count.
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.

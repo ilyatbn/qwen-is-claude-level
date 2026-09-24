@@ -40,10 +40,12 @@ different story (see § 1).
 - Transport: `game-server` is axum + socketioxide; client `socket.io-client` default `io()` — TCP, reliable, ordered,
   no volatile emits. Snapshots and input batches are **base64 strings**; everything else JSON events.
 - Snapshot `codec.rs::encode_snapshot`: **full every time, no delta**. 8-byte header (tick u32, round_time deciseconds
-  u16, darkness u8, count u8) + 20 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as i16 **truncated `as i16`**; aim
+  u16, darkness u8, count u8) + 28 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as **`i32` counts of `SNAPSHOT_QUANTUM` = 1/8 px (px/s), rounded**
+  since T22.10H — before, `i16` whole px truncated; aim
   u16; health u8 truncated; flags; fuel; selected item; vision; battery; heals/batteries; teleport charge; move_mods)
   + 4-byte footer (per-recipient ack: since T22.10F the last *simulated* seq, real input or stand-in,
-  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 132 B at 6 players before base64. (Its doc comment still says 102.)
+  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 180 B at 6 players before base64 (T22.10H; was 132).
+  Health stays the truncated u8 on purpose: `speed_multiplier` reads `health.floor()` (T22.10H).
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
   `select_slot` are separate events. **Every in-match verb runs synchronously in arrival order** — `input` since
   T22.10B, and `fire`, `use_item`, `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`, `quick_throw`
@@ -99,8 +101,9 @@ different story (see § 1).
   that ran more seqs than server ticks (a trim). `stats.worstJump` (T22.10G) holds the worst counted jump's context
   (ack/tick step, pending, ack error, speed) and `harness.mjs` prints it. The fixed step's first frame elapses 0. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
   handle pad `teleport` and `vortex_trip`. Render eases at
-  `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server state is i16-truncated; `JumpState` and `prev_input`
-  are not on the wire.
+  `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server position/velocity arrive rounded to 1/8 px (T22.10H;
+  worst `lastAckErrorPx` per client, 2 runs: `radiation-match` 2.12–2.61 → 1.40–2.24 px, `breach-vortex` 2.02–2.25 →
+  2.08–2.23 (not the wire's: its pull arm 1.00–1.09 → 0.10–0.13), `black-hole`'s pull arm 1.26 → 0.19); `JumpState` and `prev_input` are not on the wire.
 - Remotes: `interpolation.ts::RemoteInterpolator`, `INTERP_DELAY_MS` 100, `MAX_EXTRAPOLATION_MS` 250, keyed on local
   arrival time.
 - **Four clocks in GameScene:** `ClockSync` (EWMA, debug HUD only), `render/weather-math.ts::ServerClock` (monotonic,

@@ -157,6 +157,9 @@ class Reader {
   i16(): number {
     return this.v.getInt16(this.need(2), true)
   }
+  i32(): number {
+    return this.v.getInt32(this.need(4), true)
+  }
   u32(): number {
     return this.v.getUint32(this.need(4), true)
   }
@@ -313,10 +316,13 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
   const players: SnapshotPlayer[] = []
   for (let i = 0; i < n; i++) {
     const id = r.u8()
-    const x = r.i16()
-    const y = r.i16()
-    const vx = r.i16()
-    const vy = r.i16()
+    // T22.10H: `i32` counts of `SNAPSHOT_QUANTUM` (1/8 px, 1/8 px/s), rounded by
+    // the server — dequantised here and nowhere else, like `jetpackFuel` below.
+    const q = C().SNAPSHOT_QUANTUM
+    const x = r.i32() * q
+    const y = r.i32() * q
+    const vx = r.i32() * q
+    const vy = r.i32() * q
     const aim = r.u16()
     const health = r.u8()
     const flags = r.u8()

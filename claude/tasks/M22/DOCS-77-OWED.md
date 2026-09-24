@@ -42,9 +42,16 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    health — fuel, mount, jump buffer and cooldowns are not re-installed while the position agrees.
 5. **The snapshot ack** is the last *simulated* seq, real or stand-in (`World::last_simulated_seq`; T22.10F — T22.10B
    made it the last consumed, not the last received).
-6. **Quantization (for the coordinator, not yet a rule):** snapshot velocity is `as i16` whole px/s; a free-flying
-   zero-g body re-anchored on it drifts past `RECONCILE_EPSILON_PX` within ~1.5 s at ~500 px/s (T22.10F,
-   `thrusters-match`'s results screen). A finer quantum would need a wire change.
+6. **Quantization (T22.10H, ruled by the coordinator):** docs/40 §3's player record grows to
+   `SNAPSHOT_PLAYER_BYTES` 28: position and velocity are four **`i32` counts of `SNAPSHOT_QUANTUM` (1/8 px, 1/8
+   px/s), rounded** half away from zero (they were `i16` whole px, truncated). The range arithmetic is at the
+   constant: an `i16` of eighths stops at ±4095.875, short of `MAP_LARGE_W`, and upward velocity is unclamped. Health
+   stays the floored `u8` — `speed_multiplier` reads `health.floor()`, so the floor is the parity rule. New constant
+   `SNAPSHOT_QUANTUM` 0.125 (exported to the client). Replays store inputs, not snapshots: `REPLAY_VERSION` unchanged.
+   Measured (worst `lastAckErrorPx` per client, 2 runs each): `radiation-match` 2.12–2.61 → 1.40–2.24 px,
+   `breach-vortex` 2.02–2.25 → 2.08–2.23 px (its pull arm 1.00–1.09 → 0.10–0.13 px), `black-hole`'s pull arm 1.26 →
+   0.19 px. Check slacks derive from it: `black-hole` ε + √2·q (was ε + √2), `thrusters-match` after the bell
+   ε + √2·q·(1 + 3 s)/2 (was 2ε).
 
 ## The black hole (T22.12A/B)
 7. **New constants:** `BLACK_HOLE_WINDOW` 60, `BLACK_HOLE_LATEST` 10, `BLACK_HOLE_HORIZON_R` = `SPACE_ASTEROID_R_MAX`,
