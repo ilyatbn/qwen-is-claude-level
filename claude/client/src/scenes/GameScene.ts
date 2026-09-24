@@ -698,6 +698,8 @@ export class GameScene extends Phaser.Scene {
     // T22.10B: last round's holes are not this round's, and the core outlives the
     // scene — so the pull goes too, not only the drawing (`clearVortices`).
     this.mirror?.clearVortices()
+    // T22.12: nor last round's black hole.
+    this.mirror?.clearBlackHole()
     this.vortexFx?.clear()
     this.flareBodies.length = 0
     this.serverClock.reset()
@@ -852,6 +854,7 @@ export class GameScene extends Phaser.Scene {
         // T22.10B: a new world has no holes; the core must stop pulling toward
         // the old ones before the new round's first predicted tick.
         this.mirror.clearVortices()
+        this.mirror.clearBlackHole()
         this.roundTime = 0
         this.serverRoundTime = 0
         this.serverClock.reset()
@@ -997,7 +1000,10 @@ export class GameScene extends Phaser.Scene {
       // T22.10B: the vortex list — the mirror keeps it in opening order and tells
       // the core, which sums the pull from it. Unsubscribed, a client predicts no
       // pull near a vortex while the server pulls: a rubber-band.
-      'vortex_open', 'vortex_close']) {
+      'vortex_open', 'vortex_close',
+      // T22.12: the black hole — the mirror tells the core, which chains its pull
+      // after the vortices; unsubscribed, a client rubber-bands near it.
+      'black_hole']) {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
@@ -1558,6 +1564,7 @@ export class GameScene extends Phaser.Scene {
     // T22.10B: a vortex list that arrived before this map is applied now — the
     // mirror kept it (a resync does not drop it); the core is told again.
     this.mirror.pushVortices()
+    this.mirror.pushBlackHole()
 
     this.ready = true
     this.conn.sendRaw('ready', {})

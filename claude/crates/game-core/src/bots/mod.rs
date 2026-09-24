@@ -2605,9 +2605,10 @@ pub(crate) mod harness {
                         // is "how many deaths did the map cause", not which part
                         // of it (§C15).
                         // Radiation too (T22.09A): the map's, not a player's.
-                        DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {
-                            r.weather_deaths += 1
-                        }
+                        DeathCause::Weather
+                        | DeathCause::Void
+                        | DeathCause::Radiation
+                        | DeathCause::BlackHole => r.weather_deaths += 1,
                     },
                     GameEvent::Damage {
                         amount, attacker, ..

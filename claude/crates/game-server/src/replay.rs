@@ -258,7 +258,12 @@ pub const HEADER_BYTES: usize = 46;
 /// waits `INPUT_BACKLOG_TARGET` ticks before its tick, and a player who has sent
 /// nothing is not stepped in `Lobby`/`Warmup` (v18 stood in a neutral step), so
 /// every v18 recording of a client diverges from its first input.
-pub const REPLAY_VERSION: u16 = 19;
+///
+/// **20 (T22.12, the black hole)**: a new hashed field (`World::black_hole`), and
+/// every space round now gains a hole in its last minute that pulls, kills and
+/// carves — a v19 space recording diverges at the arrival, and its hashes differ
+/// from the first tick. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 20;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

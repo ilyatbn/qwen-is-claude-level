@@ -11,6 +11,7 @@ pub mod ambient;
 pub mod animals;
 pub mod attractors;
 pub mod birds;
+pub mod black_hole;
 pub mod cycle;
 pub mod mount;
 pub mod teleport;
@@ -32,9 +33,10 @@ use crate::map::meta::TeleportPad;
 use crate::map::{CarveResult, Map};
 use crate::math::{Aabb, Point, Vec2};
 use crate::player::input::Input;
-use crate::player::respawn::choose_respawn_pad;
+use crate::player::respawn::choose_respawn_pad_clear;
 use crate::player::state::{
-    choose_respawn, surface_to_centre, DeathCause, PlayerId, PlayerState, UseError,
+    choose_respawn, choose_respawn_clear, surface_to_centre, DeathCause, PlayerId, PlayerState,
+    UseError,
 };
 use crate::player::{apply_input, MoveStep};
 use crate::rng::{range_f32, substream, ChaCha8Rng};
@@ -385,6 +387,14 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// T22.12: the black hole arrived at `(x, y)` — the centre of the asteroid it
+    /// ate, which the client drops from its list by that centre. Everyone, and
+    /// sticky on the client: it stays for the round, results screen included (R8.4).
+    BlackHole {
+        tick: u32,
+        x: f32,
+        y: f32,
+    },
     /// T22.10: a vortex stopped pulling — replaced by a fourth (R9, point 2).
     VortexClose {
         tick: u32,
@@ -495,6 +505,7 @@ impl GameEvent {
             | GameEvent::Respawn { tick, .. }
             | GameEvent::Teleport { tick, .. }
             | GameEvent::VortexOpen { tick, .. }
+            | GameEvent::BlackHole { tick, .. }
             | GameEvent::VortexClose { tick, .. }
             | GameEvent::VortexTrip { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
@@ -949,6 +960,10 @@ pub struct World {
     /// other roll (the pads share `rng`; a vortex is rarer and should not). Hashed
     /// by position, as `rng` is.
     vortex_rng: ChaCha8Rng,
+    /// T22.12: the black hole's whole lifecycle — unrolled, due, or here — in one
+    /// field (`M22-RULINGS` R21: the round controller's, not the scheduler's).
+    /// Hashed. See `world::black_hole`.
+    black_hole: black_hole::BlackHole,
 }
 
 /// The map cache behind `World::for_test`: one generation per
@@ -1143,6 +1158,7 @@ impl World {
             spent_vortices: Vec::new(),
             vortex_seq: 0,
             vortex_rng: substream(seed, "vortex"),
+            black_hole: black_hole::BlackHole::Unrolled,
         }
     }
 
@@ -1206,7 +1222,9 @@ impl World {
                 .filter(|p| p.alive)
                 .map(|p| p.body.pos)
                 .collect();
-            return choose_respawn(&self.map, &living, &mut self.rng);
+            let hole = self.black_hole.pos();
+            let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
+            return choose_respawn_clear(&self.map, &living, &mut self.rng, &clear);
         }
         let pts = &self.map.meta.spawn_points;
         if pts.is_empty() {
@@ -1633,6 +1651,14 @@ impl World {
         // (`SPACE_VOID_GRACE`'s basis) rather than killed there.
         self.step_vortices(now);
 
+        // 8b0'. the black hole (T22.12): arrives when due, and its horizon takes
+        // whoever is inside — by zeroing health for 9's `resolve_deaths`, the void's
+        // way. **`Playing` only** (R8.4: it freezes at `Ended`, and cannot exist
+        // before `Playing`).
+        if playing {
+            self.step_black_hole(now);
+        }
+
         // 8b. the void (§C15). **Before the deaths**, because it works by putting
         // a body's health at zero and letting `resolve_deaths` do everything a
         // death does — the drop, the score, the event, the respawn timer.
@@ -2001,11 +2027,17 @@ impl World {
             // bell costs nobody anything. So: no gate, said out loud rather than
             // omitted, and `T22.12` adds the condition here for its own
             // `Kind::BlackHole` when it lands.
+            //
+            // **Landed (T22.12):** `black_hole::pulling` is that condition — the
+            // hole, while the phase takes input — and `GameCore::apply_input`
+            // calls the same function with the phase the server announced.
             let (pulls, n) = vortex::centres(&self.vortices);
+            let hole = black_hole::pulling(self.black_hole.pos(), self.phase);
             let env = crate::world::attractors::env_at(
                 &self.map,
                 gravity,
                 &pulls[..n],
+                hole,
                 self.players[idx].body.pos,
             );
             let p = &mut self.players[idx];
@@ -3677,9 +3709,11 @@ impl World {
                 continue;
             };
             let (pulling, spent) = (&self.vortices, &self.spent_vortices);
+            let hole = self.black_hole.pos();
             let clear = |site: crate::math::Point| {
                 let centre = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
-                vortex::clearance(pulling, spent, centre)
+                // T22.12: nor into the black hole's reach.
+                vortex::clearance(pulling, spent, centre).min(black_hole::clearance(hole, centre))
             };
             let Some(site) = self.map.random_body_site_where(&mut self.vortex_rng, clear) else {
                 continue;
@@ -3718,6 +3752,14 @@ impl World {
                 // `killer` still hands the credit to whoever put you there.
                 let direct = if self.is_in_the_void(&self.players[i]) {
                     DeathCause::Void
+                } else if self
+                    .black_hole
+                    .pos()
+                    .is_some_and(|h| black_hole::in_horizon(h, self.players[i].body.pos))
+                {
+                    // T22.12: `step_black_hole`'s predicate, one pass later — the
+                    // void's shape (R20), so no flag carries the cause.
+                    DeathCause::BlackHole
                 } else if irradiated.contains(&self.players[i].id) {
                     // After the void, before the attacker (R75). `killer`
                     // below still hands a recent shooter the credit.
@@ -3748,7 +3790,10 @@ impl World {
                     }
                     DeathCause::Player(a) => Some(a),
                     DeathCause::SelfInflicted => Some(victim),
-                    DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => None,
+                    DeathCause::Weather
+                    | DeathCause::Void
+                    | DeathCause::Radiation
+                    | DeathCause::BlackHole => None,
                 };
                 drops.push((pos, stacks));
                 let tick = self.tick;
@@ -3848,7 +3893,11 @@ impl World {
             // `None` only if every pad failed re-validation, which indestructible
             // pads make unreachable — `a_pad_respawn_never_falls_back_on_a_map_
             // carved_to_pieces` is the assertion that it stays that way.
-            let choice = choose_respawn_pad(&self.map, &living, &mut self.rng);
+            // T22.12: never inside the hole's reach — a respawn into it is a
+            // death with no explanation.
+            let hole = self.black_hole.pos();
+            let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
+            let choice = choose_respawn_pad_clear(&self.map, &living, &mut self.rng, &clear);
             if choice.pad.is_none() {
                 self.respawn_fallbacks += 1;
             }
@@ -4918,6 +4967,9 @@ impl World {
         let mut probe = self.vortex_rng.clone();
         h.update(&rand::RngCore::next_u64(&mut probe).to_le_bytes());
 
+        // T22.12: it pulls and kills, and when it is due decides when.
+        self.black_hole.hash_into(&mut h);
+
         *h.finalize().as_bytes()
     }
 }
@@ -5245,6 +5297,14 @@ mod state_hash_tests {
         let mut w = world();
         w.vortex_seq = 5;
         changed.push(("vortex seq", w.state_hash()));
+        let mut w = world();
+        w.black_hole = super::black_hole::BlackHole::Due { at: 1.0, pick: 2 };
+        changed.push(("black hole due", w.state_hash()));
+        let mut w = world();
+        w.black_hole = super::black_hole::BlackHole::Here {
+            pos: Vec2::new(300.0, 200.0),
+        };
+        changed.push(("black hole here", w.state_hash()));
 
         let mut w = world();
         w.players[0].fire_ready_at = 9.0;
@@ -5381,6 +5441,8 @@ mod state_hash_coverage {
             spent_vortices: _,
             vortex_seq: _,
             vortex_rng: _,
+            // T22.12: the black hole's lifecycle.
+            black_hole: _,
 
             // Deliberately NOT hashed, each for a stated reason:
             // `seed` is an input, fixed for the round and carried in the replay

@@ -88,6 +88,11 @@ pub struct GameCore {
     /// predicts no pull while the server pulls — the rubber-band `set_asteroids`'s
     /// doc describes, for this list.
     vortices: Vec<Vec2>,
+    /// T22.12: the black hole, once `black_hole` announced it — chained after the
+    /// vortices by `env_at`, gated on `phase` by `black_hole::pulling` exactly as
+    /// the server gates it. `None` on a client told nothing, which predicts no pull
+    /// while the server pulls: the rubber-band this field exists to prevent.
+    black_hole: Option<Vec2>,
 }
 
 /// The sandbox's weather, driven by `weather_step`.
@@ -136,6 +141,7 @@ impl GameCore {
             phase: game_core::world::RoundPhase::Playing,
             gravity: GravityMode::Standard,
             vortices: Vec::new(),
+            black_hole: None,
         }
     }
 
@@ -465,6 +471,12 @@ impl GameCore {
         self.vortices = (0..n).map(|i| Vec2::new(xs[i], ys[i])).collect();
     }
 
+    /// T22.12: the black hole the server announced (`black_hole`), or none — a new
+    /// match's mirror clears it. `WorldMirror` is the one production caller.
+    pub fn set_black_hole(&mut self, present: bool, x: f32, y: f32) {
+        self.black_hole = present.then(|| Vec2::new(x, y));
+    }
+
     /// The summed gravity field at a world point, px/s², as `[ax, ay]`.
     ///
     /// **A readback, in the sense [`GameCore::teleport_pads`] is one**: nothing
@@ -485,6 +497,7 @@ impl GameCore {
             &self.map,
             self.gravity,
             &self.vortices,
+            game_core::world::black_hole::pulling(self.black_hole, self.phase),
             Vec2::new(x, y),
         );
         Box::new([env.accel.x, env.accel.y])
@@ -594,6 +607,8 @@ impl GameCore {
         // player's.
         let gravity = self.gravity;
         let vortices = &self.vortices;
+        // T22.12: the server's gate, the server's function (R8.4 — frozen at `Ended`).
+        let hole = game_core::world::black_hole::pulling(self.black_hole, self.phase);
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -650,7 +665,7 @@ impl GameCore {
         // `worldMirror.ts::applyMapInit` through [`GameCore::set_asteroids`],
         // beside `setTeleportPads`; wiring this call at T22.11B is what made that
         // a one-line change rather than a second design.
-        let env = game_core::world::attractors::env_at(map, gravity, vortices, p.body.pos);
+        let env = game_core::world::attractors::env_at(map, gravity, vortices, hole, p.body.pos);
         apply_input(
             map,
             &mut p.body,
@@ -1974,6 +1989,9 @@ pub fn constants_json() -> String {
         // stops winning. Drawing only: the pull is `env_at`, never these in TS.
         VORTEX_CAPTURE_R => c::VORTEX_CAPTURE_R,
         VORTEX_REACH => c::VORTEX_REACH,
+        BLACK_HOLE_HORIZON_R => c::BLACK_HOLE_HORIZON_R,
+        BLACK_HOLE_CAPTURE_R => c::BLACK_HOLE_CAPTURE_R,
+        BLACK_HOLE_REACH => c::BLACK_HOLE_REACH,
         SOLAR_FLARE_RIBBON_R => c::SOLAR_FLARE_RIBBON_R,
         SOLAR_FLARE_GLOW => c::SOLAR_FLARE_GLOW,
         SOLAR_FLARE_SPAN => c::SOLAR_FLARE_SPAN,
@@ -3924,7 +3942,8 @@ mod tests {
         let at = v + Vec2::new(0.0, game_core::constants::VORTEX_CAPTURE_R * 1.5);
         let (pulls, n) = centres(&w.vortices);
         let server =
-            game_core::world::attractors::env_at(&w.map, GravityMode::Space, &pulls[..n], at).accel;
+            game_core::world::attractors::env_at(&w.map, GravityMode::Space, &pulls[..n], None, at)
+                .accel;
 
         let untold = core.field_accel_at(at.x, at.y);
         assert!(
@@ -3934,6 +3953,91 @@ mod tests {
         core.set_vortices(&[v.x], &[v.y]);
         let told = core.field_accel_at(at.x, at.y);
         assert_eq!((told[0], told[1]), (server.x, server.y));
+    }
+
+    /// **T22.12: the prediction pulls as the server does near the black hole** —
+    /// once the mirror is told what a client is told: the `carve` of the eaten rock,
+    /// the asteroid list without it, and `set_black_hole`. `GameCore::apply_input`
+    /// and `World::step` side by side, idle, from outside the capture radius until
+    /// the horizon takes the player, compared **exactly** every tick. Controls: the
+    /// body really was pulled a long way, and a mirror told the carve and the list
+    /// but not the hole leaves the server within a few ticks — the rubber-band the
+    /// setter exists to prevent. Then R8.4: after the bell both sides stop pulling
+    /// together.
+    #[test]
+    fn apply_input_near_the_black_hole_steps_exactly_as_the_server_does() {
+        use game_core::constants::BLACK_HOLE_CAPTURE_R;
+        use game_core::player::input::Input;
+        use game_core::world::{GameEvent, RoundPhase};
+        let run = |tell_hole: bool, phase_ended: bool| -> (usize, f32, bool) {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            let geo = w.map.space_geometry().expect("space");
+            let hole = w
+                .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
+                .expect("summoned");
+            for e in w.drain_events() {
+                if let GameEvent::Carve { x, y, r, .. } = e {
+                    core.carve(x, y, r);
+                }
+            }
+            let bytes = game_server::codec::encode_map_init(&w.map);
+            let parts = game_server::codec::decode_map_init_parts(&bytes).expect("own bytes");
+            install_asteroids(&mut core, &parts.asteroids);
+            if tell_hole {
+                core.set_black_hole(true, hole.x, hole.y);
+            }
+            w.add_player(1, 0, String::new());
+            let start = w
+                .dev_place_near_black_hole(1, BLACK_HOLE_CAPTURE_R * 1.5)
+                .expect("a clear side");
+            core.add_player(1, start.x, start.y);
+            if phase_ended {
+                w.set_phase(RoundPhase::Ended);
+                assert!(core.set_phase("ended"));
+            }
+            let _ = w.drain_events();
+            let (mut seq, mut agreed, mut moved, mut died) = (1000u32, 0usize, 0.0f32, false);
+            for _ in 0..240 {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                core.apply_input(1, seq, 0, 0, SIM_DT);
+                if !w.player(1).expect("seated").alive {
+                    died = true;
+                    break;
+                }
+                let server = w.player(1).expect("seated").body.pos;
+                let c = core.player_state(1);
+                if (c[0], c[1]) != (server.x, server.y) {
+                    break;
+                }
+                agreed += 1;
+                moved = moved.max((server - start).len());
+            }
+            (agreed, moved, died)
+        };
+        let (agreed, moved, died) = run(true, false);
+        // The loop stops at the first disagreement, so `died` means the two sides
+        // agreed exactly on every tick until the horizon took the player.
+        assert!(
+            died,
+            "the prediction left the server near the hole after {agreed} ticks, before \
+             the horizon took the player"
+        );
+        assert!(
+            moved > BLACK_HOLE_CAPTURE_R * 0.5,
+            "control: the body barely moved ({moved:.1} px), so agreement proves nothing"
+        );
+        let (untold, _, _) = run(false, false);
+        assert!(
+            untold < agreed,
+            "control: a mirror not told the hole agreed as long ({untold} vs {agreed} ticks)"
+        );
+        // After the bell: neither side pulls toward the hole, so both drift alike
+        // for the whole run and nobody dies.
+        let (agreed, _, died) = run(true, true);
+        assert!(!died, "the hole killed after the bell");
+        assert_eq!(agreed, 240, "the mirror left the server after the bell");
     }
 
     /// **The readback the browser check steers by** (`T22.11C`, `R63`).

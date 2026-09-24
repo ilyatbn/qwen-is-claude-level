@@ -656,3 +656,58 @@ describe('breach vortices', () => {
     core.setGravity('standard')
   })
 })
+
+/**
+ * T22.12: the black hole reaches the core **as the pull `apply_input` reads**, and
+ * the rock it ate leaves the core's list — its well with it, as on the server.
+ * Asserted through `fieldAccelAt` (the same `env_at` sum prediction runs) and the
+ * core's own asteroid table, not the mirror's fields.
+ */
+describe('the black hole (T22.12)', () => {
+  it('pulls once announced, drops the eaten rock, survives a resync, and a new round clears it', () => {
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    const wire = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
+    expect(wire.length).toBeGreaterThan(1)
+    const mirror = initMirror(core, 0, undefined, undefined, wire)
+    const eaten = wire[1]!
+    const probe = { x: eaten.x + C().BLACK_HOLE_CAPTURE_R * 1.5, y: eaten.y }
+    const fx = () => core.fieldAccelAt(probe.x, probe.y)[0]!
+    const before = fx()
+
+    mirror.applyEvent('black_hole', { x: eaten.x, y: eaten.y }, 42)
+    expect(core.meta.asteroids.length).toBe(wire.length - 1)
+    expect(core.meta.asteroids.some((a) => a.x === eaten.x && a.y === eaten.y)).toBe(false)
+    // Toward the hole: it sits at smaller x than the probe, and out-pulls the rock it replaced.
+    const pulled = fx()
+    expect(pulled - before).toBeLessThan(-C().BLACK_HOLE_CAPTURE_R)
+    // Sticky: a catch-up re-announcing it keeps the first arrival.
+    mirror.applyEvent('black_hole', { x: eaten.x, y: eaten.y }, 99)
+    expect(mirror.blackHole?.arrivedAt).toBe(42)
+
+    // A resync whose `map_init` predates the arrival still carries the rock: dropped again.
+    mirror.applyMapInit({
+      width: core.width,
+      height: core.height,
+      seed: 4242n,
+      scale: 0,
+      theme: 0,
+      wind: 0,
+      carveSeq: 0,
+      spawnPoints: [],
+      pads: [],
+      platforms: [],
+      decorations: [],
+      objects: [],
+      asteroids: wire,
+      rle: core.maskRle(),
+    })
+    expect(core.meta.asteroids.length).toBe(wire.length - 1)
+    expect(fx()).toBe(pulled)
+
+    mirror.clearBlackHole()
+    expect(mirror.blackHole).toBe(null)
+    expect(fx()).not.toBe(pulled)
+    core.setGravity('standard')
+  })
+})
+

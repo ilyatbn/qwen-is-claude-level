@@ -205,7 +205,10 @@ fn run_under(seed: u64, hold: Option<ItemId>, seconds: f32, gravity: GravityMode
                 GameEvent::Death { cause, .. } => match cause {
                     DeathCause::Player(_) => r.combat_deaths += 1,
                     DeathCause::SelfInflicted => r.self_deaths += 1,
-                    DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {}
+                    DeathCause::Weather
+                    | DeathCause::Void
+                    | DeathCause::Radiation
+                    | DeathCause::BlackHole => {}
                 },
                 GameEvent::Damage {
                     amount,

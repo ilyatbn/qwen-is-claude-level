@@ -128,7 +128,8 @@ describe('a radiation death', () => {
     expect(feedCause('void', undefined, 3)).toBe('void')
     expect(feedCause('weather', undefined, 3)).toBe('weather')
     // The control: the default is still there, so the arm above is what passed it.
-    expect(feedCause('black_hole', undefined, 3)).toBe('player')
+    // (It was `'black_hole'` until T22.12 made that a cause of its own.)
+    expect(feedCause('quasar', undefined, 3)).toBe('player')
     expect(feedCause('player', 1, 3)).toBe('player')
     // Ids decide a self-kill, whatever the string.
     expect(feedCause('selfinflicted', 3, 3)).toBe('self')
@@ -148,3 +149,21 @@ describe('a radiation death', () => {
     expect(line).not.toContain('→')
   })
 })
+
+/** T22.12 (R20): the black hole at both ends of the client — the allowlist and the line. */
+describe('a black hole death', () => {
+  it('passes the allowlist as itself and reads as falling in, with no killer', () => {
+    expect(feedCause('black_hole', undefined, 3)).toBe('black_hole')
+    const line = killLine({
+      victim: 'ana',
+      killer: undefined,
+      cause: 'black_hole',
+      by: 'black_hole',
+      involvesYou: false,
+      age: 0,
+    })
+    expect(line).toBe('ana fell into the black hole')
+    expect(line).not.toContain('?')
+  })
+})
+

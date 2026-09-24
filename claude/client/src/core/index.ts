@@ -451,6 +451,10 @@ export interface Constants {
   /** T22.10B — the breach vortex's drawing radii; drawing only (the pull is `env_at`). */
   VORTEX_CAPTURE_R: number
   VORTEX_REACH: number
+  /** T22.12 — the black hole's radii; drawing only (the pull is `env_at`). */
+  BLACK_HOLE_HORIZON_R: number
+  BLACK_HOLE_CAPTURE_R: number
+  BLACK_HOLE_REACH: number
   /** T22.08B — the solar flare's painted size and burn; drawing only. */
   SOLAR_FLARE_RIBBON_R: number
   SOLAR_FLARE_GLOW: number
@@ -889,6 +893,16 @@ export class Core {
    */
   setVortices(list: readonly { x: number; y: number }[]): void {
     this.inner.set_vortices(new Float32Array(list.map((v) => v.x)), new Float32Array(list.map((v) => v.y)))
+  }
+
+  /**
+   * T22.12: the black hole the server announced (`black_hole`), or `null` — the
+   * attractor `apply_input` chains after the vortices. Until a client calls this it
+   * predicts no pull near the hole while the server pulls: a rubber-band.
+   * `WorldMirror` is the one production caller.
+   */
+  setBlackHole(hole: { x: number; y: number } | null): void {
+    this.inner.set_black_hole(hole !== null, hole?.x ?? 0, hole?.y ?? 0)
   }
 
   /**

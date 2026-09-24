@@ -81,6 +81,10 @@ pub enum DeathCause {
     /// re-derived from "in space and unsealed" — that would name a meteor
     /// death radiation. Credits a recent attacker exactly as `Weather` does.
     Radiation,
+    /// T22.12: inside the black hole's event horizon. Re-derived from the
+    /// position, as `Void` is (`world::black_hole::in_horizon`); credits a recent
+    /// attacker as `Void` does — shot into it is the shooter's kill.
+    BlackHole,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -958,18 +962,19 @@ impl PlayerState {
             // cause unchanged.
             // `Radiation` too (T22.09A): shot to 3 health and finished by the
             // sky is the shooter's kill, by the same reason word for word.
-            DeathCause::Weather | DeathCause::Void | DeathCause::Radiation => {
-                match self.last_damaged_by {
-                    Some((who, when)) if now - when <= ASSIST_WINDOW => {
-                        if who == self.id {
-                            DeathCause::SelfInflicted
-                        } else {
-                            DeathCause::Player(who)
-                        }
+            DeathCause::Weather
+            | DeathCause::Void
+            | DeathCause::Radiation
+            | DeathCause::BlackHole => match self.last_damaged_by {
+                Some((who, when)) if now - when <= ASSIST_WINDOW => {
+                    if who == self.id {
+                        DeathCause::SelfInflicted
+                    } else {
+                        DeathCause::Player(who)
                     }
-                    _ => direct,
                 }
-            }
+                _ => direct,
+            },
         }
     }
 
@@ -1180,7 +1185,20 @@ impl PlayerState {
 /// happened when `World` first called this, and it was invisible until a player
 /// was asked to walk. The conversion lives here so no caller has to remember it.
 pub fn choose_respawn(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec2 {
-    surface_to_centre(choose_surface_point(map, living, rng))
+    choose_respawn_clear(map, living, rng, &|_| true)
+}
+
+/// [`choose_respawn`], refusing any site whose body centre `clear` rejects —
+/// T22.12's black hole, which a respawn must never offer. The same picker with a
+/// filter, not a second one (*share the function*); `choose_respawn` is this with
+/// a filter that accepts everything, and draws exactly what it always drew.
+pub fn choose_respawn_clear(
+    map: &Map,
+    living: &[Vec2],
+    rng: &mut ChaCha8Rng,
+    clear: &dyn Fn(Vec2) -> bool,
+) -> Vec2 {
+    surface_to_centre(choose_surface_point(map, living, rng, clear))
 }
 
 /// Feet line to body centre.
@@ -1188,14 +1206,21 @@ pub fn surface_to_centre(p: Vec2) -> Vec2 {
     Vec2::new(p.x, p.y - crate::constants::PLAYER_H / 2.0)
 }
 
-fn choose_surface_point(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> Vec2 {
+fn choose_surface_point(
+    map: &Map,
+    living: &[Vec2],
+    rng: &mut ChaCha8Rng,
+    clear: &dyn Fn(Vec2) -> bool,
+) -> Vec2 {
     // **`Map::body_fits_at`, not `is_standable`** (`T22.05B`). The two are the
     // same function under gravity. In space a spawn point is open air, which
     // `is_standable` refuses by definition — so with the bare call here, every
     // listed spawn on a space map failed this filter and every respawn fell
     // through to the surface scan below. The points would have been chosen,
     // shipped and hashed, and never used.
-    let usable = |p: &crate::math::Point| map.body_fits_at(*p);
+    let usable = |p: &crate::math::Point| {
+        map.body_fits_at(*p) && clear(surface_to_centre(Vec2::new(p.x as f32, p.y as f32)))
+    };
 
     // Prefer a listed spawn point that is still ground and far from the living.
     let mut best: Option<(f32, Vec2)> = None;

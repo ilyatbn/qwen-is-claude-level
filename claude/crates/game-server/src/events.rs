@@ -72,6 +72,8 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::Teleport { .. }
         // T22.10: a vortex is in the world for everyone, and so is who it took.
         | GameEvent::VortexOpen { .. }
+        // T22.12: the hole is in the world for everyone.
+        | GameEvent::BlackHole { .. }
         | GameEvent::VortexClose { .. }
         | GameEvent::VortexTrip { .. }
         | GameEvent::TombstoneSpawn { .. }
@@ -119,6 +121,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Respawn { .. } => "respawn",
         GameEvent::Teleport { .. } => "teleport",
         GameEvent::VortexOpen { .. } => "vortex_open",
+        GameEvent::BlackHole { .. } => "black_hole",
         GameEvent::VortexClose { .. } => "vortex_close",
         GameEvent::VortexTrip { .. } => "vortex_trip",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
@@ -377,6 +380,7 @@ pub fn payload_with_votes(
             json!({"tick": tick, "id": id, "x": x, "y": y})
         }
         GameEvent::VortexClose { id, .. } => json!({"tick": tick, "id": id}),
+        GameEvent::BlackHole { x, y, .. } => json!({"tick": tick, "x": x, "y": y}),
         GameEvent::VortexTrip {
             id, vortex, x, y, ..
         } => json!({"tick": tick, "id": id, "vortex": vortex, "x": x, "y": y}),
@@ -462,6 +466,9 @@ fn cause_name(c: DeathCause) -> &'static str {
         // one. **The client end fails silently** until T22.09B adds it to
         // `GameScene`'s allowlist, which turns anything unlisted into `player`.
         DeathCause::Radiation => "radiation",
+        // T22.12 (R20). The client end is `killfeed-state.ts::feedCause`, which
+        // turns anything unlisted into `player`.
+        DeathCause::BlackHole => "black_hole",
     }
 }
 

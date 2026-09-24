@@ -71,6 +71,18 @@ pub struct RespawnChoice {
 /// puts you in the middle of a spread-out fight; maximising the distance to the
 /// closest living player is what "somewhere safe to land" means.
 pub fn choose_respawn_pad(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> RespawnChoice {
+    choose_respawn_pad_clear(map, living, rng, &|_| true)
+}
+
+/// [`choose_respawn_pad`], refusing any pad (and any fallback site) whose body
+/// centre `clear` rejects — T22.12's black hole. The fallback is
+/// `choose_respawn_clear`, so the filter reaches both halves.
+pub fn choose_respawn_pad_clear(
+    map: &Map,
+    living: &[Vec2],
+    rng: &mut ChaCha8Rng,
+    clear: &dyn Fn(Vec2) -> bool,
+) -> RespawnChoice {
     let mut best: Option<(f32, &TeleportPad)> = None;
 
     for pad in &map.meta.teleport_pads {
@@ -81,6 +93,9 @@ pub fn choose_respawn_pad(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> R
             continue;
         }
         let here = Vec2::new(pad.pos.x as f32, pad.pos.y as f32);
+        if !clear(surface_to_centre(here)) {
+            continue;
+        }
         let nearest = living
             .iter()
             .map(|q| (here - *q).len())
@@ -98,7 +113,7 @@ pub fn choose_respawn_pad(map: &Map, living: &[Vec2], rng: &mut ChaCha8Rng) -> R
             pad: Some(pad.id),
         },
         None => RespawnChoice {
-            pos: crate::player::state::choose_respawn(map, living, rng),
+            pos: crate::player::state::choose_respawn_clear(map, living, rng, clear),
             pad: None,
         },
     }

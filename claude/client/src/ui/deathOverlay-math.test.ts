@@ -102,6 +102,13 @@ describe('cause attribution', () => {
     expect(causeText(info({ attacker: 2, cause: 'radiation' }), names)).toBe('Killed by ana')
   })
 
+  /** T22.12 (R20): the black hole has its own sentence — you fell in. */
+  it('says you fell into the black hole, and leaves a credited one to the shooter', () => {
+    const text = causeText(info({ attacker: null, cause: 'black_hole' }), names)
+    expect(text).toBe('You fell into the black hole')
+    expect(causeText(info({ attacker: 2, cause: 'black_hole' }), names)).toBe('Killed by ana')
+  })
+
   it('all four attribution paths produce different text', () => {
     const a = causeText(info({ attacker: 2 }), names)
     const b = causeText(info({ victim: 1, attacker: 1 }), names)

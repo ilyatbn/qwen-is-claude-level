@@ -1019,6 +1019,56 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     }
                 });
             }
+            // T22.12: **the black hole, now, for a check** (`DEV_PROBE=1`) — it eats
+            // the asteroid nearest the asking player through the same arrival the
+            // roll uses (`World::summon_black_hole_near`), so the carve, the event
+            // and every mirror see exactly what a real arrival sends; with `dist`,
+            // the player is then put at rest that far from it on a clear side.
+            // Answers with the hole and its radii. Dev-only for `debug_effects`' reason.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on(
+                    "debug_black_hole",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                return;
+                            };
+                            let dist = p.get("dist").and_then(|v| v.as_f64()).map(|d| d as f32);
+                            let reply = room
+                                .inspect(move |w| {
+                                    let near = w.player(id)?.body.pos;
+                                    let now = w.round_time;
+                                    let hole = match w.black_hole() {
+                                        Some(h) => h,
+                                        None => w.summon_black_hole_near(near, now)?,
+                                    };
+                                    let placed = dist.and_then(|d| w.dev_place_near_black_hole(id, d));
+                                    use game_core::constants as c;
+                                    Some(serde_json::json!({
+                                        "x": hole.x, "y": hole.y,
+                                        "placed": placed.map(|p| serde_json::json!({"x": p.x, "y": p.y})),
+                                        "horizon": c::BLACK_HOLE_HORIZON_R,
+                                        "capture": c::BLACK_HOLE_CAPTURE_R,
+                                        "reach": c::BLACK_HOLE_REACH,
+                                        "asteroids": w.map.meta.asteroids.len(),
+                                    }))
+                                })
+                                .await
+                                .flatten();
+                            emit(
+                                &socket,
+                                "debug_black_hole",
+                                &reply.unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    },
+                );
+            }
             {
                 let ctx = ctx.clone();
                 socket.on(
@@ -1704,6 +1754,16 @@ fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_j
             .iter()
             .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w))),
     );
+    // T22.12: the black hole, as `black_hole` announced it — the client's
+    // `set_black_hole` predicts its pull, and draws it.
+    if let Some(h) = w.black_hole() {
+        let e = game_core::world::GameEvent::BlackHole {
+            tick,
+            x: h.x,
+            y: h.y,
+        };
+        out.push((crate::events::name_of(&e), crate::events::payload_of(&e, w)));
+    }
     out
 }
 

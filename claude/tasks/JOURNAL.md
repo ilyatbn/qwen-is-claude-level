@@ -6912,3 +6912,12 @@ counted in `settled`, not in `maxEasedJumpPx`. vitest red first (*"expected 10.0
 and jittered), green after. T22.10G's task file: stand-in share ≈(N−2)/N, 36–46 %/seat at ~17 fps, not harmless on slow pages.
 Dead `seq` counter removed from `fall_damage::jump_from_flat`. `--changed e5abc46 --fast` EXIT=0 (cargo 1640/0/25, vitest 1078),
 clippy EXIT=0, `thrusters-match` 1/1 (`gate-t2212-job1.txt`).
+
+## T22.12A — the black hole, Rust + wire + prediction mirror (builder, 2026-09-24)
+`world/black_hole.rs`: one `World` field (Unrolled/Due/Here), rolled on the first `Playing` tick, arrives in [end−60, end−10] s,
+eats one rock (list+mask+well), horizon zeroes health, `DeathCause::BlackHole` derived like `Void`; pull chained into `env_at`,
+gated at `Ended` by `black_hole::pulling` on both sides; respawn/vortex pickers filtered. Wire `black_hole`, catch-up, dev hook
+`debug_black_hole`; `GameCore::set_black_hole`; `WorldMirror` drops the eaten rock by centre; feed/overlay sentences. REPLAY 20.
+Plants red: server env None, no Ended gate, no horizon kill, rock kept, respawn unfiltered (needed a 2nd test — the 1st passed),
+cause not derived, mirror env None, mirror ungated, mirror keeps the rock (vitest "expected 14 to be 13"). Stale claims: task file.
+`--changed HEAD --fast` EXIT=0 (cargo 1650/0/25, vitest 1081), clippy 0, 6 related browser checks 6/6 (`gate-t2212a.txt`). B filed.

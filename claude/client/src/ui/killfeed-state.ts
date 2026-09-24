@@ -8,7 +8,7 @@
 export const KILLFEED_MAX = 5
 export const KILLFEED_LIFETIME = 6
 
-export type DeathCause = 'player' | 'self' | 'weather' | 'void' | 'radiation'
+export type DeathCause = 'player' | 'self' | 'weather' | 'void' | 'radiation' | 'black_hole'
 
 /**
  * The wire's `cause` string, narrowed to a feed cause — **the allowlist** `GameScene`
@@ -29,6 +29,7 @@ export function feedCause(cause: string, attacker: number | undefined, victim: n
     case 'weather':
     case 'void':
     case 'radiation':
+    case 'black_hole':
       return cause
     default:
       return 'player'
@@ -104,5 +105,7 @@ export function killLine(e: KillEntry): string {
   // folding it into `weather` would read "ana was killed by radiation" — true, but
   // it is the suit running flat that a player needs to learn from it.
   if (e.cause === 'radiation') return `${e.victim}'s suit ran flat (radiation)`
+  // T22.12. Its own line for the void's reason: nobody is "killed by" it.
+  if (e.cause === 'black_hole') return `${e.victim} fell into the black hole`
   return `${e.killer ?? '?'} → ${e.victim} (${e.by})`
 }

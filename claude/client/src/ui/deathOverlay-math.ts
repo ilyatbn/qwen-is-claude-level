@@ -64,6 +64,10 @@ export function causeText(
   if (info.cause.toLowerCase() === 'radiation') {
     return 'Radiation — your suit ran out of energy'
   }
+  // T22.12 (R20). Not "Killed by": you fell in.
+  if (info.cause.toLowerCase() === 'black_hole') {
+    return 'You fell into the black hole'
+  }
   return `Killed by ${weatherName(info.cause)}`
 }
 

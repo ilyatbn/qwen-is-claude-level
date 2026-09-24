@@ -112,6 +112,17 @@ export interface VortexView {
   closedAt: number | null
 }
 
+/**
+ * T22.12: the black hole as the server announced it — at the centre of the asteroid
+ * it ate. Sticky for the round, results screen included (R8.4: it stays drawn).
+ */
+export interface BlackHoleView {
+  x: number
+  y: number
+  /** `performance.now()` when the event arrived; the drawing's clock. */
+  arrivedAt: number
+}
+
 export interface MirrorStats {
   carvesApplied: number
   pendingCarves: number
@@ -147,6 +158,14 @@ export class WorldMirror {
    * the map), and a new round must (`clearVortices`).
    */
   readonly vortices: VortexView[] = []
+  /**
+   * T22.12: the black hole, once `black_hole` arrived — the core is told it
+   * (`Core.setBlackHole`) so the prediction pulls as the server does. Held here for
+   * the vortices' reason: a resync must not drop it, a new round must.
+   */
+  blackHole: BlackHoleView | null = null
+  /** The rocks `map_init` shipped, so the one the hole ate can be dropped by centre. */
+  private asteroids: MapInit['asteroids'] = []
 
   private readonly core: Core
   private nextCarveSeq = 0
@@ -170,6 +189,8 @@ export class WorldMirror {
     // The core outlives the scene (it is the registry's), so a new mirror tells
     // it the list is empty rather than inheriting the last match's pull.
     this.core.setVortices([])
+    // T22.12: nor the last match's black hole.
+    this.core.setBlackHole(null)
   }
 
   /** The vortices that pull, in opening order — what the core sums. */
@@ -183,6 +204,29 @@ export class WorldMirror {
    */
   pushVortices(): void {
     this.core.setVortices(this.pullingVortices)
+  }
+
+  /**
+   * T22.12: tell the core the hole again, and drop the rock it ate from the core's
+   * list (by centre — the event carries it, and a `map_init` sent after the arrival
+   * no longer has it, so this is idempotent). Its well goes with it, as on the server.
+   */
+  pushBlackHole(): void {
+    const h = this.blackHole
+    if (h) {
+      const kept = this.asteroids.filter((a) => a.x !== h.x || a.y !== h.y)
+      if (kept.length !== this.asteroids.length) {
+        this.asteroids = kept
+        this.core.setAsteroids(kept)
+      }
+    }
+    this.core.setBlackHole(h)
+  }
+
+  /** A new round: no black hole, no pull toward it. */
+  clearBlackHole(): void {
+    this.blackHole = null
+    this.core.setBlackHole(null)
   }
 
   /** A new round: no holes, no pull (`resetForNewRound` and an in-scene restart). */
@@ -226,6 +270,10 @@ export class WorldMirror {
     // Empty on every map but a space one, so an ordinary match installs the
     // empty list it already had.
     this.core.setAsteroids(m.asteroids)
+    // T22.12: a map sent after the hole arrived has already dropped its rock; one
+    // sent before still has it, and `pushBlackHole` drops it again by centre.
+    this.asteroids = m.asteroids
+    if (this.blackHole) this.pushBlackHole()
     // A resync restarts the carve stream: the mask we just loaded already
     // contains every carve the server has applied, so anything buffered is
     // either already baked in or about to be re-sent.
@@ -352,6 +400,12 @@ export class WorldMirror {
           this.vortices.push({ id, x: n(p['x']), y: n(p['y']), closedAt: null })
         }
         this.pushVortices()
+        break
+      }
+      case 'black_hole': {
+        // Sticky: a catch-up re-announcing it keeps the first arrival's clock.
+        if (!this.blackHole) this.blackHole = { x: n(p['x']), y: n(p['y']), arrivedAt: now }
+        this.pushBlackHole()
         break
       }
       case 'vortex_close': {
