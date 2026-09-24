@@ -6961,3 +6961,11 @@ the move (`World::dev_relocate`, dev = tick+1; plant red). F2: server test wire 
 `endedAtTick === bellEndsTick`; `+2` plant red in both (bell px arm stayed green, 1.43). F4 deadline from `ends_tick`.
 F5 doc + lobby via `world.tick =`. F6 debug_assert. Nits; `dev_place_inward_of` announced → `breach-vortex` skips settled.
 `--changed a345d45 --fast`: Rust 1668/0/25, vitest 1091; black-hole + breach-vortex ok (`gate-t2212e-*.txt`).
+
+## T22.03B — bots in space (builder, 2026-09-24)
+`bots/space.rs::steer`: wanted velocity (arrival √(2·225·d), cruise 200) vs body velocity per axis, 40 px/s dead band —
+the brake is the error's sign; fuel reserve 1.5 s except escaping; keep-outs (hole + telegraph, vortices, flare ribbon,
+fire) judged at the stopping point. Suit ≤ 50 % → visible pack beats a fight; no exploring past the rim. 32 seeds,
+per bot per round, before → after: hole 0.18 → 0.01, flare 0.05 → 0.02, vortex trips 4.88 → 1.35, dry 72.7 → 4.1 %,
+kills 1.11 → 1.82 (standard 0.47), radiation unmoved 0.59 → 0.58 (pack supply). Plants red. Stale: "no fights" (they
+fought; they died and drifted). Part B → T22.03C (ruling: molotov/toxic never selected in *any* mode, 0 damage).
