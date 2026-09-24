@@ -107,6 +107,7 @@ import { loadAudio } from '../audio/sfx'
 import { FlareClock, FogClock, LavaClock, ServerClock, ventLights } from '../render/weather-math'
 import { FlareFx, type FlareBody } from '../render/flareFx'
 import { VortexFx } from '../render/vortexFx'
+import { BlackHoleFx } from '../render/blackHoleFx'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 
@@ -221,6 +222,8 @@ function freshObserved() {
     myTrips: [] as Array<{ x: number; y: number; snapped: boolean }>,
     /** e2e only (`DEV_PROBE=1`): the server's answer to the last `debug_breach`. */
     lastBreach: null as unknown,
+    /** e2e only (`DEV_PROBE=1`, T22.12B): the server's answer to the last `debug_black_hole`. */
+    lastBlackHole: null as unknown,
   }
 }
 
@@ -437,6 +440,8 @@ export class GameScene extends Phaser.Scene {
   private flareFx!: FlareFx
   /** T22.10B: the breach vortices, drawn from `mirror.vortices`. */
   private vortexFx!: VortexFx
+  /** T22.12B: the black hole, drawn from `mirror.blackHole`. */
+  private blackHoleFx!: BlackHoleFx
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
@@ -701,6 +706,7 @@ export class GameScene extends Phaser.Scene {
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
     this.vortexFx?.clear()
+    this.blackHoleFx?.clear()
     this.flareBodies.length = 0
     this.serverClock.reset()
     this.crosshairAt = null
@@ -773,6 +779,7 @@ export class GameScene extends Phaser.Scene {
     this.flareFx = new FlareFx(this, hasWebGL(this))
     this.flareFx.setRtt(this.lastRtt)
     this.vortexFx = new VortexFx(this, hasWebGL(this))
+    this.blackHoleFx = new BlackHoleFx(this, hasWebGL(this))
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
@@ -1169,6 +1176,9 @@ export class GameScene extends Phaser.Scene {
     this.conn.on('vortex_trip', (raw) => this.onRelocated(raw, 'vortex_trip'))
     this.conn.on('debug_breach', (raw) => {
       this.observed.lastBreach = raw
+    })
+    this.conn.on('debug_black_hole', (raw) => {
+      this.observed.lastBlackHole = raw
     })
     this.conn.on('respawn', (raw) => {
       this.observed.respawns++
@@ -2216,6 +2226,8 @@ export class GameScene extends Phaser.Scene {
       this.flareBodies.length = 0
       // T22.10B: the vortices, pulling and fading, where `vortex_open` put them.
       this.vortexFx.update(this.mirror.vortices, performance.now(), this.time.now / 1000)
+      // T22.12B: the black hole where `black_hole` put it — results screen too (R8.4).
+      this.blackHoleFx.update(this.mirror.blackHole, performance.now(), this.time.now / 1000)
       // T22.08D F5: the ribbon has gone and only burns are finishing — say so.
       if (this.flareClock.runningId >= 0) this.topHud?.setEffectTail(this.flareClock.runningId, this.flareFx.state.tail)
     }
@@ -3042,6 +3054,21 @@ export class GameScene extends Phaser.Scene {
         self.observed.lastBreach = null
         self.conn.sendRaw('debug_breach', {})
       },
+      /** e2e only (§C2, T22.12B): hide the black hole for a same-instant control frame. */
+      showBlackHole(on: boolean) {
+        self.blackHoleFx.setHidden(!on)
+        return self.blackHoleFx.state
+      },
+      /**
+       * e2e only (`DEV_PROBE=1`, T22.12B): bring the black hole now (it eats the rock
+       * nearest this player) and, with `dist`, put this player at rest that far from it.
+       * The answer lands in `debug().blackHole.lastProbe`; the hole arrives as a real one
+       * does, through `black_hole` and the carve stream.
+       */
+      debugBlackHole(dist?: number) {
+        self.observed.lastBlackHole = null
+        self.conn.sendRaw('debug_black_hole', dist === undefined ? {} : { dist })
+      },
       /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */
       showFlare(on: boolean) {
         self.flareFx.setHidden(!on)
@@ -3604,6 +3631,15 @@ export class GameScene extends Phaser.Scene {
           // T22.10B: the list the core sums (opening order), what the layer drew,
           // the relocations heard, and the predictor's corrections — the
           // rubber-band a vortex the client was not told about produces.
+          // T22.12B: the hole the core pulls toward, what the layer drew, the server's
+          // last probe answer, and the rocks the core still sums.
+          blackHole: {
+            hole: self.mirror.blackHole ? { ...self.mirror.blackHole } : null,
+            fx: self.blackHoleFx?.state ?? null,
+            lastProbe: self.observed.lastBlackHole,
+            asteroids: self.core.meta.asteroids.map((a) => ({ x: a.x, y: a.y })),
+            checksums: { ...self.mirror.stats },
+          },
           vortex: {
             list: self.mirror.vortices.map((v) => ({ ...v })),
             fx: self.vortexFx?.state ?? null,

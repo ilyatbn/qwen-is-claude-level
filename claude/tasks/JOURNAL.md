@@ -6921,3 +6921,11 @@ gated at `Ended` by `black_hole::pulling` on both sides; respawn/vortex pickers 
 Plants red: server env None, no Ended gate, no horizon kill, rock kept, respawn unfiltered (needed a 2nd test — the 1st passed),
 cause not derived, mirror env None, mirror ungated, mirror keeps the rock (vitest "expected 14 to be 13"). Stale claims: task file.
 `--changed HEAD --fast` EXIT=0 (cargo 1650/0/25, vitest 1081), clippy 0, 6 related browser checks 6/6 (`gate-t2212a.txt`). B filed.
+
+## T22.12B — the black hole on screen + `black-hole` check (builder, 2026-09-24)
+`blackHoleFx.ts`: black disc = horizon, solid accretion ring, capture ring, glow; both paths; drawn after the bell. `black-hole`
+check (DEV_PROBE, solo Space): hole + eaten rock agree at both ends, checksum agrees after the carve, no rubber-band while pulled
+(ack ≤ ε+√2 — wire truncation, measured — and ≤⅓ corrected; untold plant red 5.3 px, 9/9), death named in feed + overlay (pixels),
+respawn outside reach, cannot escape from 0.9 × capture holding thrust away, ring/disc on pixels both paths, frozen at the bell.
+Runs: vitest 4/4; black-hole 1/1; `--changed 5a2496e --fast` EXIT=0 (vitest 1085); 7 related checks 7/7 (`gate-t2212b.txt`).
+Shots: shots/black-hole-{match-flat,match-shader,death,ended}.png — looked at; shader seam fixed after the first look.

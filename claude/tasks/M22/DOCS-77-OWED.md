@@ -46,6 +46,16 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    zero-g body re-anchored on it drifts past `RECONCILE_EPSILON_PX` within ~1.5 s at ~500 px/s (T22.10F,
    `thrusters-match`'s results screen). A finer quantum would need a wire change.
 
+## The black hole (T22.12A/B)
+7. **New constants:** `BLACK_HOLE_WINDOW` 60, `BLACK_HOLE_LATEST` 10, `BLACK_HOLE_HORIZON_R` = `SPACE_ASTEROID_R_MAX`,
+   `BLACK_HOLE_CAPTURE_R` = 2 × horizon, `BLACK_HOLE_REACH` = 2 × capture, `BLACK_HOLE_THRUST_BOUND` = UP + SIDE,
+   `BLACK_HOLE_ACCEL_MAX` = 2 × bound. **New event** `black_hole {tick, x, y}` (Everyone; also in the join catch-up);
+   **new death cause** `"black_hole"`; dev-only `debug_black_hole {dist?}`. `REPLAY_VERSION` 20.
+8. **Rules for docs/13-or-a-space-section:** one per space round, arriving uniformly in `[end − 60, end − 10]` s, at the
+   centre of one asteroid it removes (list, mask, well) — never the last one; pull through the shared attractor sum;
+   inside the horizon death; inside the capture radius no thrust escapes (sideways the pull wins further out, ≈213 px);
+   frozen and still drawn after the bell; respawns and vortex trips never inside its reach.
+
 ## Other M22 points already recorded elsewhere
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).
 - `docs/13`, `docs/14`, `docs/10` describe behaviour space overrides; `docs/20-player-movement.md` still refuses fall

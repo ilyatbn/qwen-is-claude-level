@@ -359,6 +359,11 @@ export const CHECKS = [
   // shows), the trip inside the rim, the capture ring painted in both paths against a
   // hidden frame, and the minimap unchanged. Standalone: its own server.
   { name: 'breach-vortex', file: 'scripts/checks/breach-vortex.mjs', standalone: true },
+  // T22.12B: the black hole in a real match on a DEV_PROBE server — where the server
+  // put it and the rock it ate at both ends, no rubber-band while it pulls, the named
+  // death (feed + overlay), no escape from inside the capture radius, the disc and ring
+  // painted in both paths against a hidden frame, frozen at the bell. Standalone.
+  { name: 'black-hole', file: 'scripts/checks/black-hole.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.
