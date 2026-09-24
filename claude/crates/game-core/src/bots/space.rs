@@ -82,12 +82,9 @@ pub(super) fn flies(world: &World, me: &PlayerState) -> bool {
 /// the disc stays as the bots' margin: a bot flies through a capped pull slowly*).
 /// Spent vortices do not pull; a trip is survivable, so they are not worth fuel.
 fn keep_out(world: &World) -> impl Iterator<Item = (Vec2, f32)> + '_ {
-    let hole = [world.black_hole(), world.black_hole_warned_at()]
-        .into_iter()
-        .flatten()
-        .map(|h| (h, BLACK_HOLE_REACH));
+    let hole = world.black_hole_site().map(|h| (h, BLACK_HOLE_REACH));
     let vortices = world.vortices.iter().map(|v| (v.pos, VORTEX_REACH * 0.5));
-    hole.chain(vortices)
+    hole.into_iter().chain(vortices)
 }
 
 /// Is `at` somewhere a bot must not go? Inside a keep-out disc plus the margin.

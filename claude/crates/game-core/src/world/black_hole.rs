@@ -182,6 +182,19 @@ impl World {
         self.black_hole = BlackHole::Here { pos };
     }
 
+    /// **Where the hole is or is about to be** — telegraphed or here (H2, T22.14A).
+    /// The site every placement keeps clear of: the respawn, the mid-round join and
+    /// the vortex's destination. They read [`World::black_hole`], which is `None`
+    /// while the hole is only warned, so a player could be put where it opened
+    /// `BLACK_HOLE_TELEGRAPH` seconds later and die with no warning they could act
+    /// on. The bots' keep-outs read it too.
+    pub fn black_hole_site(&self) -> Option<Vec2> {
+        match self.black_hole {
+            BlackHole::Warned { pos, .. } | BlackHole::Here { pos } => Some(pos),
+            BlackHole::Unrolled | BlackHole::Due { .. } => None,
+        }
+    }
+
     /// Where it will open, while it is telegraphed (R93).
     pub fn black_hole_warned_at(&self) -> Option<Vec2> {
         match self.black_hole {
@@ -202,7 +215,7 @@ impl World {
         }
         if let BlackHole::Due { at, pick } = self.black_hole {
             if now >= at - BLACK_HOLE_TELEGRAPH {
-                let (index, pos) = self.black_hole_site(pick as usize);
+                let (index, pos) = self.site_for_pick(pick as usize);
                 self.warn_black_hole(at, index, pos);
             }
         }
@@ -224,7 +237,7 @@ impl World {
     /// Which rock `pick` eats and where the hole opens: the rock's index in the list
     /// as it stands and its centre — or, with fewer than two rocks, the arena centre
     /// and no rock (never the last asteroid; the module doc says why).
-    fn black_hole_site(&self, pick: usize) -> (u32, Vec2) {
+    fn site_for_pick(&self, pick: usize) -> (u32, Vec2) {
         let rocks = &self.map.meta.asteroids;
         if rocks.len() >= 2 {
             let i = pick % rocks.len();
@@ -282,7 +295,7 @@ impl World {
             return None;
         }
         let pick = self.rock_nearest(near, BLACK_HOLE_REACH);
-        let (index, pos) = self.black_hole_site(pick);
+        let (index, pos) = self.site_for_pick(pick);
         self.warn_black_hole(now + BLACK_HOLE_TELEGRAPH, index, pos);
         Some(pos)
     }
@@ -349,7 +362,7 @@ impl World {
     fn arrive_black_hole(&mut self, pick: usize, now: f32) {
         let n = self.map.meta.asteroids.len();
         let pos = if n >= 2 {
-            // `pick % n` is `pick` itself when it came from `black_hole_site`.
+            // `pick % n` is `pick` itself when it came from `site_for_pick`.
             let a = self.map.meta.asteroids.remove(pick % n);
             // `+ 2`: the stamp keeps every pixel inside `r`, and rounding may put
             // one on it (`stamp_asteroid`); asteroids are `SPACE_ASTEROID_GAP_MIN`
@@ -1188,6 +1201,71 @@ mod tests {
             clearance(Some(spot), at) >= 0.0,
             "respawned {:.1} px from a hole sitting on the first spawn point",
             (at - spot).len()
+        );
+    }
+
+    /// **H2 (T22.14A): nor while it is only telegraphed.** The same two live bindings
+    /// — a respawn with the first spawn point the picker's choice, and a mid-round
+    /// join with the unfiltered joiner's point — with the hole **warned** on that
+    /// point instead of here: it opens there `BLACK_HOLE_TELEGRAPH` seconds later, so
+    /// a body put there dies with no warning it could act on. Held warned for the
+    /// whole test (its `at` far off), so what is asserted is the placement rule.
+    #[test]
+    fn nobody_is_put_where_a_telegraphed_hole_will_open() {
+        let mut w = world(GravityMode::Space, 13, 600.0);
+        let first = w.map.meta.spawn_points[0];
+        let spot =
+            crate::player::state::surface_to_centre(Vec2::new(first.x as f32, first.y as f32));
+        let unfiltered = crate::player::state::choose_respawn(&w.map, &[], &mut w.rng.clone());
+        assert_eq!(
+            unfiltered, spot,
+            "control: the picker's first choice is not the first point"
+        );
+        let warned = |pos| BlackHole::Warned {
+            at: 1.0e6,
+            index: 0,
+            pos,
+        };
+        w.black_hole = warned(spot);
+        w.player_mut(0).expect("ana").health = 0.0;
+        let mut at = None;
+        for _ in 0..((crate::constants::RESPAWN_DELAY + 1.0) / SIM_DT) as usize {
+            step(&mut w, 0);
+            for e in w.drain_events() {
+                if let GameEvent::Respawn { x, y, .. } = e {
+                    at = Some(Vec2::new(x, y));
+                }
+            }
+            if at.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            w.black_hole_warned_at(),
+            Some(spot),
+            "premise: still only telegraphed"
+        );
+        let at = at.expect("never respawned");
+        assert!(
+            clearance(Some(spot), at) >= 0.0,
+            "respawned {:.1} px from where a telegraphed hole will open",
+            (at - spot).len()
+        );
+        // The join.
+        let living: Vec<Vec2> = w
+            .players
+            .iter()
+            .filter(|p| p.alive)
+            .map(|p| p.body.pos)
+            .collect();
+        let joiner = crate::player::state::choose_respawn(&w.map, &living, &mut w.rng.clone());
+        w.black_hole = warned(joiner);
+        w.add_player(1, 0, "bo".into());
+        let at = w.player(1).expect("bo").body.pos;
+        assert!(
+            clearance(Some(joiner), at) >= 0.0,
+            "joined {:.1} px from where a telegraphed hole will open",
+            (at - joiner).len()
         );
     }
 

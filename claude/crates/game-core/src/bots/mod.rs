@@ -795,10 +795,11 @@ impl Bot {
                 if d > FOV_DAY || !self.reachable(world, pos, it.pos) {
                     continue;
                 }
-                // T22.12C F2: never shop inside the black hole's reach — the one line
+                // T22.12C F2: never shop inside the black hole's reach (or where a
+                // telegraphed one will open, T22.14A H2) — the one line
                 // of avoidance that needs no flight model. Steering out of the pull
                 // is T22.03B's (bots fly in space there, not here).
-                if crate::world::black_hole::clearance(world.black_hole(), it.pos) < 0.0 {
+                if crate::world::black_hole::clearance(world.black_hole_site(), it.pos) < 0.0 {
                     continue;
                 }
                 // T22.03G: nothing the pickup would refuse (a full counter or stack) —

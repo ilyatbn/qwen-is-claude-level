@@ -599,11 +599,22 @@ mod world_tests {
     #[test]
     fn a_trip_never_lands_inside_the_black_holes_reach() {
         use crate::world::black_hole::{clearance, BlackHole};
-        let trip = |hole: Option<Vec2>| {
+        // H2 (T22.14A): `warned` puts the hole on the spot **telegraphed** rather
+        // than here — it opens there two seconds later, so a trip landing there is
+        // the same death with no warning.
+        let trip = |hole: Option<(Vec2, bool)>| {
             let mut w = space_world(7);
             three_vortices(&mut w);
-            if let Some(pos) = hole {
-                w.black_hole = BlackHole::Here { pos };
+            if let Some((pos, warned)) = hole {
+                w.black_hole = if warned {
+                    BlackHole::Warned {
+                        at: 1.0e6,
+                        index: 0,
+                        pos,
+                    }
+                } else {
+                    BlackHole::Here { pos }
+                };
             }
             let v = w.vortices[0].pos;
             w.players[0].body = Body::new(v);
@@ -622,12 +633,15 @@ mod world_tests {
             first,
             "control: the same trip did not land in the same place"
         );
-        let dest = trip(Some(first));
-        assert!(
-            clearance(Some(first), dest) >= 0.0,
-            "a trip landed {:.1} px from a hole on the spot the unfiltered draw picks",
-            (dest - first).len()
-        );
+        for warned in [false, true] {
+            let dest = trip(Some((first, warned)));
+            assert!(
+                clearance(Some(first), dest) >= 0.0,
+                "a trip landed {:.1} px from a hole (warned {warned}) on the spot the unfiltered \
+                 draw picks",
+                (dest - first).len()
+            );
+        }
     }
 
     /// **R88: a vortex the cap displaced stops pulling and keeps catching.** Four

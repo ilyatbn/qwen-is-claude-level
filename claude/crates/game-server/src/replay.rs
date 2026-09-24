@@ -291,8 +291,9 @@ pub const HEADER_BYTES: usize = 46;
 ///
 /// **25 (T22.14A, the final audit's hazards)**: the silent-divergence shape. Inside
 /// the black hole's reach no vortex pulls (H1), so a v24 space recording diverges the
-/// first tick a body sits inside the reach while a vortex's pull reached it. No new
-/// tag, no layout change.
+/// first tick a body sits inside the reach while a vortex's pull reached it; a
+/// respawn, join or vortex trip during the telegraph keeps clear of where the hole
+/// will open (H2). No new tag, no layout change.
 pub const REPLAY_VERSION: u16 = 25;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.

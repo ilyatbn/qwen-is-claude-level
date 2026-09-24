@@ -1287,7 +1287,8 @@ impl World {
                 .filter(|p| p.alive)
                 .map(|p| p.body.pos)
                 .collect();
-            let hole = self.black_hole.pos();
+            // H2 (T22.14A): telegraphed counts — it opens there in two seconds.
+            let hole = self.black_hole_site();
             let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
             return choose_respawn_clear(&self.map, &living, &mut self.rng, &clear);
         }
@@ -3857,7 +3858,8 @@ impl World {
                 continue;
             };
             let (pulling, spent) = (&self.vortices, &self.spent_vortices);
-            let hole = self.black_hole.pos();
+            // H2 (T22.14A): telegraphed counts — it opens there in two seconds.
+            let hole = self.black_hole_site();
             let clear = |site: crate::math::Point| {
                 let centre = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
                 // T22.12: nor into the black hole's reach.
@@ -4052,7 +4054,8 @@ impl World {
             // carved_to_pieces` is the assertion that it stays that way.
             // T22.12: never inside the hole's reach — a respawn into it is a
             // death with no explanation.
-            let hole = self.black_hole.pos();
+            // H2 (T22.14A): telegraphed counts — it opens there in two seconds.
+            let hole = self.black_hole_site();
             let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
             let choice = choose_respawn_pad_clear(&self.map, &living, &mut self.rng, &clear);
             if choice.pad.is_none() {
