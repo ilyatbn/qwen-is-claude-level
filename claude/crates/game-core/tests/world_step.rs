@@ -683,7 +683,7 @@ fn catch_up_credit_cannot_be_banked_for_a_later_burst() {
     let then_burst = |w: &mut World, honest: u32| {
         let mut sent = 0u32;
         let mut worst = 0u32;
-        let mut step = |w: &mut World, sent: u32, worst: &mut u32| {
+        let step = |w: &mut World, sent: u32, worst: &mut u32| {
             let before = consumed(w, sent);
             w.step(SIM_DT);
             *worst = (*worst).max(consumed(w, sent) - before);
