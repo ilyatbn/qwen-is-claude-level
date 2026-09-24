@@ -17,6 +17,8 @@
  * **Both paint the capture ring solid**, at `VORTEX_CAPTURE_R` — what takes you —
  * and `breach-vortex` asserts it on the rendered frame in both paths, against the
  * same instant with the layer hidden, plus a control point clear of it (§C2).
+ * **Nothing else is a line** (`R98`, T22.10I): the swirl fades to nothing by its outer
+ * radius (`swirlFade`) on both paths, and `breach-vortex` asserts no edge there.
  *
  * A vortex that stopped pulling (`vortex_close`, R88) fades over `VORTEX_FADE_MS`.
  */
@@ -25,7 +27,21 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
-import { VORTEX_ARMS, VORTEX_RING_COLOR, VORTEX_RING_W, armPhase, rgbOf, spiralArm, vortexFade, vortexRadii } from './vortexFx-math'
+import {
+  VORTEX_ARMS,
+  VORTEX_RING_COLOR,
+  VORTEX_RING_W,
+  VORTEX_SWIRL_FADE_FROM,
+  armPhase,
+  rgbOf,
+  spiralArm,
+  swirlFade,
+  vortexFade,
+  vortexRadii,
+} from './vortexFx-math'
+
+/** Discs the flat halo is stacked from, so it fades out instead of ending in an edge (R98). Drawing only. */
+const HALO_STEPS = 10
 
 /** One vortex to draw — `WorldMirror`'s `VortexView`, structurally. */
 export interface VortexDraw {
@@ -62,9 +78,10 @@ precision mediump float;
 
 uniform vec2 resolution;
 uniform float time;
-// VORTEX_CAPTURE_R and VORTEX_REACH / 2, world px.
+// VORTEX_CAPTURE_R and VORTEX_REACH / 2, world px; fadeFrom is where swirlFade starts.
 uniform float capture;
 uniform float outer;
+uniform float fadeFrom;
 uniform float ringW;
 uniform float strength;
 uniform float arms;
@@ -82,7 +99,8 @@ void main() {
   float wind = log(max(r, 1.0) / (capture * 0.25)) / log(outer / (capture * 0.25));
   float arm = 0.5 + 0.5 * sin(arms * (a - 6.2831853 * 1.25 * wind) + spin * time * arms);
   arm = pow(arm, 4.0);
-  float reach = 1.0 - smoothstep(capture, outer, r);
+  // swirlFade (R98): decoration, gone by outer with no edge there.
+  float reach = 1.0 - smoothstep(fadeFrom, outer, r);
   float swirl = arm * reach;
   // The ring: solid across ringW, so the probe band is painted whatever the swirl does.
   float ring = 1.0 - smoothstep(ringW * 0.5, ringW * 0.5 + 1.5, abs(r - capture));
@@ -177,21 +195,35 @@ export class VortexFx {
   private paintFlat(v: VortexDraw, fade: number, r: { capture: number; outer: number }, t: number): void {
     const g = this.gfx
     const inner = r.capture * 0.25
-    // A faint violet halo out to where thrust stops winning.
-    this.glow.fillStyle(0x5020a0, 0.16 * fade)
-    this.glow.fillCircle(v.x, v.y, r.outer)
-    // The arms, added so they glow over the dark.
+    // A faint violet halo — decoration (R98), not a line: stacked discs whose summed
+    // alpha follows `swirlFade`, so the outermost adds almost nothing and no edge reads
+    // as a boundary. (ADD blend: the discs sum.)
+    for (let i = HALO_STEPS; i >= 1; i--) {
+      const rad = r.capture + ((r.outer - r.capture) * i) / HALO_STEPS
+      const step = swirlFade(rad - (r.outer - r.capture) / HALO_STEPS, r.capture, r.outer) - swirlFade(rad, r.capture, r.outer)
+      if (step > 0) {
+        this.glow.fillStyle(0x5020a0, 0.16 * step * fade)
+        this.glow.fillCircle(v.x, v.y, rad)
+      }
+    }
+    // The arms, added so they glow over the dark, each segment as strong as `swirlFade`
+    // at its **outer** end — never brighter anywhere along it than the fade allows, so
+    // they thin out rather than stop on a circle (the samples are far apart out there:
+    // the inner end's fade left a visible stub at the edge, measured 51 in green).
     for (let k = 0; k < VORTEX_ARMS; k++) {
       spiralArm(v.x, v.y, inner, r.outer, armPhase(k, t), this.arm)
       for (const [w, color, alpha] of [
         [9, 0x6a2cff, 0.35],
         [3, 0x78f0ff, 0.8],
       ] as const) {
-        this.glow.lineStyle(w, color, alpha * fade)
-        this.glow.beginPath()
-        this.glow.moveTo(this.arm[0]!, this.arm[1]!)
-        for (let i = 2; i + 1 < this.arm.length; i += 2) this.glow.lineTo(this.arm[i]!, this.arm[i + 1]!)
-        this.glow.strokePath()
+        for (let i = 0; i + 3 < this.arm.length; i += 2) {
+          const x1 = this.arm[i + 2]!
+          const y1 = this.arm[i + 3]!
+          const s = swirlFade(Math.hypot(x1 - v.x, y1 - v.y), r.capture, r.outer)
+          if (s <= 0) break
+          this.glow.lineStyle(w, color, alpha * s * fade)
+          this.glow.lineBetween(this.arm[i]!, this.arm[i + 1]!, x1, y1)
+        }
       }
     }
     // The dark core, then the ring that takes you — solid, the probe band.
@@ -207,6 +239,7 @@ export class VortexFx {
       const base = new Phaser.Display.BaseShader(`vortex${v.id}`, vortexFragment(), undefined, {
         capture: { type: '1f', value: r.capture },
         outer: { type: '1f', value: r.outer },
+        fadeFrom: { type: '1f', value: r.capture + (r.outer - r.capture) * VORTEX_SWIRL_FADE_FROM },
         ringW: { type: '1f', value: VORTEX_RING_W },
         strength: { type: '1f', value: 1 },
         arms: { type: '1f', value: VORTEX_ARMS },

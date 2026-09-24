@@ -30,7 +30,11 @@
  * 4. **coverage in both of GameScene's render paths** — the capture ring (`VORTEX_CAPTURE_R`,
  *    what takes you) is painted where `vortex_open` put it, against the same frozen
  *    instant with the layer hidden, and a control point clear of the drawing does not
- *    change (§C2). The path is read off `vortex.fx.shader`, what drew the frame;
+ *    change (§C2). The path is read off `vortex.fx.shader`, what drew the frame.
+ *    **And no line at `VORTEX_REACH / 2`** (`R98`, T22.10I): since `R97` nothing happens
+ *    there, so the swirl must have faded out before it — the layer's contribution just
+ *    inside and at that radius stays under `EDGE_MAX`, while the swirl is still drawn
+ *    half-way out (the presence control, so a vortex drawing nothing cannot pass);
  * 5. **not on the minimap** (R9, point 5) — the minimap's own DOM canvas, photographed
  *    in the same shown/hidden pair, does not change while the world canvas does.
  */
@@ -59,6 +63,20 @@ const RING_TOLERANCE = 12
  * a missing ring. With the ring deleted the flat path measured 0 of 17.
  */
 const RING_COLOUR_SHARE = 0.8
+/**
+ * R98: the largest per-channel change the layer may make at, and `EDGE_IN` world px
+ * inside, the swirl's outer radius `VORTEX_REACH / 2` — no edge there reads as a line.
+ * The old hard-edged halo alone made ~25 in blue (0.16 × 0x a0, additive).
+ */
+const EDGE_MAX = 12
+/** World px inside `VORTEX_REACH / 2` of the second edge probe. */
+const EDGE_IN = 6
+/**
+ * Of the edge probes, the share that must be in view. Lower than the ring's: at 1280×720
+ * the outer radius runs off the top and bottom sixths (measured 12 and 16 of 48 in view,
+ * sandbox and match) — still a dozen points across both sides of the swirl.
+ */
+const EDGE_MIN_ON_SCREEN = 0.2
 /** Of the ring probes, at least this share must be in view for the coverage to mean anything. */
 const MIN_ON_SCREEN = 0.5
 /** How long the pull may take to deliver the placed player to the vortex, s. */
@@ -123,6 +141,22 @@ async function coverage(page, k, v, label, wantShader) {
       if (await underDom(s)) hidden++
       else shown.push({ x: s.x, y: s.y })
     }
+    // R98: probes at, and just inside, the swirl's outer radius; and half-way out
+    // between the ring and it, where the swirl must still be drawn.
+    const outer = k.VORTEX_REACH / 2
+    const edge = []
+    const mid = []
+    for (let i = 0; i < RING_PROBES; i++) {
+      const a = ((i + 0.5) / RING_PROBES) * Math.PI * 2
+      for (const [list, r] of [
+        [edge, outer],
+        [edge, outer - EDGE_IN],
+        [mid, (outer + k.VORTEX_CAPTURE_R) / 2],
+      ]) {
+        const s = await toScreen(page, v.x + Math.cos(a) * r, v.y + Math.sin(a) * r)
+        if (inView(s) && !(await underDom(s))) list.push({ x: s.x, y: s.y })
+      }
+    }
     // The control: clear of the swirl's outer edge (`VORTEX_REACH / 2`), in view.
     let ctrl = null
     for (const a of [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, (3 * Math.PI) / 4]) {
@@ -148,6 +182,15 @@ async function coverage(page, k, v, label, wantShader) {
     await page.screenshot({ path: join(shotsDir, `breach-vortex-${label}-hidden.png`) })
     await page.evaluate(() => window.__game.showVortices(true))
     const cmp = await comparePhotos(page, on, off, { points: ctrl ? [...shown, { x: ctrl.x, y: ctrl.y }] : shown })
+    const rim = await comparePhotos(page, on, off, { points: [...edge, ...mid] })
+    const edgeD = rim.detail.slice(0, edge.length)
+    const midMoved = rim.points.slice(edge.length).filter(Boolean).length
+    const edgeWorst = edgeD.reduce((m, q) => Math.max(m, q.peak), 0)
+    if (edge.length < RING_PROBES * 2 * EDGE_MIN_ON_SCREEN) fail(`${label}: only ${edge.length} of ${RING_PROBES * 2} swirl-edge points in view — its absence claim would mean nothing`)
+    else if (midMoved === 0) fail(`${label}: control — the swirl is not drawn half-way out (0 of ${mid.length} points changed), so no edge proves nothing`)
+    else if (edgeWorst > EDGE_MAX)
+      fail(`${label}: the swirl draws a line at VORTEX_REACH / 2 (R98) — ${edgeD.filter((q) => q.peak > EDGE_MAX).length} of ${edge.length} edge points changed by more than ${EDGE_MAX}: ${JSON.stringify(edgeD.filter((q) => q.peak > EDGE_MAX).slice(0, 3))}`)
+    else ok(`${label}: no line at VORTEX_REACH / 2 — worst edge change ${edgeWorst} ≤ ${EDGE_MAX} over ${edge.length} points; the swirl drawn at ${midMoved}/${mid.length} half-way points`)
     const painted = cmp.points.slice(0, shown.length).filter(Boolean).length
     // **The ring's own colour, not merely a change**: the halo and the arms move
     // these pixels too (measured: every ring probe changed on the flat path with the

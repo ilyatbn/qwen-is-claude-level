@@ -7029,3 +7029,10 @@ R97: `attractors::capped_at` sums wells + live vortices under one `SPACE_WELL_AC
 default). F2: vortex exclusion removed, any-fuel runs 0/1/0/0/0, bound 0.01 (plant 0.042). F4: winged stuck = displacement per
 window, give-up after 4 legs, legs keep out of void/keep-outs; walkers keep per-tick (load-bearing). F5: `Counter::of`, pickup
 refuses via `would_take`, all-ITEMS unit. F6 done. Filed: pits under wander cells, vertical blocks, walker hop, swirl ruling.
+
+## T22.10I — the ring marks the capture (builder, 2026-09-25)
+R98: the ring was already at `VORTEX_CAPTURE_R`; the line at `REACH / 2` was the flat halo's hard edge (25/channel) and the
+arms ending on it. `swirlFade` (smoothstep to 0 at outer) drives stacked halo discs, per-segment arm alpha (outer end —
+the inner end left a 51 stub) and the shader's `fadeFrom`. `breach-vortex`: no change > 12 at/inside REACH/2, both paths,
+presence control half-way out. Plants red: old flat (25), shader ring (232), no swirl (control). Green 3/3. Rubber-band arm
+red once in six (2.12 px ack error) — drawing-only change; reported, not parked.

@@ -2,11 +2,14 @@
  * T22.10B — the breach vortex's picture, as pure numbers. `vortexFx.ts` paints what
  * these decide; nothing here knows Phaser, so all of it runs under vitest.
  *
- * **What you see is what pulls** (`T22.10B-the-vortex-on-screen.md`, point 2): the
- * bright ring sits at `VORTEX_CAPTURE_R` — cross it and you are taken — and the
- * swirl reaches out to `VORTEX_REACH / 2`, where thrust stops beating the pull
- * (`VORTEX_ACCEL_MAX`'s basis). Both radii come from the core's constants; the
- * numbers below are only how it looks.
+ * **The one line is the one rule** (`R98`, T22.10I; the black hole's `R90` principle):
+ * the bright ring sits at `VORTEX_CAPTURE_R` — cross it and you are taken. Since `R97`
+ * (T22.03I) nothing else about the vortex is a line: outside the capture radius thrust
+ * always wins, so `VORTEX_REACH / 2` marks nothing. The swirl is **decoration** inside
+ * the reach and fades to nothing before its outer radius (`swirlFade`), so no edge there
+ * reads as a boundary. (Before `R98` it was drawn as "where thrust stops winning", with
+ * a hard-edged halo at `VORTEX_REACH / 2`.) Both radii come from the core's constants;
+ * the numbers below are only how it looks.
  */
 
 /** Spiral arms per vortex. Drawing only. */
@@ -37,9 +40,30 @@ export const VORTEX_RING_W = 6
  */
 export const VORTEX_FADE_MS = 1500
 
-/** The two radii the drawing is sized from: what takes you, and where the swirl ends. */
+/**
+ * The two radii the drawing is sized from: what takes you (the ring), and where the
+ * decorative swirl has faded out (`R98`: not a boundary, and never drawn as an edge).
+ */
 export function vortexRadii(k: { VORTEX_CAPTURE_R: number; VORTEX_REACH: number }): { capture: number; outer: number } {
   return { capture: k.VORTEX_CAPTURE_R, outer: k.VORTEX_REACH / 2 }
+}
+
+/**
+ * Where the swirl fades to nothing (`R98`): the share of `[capture, outer]` it has
+ * begun fading by, and where it is gone. Drawing only.
+ */
+export const VORTEX_SWIRL_FADE_FROM = 0.35
+/**
+ * The swirl's strength at `r` — 1 inside `VORTEX_SWIRL_FADE_FROM` of the way out from
+ * the ring, falling smoothly to 0 **at** `outer`, so nothing drawn there has an edge.
+ * Both paths use this shape (the shader's `smoothstep` is the same curve).
+ */
+export function swirlFade(r: number, capture: number, outer: number): number {
+  const from = capture + (outer - capture) * VORTEX_SWIRL_FADE_FROM
+  if (r <= from) return 1
+  if (r >= outer) return 0
+  const u = (r - from) / (outer - from)
+  return 1 - u * u * (3 - 2 * u)
 }
 
 /** 1 while it pulls; falling to 0 over `VORTEX_FADE_MS` once it stopped (`closedAt`). */

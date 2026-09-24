@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core } from '../core'
-import { VORTEX_ARM_SAMPLES, VORTEX_FADE_MS, armPhase, spiralArm, vortexFade, vortexRadii } from './vortexFx-math'
+import { VORTEX_ARM_SAMPLES, VORTEX_FADE_MS, VORTEX_SWIRL_FADE_FROM, armPhase, spiralArm, swirlFade, vortexFade, vortexRadii } from './vortexFx-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -10,7 +10,7 @@ beforeAll(async () => {
 }, 60_000)
 
 describe('the vortex drawing', () => {
-  it('rings what takes you and swirls to where thrust stops winning', () => {
+  it('rings what takes you; the swirl is sized inside the reach', () => {
     const k = C()
     const r = vortexRadii(k)
     // Not NaN: the constants reached the client (an absent key reads undefined).
@@ -18,6 +18,25 @@ describe('the vortex drawing', () => {
     expect(r.capture).toBe(k.VORTEX_CAPTURE_R)
     expect(r.outer).toBe(k.VORTEX_REACH / 2)
     expect(r.outer).toBeGreaterThan(r.capture)
+  })
+
+  it('the swirl fades to nothing at its outer radius, with no step on the way (R98)', () => {
+    const { capture, outer } = vortexRadii(C())
+    const from = capture + (outer - capture) * VORTEX_SWIRL_FADE_FROM
+    expect(swirlFade(capture, capture, outer)).toBe(1)
+    expect(swirlFade(from, capture, outer)).toBe(1)
+    expect(swirlFade(outer, capture, outer)).toBe(0)
+    // Continuous and falling: no sample-to-sample step bigger than a smooth curve makes.
+    const n = 200
+    let prev = 1
+    for (let i = 0; i <= n; i++) {
+      const f = swirlFade(capture + ((outer - capture) * i) / n, capture, outer)
+      expect(f).toBeLessThanOrEqual(prev)
+      expect(prev - f).toBeLessThan(3 / n / (1 - VORTEX_SWIRL_FADE_FROM))
+      prev = f
+    }
+    // Nearly gone just inside the edge — what `breach-vortex` photographs there.
+    expect(swirlFade(outer - (outer - capture) * 0.05, capture, outer)).toBeLessThan(0.02)
   })
 
   it('an arm runs from the inner radius to the outer one, whatever the phase', () => {
