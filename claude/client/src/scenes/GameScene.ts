@@ -553,6 +553,12 @@ export class GameScene extends Phaser.Scene {
   private serverDarkness = 0
   /** T22.06: the darkness the last frame was drawn with — `sceneDarkness`'s answer, not the byte. */
   private drawnDarkness = 0
+  /**
+   * e2e only (T22.00H, `holdSky`): the round time the sky is drawn at, or `null` to
+   * follow `roundTime`. Only the sky and its parallax band read it — darkness,
+   * fog and everything else keep the live clock.
+   */
+  private skyHeldAt: number | null = null
 
   private observed = freshObserved()
 
@@ -2164,7 +2170,7 @@ export class GameScene extends Phaser.Scene {
     this.drawnDarkness = darkness
     // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
     this.sky.parallax.setWeatherShade(this.world?.weather.ambientIntensity ?? 0, this.world?.weather.toxicIntensity ?? 0)
-    this.sky.update(this.roundTime, darkness, C().NIGHT_DARKNESS, space)
+    this.sky.update(this.skyHeldAt ?? this.roundTime, darkness, C().NIGHT_DARKNESS, space)
 
     this.death.update(
       !this.meAlive,
@@ -3061,6 +3067,20 @@ export class GameScene extends Phaser.Scene {
        */
       cloudsAt(t: number) {
         return self.sky?.parallax.cloudsAt(t) ?? []
+      },
+      /**
+       * e2e only (T22.00H): draw the sky at round time `t` until `null` releases it.
+       *
+       * The day cycle moves the sky's gradient on `roundTime` (`sky-math.ts`,
+       * `KEYFRAMES`), fastest in the first `0.12 * CYCLE_LENGTH` seconds of a round.
+       * A check photographing a band of sky across a running scene cannot call it a
+       * still control otherwise: `beams-shader`'s stroked beam read 75.2 % changed
+       * on an idle box, where it reached the band ~3 s into the round, and 0.0 %
+       * under `--jobs 4`, where it got there ~17 s in. Returns the clock it holds.
+       */
+      holdSky(t: number | null) {
+        self.skyHeldAt = t
+        return { heldAt: self.skyHeldAt }
       },
       /** e2e only (§C2, T21.31): hide the clouds alone for a same-instant control frame. */
       setCloudsVisible(on: boolean) {

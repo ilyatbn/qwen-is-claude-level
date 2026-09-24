@@ -224,12 +224,22 @@ const STEPS = 5
 /** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
 const FRAME_BUDGET_MS = 8_000
 
+//
+// **The sky is held too (T22.00H).** The band is mostly sky, and the day cycle moves the
+// sky's gradient on the round clock — fastest in a round's first seconds. On an idle box
+// this section reaches the band ~3 s into the round and the *still* strokes read 75.2 %
+// changed (up to 12 per channel of sky), so the verdict said "does not animate" about a
+// shader that did; under `--jobs 4` it got there ~17 s in, on a flat stretch of the cycle,
+// and passed. `holdSky` pins only the sky's clock, so the stroked control is still again
+// whatever the box's speed, and the shader's own `time` uniform (Phaser's loop) runs on.
 /** The largest change from the first photograph over `STEPS` steps, and what it cost. */
 async function flicker(hq) {
   await setHQ(hq)
   await hold(true)
   const Q = await fireAndFreeze(`flicker (${hq ? 'on' : 'off'})`)
   if (!Q) return null
+  const held = await page.evaluate(() => window.__game.holdSky(window.__game.debug().roundTime))
+  if (typeof held?.heldAt !== 'number') fail(`the sky could not be held: ${JSON.stringify(held)}`)
   await freeze(false)
   // **Per pixel, not a patch mean** — measured, the mean moved 2.2 for a rippling beam
   // and 1.0 for a still one: a ripple running along a 130 px patch averages out, as
@@ -245,6 +255,7 @@ async function flicker(hq) {
     most = Math.max(most, await changedFraction(first, await grab(Q.band)))
   }
   await hold(false)
+  await page.evaluate(() => window.__game.holdSky(null))
   await page.waitForFunction('window.__game.debug().tracersDrawn === 0', null, { timeout: 10_000 }).catch(() => null)
   return { most, frames, ms, wanted: STEP_FRAMES * STEPS }
 }

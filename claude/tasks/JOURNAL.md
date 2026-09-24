@@ -7055,3 +7055,10 @@ ready to un-park; flag left.
 rebake median `objects` → `perf` (+ `SandboxScene.lastBakeMs`), plant red at 6.80. Plants via the helper red with both
 messages. **`beams-shader` is red at HEAD independent of this** (stroked 75.2 %, 3/3; regression in `4dfc5a5..2d47a7f`).
 Split of `thrusters-match` not done (a new gate entry).
+
+## T22.00H — the beams did not stop moving; the sky did (builder, 2026-09-25)
+Bisect over `4dfc5a5^..HEAD` named `4dfc5a5` only because the good end was assumed: `4ab7a8f` is red too, stroked 75.2 %
+at every commit. All green runs were batched (flicker ~17 s into the round), all red ones alone (~3 s in); dumped crops
+show only the sky moving, ~12/channel on `KEYFRAMES` 0→0.12. `__game.holdSky(t)` pins the sky's clock (`skyHeldAt ??
+roundTime`); `beams-shader` holds it across `flicker`. Green 2/2 alone, stroked 0.0 %; plants red: hold ignored (75.2 %),
+ripple `time` zeroed (painted 0.0 %). Other shader checks alone: all green, flat 0.0 %. No threshold touched.
