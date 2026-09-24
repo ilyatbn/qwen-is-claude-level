@@ -442,6 +442,12 @@ export class GameScene extends Phaser.Scene {
   private vortexFx!: VortexFx
   /** T22.12B: the black hole, drawn from `mirror.blackHole`. */
   private blackHoleFx!: BlackHoleFx
+  /**
+   * T22.12C F5: the last `Playing` `round_state`'s tick and time left — where the
+   * bell falls. Each snapshot turns it into an input seq for the core
+   * (`Core.setBell`), which stops predicting the hole's pull from there.
+   */
+  private bellClock: { stateTick: number; timeLeft: number } | null = null
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
@@ -705,6 +711,8 @@ export class GameScene extends Phaser.Scene {
     this.mirror?.clearVortices()
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
+    this.bellClock = null
+    this.core?.setBell(null)
     this.vortexFx?.clear()
     this.blackHoleFx?.clear()
     this.flareBodies.length = 0
@@ -852,12 +860,25 @@ export class GameScene extends Phaser.Scene {
       this.results.setTally(parseVoteTally(p['votes']))
       this.timeLeft = Number(p['time_left'] ?? 0)
       const stateTick = Number(p['tick'] ?? this.lastServerTick)
+      // T22.12C F5: the bell, off the `Playing` round clock — the core stops the
+      // hole's pull on the input seq the server steps in `Ended`, which it learns
+      // from the next snapshot (`onSnapshot`). Only `Playing`'s clock ends at the
+      // bell; `Ended` keeps the last one (the phase gate already holds there).
+      if (this.phase === 'playing') this.bellClock = { stateTick, timeLeft: this.timeLeft }
+      else if (this.phase !== 'ended') {
+        this.bellClock = null
+        this.core.setBell(null)
+      }
       // A restart hands us a brand-new `World`, so the server's tick and round
       // time both go back to 0 (`Room::restart`). Every clock the client holds
       // is now an anchor to a world that is gone; the next snapshot re-anchors
       // them, but the deadline below is computed *before* it arrives.
       if (stateTick < this.lastServerTick) {
         this.lastServerTick = stateTick
+        if (this.phase !== 'playing') {
+          this.bellClock = null
+          this.core.setBell(null)
+        }
         // T22.10B: a new world has no holes; the core must stop pulling toward
         // the old ones before the new round's first predicted tick.
         this.mirror.clearVortices()
@@ -1009,8 +1030,9 @@ export class GameScene extends Phaser.Scene {
       // pull near a vortex while the server pulls: a rubber-band.
       'vortex_open', 'vortex_close',
       // T22.12: the black hole — the mirror tells the core, which chains its pull
-      // after the vortices; unsubscribed, a client rubber-bands near it.
-      'black_hole']) {
+      // after the vortices; unsubscribed, a client rubber-bands near it. And its
+      // telegraph (T22.12C, R93), which only draws.
+      'black_hole', 'black_hole_warn']) {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
@@ -1678,6 +1700,9 @@ export class GameScene extends Phaser.Scene {
       this.vision = mine.vision
     }
     if (mine && this.predictor) {
+      // T22.12C F5: before the reconcile replays, so a replayed input past the bell
+      // is stepped without the hole's pull, as the server stepped it.
+      if (this.bellClock) this.core.setBell({ ...this.bellClock, ack: s.lastInputSeq, snapTick: s.tick })
       this.predictor.reconcile({
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
         tick: s.tick,
@@ -2227,7 +2252,8 @@ export class GameScene extends Phaser.Scene {
       // T22.10B: the vortices, pulling and fading, where `vortex_open` put them.
       this.vortexFx.update(this.mirror.vortices, performance.now(), this.time.now / 1000)
       // T22.12B: the black hole where `black_hole` put it — results screen too (R8.4).
-      this.blackHoleFx.update(this.mirror.blackHole, performance.now(), this.time.now / 1000)
+      // T22.12C R93: and its telegraph, before it opens.
+      this.blackHoleFx.update(this.mirror.blackHole, this.mirror.blackHoleWarn, performance.now(), this.time.now / 1000)
       // T22.08D F5: the ribbon has gone and only burns are finishing — say so.
       if (this.flareClock.runningId >= 0) this.topHud?.setEffectTail(this.flareClock.runningId, this.flareFx.state.tail)
     }
@@ -2266,7 +2292,10 @@ export class GameScene extends Phaser.Scene {
       // the minimap and the screen disagree about who is visible (§A6).
       // T21.19: dropped crates blink here, from the mirror the item layer draws from,
       // on the server's round clock.
-      this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime)
+      // T22.12C R93: and the black hole, once it is here — hidden with its layer, so
+      // the check's hidden frame is a control for the minimap too.
+      const hole = this.blackHoleFx.state.hidden ? null : this.mirror.blackHole
+      this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
     }
 
     const lights: LightSource[] = [
@@ -3065,9 +3094,12 @@ export class GameScene extends Phaser.Scene {
        * The answer lands in `debug().blackHole.lastProbe`; the hole arrives as a real one
        * does, through `black_hole` and the carve stream.
        */
-      debugBlackHole(dist?: number) {
+      debugBlackHole(dist?: number, warn?: boolean) {
         self.observed.lastBlackHole = null
-        self.conn.sendRaw('debug_black_hole', dist === undefined ? {} : { dist })
+        self.conn.sendRaw('debug_black_hole', {
+          ...(dist === undefined ? {} : { dist }),
+          ...(warn ? { warn: true } : {}),
+        })
       },
       /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */
       showFlare(on: boolean) {
@@ -3635,6 +3667,7 @@ export class GameScene extends Phaser.Scene {
           // last probe answer, and the rocks the core still sums.
           blackHole: {
             hole: self.mirror.blackHole ? { ...self.mirror.blackHole } : null,
+            warn: self.mirror.blackHoleWarn ? { ...self.mirror.blackHoleWarn } : null,
             fx: self.blackHoleFx?.state ?? null,
             lastProbe: self.observed.lastBlackHole,
             asteroids: self.core.meta.asteroids.map((a) => ({ x: a.x, y: a.y })),

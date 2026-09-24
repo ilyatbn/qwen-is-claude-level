@@ -6937,3 +6937,11 @@ health stays floored (`speed_multiplier` floors). REPLAY unchanged (no snapshots
 radiation-match 2.12–2.61 → 1.40–2.24, breach-vortex pull arm 1.00–1.09 → 0.10–0.13, black-hole pull 1.26 → 0.19–0.34.
 `--changed HEAD`: Rust 1653/0/25, vitest 1086, e2e 72/73 — black-hole's pull sampler raced the probe (red 1/2 at base
 too); now started before the probe, 4-check runs 2/2 green; net smoke 25/25 (`gate-t2210h-*.txt`).
+
+## T22.12C — what the black-hole review found (builder, 2026-09-24)
+R90 sizes off DOWN (edge pull 810, reach 256, peak 1080; capture radius/ring/arm gone): 208/208 flights from the horizon
+escape. R91 wells muted inside the reach in `env_at` (by presence; plant: 9/208 trapped). R92 no drop. R93 `black_hole_warn`
+2 s ahead (Warned state, catch-up, dev `warn`), violet ring + minimap marker. F3 join/trip clearance tests; F5 `bell_seq`
++ `set_bell`, round ends on nearest tick (was a float tie): bell correction 2.22 → 0.000 px. F8 scaled window, F9 cause
+gated + after-bell stillness arm (0.00 px). F7 untold: 4.60 px, 16/25 corrected vs told 0.27–0.43, 0. REPLAY 21. Bots skip
+items in the reach. `--changed dcbd008`: Rust 1662/0/25, vitest 1087, e2e 73/73, net smoke 25/25 (`gate-t2212c-*.txt`).

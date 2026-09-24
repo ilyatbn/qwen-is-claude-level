@@ -53,15 +53,25 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    0.19 px. Check slacks derive from it: `black-hole` ε + √2·q (was ε + √2), `thrusters-match` after the bell
    ε + √2·q·(1 + 3 s)/2 (was 2ε).
 
-## The black hole (T22.12A/B)
-7. **New constants:** `BLACK_HOLE_WINDOW` 60, `BLACK_HOLE_LATEST` 10, `BLACK_HOLE_HORIZON_R` = `SPACE_ASTEROID_R_MAX`,
-   `BLACK_HOLE_CAPTURE_R` = 2 × horizon, `BLACK_HOLE_REACH` = 2 × capture, `BLACK_HOLE_THRUST_BOUND` = UP + SIDE,
-   `BLACK_HOLE_ACCEL_MAX` = 2 × bound. **New event** `black_hole {tick, x, y}` (Everyone; also in the join catch-up);
-   **new death cause** `"black_hole"`; dev-only `debug_black_hole {dist?}`. `REPLAY_VERSION` 20.
-8. **Rules for docs/13-or-a-space-section:** one per space round, arriving uniformly in `[end − 60, end − 10]` s, at the
-   centre of one asteroid it removes (list, mask, well) — never the last one; pull through the shared attractor sum;
-   inside the horizon death; inside the capture radius no thrust escapes (sideways the pull wins further out, ≈213 px);
-   frozen and still drawn after the bell; respawns and vortex trips never inside its reach.
+## The black hole (T22.12A/B, rewritten by T22.12C for R90–R93)
+7. **New constants:** `BLACK_HOLE_WINDOW` 60, `BLACK_HOLE_LATEST` 10, `BLACK_HOLE_TELEGRAPH` 2,
+   `BLACK_HOLE_HORIZON_R` = `SPACE_ASTEROID_R_MAX`, `BLACK_HOLE_ESCAPE_MARGIN` 0.9, `BLACK_HOLE_EDGE_PULL` =
+   `JETPACK_THRUST_DOWN` × margin (810), `BLACK_HOLE_REACH` = 4 × horizon (256), `BLACK_HOLE_ACCEL_MAX` =
+   `EDGE_PULL / (1 − HORIZON_R / REACH)` (1080). **Not** `BLACK_HOLE_CAPTURE_R` / `BLACK_HOLE_THRUST_BOUND`
+   (T22.12A's; deleted by R90). **New events** `black_hole {tick, x, y}` and `black_hole_warn {tick, x, y,
+   arrives_in}` (both Everyone; both in the join catch-up); **new death cause** `"black_hole"`; dev-only
+   `debug_black_hole {dist?, warn?}`. `REPLAY_VERSION` 21. `SNAPSHOT_QUANTUM` is point 6's.
+8. **Rules for docs/13-or-a-space-section:** one per space round, arriving uniformly in `[end − W, end − W/6]`
+   s where `W` = 60 s, or on a round shorter than 62 s the round's length less the telegraph (scaled, not
+   clipped); **telegraphed 2 s before** at the spot (`black_hole_warn`); at the centre of one asteroid it removes
+   (list, mask, well) — never the last one. Pull through the shared attractor sum, linear from 1080 px/s² at the
+   centre to 0 at the reach — **810 at the horizon, under the weakest thrust (DOWN 900), so outside the horizon
+   every thrust escapes and inside it you die: the horizon is the one rule, and the ring drawn at it is the
+   line** (R90). **Within its reach the asteroid wells do not pull** (R91). A black-hole death **drops nothing**
+   (R92). Frozen and still drawn after the bell — and with the wells muted inside its reach, nothing there pulls
+   then; the death is named the hole's only while it pulls (F9). Shown on the minimap (R93). Respawns, mid-round
+   joins and vortex trips never inside its reach. **The round ends on the tick nearest its deadline**
+   (`phase_time_left() ≤ SIM_DT/2`, T22.12C F5) so a client can derive the bell tick from `round_state`.
 
 ## Other M22 points already recorded elsewhere
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).

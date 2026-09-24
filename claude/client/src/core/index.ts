@@ -455,8 +455,9 @@ export interface Constants {
   VORTEX_REACH: number
   /** T22.12 — the black hole's radii; drawing only (the pull is `env_at`). */
   BLACK_HOLE_HORIZON_R: number
-  BLACK_HOLE_CAPTURE_R: number
   BLACK_HOLE_REACH: number
+  /** T22.12C R93: seconds between `black_hole_warn` and the hole opening. */
+  BLACK_HOLE_TELEGRAPH: number
   /** T22.08B — the solar flare's painted size and burn; drawing only. */
   SOLAR_FLARE_RIBBON_R: number
   SOLAR_FLARE_GLOW: number
@@ -905,6 +906,18 @@ export class Core {
    */
   setBlackHole(hole: { x: number; y: number } | null): void {
     this.inner.set_black_hole(hole !== null, hole?.x ?? 0, hole?.y ?? 0)
+  }
+
+  /**
+   * T22.12C F5: where the bell falls, in input seqs — from the last `Playing`
+   * `round_state` (`stateTick`, `timeLeft`) and this snapshot (`ack` ran on
+   * `snapTick`); `null` clears it. The derivation is Rust's
+   * (`black_hole::bell_seq`); from that seq on the prediction stops pulling toward
+   * the hole, as the server did on its `Ended` tick.
+   */
+  setBell(bell: { stateTick: number; timeLeft: number; ack: number; snapTick: number } | null): void {
+    if (bell) this.inner.set_bell(bell.stateTick, bell.timeLeft, bell.ack, bell.snapTick)
+    else this.inner.clear_bell()
   }
 
   /**

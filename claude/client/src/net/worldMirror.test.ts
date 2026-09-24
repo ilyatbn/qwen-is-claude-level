@@ -670,16 +670,30 @@ describe('the black hole (T22.12)', () => {
     expect(wire.length).toBeGreaterThan(1)
     const mirror = initMirror(core, 0, undefined, undefined, wire)
     const eaten = wire[1]!
-    const probe = { x: eaten.x + C().BLACK_HOLE_CAPTURE_R * 1.5, y: eaten.y }
+    const probe = { x: eaten.x + C().BLACK_HOLE_REACH * 0.5, y: eaten.y }
     const fx = () => core.fieldAccelAt(probe.x, probe.y)[0]!
+    const fy = () => core.fieldAccelAt(probe.x, probe.y)[1]!
     const before = fx()
+    const beforeY = fy()
+
+    // T22.12C R93: the telegraph is drawn, not pulled — the core is not told.
+    mirror.applyEvent('black_hole_warn', { x: eaten.x, y: eaten.y, arrives_in: C().BLACK_HOLE_TELEGRAPH }, 10)
+    expect(mirror.blackHoleWarn).toEqual({ x: eaten.x, y: eaten.y, since: 10, opensAt: 10 + C().BLACK_HOLE_TELEGRAPH * 1000 })
+    expect(fx()).toBe(before)
+    expect(mirror.blackHole).toBe(null)
 
     mirror.applyEvent('black_hole', { x: eaten.x, y: eaten.y }, 42)
+    expect(mirror.blackHoleWarn).toBe(null)
     expect(core.meta.asteroids.length).toBe(wire.length - 1)
     expect(core.meta.asteroids.some((a) => a.x === eaten.x && a.y === eaten.y)).toBe(false)
-    // Toward the hole: it sits at smaller x than the probe, and out-pulls the rock it replaced.
+    // Toward the hole: it sits at smaller x than the probe. And R91 on the mirror's
+    // side: inside the reach **only** the hole pulls, so level with it the field has
+    // no vertical part at all — which the wells gave it before (the control).
     const pulled = fx()
-    expect(pulled - before).toBeLessThan(-C().BLACK_HOLE_CAPTURE_R)
+    expect(pulled).toBeLessThan(0)
+    expect(pulled).not.toBe(before)
+    expect(beforeY).not.toBe(0)
+    expect(fy()).toBe(0)
     // Sticky: a catch-up re-announcing it keeps the first arrival.
     mirror.applyEvent('black_hole', { x: eaten.x, y: eaten.y }, 99)
     expect(mirror.blackHole?.arrivedAt).toBe(42)

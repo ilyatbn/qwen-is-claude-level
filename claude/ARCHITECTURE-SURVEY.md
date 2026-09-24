@@ -110,6 +110,10 @@ different story (see § 1).
   slews; flare), `roundTime` (extrapolated `+= dt`), `serverRoundTime` (last snapshot).
 - Every movement modifier `apply_input` reads must reach the client as a wire bit + a `GameCore` setter, or the
   predictor rubber-bands (see § 6).
+- **The bell (T22.12C F5):** `GameCore::set_bell` (from the last `Playing` `round_state`'s tick and time left and
+  each snapshot's tick/ack, via `black_hole::bell_seq`) stops the prediction's black-hole pull at the first seq the
+  server steps in `Ended` — a body in the pull took a ~2.2 px bell correction without it. It relies on `Playing`
+  ending on the tick nearest its deadline (`phase_time_left() <= SIM_DT / 2`).
 
 ## 4. Determinism
 - `docs/01-architecture.md` "Determinism, and how far it needs to go": cross-platform float determinism **not required,

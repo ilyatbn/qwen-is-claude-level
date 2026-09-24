@@ -89,10 +89,16 @@ pub struct GameCore {
     /// doc describes, for this list.
     vortices: Vec<Vec2>,
     /// T22.12: the black hole, once `black_hole` announced it — chained after the
-    /// vortices by `env_at`, gated on `phase` by `black_hole::pulling` exactly as
+    /// vortices by `env_at`, gated on `phase` by `black_hole::pulls` exactly as
     /// the server gates it. `None` on a client told nothing, which predicts no pull
     /// while the server pulls: the rubber-band this field exists to prevent.
     black_hole: Option<Vec2>,
+    /// T22.12C F5: the first input seq the server steps after the bell
+    /// (`black_hole::bell_seq`, set by [`GameCore::set_bell`] each snapshot from the
+    /// round clock). From it on, the prediction does not pull toward the hole —
+    /// the server stopped on its `Ended` tick, and `ended` arrives a trip later.
+    /// `None` before a `Playing` round clock is known.
+    bell_seq: Option<u32>,
 }
 
 /// The sandbox's weather, driven by `weather_step`.
@@ -142,6 +148,7 @@ impl GameCore {
             gravity: GravityMode::Standard,
             vortices: Vec::new(),
             black_hole: None,
+            bell_seq: None,
         }
     }
 
@@ -477,6 +484,22 @@ impl GameCore {
         self.black_hole = present.then(|| Vec2::new(x, y));
     }
 
+    /// T22.12C F5: where the bell falls in **input seqs** — from a `Playing`
+    /// `round_state` (`state_tick`, `time_left`) and a snapshot (`ack` ran on
+    /// `snap_tick`), through `black_hole::bell_seq`, the one derivation. Called by
+    /// `GameScene` on every snapshot before the reconcile replays, so a replayed
+    /// input past the bell is stepped as the server stepped it: without the pull.
+    pub fn set_bell(&mut self, state_tick: u32, time_left: f32, ack: u32, snap_tick: u32) {
+        self.bell_seq = Some(game_core::world::black_hole::bell_seq(
+            state_tick, time_left, ack, snap_tick,
+        ));
+    }
+
+    /// No bell known (a new round, the lobby, warmup).
+    pub fn clear_bell(&mut self) {
+        self.bell_seq = None;
+    }
+
     /// The summed gravity field at a world point, px/s², as `[ax, ay]`.
     ///
     /// **A readback, in the sense [`GameCore::teleport_pads`] is one**: nothing
@@ -497,7 +520,8 @@ impl GameCore {
             &self.map,
             self.gravity,
             &self.vortices,
-            game_core::world::black_hole::pulling(self.black_hole, self.phase),
+            self.black_hole,
+            game_core::world::black_hole::pulls(self.phase),
             Vec2::new(x, y),
         );
         Box::new([env.accel.x, env.accel.y])
@@ -607,8 +631,12 @@ impl GameCore {
         // player's.
         let gravity = self.gravity;
         let vortices = &self.vortices;
-        // T22.12: the server's gate, the server's function (R8.4 — frozen at `Ended`).
-        let hole = game_core::world::black_hole::pulling(self.black_hole, self.phase);
+        // T22.12: the server's gate, the server's function (R8.4 — frozen at `Ended`),
+        // and T22.12C F5: frozen from the bell's seq on, which the server stepped in
+        // `Ended` before this client heard so.
+        let hole = self.black_hole;
+        let hole_pulls = game_core::world::black_hole::pulls(self.phase)
+            && self.bell_seq.is_none_or(|b| seq < b);
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
@@ -665,7 +693,9 @@ impl GameCore {
         // `worldMirror.ts::applyMapInit` through [`GameCore::set_asteroids`],
         // beside `setTeleportPads`; wiring this call at T22.11B is what made that
         // a one-line change rather than a second design.
-        let env = game_core::world::attractors::env_at(map, gravity, vortices, hole, p.body.pos);
+        let env = game_core::world::attractors::env_at(
+            map, gravity, vortices, hole, hole_pulls, p.body.pos,
+        );
         apply_input(
             map,
             &mut p.body,
@@ -1993,8 +2023,9 @@ pub fn constants_json() -> String {
         VORTEX_CAPTURE_R => c::VORTEX_CAPTURE_R,
         VORTEX_REACH => c::VORTEX_REACH,
         BLACK_HOLE_HORIZON_R => c::BLACK_HOLE_HORIZON_R,
-        BLACK_HOLE_CAPTURE_R => c::BLACK_HOLE_CAPTURE_R,
         BLACK_HOLE_REACH => c::BLACK_HOLE_REACH,
+        // T22.12C R93: how long the telegraph lasts before the hole opens.
+        BLACK_HOLE_TELEGRAPH => c::BLACK_HOLE_TELEGRAPH,
         SOLAR_FLARE_RIBBON_R => c::SOLAR_FLARE_RIBBON_R,
         SOLAR_FLARE_GLOW => c::SOLAR_FLARE_GLOW,
         SOLAR_FLARE_SPAN => c::SOLAR_FLARE_SPAN,
@@ -3944,9 +3975,15 @@ mod tests {
         let v = w.vortices[0].pos;
         let at = v + Vec2::new(0.0, game_core::constants::VORTEX_CAPTURE_R * 1.5);
         let (pulls, n) = centres(&w.vortices);
-        let server =
-            game_core::world::attractors::env_at(&w.map, GravityMode::Space, &pulls[..n], None, at)
-                .accel;
+        let server = game_core::world::attractors::env_at(
+            &w.map,
+            GravityMode::Space,
+            &pulls[..n],
+            None,
+            false,
+            at,
+        )
+        .accel;
 
         let untold = core.field_accel_at(at.x, at.y);
         assert!(
@@ -3969,7 +4006,7 @@ mod tests {
     /// together.
     #[test]
     fn apply_input_near_the_black_hole_steps_exactly_as_the_server_does() {
-        use game_core::constants::BLACK_HOLE_CAPTURE_R;
+        use game_core::constants::BLACK_HOLE_REACH;
         use game_core::player::input::Input;
         use game_core::world::{GameEvent, RoundPhase};
         let run = |tell_hole: bool, phase_ended: bool| -> (usize, f32, bool) {
@@ -3991,7 +4028,7 @@ mod tests {
             }
             w.add_player(1, 0, String::new());
             let start = w
-                .dev_place_near_black_hole(1, BLACK_HOLE_CAPTURE_R * 1.5)
+                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.75)
                 .expect("a clear side");
             core.add_player(1, start.x, start.y);
             if phase_ended {
@@ -4028,7 +4065,7 @@ mod tests {
              the horizon took the player"
         );
         assert!(
-            moved > BLACK_HOLE_CAPTURE_R * 0.5,
+            moved > BLACK_HOLE_REACH * 0.25,
             "control: the body barely moved ({moved:.1} px), so agreement proves nothing"
         );
         let (untold, _, _) = run(false, false);
@@ -4041,6 +4078,97 @@ mod tests {
         let (agreed, _, died) = run(true, true);
         assert!(!died, "the hole killed after the bell");
         assert_eq!(agreed, 240, "the mirror left the server after the bell");
+    }
+
+    /// **T22.12C F5: the bell, for a body in the pull** — measured, not settled.
+    ///
+    /// The server stops the hole's pull on its `Ended` tick; a client hears `ended`
+    /// a trip later and, until then, predicted the pull on inputs the server stepped
+    /// without it. `set_bell` (from a `Playing` round clock and a snapshot, through
+    /// `black_hole::bell_seq`) stops the prediction's pull at the right seq. Server
+    /// and mirror side by side, idle, in the pull, across the bell; the client
+    /// "hears" `ended` `HEARD_AFTER` ticks late. Measured at the moment it hears:
+    /// **with the bell seq the two agree exactly; without it they are this far apart**
+    /// — the bell correction every player in the pull used to take. The round clock
+    /// is sampled twice (at the round's start and half a second before the bell), since
+    /// `time_left / SIM_DT` is a float and `round` has to land on the same tick both
+    /// times.
+    #[test]
+    fn the_bell_seq_stops_the_pull_on_the_servers_ended_tick() {
+        use game_core::constants::{BLACK_HOLE_REACH, SIM_HZ, SNAPSHOT_QUANTUM};
+        use game_core::player::input::Input;
+        use game_core::world::{GameEvent, RoundPhase};
+        const HEARD_AFTER: u32 = 6;
+        const ROUND_S: f32 = 1.5;
+        let run = |sample_late: bool, use_bell: bool| -> f32 {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            w.set_round_seconds(ROUND_S);
+            let geo = w.map.space_geometry().expect("space");
+            let hole = w
+                .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
+                .expect("summoned");
+            for e in w.drain_events() {
+                if let GameEvent::Carve { x, y, r, .. } = e {
+                    core.carve(x, y, r);
+                }
+            }
+            let bytes = game_server::codec::encode_map_init(&w.map);
+            let parts = game_server::codec::decode_map_init_parts(&bytes).expect("own bytes");
+            install_asteroids(&mut core, &parts.asteroids);
+            core.set_black_hole(true, hole.x, hole.y);
+            w.add_player(1, 0, String::new());
+            let start = w
+                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.97)
+                .expect("a clear side");
+            core.add_player(1, start.x, start.y);
+            let _ = w.drain_events();
+            // The round clock as a `Playing` `round_state` carries it.
+            let mut clock = (w.tick, w.phase_time_left());
+            let (mut seq, mut ended_at) = (1000u32, None::<u32>);
+            loop {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                if sample_late && w.phase == RoundPhase::Playing && w.phase_time_left() > 0.5 {
+                    clock = (w.tick, w.phase_time_left());
+                }
+                if use_bell {
+                    // A snapshot of this tick: `seq` ran on it.
+                    core.set_bell(clock.0, clock.1, seq, w.tick);
+                }
+                core.apply_input(1, seq, 0, 0, SIM_DT);
+                if w.phase == RoundPhase::Ended && ended_at.is_none() {
+                    ended_at = Some(w.tick);
+                }
+                assert!(
+                    w.player(1).expect("seated").alive,
+                    "the hole took the body before the bell"
+                );
+                if ended_at.is_some_and(|t| w.tick >= t + HEARD_AFTER) {
+                    let server = w.player(1).expect("seated").body.pos;
+                    let c = core.player_state(1);
+                    return (Vec2::new(c[0], c[1]) - server).len();
+                }
+                assert!(w.tick < (ROUND_S * 2.0 * SIM_HZ as f32) as u32, "no bell");
+            }
+        };
+        let gated = run(false, true);
+        let gated_late = run(true, true);
+        let ungated = run(false, false);
+        assert!(
+            gated <= SNAPSHOT_QUANTUM && gated_late <= SNAPSHOT_QUANTUM,
+            "with the bell seq the prediction still left the server at the bell: {gated:.3} / \
+             {gated_late:.3} px (the round clock sampled early / late)"
+        );
+        assert!(
+            ungated > 10.0 * SNAPSHOT_QUANTUM,
+            "control: without the bell seq the prediction is only {ungated:.3} px off {HEARD_AFTER} \
+             ticks after the bell, so this measures nothing"
+        );
+        eprintln!(
+            "bell correction for a body in the pull, heard {HEARD_AFTER} ticks late: \
+             {ungated:.2} px without the bell seq, {gated:.3} / {gated_late:.3} px with it"
+        );
     }
 
     /// **The readback the browser check steers by** (`T22.11C`, `R63`).

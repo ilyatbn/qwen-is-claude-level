@@ -15,6 +15,12 @@
  * accretion ring solid** in `BLACK_HOLE_RING_COLOR` just outside the horizon, and
  * `black-hole` asserts both on the rendered frame in both paths, against the same
  * instant with the layer hidden, plus a control point clear of it (§C2).
+ *
+ * **The telegraph** (T22.12C, R93) is `Graphics` on **both** paths: a solid ring in
+ * `BLACK_HOLE_WARN_COLOR` at the horizon where the hole will open, and a thin ring
+ * closing in onto it from the reach over `BLACK_HOLE_TELEGRAPH`. One picture on
+ * both paths on purpose — it is a warning, not the event, and a shader for two
+ * seconds would be a second thing for the check to prove.
  */
 
 import Phaser from 'phaser'
@@ -22,19 +28,22 @@ import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
 import {
-  BLACK_HOLE_CAPTURE_ALPHA,
-  BLACK_HOLE_CAPTURE_COLOR,
-  BLACK_HOLE_CAPTURE_W,
   BLACK_HOLE_DISC_COLOR,
   BLACK_HOLE_RING_COLOR,
   BLACK_HOLE_RING_W,
   BLACK_HOLE_SPIN,
   BLACK_HOLE_STREAKS,
+  BLACK_HOLE_WARN_CLOSING_ALPHA,
+  BLACK_HOLE_WARN_CLOSING_W,
+  BLACK_HOLE_WARN_COLOR,
+  BLACK_HOLE_WARN_W,
   type BlackHoleRadii,
   blackHoleGrowth,
   blackHoleRadii,
   rgbOf,
   streakPhase,
+  warnClosingRadius,
+  warnProgress,
 } from './blackHoleFx-math'
 
 /** The hole to draw — `WorldMirror`'s `BlackHoleView`, structurally. */
@@ -42,6 +51,14 @@ export interface BlackHoleDraw {
   x: number
   y: number
   arrivedAt: number
+}
+
+/** The telegraph to draw — `WorldMirror`'s `BlackHoleWarnView`, structurally. */
+export interface BlackHoleWarnDraw {
+  x: number
+  y: number
+  since: number
+  opensAt: number
 }
 
 /** What the last `update` drew — read back by the checks, never the setting (§A39). */
@@ -56,6 +73,13 @@ export interface BlackHoleFxState {
   /** The accretion ring's colour, 0–255 — what a check expects at the ring. */
   ringRgb: [number, number, number]
   radii: BlackHoleRadii
+  /** R93: the telegraph was painted this frame (the hole is not here yet). */
+  warned: boolean
+  /** 0 → 1 through the telegraph. */
+  warnProgress: number
+  /** The telegraph ring's colour, 0–255, and where it is. */
+  warnRgb: [number, number, number]
+  warnAt: { x: number; y: number } | null
 }
 
 /**
@@ -75,14 +99,10 @@ uniform float time;
 uniform float horizon;
 uniform float ring;
 uniform float ringW;
-uniform float capture;
 uniform float reach;
 uniform float spin;
 uniform float grow;
 uniform vec3 ringCol;
-uniform vec3 captureCol;
-uniform float captureA;
-uniform float captureW;
 
 varying vec2 fragCoord;
 
@@ -111,10 +131,6 @@ void main() {
   float halo = pow(1.0 - smoothstep(horizon, reach, r), 3.0) * 0.35;
   vec3 col = hotCol * hot + vec3(1.0, 0.55, 0.25) * halo;
   float alpha = clamp(hot + halo, 0.0, 1.0);
-  // The capture ring: faint, the no-escape line.
-  float cap = 1.0 - smoothstep(captureW * 0.5, captureW * 0.5 + 1.0, abs(r - capture));
-  col = mix(col, captureCol, cap * captureA);
-  alpha = max(alpha, cap * captureA);
   // The accretion ring: solid across ringW — the probe band.
   float rg = 1.0 - smoothstep(ringW * 0.5, ringW * 0.5 + 1.0, abs(r - ring));
   col = mix(col, ringCol, rg);
@@ -147,13 +163,18 @@ export class BlackHoleFx {
     this.last = this.stateOf(false, false, 0)
   }
 
-  /** One frame. `nowMs` is `performance.now()` (the clock `arrivedAt` is on); `t` turns the streaks. */
-  update(hole: BlackHoleDraw | null, nowMs: number, t: number): void {
+  /**
+   * One frame. `nowMs` is `performance.now()` (the clock `arrivedAt`, `since` and
+   * `opensAt` are on); `t` turns the streaks. `warn` is drawn only while `hole` is not.
+   */
+  update(hole: BlackHoleDraw | null, warn: BlackHoleWarnDraw | null, nowMs: number, t: number): void {
     this.gfx.clear()
     this.glow.clear()
     const viaShader = this.webgl && isHighQuality()
     let drawn = false
     let growth = 0
+    let warned = false
+    let progress = 0
     if (hole && !this.hidden) {
       growth = blackHoleGrowth(hole.arrivedAt, nowMs)
       drawn = growth > 0
@@ -162,10 +183,14 @@ export class BlackHoleFx {
         if (viaShader) this.paintShader(hole, growth, r)
         else this.paintFlat(hole, growth, r, t)
       }
+    } else if (!hole && warn && !this.hidden) {
+      progress = warnProgress(warn.since, warn.opensAt, nowMs)
+      this.paintWarn(warn, progress, blackHoleRadii(C()))
+      warned = true
     }
     if (!(drawn && viaShader)) this.dropQuad()
     if (drawn) this.frames++
-    this.last = this.stateOf(drawn, viaShader && drawn, growth)
+    this.last = this.stateOf(drawn, viaShader && drawn, growth, warned, progress, warned && warn ? warn : null)
   }
 
   /** e2e only (§C2): hide the layer for a same-instant control frame. */
@@ -179,7 +204,13 @@ export class BlackHoleFx {
   }
 
   get state(): BlackHoleFxState {
-    return { ...this.last, ringRgb: [...this.last.ringRgb], radii: { ...this.last.radii } }
+    return {
+      ...this.last,
+      ringRgb: [...this.last.ringRgb],
+      radii: { ...this.last.radii },
+      warnRgb: [...this.last.warnRgb],
+      warnAt: this.last.warnAt ? { ...this.last.warnAt } : null,
+    }
   }
 
   /** A new round: nothing drawn; the position itself is the mirror's to clear. */
@@ -195,7 +226,14 @@ export class BlackHoleFx {
     this.glow.destroy()
   }
 
-  private stateOf(drawn: boolean, shader: boolean, growth: number): BlackHoleFxState {
+  private stateOf(
+    drawn: boolean,
+    shader: boolean,
+    growth: number,
+    warned = false,
+    progress = 0,
+    warnAt: { x: number; y: number } | null = null,
+  ): BlackHoleFxState {
     return {
       drawn,
       shader,
@@ -204,7 +242,19 @@ export class BlackHoleFx {
       growth,
       ringRgb: rgbOf(BLACK_HOLE_RING_COLOR),
       radii: blackHoleRadii(C()),
+      warned,
+      warnProgress: progress,
+      warnRgb: rgbOf(BLACK_HOLE_WARN_COLOR),
+      warnAt: warnAt ? { x: warnAt.x, y: warnAt.y } : null,
     }
+  }
+
+  /** R93: the solid ring where it will open, and the ring closing in onto it. */
+  private paintWarn(w: BlackHoleWarnDraw, u: number, r: BlackHoleRadii): void {
+    this.gfx.lineStyle(BLACK_HOLE_WARN_CLOSING_W, BLACK_HOLE_WARN_COLOR, BLACK_HOLE_WARN_CLOSING_ALPHA)
+    this.gfx.strokeCircle(w.x, w.y, warnClosingRadius(r, u))
+    this.gfx.lineStyle(BLACK_HOLE_WARN_W, BLACK_HOLE_WARN_COLOR, 1)
+    this.gfx.strokeCircle(w.x, w.y, r.horizon)
   }
 
   private dropQuad(): void {
@@ -233,9 +283,6 @@ export class BlackHoleFx {
         this.glow.strokePath()
       }
     }
-    // The capture ring — the no-escape line, faint.
-    this.gfx.lineStyle(BLACK_HOLE_CAPTURE_W, BLACK_HOLE_CAPTURE_COLOR, BLACK_HOLE_CAPTURE_ALPHA)
-    this.gfx.strokeCircle(h.x, h.y, r.capture * s)
     // The accretion ring, solid — the probe band — then the horizon, black to its edge.
     this.gfx.lineStyle(BLACK_HOLE_RING_W * s, BLACK_HOLE_RING_COLOR, 1)
     this.gfx.strokeCircle(h.x, h.y, r.ring * s)
@@ -246,19 +293,14 @@ export class BlackHoleFx {
   private paintShader(h: BlackHoleDraw, grow: number, r: BlackHoleRadii): void {
     if (!this.quad) {
       const [rr, rg, rb] = rgbOf(BLACK_HOLE_RING_COLOR)
-      const [cr, cg, cb] = rgbOf(BLACK_HOLE_CAPTURE_COLOR)
       const base = new Phaser.Display.BaseShader('blackHole', blackHoleFragment(), undefined, {
         horizon: { type: '1f', value: r.horizon },
         ring: { type: '1f', value: r.ring },
         ringW: { type: '1f', value: BLACK_HOLE_RING_W },
-        capture: { type: '1f', value: r.capture },
         reach: { type: '1f', value: r.reach },
         spin: { type: '1f', value: BLACK_HOLE_SPIN },
         grow: { type: '1f', value: grow },
         ringCol: { type: '3f', value: { x: rr / 255, y: rg / 255, z: rb / 255 } },
-        captureCol: { type: '3f', value: { x: cr / 255, y: cg / 255, z: cb / 255 } },
-        captureA: { type: '1f', value: BLACK_HOLE_CAPTURE_ALPHA },
-        captureW: { type: '1f', value: BLACK_HOLE_CAPTURE_W },
       })
       this.quad = this.scene.add
         .shader(base, 0, 0, r.reach * 2, r.reach * 2)

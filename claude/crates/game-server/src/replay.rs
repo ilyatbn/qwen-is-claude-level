@@ -263,7 +263,13 @@ pub const HEADER_BYTES: usize = 46;
 /// every space round now gains a hole in its last minute that pulls, kills and
 /// carves — a v19 space recording diverges at the arrival, and its hashes differ
 /// from the first tick. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 20;
+///
+/// **21 (T22.12C, the black-hole review)**: the silent-divergence shape again — the
+/// pull is right-sized (R90), the wells are muted inside its reach (R91), a death in
+/// it drops nothing (R92), and it is telegraphed first (R93: a new hashed state,
+/// `BlackHole::Warned`, and a window scaled on short rounds). A v20 space recording
+/// diverges at the telegraph. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 21;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

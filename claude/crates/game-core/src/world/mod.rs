@@ -395,6 +395,15 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// T22.12C, R93: the black hole will open at `(x, y)` in `arrives_in` seconds —
+    /// the telegraph, `BLACK_HOLE_TELEGRAPH` before the arrival. Everyone. An event
+    /// rather than a client derivation because the arrival time is the server's roll.
+    BlackHoleWarn {
+        tick: u32,
+        x: f32,
+        y: f32,
+        arrives_in: f32,
+    },
     /// T22.10: a vortex stopped pulling — replaced by a fourth (R9, point 2).
     VortexClose {
         tick: u32,
@@ -506,6 +515,7 @@ impl GameEvent {
             | GameEvent::Teleport { tick, .. }
             | GameEvent::VortexOpen { tick, .. }
             | GameEvent::BlackHole { tick, .. }
+            | GameEvent::BlackHoleWarn { tick, .. }
             | GameEvent::VortexClose { tick, .. }
             | GameEvent::VortexTrip { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
@@ -1680,7 +1690,14 @@ impl World {
         // Phase advance last, so a tick is never half in two phases.
         if warmup && self.phase_time_left() <= 0.0 {
             self.set_phase(RoundPhase::Playing);
-        } else if playing && self.phase_time_left() <= 0.0 {
+        } else if playing && self.phase_time_left() <= crate::constants::SIM_DT / 2.0 {
+            // **The tick nearest the deadline, not the first past it** (T22.12C F5).
+            // A round is a whole number of ticks, so the deadline always falls on a
+            // tie, and `round_time` is an `f32` sum: `<= 0.0` ended a 1.5 s round
+            // on tick 91 (1.4999998 s summed) where 90 was meant. A client deriving
+            // the bell from the round clock (`black_hole::bell_seq`) cannot see that
+            // last-bit error; half a tick of slack puts the bell on the nearest tick,
+            // which `round(time_left / SIM_DT)` finds exactly.
             self.set_phase(RoundPhase::Ended);
         }
     }
@@ -2028,16 +2045,18 @@ impl World {
             // omitted, and `T22.12` adds the condition here for its own
             // `Kind::BlackHole` when it lands.
             //
-            // **Landed (T22.12):** `black_hole::pulling` is that condition — the
-            // hole, while the phase takes input — and `GameCore::apply_input`
-            // calls the same function with the phase the server announced.
+            // **Landed (T22.12):** `black_hole::pulls` is that condition — the
+            // phase takes input — and `GameCore::apply_input` calls the same
+            // function with the phase the server announced (and, T22.12C F5, the
+            // bell's seq). The hole's *presence* goes in separately: R91 mutes
+            // the wells inside its reach whether or not it pulls.
             let (pulls, n) = vortex::centres(&self.vortices);
-            let hole = black_hole::pulling(self.black_hole.pos(), self.phase);
             let env = crate::world::attractors::env_at(
                 &self.map,
                 gravity,
                 &pulls[..n],
-                hole,
+                self.black_hole.pos(),
+                black_hole::pulls(self.phase),
                 self.players[idx].body.pos,
             );
             let p = &mut self.players[idx];
@@ -3752,13 +3771,17 @@ impl World {
                 // `killer` still hands the credit to whoever put you there.
                 let direct = if self.is_in_the_void(&self.players[i]) {
                     DeathCause::Void
-                } else if self
-                    .black_hole
-                    .pos()
-                    .is_some_and(|h| black_hole::in_horizon(h, self.players[i].body.pos))
+                } else if black_hole::pulls(self.phase)
+                    && self
+                        .black_hole
+                        .pos()
+                        .is_some_and(|h| black_hole::in_horizon(h, self.players[i].body.pos))
                 {
                     // T22.12: `step_black_hole`'s predicate, one pass later — the
-                    // void's shape (R20), so no flag carries the cause.
+                    // void's shape (R20), so no flag carries the cause. **Gated as
+                    // the kill is** (T22.12C F9): the horizon kills only while the
+                    // hole pulls, so a death inside it after the bell is something
+                    // else's and must not be named the hole's.
                     DeathCause::BlackHole
                 } else if irradiated.contains(&self.players[i].id) {
                     // After the void, before the attacker (R75). `killer`
@@ -3795,7 +3818,12 @@ impl World {
                     | DeathCause::Radiation
                     | DeathCause::BlackHole => None,
                 };
-                drops.push((pos, stacks));
+                // R92: **the hole swallows the inventory** — keyed on the direct
+                // cause, not the credited one, so a shove into it still drops
+                // nothing. Floating loot at the horizon was bait nobody survives.
+                if direct != DeathCause::BlackHole {
+                    drops.push((pos, stacks));
+                }
                 let tick = self.tick;
                 // **Tell the owner their inventory is gone.**
                 //
@@ -5305,6 +5333,13 @@ mod state_hash_tests {
             pos: Vec2::new(300.0, 200.0),
         };
         changed.push(("black hole here", w.state_hash()));
+        let mut w = world();
+        w.black_hole = super::black_hole::BlackHole::Warned {
+            at: 1.0,
+            index: 2,
+            pos: Vec2::new(300.0, 200.0),
+        };
+        changed.push(("black hole warned", w.state_hash()));
 
         let mut w = world();
         w.players[0].fire_ready_at = 9.0;

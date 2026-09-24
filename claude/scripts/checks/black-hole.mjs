@@ -5,30 +5,38 @@
  *   node scripts/checks/black-hole.mjs
  *
  * One human alone in a private Space room on a `DEV_PROBE=1` server (`breach-vortex`'s
- * route). `debug_black_hole` brings the hole now through the same arrival the round's
- * roll uses (`World::summon_black_hole_near` — the carve, the event, the list), and
- * with `dist` puts the player at rest that far from it on a clear side. Then:
+ * route). `debug_black_hole` brings the hole through the same arrival the round's roll
+ * uses (`World::summon_black_hole_near` / `warn_black_hole_near` — the telegraph, the
+ * carve, the event, the list), and with `dist` puts the player at rest that far from it
+ * on a clear side. Then:
  *
+ * 0. **the telegraph** (T22.12C, R93): asked with `warn`, the spot is announced first —
+ *    a solid ring in the telegraph's own colour at the horizon where it will open, on
+ *    the rendered frame against the same instant hidden, plus a control point — and the
+ *    hole then opens exactly there;
  * 1. **both ends agree**: the client's hole is where the server put it; the rock it ate
  *    is gone from the client core's asteroid list (the list the prediction sums) and
  *    the count matches the server's; a mask checksum taken after the arrival agrees;
+ *    and it is **on the minimap** (R93): the marker in the ring's colour, which goes
+ *    when the layer is hidden;
  * 2. **no rubber-band while pulled**: placed idle at `0.9 × BLACK_HOLE_REACH`, from
  *    the placement until the horizon takes the player — the prediction's error at each
- *    acked input (`lastAckErrorPx`) and every correction's jump (`lastJumpPx`) stay
- *    within `RECONCILE_EPSILON_PX`. A client not told the hole predicts no pull while
- *    the server pulls, and every correction is the pull it missed. Controls: the
- *    body travelled, and snapshots were acked while it did;
+ *    acked input (`lastAckErrorPx`) within `RECONCILE_EPSILON_PX` + the wire's rounding,
+ *    and corrections at no more than a third of the acks. A client not told the hole
+ *    predicts no pull while the server pulls (F7: planted, red). Controls: the body
+ *    travelled, and snapshots were acked while it did;
  * 3. **the death is named at both ends**: cause `black_hole`, nobody credited; the
  *    overlay reads the black-hole sentence and the kill feed line has no `?` (R20),
- *    and the overlay's patch changed on the rendered frame against idle frames;
- * 4. **you cannot escape** (the inverse of T22.11's guard, on the wire): after the
- *    respawn — which is outside `BLACK_HOLE_REACH` — placed at `0.9 × CAPTURE_R`
- *    holding the thrust that points away, the player dies of it anyway;
+ *    and the overlay's patch changed on the rendered frame against idle frames; the
+ *    respawn is outside `BLACK_HOLE_REACH`. (T22.12B's "cannot escape from inside the
+ *    capture radius" arm is gone with the capture radius, R90: the horizon is the rule,
+ *    and escape from just outside it is Rust's, over 208 flights);
  * 5. **coverage in both of GameScene's render paths**: the accretion ring painted in
  *    its own colour and the disc black, against the same frozen instant with the layer
  *    hidden, plus a control point clear of the glow (§C2). Screenshots in the shots dir;
- * 6. **frozen at the bell** (R8.4): after `Ended` it is still drawn, and a player put
- *    inside the horizon is not killed.
+ * 6. **frozen at the bell** (R8.4, F9): after `Ended` it is still drawn, a player put at
+ *    rest in its reach is **not pulled** (against arm 2's travel as the control), and a
+ *    player put inside the horizon is not killed.
  *
  * Arrival *timing* across seeds is Rust's (`black_hole::tests`): a browser round long
  * enough to see a natural arrival costs a minute per run for no new claim.
@@ -103,9 +111,9 @@ async function soloSpace(stack, name) {
   return { page, errors }
 }
 
-/** Ask for the hole (and a placement); resolves with the server's answer. */
-async function probe(page, dist) {
-  await page.evaluate((d) => window.__game.debugBlackHole(d), dist)
+/** Ask for the hole (and a placement, or the telegraph); resolves with the server's answer. */
+async function probe(page, dist, warn = false) {
+  await page.evaluate(([d, w]) => window.__game.debugBlackHole(d ?? undefined, w), [dist ?? null, warn])
   await page.waitForFunction(() => window.__game.debug().blackHole.lastProbe !== null, null, { timeout: deadlineMs(10, 'debug_black_hole'), polling: 'raf' })
   const p = (await page.evaluate(() => window.__game.debug())).blackHole.lastProbe
   if (!p) throw new Error('debug_black_hole answered null — no space map, no rock, or no clear side')
@@ -217,6 +225,98 @@ async function coverage(page, h, label, wantShader) {
   }
 }
 
+/**
+ * R93: the telegraph on the rendered frame — ring probes at the horizon in the
+ * telegraph's own colour where the hole will open, against the same frozen instant
+ * with the layer hidden, plus a control point clear of it.
+ */
+async function telegraph(page, w) {
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [w.x, w.y])
+  await frames(page, SETTLE_FRAMES)
+  await page.evaluate(() => window.__game.freeze(true))
+  try {
+    await frames(page, 2)
+    const fx = (await page.evaluate(() => window.__game.debug())).blackHole.fx
+    if (!fx || !fx.warned) {
+      fail(`telegraph: not drawn before the hole opened: ${JSON.stringify(fx)}`)
+      return
+    }
+    const bounds = await page.evaluate(() => {
+      const r = document.querySelector('canvas').getBoundingClientRect()
+      return { left: r.left, top: r.top, w: r.width, h: r.height }
+    })
+    const inView = (s) => s.onScreen && s.y > bounds.top + bounds.h / 6 && s.y < bounds.top + (bounds.h * 5) / 6
+    const underDom = (s) => page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName !== 'CANVAS', [s.x, s.y])
+    const pts = []
+    for (let i = 0; i < RING_PROBES; i++) {
+      const a = (i / RING_PROBES) * Math.PI * 2
+      const s = await toScreen(page, w.x + Math.cos(a) * fx.radii.horizon, w.y + Math.sin(a) * fx.radii.horizon)
+      if (inView(s) && !(await underDom(s))) pts.push({ x: s.x, y: s.y })
+    }
+    let ctrl = null
+    for (const a of [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, (3 * Math.PI) / 4]) {
+      const r = fx.radii.reach + 60
+      const s = await toScreen(page, w.x + Math.cos(a) * r, w.y + Math.sin(a) * r)
+      if (inView(s) && !(await underDom(s))) {
+        ctrl = s
+        break
+      }
+    }
+    const on = await photo(page)
+    await page.screenshot({ path: join(shotsDir, 'black-hole-telegraph.png') })
+    await page.evaluate(() => window.__game.showBlackHole(false))
+    await frames(page, 2)
+    const off = await photo(page)
+    await page.screenshot({ path: join(shotsDir, 'black-hole-telegraph-hidden.png') })
+    await page.evaluate(() => window.__game.showBlackHole(true))
+    const all = [...pts, ...(ctrl ? [{ x: ctrl.x, y: ctrl.y }] : [])]
+    const cmp = await comparePhotos(page, on, off, { points: all })
+    const inColour = cmp.detail.slice(0, pts.length).filter((q) => q.a.every((c, i) => Math.abs(c - fx.warnRgb[i]) <= RING_TOLERANCE)).length
+    if (pts.length < RING_PROBES * MIN_ON_SCREEN) fail(`telegraph: only ${pts.length} of ${RING_PROBES} ring points in view`)
+    else if (inColour < pts.length * RING_COLOUR_SHARE) fail(`telegraph: only ${inColour} of ${pts.length} ring points in its colour ${JSON.stringify(fx.warnRgb)}: ${JSON.stringify(cmp.detail.slice(0, 4))}`)
+    else ok(`telegraph: ${inColour}/${pts.length} ring points in its own colour at the horizon where it will open (${(fx.warnProgress * 100).toFixed(0)} % through)`)
+    if (!ctrl) fail('telegraph: no point in view clear of it for the control')
+    else if (cmp.points[all.length - 1]) fail(`telegraph: control — a point clear of it changed too: ${JSON.stringify(cmp.detail[all.length - 1])}`)
+    else ok('telegraph: control — a point clear of it did not change')
+  } finally {
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+}
+
+/** R93: the minimap marker — its ring pixel in the hole's colour, gone with the layer hidden. */
+async function minimapMark(page, ringRgb) {
+  const read = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('[data-minimap="root"] canvas')
+      const st = window.__game.minimap()
+      if (!el || !st || !st.holeAt) return { st, px: null }
+      const ctx = el.getContext('2d')
+      const half = Math.floor(st.holeMarkPx / 2)
+      const at = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3))
+      return { st, px: { ring: at(st.holeAt.x - half, st.holeAt.y), core: at(st.holeAt.x, st.holeAt.y) } }
+    })
+  const mmState = await page.evaluate(() => window.__game.minimap())
+  if (mmState && mmState.visible === false) await page.keyboard.press('m')
+  await frames(page, 3)
+  const shown = await read()
+  const where = shown.st?.holeAt
+  await page.evaluate(() => window.__game.showBlackHole(false))
+  await frames(page, 3)
+  const hidden = await page.evaluate((w) => {
+    const el = document.querySelector('[data-minimap="root"] canvas')
+    const st = window.__game.minimap()
+    if (!el || !w) return { st, ring: null }
+    const half = Math.floor(st.holeMarkPx / 2)
+    return { st, ring: Array.from(el.getContext('2d').getImageData(w.x - half, w.y, 1, 1).data.slice(0, 3)) }
+  }, where)
+  await page.evaluate(() => window.__game.showBlackHole(true))
+  const near = (a, b) => a && a.every((c, i) => Math.abs(c - b[i]) <= RING_TOLERANCE)
+  if (!shown.px) fail(`minimap: the hole is not on it: ${JSON.stringify(shown.st)}`)
+  else if (!near(shown.px.ring, ringRgb) || !shown.px.core.every((c) => c <= DISC_MAX)) fail(`minimap: the marker is not the hole's ring round a black core: ${JSON.stringify(shown.px)}`)
+  else if (hidden.st?.holeDrawn || near(hidden.ring, ringRgb)) fail(`minimap: control — the marker stayed with the layer hidden: ${JSON.stringify(hidden)}`)
+  else ok(`minimap: the hole is marked at (${where.x}, ${where.y}) in its ring's colour round a black core, and goes with the layer hidden`)
+}
+
 const stack = await startStack({
   port: await freePort(),
   label: 'black-hole',
@@ -239,10 +339,22 @@ try {
   // 5 snapshots in 0.25 s).
   const placeAt = 0.9 * k.BLACK_HOLE_REACH
   const deaths0 = (await dbg()).observed.deaths.length
-  // The first probe of the page: `lastProbe` is still null, so the sampler waits for it.
-  const pulled = pullSeries(page, k.BLACK_HOLE_CAPTURE_R / 4, PULL_BUDGET_S * 1000)
+  // --- 0. the telegraph (R93) ---------------------------------------------------------
+  const warned = await probe(page, undefined, true)
+  if (!warned.warned) fail(`asked for a telegraph, the server answered ${JSON.stringify(warned)}`)
+  await page.waitForFunction(() => window.__game.debug().blackHole.warn !== null, null, { timeout: deadlineMs(10, 'black_hole_warn'), polling: 'raf' })
+  const warnAt = (await dbg()).blackHole.warn
+  await telegraph(page, warnAt)
+  await page.waitForFunction(() => window.__game.debug().blackHole.hole !== null, null, { timeout: deadlineMs(k.BLACK_HOLE_TELEGRAPH + 10, 'black_hole after its telegraph'), polling: 'raf' })
+  const opened = (await dbg()).blackHole.hole
+  const late = (opened.arrivedAt - warnAt.since) / 1000
+  if (Math.hypot(opened.x - warnAt.x, opened.y - warnAt.y) > 0.5) fail(`the hole opened at (${opened.x}, ${opened.y}), not where it was telegraphed (${warnAt.x}, ${warnAt.y})`)
+  else ok(`the hole opened where it was telegraphed, ${late.toFixed(2)} s after the warning reached the page (BLACK_HOLE_TELEGRAPH ${k.BLACK_HOLE_TELEGRAPH} s; the exact lead is Rust's)`)
+
+  // --- 1. arrival, both ends; the placement ------------------------------------------
+  // Started before the placement probe: it reads the placement in-page (T22.10H).
+  const pulled = pullSeries(page, k.BLACK_HOLE_HORIZON_R / 2, PULL_BUDGET_S * 1000)
   const first = await probe(page, placeAt)
-  await page.waitForFunction(() => window.__game.debug().blackHole.hole !== null, null, { timeout: deadlineMs(10, 'black_hole'), polling: 'raf' })
   const d1 = await dbg()
   const hole = d1.blackHole.hole
   const checked0 = d1.blackHole.checksums.checksumsChecked
@@ -254,6 +366,7 @@ try {
   else if (rocks.some((a) => a.x === hole.x && a.y === hole.y)) fail('the client core still sums the rock the hole ate')
   else ok(`exactly one rock gone on both sides (${rocksBefore} → ${rocks.length}), and not the client's the hole ate`)
   if (!first.placed) throw new Error(`the server found no clear side ${placeAt} px from the hole: ${JSON.stringify(first)}`)
+  await minimapMark(page, d1.blackHole.fx?.ringRgb ?? [0, 0, 0])
 
   // --- 2. no rubber-band while pulled; 3. the named death -----------------------------
   // **The bound is RECONCILE_EPSILON_PX plus the wire's rounding, and why.**
@@ -293,7 +406,7 @@ try {
   const summary = `worst ack error ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, ${travelled.toFixed(0)} px in ${secs.toFixed(2)} s`
   if (!series.length) fail(`the prediction never reached the placed body ${JSON.stringify(first.placed)}`)
   else if (!dead) fail(`the hole never took the idle player in ${PULL_BUDGET_S} s: ${summary}`)
-  else if (travelled < k.BLACK_HOLE_CAPTURE_R / 2) fail(`control: the player moved only ${travelled.toFixed(0)} px before dying — nothing was pulled`)
+  else if (travelled < (placeAt - k.BLACK_HOLE_HORIZON_R) / 2) fail(`control: the player moved only ${travelled.toFixed(0)} px before dying — nothing was pulled`)
   else if (acked === 0) fail(`control: no snapshot acked a predicted input during the pull, so the error was never measured`)
   else if (worstAck > bound) fail(`rubber-band while the hole pulled: ${summary} — the ack error is over ${bound.toFixed(2)} px (RECONCILE_EPSILON_PX + √2 · SNAPSHOT_QUANTUM; is the client told the hole?)`)
   else if (corrections * 3 > acked) fail(`rubber-band while the hole pulled: ${summary} — corrected at more than a third of the acked snapshots (is the client told the hole?)`)
@@ -318,7 +431,7 @@ try {
   if (deathDelta < 8 || deathDelta < idleDelta * 3) fail(`the overlay's patch moved ${deathDelta.toFixed(1)} at death against ${idleDelta.toFixed(1)} idle`)
   else ok(`the rendered frame changed where the overlay is: ${deathDelta.toFixed(1)} at death against ${idleDelta.toFixed(1)} idle`)
 
-  // --- 4. the respawn is clear, and from inside the capture radius you cannot escape ----
+  // --- 3b. the respawn is clear -------------------------------------------------------
   const respawns0 = dd.observed.respawns
   await page.waitForFunction((n) => window.__game.debug().observed.respawns > n && window.__game.debug().death.meAlive, respawns0, { timeout: deadlineMs(k.RESPAWN_DELAY + 10, 'the respawn') })
   await frames(page, 3)
@@ -326,37 +439,6 @@ try {
   const clear = Math.hypot(back.x - hole.x, back.y - hole.y)
   if (clear < k.BLACK_HOLE_REACH - 4) fail(`respawned ${clear.toFixed(0)} px from the hole, inside its reach ${k.BLACK_HOLE_REACH}`)
   else ok(`respawned ${clear.toFixed(0)} px from the hole, outside its reach (${k.BLACK_HOLE_REACH})`)
-  const deaths1 = (await dbg()).observed.deaths.length
-  const second = await probe(page, 0.9 * k.BLACK_HOLE_CAPTURE_R)
-  if (!second.placed) fail(`no clear side ${0.9 * k.BLACK_HOLE_CAPTURE_R} px from the hole`)
-  else {
-    const dx = second.placed.x - hole.x
-    const dy = second.placed.y - hole.y
-    const keys = []
-    if (Math.abs(dx) > Math.abs(dy) * 0.3) keys.push(dx > 0 ? 'd' : 'a')
-    if (Math.abs(dy) > Math.abs(dx) * 0.3) keys.push(dy < 0 ? 'w' : 's')
-    for (const key of keys) await page.keyboard.down(key)
-    let furthest = 0
-    let died = false
-    const until = Date.now() + PULL_BUDGET_S * 1000
-    try {
-      while (Date.now() < until) {
-        const d = await dbg()
-        if (d.observed.deaths.length > deaths1) {
-          died = d.observed.deaths.slice(deaths1).some((x) => x.cause === 'black_hole')
-          break
-        }
-        if (d.player) furthest = Math.max(furthest, Math.hypot(d.player.x - hole.x, d.player.y - hole.y))
-        await sleep(50)
-      }
-    } finally {
-      for (const key of keys) await page.keyboard.up(key)
-    }
-    if (!died) fail(`holding ${keys.join('+')} away from the hole from ${(0.9 * k.BLACK_HOLE_CAPTURE_R).toFixed(0)} px escaped (furthest ${furthest.toFixed(0)} px)`)
-    else if (furthest > k.BLACK_HOLE_CAPTURE_R + 4) fail(`died of the hole, but got ${furthest.toFixed(0)} px out alive — past the capture radius ${k.BLACK_HOLE_CAPTURE_R}`)
-    else ok(`holding ${keys.join('+')} away from ${(0.9 * k.BLACK_HOLE_CAPTURE_R).toFixed(0)} px did not escape: died of the hole, never past ${furthest.toFixed(0)} px`)
-  }
-  await page.waitForFunction((n) => window.__game.debug().observed.respawns > n && window.__game.debug().death.meAlive, respawns0 + 1, { timeout: deadlineMs(k.RESPAWN_DELAY + 10, 'the second respawn') }).catch(() => {})
 
   // --- 5. coverage, flat and shader ---------------------------------------------------
   for (const hq of [false, true]) {
@@ -374,6 +456,23 @@ try {
   // --- 6. frozen at the bell ----------------------------------------------------------
   await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: deadlineMs(ROUND_S + 10, 'the bell') })
   await frames(page, 10)
+  // F9: **not pulled** after the bell. Put at rest well inside the reach — where arm 2's
+  // pull carried the body toward the horizon — and watched for a second: nothing may move
+  // it (the hole is frozen, and R91 keeps the wells muted inside its reach).
+  const still = await probe(page, 0.6 * k.BLACK_HOLE_REACH)
+  if (!still.placed) fail('after the bell: no clear side to place the player in the reach')
+  else {
+    await page.waitForFunction((at) => {
+      const p = window.__game.debug().player
+      return p && Math.hypot(p.x - at.x, p.y - at.y) < 1
+    }, still.placed, { timeout: deadlineMs(5, 'the placement after the bell'), polling: 'raf' }).catch(() => {})
+    const a = (await dbg()).player
+    await frames(page, k.SIM_HZ)
+    const b = (await dbg()).player
+    const moved = a && b ? Math.hypot(b.x - a.x, b.y - a.y) : NaN
+    if (!(moved <= k.RECONCILE_EPSILON_PX)) fail(`after the bell a player at rest ${(0.6 * k.BLACK_HOLE_REACH).toFixed(0)} px from the hole moved ${moved.toFixed(2)} px in ${k.SIM_HZ} frames — it still pulls (arm 2: ${travelled.toFixed(0)} px while it did)`)
+    else ok(`after the bell a player at rest in its reach moved ${moved.toFixed(2)} px in ${k.SIM_HZ} frames — not pulled (while playing: ${travelled.toFixed(0)} px)`)
+  }
   const deaths2 = (await dbg()).observed.deaths.length
   const inside = await probe(page, 0.5 * k.BLACK_HOLE_HORIZON_R)
   await frames(page, 60)

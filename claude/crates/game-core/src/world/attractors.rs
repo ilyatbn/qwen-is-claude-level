@@ -89,9 +89,10 @@ pub enum Kind {
     /// basis is on `VORTEX_ACCEL_MAX` — so the asteroid escape guarantee must never
     /// widen to it.
     Vortex,
-    /// T22.12's black hole. **Inescapable inside `BLACK_HOLE_CAPTURE_R`, by
-    /// design** — it carries the *inverse* of the asteroid guarantee
-    /// (`black_hole::tests::from_inside_the_capture_radius_full_thrust_does_not_escape`).
+    /// T22.12's black hole. **Escapable everywhere outside its horizon and death
+    /// inside it** (R90): its own guarantee is
+    /// `black_hole::tests::from_just_outside_the_horizon_full_thrust_escapes_past_the_reach`,
+    /// and the asteroid ceiling must not widen to it (its margin is thinner).
     BlackHole,
 }
 
@@ -235,13 +236,26 @@ pub fn field_at<I: IntoIterator<Item = Attractor>>(attractors: I, pos: Vec2) -> 
 /// **after** the asteroids, into the **same** `field_at` (R11: one summation; a
 /// second loop beside it is the thing that rule exists to prevent).
 ///
-/// `hole` (T22.12) is the black hole **as it pulls this tick** — already gated on
-/// the phase by `black_hole::pulling`, which both sides call — chained last.
+/// `hole` (T22.12) is the black hole if it has arrived, and `hole_pulls` whether it
+/// pulls this tick (`black_hole::pulls`, R8.4: not after the bell) — chained last.
+/// **Two arguments, because they are two facts**: R91 keys on the hole being
+/// *there*, the pull on it *pulling*.
+///
+/// **R91: within the hole's `BLACK_HOLE_REACH` the asteroid wells do not pull —
+/// only the hole does.** Rocks beside the eaten one summed to 745 px/s² at the
+/// horizon and trapped 20 of 208 flights the hole alone lets go, which turned the
+/// horizon — the rule a player can see — back into a guess. Filtered here, inside
+/// this one summation, not by a second loop; and keyed on the hole being present
+/// rather than pulling, so after the bell nothing pulls inside the reach at all (the
+/// results screen is still, R8.4) instead of the wells taking over from the hole.
+/// The same `d >= reach` boundary as `Attractor::pull_at`, so the hole's pull and the
+/// wells' hand over at one radius.
 pub fn env_at(
     map: &Map,
     gravity: GravityMode,
     vortices: &[Vec2],
     hole: Option<Vec2>,
+    hole_pulls: bool,
     pos: Vec2,
 ) -> Env {
     match gravity {
@@ -250,16 +264,20 @@ pub fn env_at(
         // T22.11A: no field, no speed cap, so `integrate`'s two new lines add
         // exactly nothing and the scalar path's arithmetic is untouched.
         GravityMode::Standard | GravityMode::Low => Env::field_free(gravity),
-        GravityMode::Space => Env {
-            gravity,
-            accel: field_at(
-                asteroid_attractors(map)
-                    .chain(vortices.iter().map(|&v| Attractor::vortex(v)))
-                    .chain(hole.map(Attractor::black_hole)),
-                pos,
-            ),
-            max_speed: Some(SPACE_MAX_SPEED),
-        },
+        GravityMode::Space => {
+            let wells = hole.is_none_or(|h| (pos - h).len() >= BLACK_HOLE_REACH);
+            Env {
+                gravity,
+                accel: field_at(
+                    asteroid_attractors(map)
+                        .filter(|_| wells)
+                        .chain(vortices.iter().map(|&v| Attractor::vortex(v)))
+                        .chain(hole.filter(|_| hole_pulls).map(Attractor::black_hole)),
+                    pos,
+                ),
+                max_speed: Some(SPACE_MAX_SPEED),
+            }
+        }
     }
 }
 
@@ -318,7 +336,7 @@ mod tests {
     /// itself forever while `World::apply_inputs` handed out something else.
     fn step(map: &Map, st: &mut MovementState, buttons: u8, gravity: GravityMode) {
         let input = Input::new(0, buttons, 0);
-        let env = env_at(map, gravity, &[], None, st.body.pos);
+        let env = env_at(map, gravity, &[], None, false, st.body.pos);
         st.step(
             map,
             &input,
@@ -928,13 +946,13 @@ mod tests {
 
         for mode in [GravityMode::Standard, GravityMode::Low] {
             assert_eq!(
-                env_at(&map, mode, &[], None, at),
+                env_at(&map, mode, &[], None, false, at),
                 Env::field_free(mode),
                 "{mode:?} picked up a field or a speed cap from a map with rocks on it"
             );
         }
         // The presence half, in the same test: the same map, the same point.
-        let space = env_at(&map, GravityMode::Space, &[], None, at);
+        let space = env_at(&map, GravityMode::Space, &[], None, false, at);
         assert_ne!(space.accel, Vec2::ZERO, "space read no field at all");
         assert_eq!(space.max_speed, Some(SPACE_MAX_SPEED));
     }

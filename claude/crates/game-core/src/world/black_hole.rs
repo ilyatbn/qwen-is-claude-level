@@ -6,24 +6,31 @@
 //! **It is the closing pressure, not a fourth thing to dodge**: it arrives in the last
 //! minute, never leaves, and takes an asteroid with it.
 //!
-//! Where each rule lives (`M22-RULINGS` R8, R11, R20, R21):
+//! Where each rule lives (`M22-RULINGS` R8, R11, R20, R21; `T22.12` "As ruled" R90–R93):
 //! - **the lifecycle** is the round controller's, not the scheduler's (R21): one
-//!   `World` field, [`BlackHole`], rolled on the first `Playing` tick of a space round
-//!   and stepped by [`World::step_black_hole`] from `World::step`;
+//!   `World` field, [`BlackHole`], rolled on the first `Playing` tick of a space round,
+//!   **telegraphed** [`BLACK_HOLE_TELEGRAPH`] seconds before it opens (R93,
+//!   `black_hole_warn`) and stepped by [`World::step_black_hole`] from `World::step`;
 //! - **the pull** is `attractors::Attractor::black_hole`, chained into the one
 //!   `field_at` after the wells and the vortices, on both sides through
-//!   `attractors::env_at` — and gated on the phase by [`pulling`], which both sides
-//!   call (R8.4: it freezes at `Ended`);
+//!   `attractors::env_at` — gated on the phase by [`pulls`], which both sides call
+//!   (R8.4: it freezes at `Ended`); and **inside its reach the wells are muted** (R91,
+//!   in that same `env_at`);
 //! - **the horizon** is a state change, not a force: [`in_horizon`] zeroes health like
 //!   the void, and `resolve_deaths` re-derives `DeathCause::BlackHole` from the same
-//!   predicate one pass later (R20's shape — derive, do not add a flag).
+//!   predicate one pass later (R20's shape — derive, do not add a flag), **only while
+//!   it [`pulls`]** — the kill is gated on `Playing`, so is the name (T22.12C F9). A
+//!   black-hole death drops nothing (R92).
+//! - **the horizon is the whole rule** (R90): the pull there is
+//!   `BLACK_HOLE_EDGE_PULL`, under the weakest thrust, so one pixel outside it every
+//!   player holding thrust away climbs out — and the ring drawn at it is the line.
 //!
 //! **Decisions this file makes, for the coordinator** (reversible, each in one place):
 //! - the hole sits at the eaten asteroid's centre, and the rock is carved away there
 //!   (`CarveKind::Meteor`, an existing wire kind, so the client's carve stream and
 //!   its mask checksum carry the change with no new terrain path);
-//! - **anyone standing on that rock is inside the capture radius** (`BLACK_HOLE_CAPTURE_R`
-//!   is twice the largest rock) and goes where the hole sends everyone — in;
+//! - **anyone standing on that rock is inside the horizon or just outside it** (the
+//!   horizon is the largest rock's radius) — with the 2 s telegraph over their feet;
 //! - it never eats the **last** asteroid: `Map::space_geometry` is derived from the
 //!   asteroid list being non-empty, so eating the only rock would turn the rim, the
 //!   void and every space rule off mid-round. A map with one rock gets the hole at
@@ -31,14 +38,15 @@
 //!   derivation, which is a field meaning two things — reported, not changed here.)
 
 use crate::constants::{
-    BLACK_HOLE_HORIZON_R, BLACK_HOLE_LATEST, BLACK_HOLE_REACH, BLACK_HOLE_WINDOW,
+    BLACK_HOLE_HORIZON_R, BLACK_HOLE_LATEST, BLACK_HOLE_REACH, BLACK_HOLE_TELEGRAPH,
+    BLACK_HOLE_WINDOW, SIM_DT,
 };
 use crate::math::Vec2;
 use crate::rng::{range_f32, substream};
 use crate::world::{CarveKind, GameEvent, RoundPhase, World};
 
-/// The black hole's whole lifecycle — **one field**, so "rolled", "due" and "here"
-/// cannot disagree with each other.
+/// The black hole's whole lifecycle — **one field**, so "rolled", "warned" and
+/// "here" cannot disagree with each other.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BlackHole {
     /// Not rolled: before the round's first `Playing` tick, or not a space round.
@@ -46,6 +54,10 @@ pub enum BlackHole {
     /// Rolled: arrives at round time `at` and eats the asteroid `pick` indexes
     /// (modulo the list as it stands then).
     Due { at: f32, pick: u32 },
+    /// Telegraphed (R93): `black_hole_warn` has gone out, and at round time `at` it
+    /// opens at `pos`, eating asteroid `index` (the list cannot change before then —
+    /// only the hole removes rocks).
+    Warned { at: f32, index: u32, pos: Vec2 },
     /// Here, for the rest of the round (R8: permanent, fixed size).
     Here { pos: Vec2 },
 }
@@ -74,6 +86,13 @@ impl BlackHole {
                 h.update(&pos.x.to_le_bytes());
                 h.update(&pos.y.to_le_bytes());
             }
+            BlackHole::Warned { at, index, pos } => {
+                h.update(&[3]);
+                h.update(&at.to_le_bytes());
+                h.update(&index.to_le_bytes());
+                h.update(&pos.x.to_le_bytes());
+                h.update(&pos.y.to_le_bytes());
+            }
         }
     }
 }
@@ -81,11 +100,18 @@ impl BlackHole {
 /// The arrival roll: a seeded moment in the last minute, and which rock.
 ///
 /// Its own substream, so rolling it moves no other roll (the vortex's reason).
-/// Uniform over `[end - WINDOW, end - LATEST]`, never before the phase began.
+/// Uniform over `[end - window, end - window · LATEST / WINDOW]`, where `window` is
+/// `BLACK_HOLE_WINDOW` — or, on a round too short for it plus the telegraph, the
+/// round's length less the telegraph (T22.12C F8: scaled, see the constant), so the
+/// telegraph always fits after the phase begins.
 pub fn roll(seed: u64, phase_started_at: f32, round_ends_at: f32) -> BlackHole {
     let mut rng = substream(seed, "black_hole");
-    let earliest = round_ends_at - BLACK_HOLE_WINDOW;
-    let at = earliest + range_f32(&mut rng, 0.0, BLACK_HOLE_WINDOW - BLACK_HOLE_LATEST);
+    let length = round_ends_at - phase_started_at;
+    let window = BLACK_HOLE_WINDOW
+        .min(length - BLACK_HOLE_TELEGRAPH)
+        .max(0.0);
+    let span = window * (1.0 - BLACK_HOLE_LATEST / BLACK_HOLE_WINDOW);
+    let at = round_ends_at - window + range_f32(&mut rng, 0.0, span);
     let pick = rand::RngCore::next_u32(&mut rng);
     BlackHole::Due {
         at: at.max(phase_started_at),
@@ -93,15 +119,17 @@ pub fn roll(seed: u64, phase_started_at: f32, round_ends_at: f32) -> BlackHole {
     }
 }
 
-/// The hole as it **pulls** this tick: present, and the phase takes input.
+/// Whether the hole **pulls** this tick: the phase takes input.
 ///
 /// R8.4: it freezes at `Ended` — T21.30 keeps physics running after the bell
 /// (*"input does nothing — but gravity does"*), so an attractor left on that path
 /// would keep pulling on the results screen. **Both sides call this**:
-/// `World::apply_inputs` and `GameCore::apply_input`, so the mirror cannot gate it
-/// differently. The asteroid wells deliberately keep pulling (T22.11B's note there).
-pub fn pulling(hole: Option<Vec2>, phase: RoundPhase) -> Option<Vec2> {
-    hole.filter(|_| phase.accepts_input())
+/// `World::apply_inputs` and `GameCore::apply_input` (which also stops at the bell's
+/// seq, T22.12C F5), so the mirror cannot gate it differently. The asteroid wells
+/// keep pulling outside the reach (T22.11B's note there); inside it nothing pulls
+/// after the bell (R91 mutes them by the hole's presence, `attractors::env_at`).
+pub fn pulls(phase: RoundPhase) -> bool {
+    phase.accepts_input()
 }
 
 /// Inside the event horizon — the one predicate the kill and the death's cause share.
@@ -116,23 +144,56 @@ pub fn clearance(hole: Option<Vec2>, centre: Vec2) -> f32 {
     hole.map_or(f32::INFINITY, |h| (centre - h).len() - BLACK_HOLE_REACH)
 }
 
+/// **The first input seq the server steps after the bell** (T22.12C F5) — the seq
+/// from which a client's prediction must stop pulling toward the hole.
+///
+/// The server stops the pull on its `Ended` tick; a client hears `ended` a trip
+/// later and, until then, predicted the pull on inputs the server stepped without
+/// it. Derived from what the client already holds: a `Playing` `round_state` —
+/// `state_tick` and `time_left` — puts the bell at the end of tick
+/// `state_tick + round(time_left / SIM_DT)` (`World::step` changes phase last, so
+/// that tick still pulled); and a snapshot says seq `ack` ran on tick `snap_tick`,
+/// one seq a tick after it (R89: one step per player per tick). So the first seq
+/// stepped in `Ended` is `ack + (bell − snap_tick) + 1`. `round`, not `ceil`: the
+/// round clock is a float sum and `time_left` can land a hair either side of a
+/// whole tick — one tick of error is ~0.2 px of pull, measured by
+/// `game-wasm`'s `the_bell_seq_stops_the_pull_on_the_servers_ended_tick`.
+pub fn bell_seq(state_tick: u32, time_left: f32, ack: u32, snap_tick: u32) -> u32 {
+    let bell = i64::from(state_tick) + (time_left / SIM_DT).round() as i64;
+    (i64::from(ack) + bell - i64::from(snap_tick) + 1).clamp(0, i64::from(u32::MAX)) as u32
+}
+
 impl World {
     /// The hole, if it has arrived.
     pub fn black_hole(&self) -> Option<Vec2> {
         self.black_hole.pos()
     }
 
-    /// When it is due, while it is due — the arrival assertion's readback.
+    /// When it is due, while it is due or warned — the arrival assertion's readback.
     pub fn black_hole_due_at(&self) -> Option<f32> {
         match self.black_hole {
-            BlackHole::Due { at, .. } => Some(at),
+            BlackHole::Due { at, .. } | BlackHole::Warned { at, .. } => Some(at),
             _ => None,
         }
     }
 
-    /// `Playing` only (the caller gates): roll, arrive when due, and take whoever is
-    /// inside the horizon. Before the void in `step`, for the void's reason — it
-    /// works by zeroing health and letting `resolve_deaths` do the rest.
+    /// Tests outside `world` (the bots') put a hole where they need one, on any map.
+    #[cfg(test)]
+    pub(crate) fn place_black_hole_for_test(&mut self, pos: Vec2) {
+        self.black_hole = BlackHole::Here { pos };
+    }
+
+    /// Where it will open, while it is telegraphed (R93).
+    pub fn black_hole_warned_at(&self) -> Option<Vec2> {
+        match self.black_hole {
+            BlackHole::Warned { pos, .. } => Some(pos),
+            _ => None,
+        }
+    }
+
+    /// `Playing` only (the caller gates): roll, telegraph, arrive when due, and take
+    /// whoever is inside the horizon. Before the void in `step`, for the void's
+    /// reason — it works by zeroing health and letting `resolve_deaths` do the rest.
     pub(super) fn step_black_hole(&mut self, now: f32) {
         if self.map.space_geometry().is_none() {
             return;
@@ -141,8 +202,14 @@ impl World {
             self.black_hole = roll(self.seed, self.phase_started_at, self.round_ends_at());
         }
         if let BlackHole::Due { at, pick } = self.black_hole {
+            if now >= at - BLACK_HOLE_TELEGRAPH {
+                let (index, pos) = self.black_hole_site(pick as usize);
+                self.warn_black_hole(at, index, pos);
+            }
+        }
+        if let BlackHole::Warned { at, index, .. } = self.black_hole {
             if now >= at {
-                self.arrive_black_hole(pick as usize, now);
+                self.arrive_black_hole(index as usize, now);
             }
         }
         let Some(hole) = self.black_hole.pos() else {
@@ -155,23 +222,72 @@ impl World {
         }
     }
 
+    /// Which rock `pick` eats and where the hole opens: the rock's index in the list
+    /// as it stands and its centre — or, with fewer than two rocks, the arena centre
+    /// and no rock (never the last asteroid; the module doc says why).
+    fn black_hole_site(&self, pick: usize) -> (u32, Vec2) {
+        let rocks = &self.map.meta.asteroids;
+        if rocks.len() >= 2 {
+            let i = pick % rocks.len();
+            (i as u32, Vec2::new(rocks[i].x as f32, rocks[i].y as f32))
+        } else {
+            let geo = self.map.space_geometry().expect("gated by the caller");
+            (u32::MAX, Vec2::new(geo.cx, geo.cy))
+        }
+    }
+
+    /// R93: the telegraph — the state, and `black_hole_warn` with the spot and how
+    /// long until it opens, for everyone.
+    fn warn_black_hole(&mut self, at: f32, index: u32, pos: Vec2) {
+        self.black_hole = BlackHole::Warned { at, index, pos };
+        let tick = self.tick;
+        self.events.push(GameEvent::BlackHoleWarn {
+            tick,
+            x: pos.x,
+            y: pos.y,
+            arrives_in: (at - self.round_time).max(0.0),
+        });
+    }
+
     /// Bring the hole now, eating the asteroid nearest `near` — the tests' and the
     /// dev hook's way in, through the same arrival the roll uses. Space only, once.
+    /// **No telegraph**: see [`World::warn_black_hole_near`] for the one that has it.
     pub fn summon_black_hole_near(&mut self, near: Vec2, now: f32) -> Option<Vec2> {
         if self.map.space_geometry().is_none() || self.black_hole.pos().is_some() {
             return None;
         }
-        let d = |a: &crate::map::meta::Asteroid| (Vec2::new(a.x as f32, a.y as f32) - near).len();
-        let index = self
-            .map
-            .meta
-            .asteroids
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| d(a).total_cmp(&d(b)))
-            .map_or(0, |(i, _)| i);
+        let index = self.rock_nearest(near, 0.0);
         self.arrive_black_hole(index, now);
         self.black_hole.pos()
+    }
+
+    /// Telegraph the hole now, to open [`BLACK_HOLE_TELEGRAPH`] seconds from `now`
+    /// through the ordinary step (R93) — the dev hook's `warn` (T22.12C). It eats the
+    /// rock nearest `near` **whose centre is outside the reach of `near`**, so the
+    /// asker is not standing in it while the check photographs the warning. Space
+    /// only, before the hole is here; `None` otherwise.
+    pub fn warn_black_hole_near(&mut self, near: Vec2, now: f32) -> Option<Vec2> {
+        if self.map.space_geometry().is_none() || self.black_hole.pos().is_some() {
+            return None;
+        }
+        let pick = self.rock_nearest(near, BLACK_HOLE_REACH);
+        let (index, pos) = self.black_hole_site(pick);
+        self.warn_black_hole(now + BLACK_HOLE_TELEGRAPH, index, pos);
+        Some(pos)
+    }
+
+    /// The index of the rock whose centre is nearest `near` among those at least
+    /// `min` from it (all of them if none is), 0 on an empty list.
+    fn rock_nearest(&self, near: Vec2, min: f32) -> usize {
+        let d = |a: &crate::map::meta::Asteroid| (Vec2::new(a.x as f32, a.y as f32) - near).len();
+        let rocks = &self.map.meta.asteroids;
+        let far_enough = rocks.iter().any(|a| d(a) >= min);
+        rocks
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !far_enough || d(a) >= min)
+            .min_by(|(_, a), (_, b)| d(a).total_cmp(&d(b)))
+            .map_or(0, |(i, _)| i)
     }
 
     /// Dev seam for the browser checks (`debug_black_hole`): put player `id` at rest
@@ -220,6 +336,7 @@ impl World {
     fn arrive_black_hole(&mut self, pick: usize, now: f32) {
         let n = self.map.meta.asteroids.len();
         let pos = if n >= 2 {
+            // `pick % n` is `pick` itself when it came from `black_hole_site`.
             let a = self.map.meta.asteroids.remove(pick % n);
             // `+ 2`: the stamp keeps every pixel inside `r`, and rounding may put
             // one on it (`stamp_asteroid`); asteroids are `SPACE_ASTEROID_GAP_MIN`
@@ -258,8 +375,8 @@ impl World {
 mod tests {
     use super::*;
     use crate::constants::{
-        GravityMode, MapScale, BLACK_HOLE_ACCEL_MAX, BLACK_HOLE_CAPTURE_R, BLACK_HOLE_THRUST_BOUND,
-        DEFAULT_MAP_GENERATOR, JETPACK_MAX_FUEL, SIM_DT,
+        GravityMode, MapScale, BLACK_HOLE_EDGE_PULL, DEFAULT_MAP_GENERATOR, JETPACK_MAX_FUEL,
+        JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_DT,
     };
     use crate::player::input::{button, Input};
     use crate::player::state::DeathCause;
@@ -383,18 +500,21 @@ mod tests {
                 "a rock the hole did not eat lost its pixels"
             );
         }
-        // Its well is gone: the field just outside the rock is the hole's alone.
-        let probe = centre + Vec2::new(0.0, crate::constants::BLACK_HOLE_REACH * 0.75);
+        // Its well is gone. Probed **just outside the hole's reach**, where the wells
+        // pull again (R91 mutes them inside it, so a probe there would pass with the
+        // eaten rock's well still in the list): the field is the survivors' alone,
+        // and the eaten rock's own well does reach this far (the control).
+        let probe = centre + Vec2::new(0.0, crate::constants::BLACK_HOLE_REACH + 2.0);
+        assert_ne!(
+            Attractor::asteroid(&target).pull_at(probe),
+            Vec2::ZERO,
+            "control: the eaten rock's well does not reach the probe"
+        );
         let expect = crate::world::attractors::field_at(
-            w.map
-                .meta
-                .asteroids
-                .iter()
-                .map(Attractor::asteroid)
-                .chain(Some(Attractor::black_hole(centre))),
+            w.map.meta.asteroids.iter().map(Attractor::asteroid),
             probe,
         );
-        let got = env_at(&w.map, GravityMode::Space, &[], Some(centre), probe).accel;
+        let got = env_at(&w.map, GravityMode::Space, &[], Some(centre), true, probe).accel;
         assert_eq!(got, expect);
         let events = w.drain_events();
         assert_eq!(
@@ -446,9 +566,19 @@ mod tests {
         }
     }
 
-    /// Run ana for `secs` holding thrust away from the hole; the result is whether
-    /// she died of it and how far out she ever got alive.
-    fn flee(w: &mut World, hole: Vec2, secs: f32) -> (bool, f32) {
+    fn hole_world(seed: u64) -> (World, Vec2) {
+        let mut w = world(GravityMode::Space, seed, 600.0);
+        let geo = w.map.space_geometry().expect("space");
+        let hole = w
+            .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
+            .expect("summoned");
+        w.drain_events();
+        (w, hole)
+    }
+
+    /// Run ana for up to `secs` holding thrust away from the hole; stops once she is
+    /// past the reach. Whether she died of it, and how far out she got alive.
+    fn escape(w: &mut World, hole: Vec2, secs: f32) -> (bool, f32) {
         let mut furthest: f32 = 0.0;
         for _ in 0..(secs / SIM_DT) as usize {
             let pos = w.player(0).expect("ana").body.pos;
@@ -460,91 +590,136 @@ mod tests {
             if deaths(&w.drain_events()).contains(&DeathCause::BlackHole) {
                 return (true, furthest);
             }
+            if furthest > crate::constants::BLACK_HOLE_REACH + 8.0 {
+                break;
+            }
         }
         (false, furthest)
     }
 
-    fn hole_world(seed: u64) -> (World, Vec2) {
-        let mut w = world(GravityMode::Space, seed, 600.0);
-        let geo = w.map.space_geometry().expect("space");
-        let hole = w
-            .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
-            .expect("summoned");
-        w.drain_events();
-        (w, hole)
+    /// **R90 + R91: the horizon is the whole rule** — from one pixel outside it, at
+    /// rest on a full tank, holding the thrust that points away, **every** flight
+    /// climbs out past the reach: 16 sides of 13 maps, the review's 208 flights
+    /// (**0 escaped** at T22.12A's sizes, and **20 were trapped** by neighbouring
+    /// wells once the pull was right-sized — the plant that un-mutes R91 is red
+    /// here). The kill inside it is `inside_the_horizon_is_death_on_the_tick…`.
+    ///
+    /// **The terrain is cleared out of the way** to past the reach first: the claim is
+    /// about the *field* — the hole plus every rock's well, whose list is untouched —
+    /// and a flight that bumps a rock's side is stopped by the rock, not the hole
+    /// (measured: a straight-up flight on a side whose radial was clear ran into the
+    /// rock beside it at 168 px, because the buttons cannot point along the radial).
+    ///
+    /// The constants' own claim first: the pull at the horizon is `EDGE_PULL`, under
+    /// the **weakest** thrust (DOWN), and every thrust is at least that.
+    #[test]
+    fn from_just_outside_the_horizon_full_thrust_escapes_past_the_reach() {
+        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H};
+        let edge = Attractor::black_hole(Vec2::ZERO)
+            .pull_at(Vec2::new(BLACK_HOLE_HORIZON_R, 0.0))
+            .len();
+        assert!(
+            (edge - BLACK_HOLE_EDGE_PULL).abs() < 0.5,
+            "edge pull {edge}"
+        );
+        let weakest = JETPACK_THRUST_DOWN
+            .min(JETPACK_THRUST_SIDE)
+            .min(JETPACK_THRUST_UP);
+        assert!(
+            edge < weakest,
+            "the pull at the horizon {edge} beats a thrust {weakest}"
+        );
+
+        const SIDES: usize = 16;
+        let mut flights = 0;
+        let mut trapped = Vec::new();
+        let mut wells_inside = 0;
+        for seed in 0..13u64 {
+            for k in 0..SIDES {
+                let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
+                let (mut w, hole) = hole_world(seed);
+                // Through `Map::carve_circle` (the coarse grid collision reads is
+                // kept with the mask), with its pending breaches drained: a disc
+                // this size can reach the rim, and the vortex a breach opens pulled
+                // a flight into the hole (measured, seed 11 side 4).
+                let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
+                let _ = w
+                    .map
+                    .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
+                let _ = w.map.take_breaches();
+                if k == 0 {
+                    // The control that there are wells to mute: some rock's well
+                    // reaches the horizon on this map.
+                    let at = hole + Vec2::new(BLACK_HOLE_HORIZON_R + 1.0, 0.0);
+                    let wells = crate::world::attractors::field_at(
+                        w.map.meta.asteroids.iter().map(Attractor::asteroid),
+                        at,
+                    );
+                    wells_inside += usize::from(wells != Vec2::ZERO);
+                }
+                place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
+                let (died, furthest) = escape(&mut w, hole, JETPACK_MAX_FUEL);
+                flights += 1;
+                if died || furthest <= BLACK_HOLE_REACH {
+                    trapped.push(format!(
+                        "seed {seed} side {k}: died {died}, {furthest:.1} px"
+                    ));
+                }
+            }
+        }
+        assert!(
+            wells_inside >= 10,
+            "control: a well reaches the horizon on only {wells_inside} of 13 maps"
+        );
+        assert!(
+            trapped.is_empty(),
+            "{} of {flights} flights from just outside the horizon did not get past the \
+             reach: {trapped:?}",
+            trapped.len()
+        );
     }
 
-    /// **The inverse of `T22.11`'s escape ceiling** — *"if you get within the
-    /// range of it, you cannot escape"* as a rule rather than a hope. From inside
-    /// `BLACK_HOLE_CAPTURE_R`, at rest on a full tank, holding the thrust that
-    /// points most directly away, on every side: dead of the hole, never out past
-    /// the capture radius alive. The control is the same flight from where the pull
-    /// is half the **weakest** thrust (sideways): it escapes past the reach —
-    /// otherwise this passes for a hole that kills everyone on the map.
-    ///
-    /// **Measured, and why the control is not "just outside the capture radius":**
-    /// thrust is anisotropic (UP 2200, SIDE 1100, the diagonal ~2460), so the true
-    /// no-escape radius depends on the side — at 1.3× the capture radius a mostly
-    /// sideways flight still died (166 px, pull 2320 against SIDE's 1100). The
-    /// capture radius is the radius inside which **no** direction escapes; outside
-    /// it, some directions still cannot.
+    /// **R91: inside the hole's reach only the hole pulls; outside it the wells do.**
+    /// Inside: the field is exactly the hole's own pull, though rocks' wells reach
+    /// there (the control that muting changed something). Outside, one pixel past
+    /// the reach: the wells, exactly the hole-free field, and not zero — a presence
+    /// control, or "muted" would pass for a map with no wells at all.
     #[test]
-    fn from_inside_the_capture_radius_full_thrust_does_not_escape() {
-        // The constants' own claim, stated once: at the capture radius the pull
-        // equals the bound on any thrust, and the bound covers the diagonal.
-        let edge = Attractor::black_hole(Vec2::ZERO)
-            .pull_at(Vec2::new(BLACK_HOLE_CAPTURE_R, 0.0))
-            .len();
-        assert!((edge - BLACK_HOLE_THRUST_BOUND).abs() < 1.0);
-        let diag = (crate::constants::JETPACK_THRUST_UP.powi(2)
-            + crate::constants::JETPACK_THRUST_SIDE.powi(2))
-        .sqrt();
-        assert!(diag <= BLACK_HOLE_THRUST_BOUND);
-
-        let secs = 2.0 * JETPACK_MAX_FUEL;
-        let mut controls = 0;
-        for k in 0..8 {
-            let angle = k as f32 * std::f32::consts::TAU / 8.0 + 0.2;
-            let (mut w, hole) = hole_world(11);
-            place(&mut w, hole, BLACK_HOLE_CAPTURE_R * 0.95, angle);
-            let (died, furthest) = flee(&mut w, hole, secs);
-            assert!(
-                died,
-                "side {k}: full thrust from inside the capture radius escaped"
+    fn inside_the_reach_only_the_hole_pulls_and_outside_it_the_wells_do() {
+        use crate::constants::BLACK_HOLE_REACH;
+        let (w, hole) = hole_world(5);
+        let wells_at = |p: Vec2| {
+            crate::world::attractors::field_at(
+                w.map.meta.asteroids.iter().map(Attractor::asteroid),
+                p,
+            )
+        };
+        let mut muted = 0;
+        for k in 0..16 {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            let dir = Vec2::new(a.cos(), a.sin());
+            let inside = hole + dir * (BLACK_HOLE_REACH * 0.5);
+            let got = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, inside).accel;
+            assert_eq!(
+                got,
+                Attractor::black_hole(hole).pull_at(inside),
+                "side {k}: inside"
             );
-            assert!(
-                furthest <= BLACK_HOLE_CAPTURE_R,
-                "side {k}: got {furthest:.1} px out alive, past the capture radius"
-            );
-
-            let (mut w, hole) = hole_world(11);
-            let far = crate::constants::BLACK_HOLE_REACH
-                * (1.0 - 0.5 * crate::constants::JETPACK_THRUST_SIDE / BLACK_HOLE_ACCEL_MAX);
-            // Only on a side whose way out is open space — a rock in the way stops
-            // the flight for a reason that is not the hole.
-            let dir = Vec2::new(angle.cos(), angle.sin());
-            let open = (0..=40).all(|i| {
-                let at = hole + dir * (far + i as f32 * 4.0);
-                !crate::physics::collide::aabb_overlaps_solid(
-                    &w.map,
-                    crate::physics::body::Body::new(at).aabb(),
-                )
-            });
-            if !open {
-                continue;
+            if wells_at(inside) != Vec2::ZERO {
+                muted += 1;
             }
-            controls += 1;
-            place(&mut w, hole, far, angle);
-            let (died, furthest) = flee(&mut w, hole, secs);
-            assert!(
-                !died && furthest > crate::constants::BLACK_HOLE_REACH,
-                "control, side {k}: full thrust from {far:.1} px did not escape past the \
-                 reach (died {died}, furthest {furthest:.1} px)"
+            let outside = hole + dir * (BLACK_HOLE_REACH + 1.0);
+            let got = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, outside).accel;
+            assert_eq!(got, wells_at(outside), "side {k}: outside");
+            assert_ne!(
+                got,
+                Vec2::ZERO,
+                "side {k}: control — no well reaches past the reach"
             );
         }
         assert!(
-            controls >= 4,
-            "only {controls} open sides: the control is too thin"
+            muted > 0,
+            "control: no well reached inside the reach, so muting proves nothing"
         );
     }
 
@@ -570,12 +745,12 @@ mod tests {
     fn outside_the_reach_the_hole_adds_nothing() {
         let (w, hole) = hole_world(5);
         let out = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH + 1.0, 0.0);
-        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), out).accel;
-        let without = env_at(&w.map, GravityMode::Space, &[], None, out).accel;
+        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, out).accel;
+        let without = env_at(&w.map, GravityMode::Space, &[], None, false, out).accel;
         assert_eq!(with, without);
         let inside = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH * 0.5, 0.0);
-        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), inside).accel;
-        let without = env_at(&w.map, GravityMode::Space, &[], None, inside).accel;
+        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, inside).accel;
+        let without = env_at(&w.map, GravityMode::Space, &[], None, false, inside).accel;
         assert_ne!(
             with, without,
             "control: inside the reach the hole pulled nothing"
@@ -583,34 +758,35 @@ mod tests {
     }
 
     /// R8.4: at `Ended` it freezes — no pull, no kill — and stays (drawn: the
-    /// client keeps the event). The control is the same body one tick before the
-    /// bell, which the hole does pull.
+    /// client keeps the event). The control is the same body before the bell, which
+    /// the hole does pull. And R91 keys on the hole being *there*: inside its reach
+    /// after the bell **nothing** pulls — not the hole, and not the wells it mutes —
+    /// so a body at rest stays at rest on the results screen.
     #[test]
     fn at_ended_it_freezes_and_stays() {
         let (mut w, hole) = hole_world(9);
-        let at = hole + Vec2::new(0.0, BLACK_HOLE_CAPTURE_R * 1.5);
-        assert!(pulling(Some(hole), RoundPhase::Playing).is_some());
-        assert_eq!(pulling(Some(hole), RoundPhase::Ended), None);
+        let at = hole + Vec2::new(0.0, crate::constants::BLACK_HOLE_REACH * 0.6);
+        assert!(pulls(RoundPhase::Playing));
+        assert!(!pulls(RoundPhase::Ended));
         // Playing: pulled toward the hole (the control).
         let p = w.player_mut(0).expect("ana");
         p.body = crate::physics::body::Body::new(at);
         step(&mut w, 0);
         let v_playing = w.player(0).expect("ana").body.vel;
-        let wells = env_at(&w.map, GravityMode::Space, &[], None, at).accel;
         assert!(
-            (v_playing - wells * SIM_DT).y < -1.0,
-            "control: the hole did not pull"
+            v_playing.y < -1.0,
+            "control: the hole did not pull ({v_playing:?})"
         );
-        // Ended: the same body, the same place — only the wells.
+        // Ended: the same body, the same place — nothing pulls.
         w.set_phase(RoundPhase::Ended);
         let p = w.player_mut(0).expect("ana");
         p.body = crate::physics::body::Body::new(at);
-        step(&mut w, 0);
-        let v_ended = w.player(0).expect("ana").body.vel;
-        assert!(
-            (v_ended - wells * SIM_DT).len() < 1e-3,
-            "it pulled after the bell"
-        );
+        for _ in 0..30 {
+            step(&mut w, 0);
+        }
+        let b = w.player(0).expect("ana").body;
+        assert_eq!(b.vel, Vec2::ZERO, "something pulled after the bell");
+        assert_eq!(b.pos, at, "the body moved after the bell");
         // No kill inside the horizon after the bell, and it is still here.
         let p = w.player_mut(0).expect("ana");
         p.body = crate::physics::body::Body::new(hole + Vec2::new(1.0, 0.0));
@@ -620,6 +796,191 @@ mod tests {
             "it killed after the bell"
         );
         assert_eq!(w.black_hole(), Some(hole));
+    }
+
+    /// **T22.12C F9: the cause is gated as the kill is.** A player who dies inside
+    /// the horizon *after the bell* died of something else — the hole does not kill
+    /// then — so the death is not named the hole's. The control is the same death on
+    /// the same spot in `Playing`, which is.
+    #[test]
+    fn a_death_inside_the_horizon_after_the_bell_is_not_named_the_holes() {
+        let cause_of = |phase: RoundPhase| {
+            let (mut w, hole) = hole_world(9);
+            w.set_phase(phase);
+            let p = w.player_mut(0).expect("ana");
+            p.body = crate::physics::body::Body::new(hole + Vec2::new(2.0, 0.0));
+            p.health = 0.0;
+            step(&mut w, 0);
+            deaths(&w.drain_events())
+        };
+        assert_eq!(
+            cause_of(RoundPhase::Playing),
+            vec![DeathCause::BlackHole],
+            "control"
+        );
+        let ended = cause_of(RoundPhase::Ended);
+        assert_eq!(
+            ended.len(),
+            1,
+            "control: the death after the bell was not resolved"
+        );
+        assert_ne!(
+            ended[0],
+            DeathCause::BlackHole,
+            "named the hole after the bell"
+        );
+    }
+
+    /// **R92: the hole swallows the inventory** — a black-hole death drops nothing,
+    /// so there is no loot floating at the horizon. The control is the same carried
+    /// item on a death that is not the hole's (health to zero, clear of it), which
+    /// does drop.
+    #[test]
+    fn a_black_hole_death_drops_nothing() {
+        let drops_of = |in_hole: bool| {
+            let (mut w, hole) = hole_world(3);
+            let at = if in_hole {
+                hole + Vec2::new(crate::constants::BLACK_HOLE_HORIZON_R * 0.5, 0.0)
+            } else {
+                hole + Vec2::new(crate::constants::BLACK_HOLE_REACH * 3.0, 0.0)
+            };
+            let p = w.player_mut(0).expect("ana");
+            p.body = crate::physics::body::Body::new(at);
+            p.inventory.add(crate::items::registry::FLASHLIGHT, 1);
+            if !in_hole {
+                p.health = 0.0;
+            }
+            step(&mut w, 0);
+            let events = w.drain_events();
+            assert_eq!(deaths(&events).len(), 1, "in_hole {in_hole}: nobody died");
+            events
+                .iter()
+                .filter(|e| matches!(e, GameEvent::ItemSpawn { .. }))
+                .count()
+        };
+        assert!(
+            drops_of(false) > 0,
+            "control: a death clear of the hole dropped nothing"
+        );
+        assert_eq!(drops_of(true), 0, "the hole left the inventory floating");
+    }
+
+    /// **R93: the telegraph** — `black_hole_warn` goes out exactly once,
+    /// `BLACK_HOLE_TELEGRAPH` before the arrival, at the spot the hole then opens,
+    /// over many seeds. The control is that the hole does arrive (a telegraph for a
+    /// hole that never comes passes "at the spot" vacuously).
+    #[test]
+    fn it_is_telegraphed_at_the_spot_two_seconds_before_it_opens() {
+        use crate::constants::BLACK_HOLE_TELEGRAPH;
+        for seed in 0..8u64 {
+            let mut w = world(GravityMode::Space, seed, 1.5 * BLACK_HOLE_WINDOW);
+            let (mut warned, mut arrived) = (Vec::new(), None);
+            while w.phase == RoundPhase::Playing && arrived.is_none() {
+                step(&mut w, 0);
+                for e in w.drain_events() {
+                    match e {
+                        GameEvent::BlackHoleWarn {
+                            x, y, arrives_in, ..
+                        } => warned.push((w.round_time, Vec2::new(x, y), arrives_in)),
+                        GameEvent::BlackHole { x, y, .. } => {
+                            arrived = Some((w.round_time, Vec2::new(x, y)))
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(h) = w.black_hole_warned_at() {
+                    park_far(&mut w, h);
+                }
+            }
+            let (t_arrive, spot) =
+                arrived.unwrap_or_else(|| panic!("seed {seed}: it never arrived"));
+            assert_eq!(
+                warned.len(),
+                1,
+                "seed {seed}: warned {} times",
+                warned.len()
+            );
+            let (t_warn, at, arrives_in) = warned[0];
+            assert_eq!(
+                at, spot,
+                "seed {seed}: warned at one spot, opened at another"
+            );
+            let lead = t_arrive - t_warn;
+            assert!(
+                (lead - BLACK_HOLE_TELEGRAPH).abs() <= SIM_DT * 1.5,
+                "seed {seed}: telegraphed {lead:.3}s ahead, not {BLACK_HOLE_TELEGRAPH}"
+            );
+            assert!(
+                (arrives_in - lead).abs() <= SIM_DT * 1.5,
+                "seed {seed}: the warning said {arrives_in:.3}s, it took {lead:.3}s"
+            );
+        }
+    }
+
+    /// **T22.12C F8: a short round scales the window** — a dev `ROUND_SECONDS` a
+    /// third of the window still gets a hole, after the phase began plus a full
+    /// telegraph and before the scaled latest point, and at seeded moments rather
+    /// than all piled onto the first tick (what clipping did).
+    #[test]
+    fn a_short_round_scales_the_window_and_still_telegraphs() {
+        use crate::constants::BLACK_HOLE_TELEGRAPH;
+        let round = BLACK_HOLE_WINDOW / 3.0;
+        let window = round - BLACK_HOLE_TELEGRAPH;
+        let mut arrivals = Vec::new();
+        for seed in 0..12u64 {
+            let mut w = world(GravityMode::Space, seed, round);
+            let mut at = None;
+            while w.phase == RoundPhase::Playing && at.is_none() {
+                step(&mut w, 0);
+                if let Some(h) = w.black_hole_warned_at().or(w.black_hole()) {
+                    park_far(&mut w, h);
+                }
+                if w.black_hole().is_some() {
+                    at = Some(w.round_time);
+                }
+            }
+            let at = at.unwrap_or_else(|| panic!("seed {seed}: no hole in a {round}s round"));
+            assert!(
+                at >= BLACK_HOLE_TELEGRAPH,
+                "seed {seed}: arrived {at:.2}s in, before a whole telegraph"
+            );
+            let latest = round - window * BLACK_HOLE_LATEST / BLACK_HOLE_WINDOW;
+            assert!(
+                at <= latest + SIM_DT,
+                "seed {seed}: arrived {at:.2}s, past the scaled latest {latest:.2}"
+            );
+            arrivals.push(at);
+        }
+        let spread = arrivals.iter().cloned().fold(f32::MIN, f32::max)
+            - arrivals.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            spread > 1.0,
+            "every short round arrived within {spread:.2}s"
+        );
+    }
+
+    /// **T22.12C F3: a mid-round joiner never spawns inside the reach** —
+    /// `World::spawn_for`'s filter, at its live binding: the hole is put on the very
+    /// point the unfiltered picker chooses (the control asserts it would), then a
+    /// player joins.
+    #[test]
+    fn a_mid_round_joiner_never_spawns_inside_the_reach() {
+        let (mut w, _) = hole_world(13);
+        let living: Vec<Vec2> = w
+            .players
+            .iter()
+            .filter(|p| p.alive)
+            .map(|p| p.body.pos)
+            .collect();
+        let unfiltered = crate::player::state::choose_respawn(&w.map, &living, &mut w.rng.clone());
+        w.black_hole = BlackHole::Here { pos: unfiltered };
+        w.add_player(1, 0, "bo".into());
+        let at = w.player(1).expect("bo").body.pos;
+        assert!(
+            clearance(Some(unfiltered), at) >= 0.0,
+            "joined {:.1} px from a hole on the point the unfiltered picker chose",
+            (at - unfiltered).len()
+        );
     }
 
     /// Nothing in the other modes — with the presence control in space.

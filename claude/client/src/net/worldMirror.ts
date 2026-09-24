@@ -123,6 +123,20 @@ export interface BlackHoleView {
   arrivedAt: number
 }
 
+/**
+ * T22.12C (R93): the telegraph — where the hole will open and when, off
+ * `black_hole_warn`. Drawn until the hole arrives (or the clock runs out); it does
+ * not pull, so the core is not told.
+ */
+export interface BlackHoleWarnView {
+  x: number
+  y: number
+  /** `performance.now()` when the warning arrived. */
+  since: number
+  /** `performance.now()` at which the server said it opens. */
+  opensAt: number
+}
+
 export interface MirrorStats {
   carvesApplied: number
   pendingCarves: number
@@ -164,6 +178,8 @@ export class WorldMirror {
    * the vortices' reason: a resync must not drop it, a new round must.
    */
   blackHole: BlackHoleView | null = null
+  /** T22.12C R93: the telegraph, until the hole arrives. */
+  blackHoleWarn: BlackHoleWarnView | null = null
   /** The rocks `map_init` shipped, so the one the hole ate can be dropped by centre. */
   private asteroids: MapInit['asteroids'] = []
 
@@ -226,6 +242,7 @@ export class WorldMirror {
   /** A new round: no black hole, no pull toward it. */
   clearBlackHole(): void {
     this.blackHole = null
+    this.blackHoleWarn = null
     this.core.setBlackHole(null)
   }
 
@@ -405,7 +422,16 @@ export class WorldMirror {
       case 'black_hole': {
         // Sticky: a catch-up re-announcing it keeps the first arrival's clock.
         if (!this.blackHole) this.blackHole = { x: n(p['x']), y: n(p['y']), arrivedAt: now }
+        this.blackHoleWarn = null
         this.pushBlackHole()
+        break
+      }
+      case 'black_hole_warn': {
+        // R93. Ignored once the hole is here (a catch-up can carry both orders).
+        if (!this.blackHole) {
+          const secs = Math.max(0, n(p['arrives_in']))
+          this.blackHoleWarn = { x: n(p['x']), y: n(p['y']), since: now, opensAt: now + secs * 1000 }
+        }
         break
       }
       case 'vortex_close': {

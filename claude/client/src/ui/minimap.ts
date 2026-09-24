@@ -26,6 +26,13 @@ import {
   worldToMinimap,
   type MinimapGeometry,
 } from './minimap-math'
+import { BLACK_HOLE_RING_COLOR } from '../render/blackHoleFx-math'
+
+/**
+ * T22.12C R93: the black hole's minimap marker — a black dot in a ring of the hole's
+ * own accretion colour, this many px across. Drawing only.
+ */
+const HOLE_MARK_PX = 7
 
 /** Terrain is re-sampled at most this often — twice a second, per the task. */
 const TERRAIN_REBAKE_S = 0.5
@@ -50,6 +57,9 @@ export class Minimap {
   private crateCount = 0
   private cratesDrawn = 0
   private crateLit = false
+  /** T22.12C R93: whether the last draw put the black hole's marker on, and where (canvas px). */
+  private holeDrawn = false
+  private holeAt: { x: number; y: number } | null = null
 
   constructor(
     private readonly core: Core,
@@ -109,12 +119,17 @@ export class Minimap {
     // crates and still typechecks — the minimap drew no items for this whole game.
     crates: readonly { x: number; y: number }[],
     roundTime: number,
+    // T22.12C R93: the black hole once it is here — a hazard the whole map shares,
+    // so it is drawn whether explored or not. Required for the crates' reason.
+    hole: { x: number; y: number } | null,
   ): void {
     this.reveal(me.x, me.y, C().MINIMAP_REVEAL_R)
     const c = C()
     this.crateCount = crates.length
     this.crateLit = crateBeaconLit(roundTime, c.MINIMAP_CRATE_PERIOD, c.MINIMAP_CRATE_ON)
     this.cratesDrawn = 0
+    this.holeDrawn = false
+    this.holeAt = null
     if (!this.visible) return
 
     this.terrainAge += dt
@@ -122,7 +137,7 @@ export class Minimap {
       this.resampleTerrain()
       this.terrainAge = 0
     }
-    this.draw(me, others, fov, crates)
+    this.draw(me, others, fov, crates, hole)
   }
 
   /**
@@ -150,6 +165,7 @@ export class Minimap {
     others: readonly RemoteDot[],
     fov: number,
     crates: readonly { x: number; y: number }[],
+    hole: { x: number; y: number } | null,
   ): void {
     const { w, h } = this.geo
     const img = this.ctx.createImageData(w, h)
@@ -197,6 +213,19 @@ export class Minimap {
       }
     }
 
+    // T22.12C R93: the black hole — under the local dot, over the terrain.
+    if (hole) {
+      const q = worldToMinimap(hole.x, hole.y, this.geo)
+      const half = Math.floor(HOLE_MARK_PX / 2)
+      const [x0, y0] = [Math.round(q.x) - half, Math.round(q.y) - half]
+      this.ctx.fillStyle = `#${BLACK_HOLE_RING_COLOR.toString(16).padStart(6, '0')}`
+      this.ctx.fillRect(x0, y0, HOLE_MARK_PX, HOLE_MARK_PX)
+      this.ctx.fillStyle = '#000000'
+      this.ctx.fillRect(x0 + 2, y0 + 2, HOLE_MARK_PX - 4, HOLE_MARK_PX - 4)
+      this.holeDrawn = true
+      this.holeAt = { x: Math.round(q.x), y: Math.round(q.y) }
+    }
+
     const p = worldToMinimap(me.x, me.y, this.geo)
     this.ctx.fillStyle = '#ffe066'
     this.ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3)
@@ -211,6 +240,11 @@ export class Minimap {
     crates: number
     crateLit: boolean
     crateDrawn: number
+    /** T22.12C R93: the black hole's marker was drawn, centred here (canvas px). */
+    holeDrawn: boolean
+    holeAt: { x: number; y: number } | null
+    /** The marker's size, so a check can find its ring (the outer pixel) and core. */
+    holeMarkPx: number
   } {
     return {
       visible: this.visible,
@@ -219,6 +253,9 @@ export class Minimap {
       crates: this.crateCount,
       crateLit: this.crateLit,
       crateDrawn: this.cratesDrawn,
+      holeDrawn: this.holeDrawn,
+      holeAt: this.holeAt ? { ...this.holeAt } : null,
+      holeMarkPx: HOLE_MARK_PX,
     }
   }
 

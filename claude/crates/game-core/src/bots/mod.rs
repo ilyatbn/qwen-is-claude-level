@@ -557,6 +557,12 @@ impl Bot {
                 if d > FOV_DAY || !self.reachable(world, pos, it.pos) {
                     continue;
                 }
+                // T22.12C F2: never shop inside the black hole's reach — the one line
+                // of avoidance that needs no flight model. Steering out of the pull
+                // is T22.03B's (bots fly in space there, not here).
+                if crate::world::black_hole::clearance(world.black_hole(), it.pos) < 0.0 {
+                    continue;
+                }
                 // A weapon outranks a medkit **when we have no weapon** (§E10).
                 // Nearest-of-anything sent an unarmed bot past a bazooka to the
                 // battery beyond it; arming yourself is the thing that makes the
@@ -1783,6 +1789,33 @@ mod tests {
             armed.goal,
             Goal::Item(heal),
             "an armed bot ignored the nearer medkit, so the preference is not conditional",
+        );
+    }
+
+    /// **T22.12C F2: a bot does not shop inside the black hole's reach** — the
+    /// same unarmed bot and the same weapon as above, with a hole just past the gun
+    /// so the gun is inside its reach and the medkit is not: it goes for the medkit.
+    /// The control is the test above, where the gun wins.
+    #[test]
+    fn an_unarmed_bot_does_not_shop_inside_the_black_holes_reach() {
+        let mut w = world_with(&[1]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        let heal = drop_at(&mut w, MEDKIT, Vec2::new(at.x + 60.0, at.y));
+        let gun_at = Vec2::new(at.x + 200.0, at.y);
+        let gun = drop_at(&mut w, BAZOOKA, gun_at);
+        // Beyond the gun, so the gun is inside the reach and the medkit is not.
+        let hole = gun_at + Vec2::new(crate::constants::BLACK_HOLE_REACH - 10.0, 0.0);
+        w.place_black_hole_for_test(hole);
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        b.think(&w, 0.0, SIM_DT);
+        assert_eq!(
+            b.goal,
+            Goal::Item(heal),
+            "an unarmed bot did not settle for the medkit clear of the hole (the gun, item \
+             {gun}, is inside its reach)"
         );
     }
 

@@ -796,6 +796,13 @@ pub const MAX_PENDING_BREACHES: usize = 8;
 
 /// The black hole arrives inside the last this-many seconds of `Playing` (R8.1:
 /// *"appears randomly at the last minute"* — every round, random timing).
+///
+/// **On a round shorter than this plus [`BLACK_HOLE_TELEGRAPH`]** (a dev
+/// `ROUND_SECONDS`, T22.12C F8) the window is **scaled**, not clipped: it becomes
+/// the round's length less the telegraph, and [`BLACK_HOLE_LATEST`] shrinks in the
+/// same proportion — so the hole still arrives in the same *share* of the round and
+/// its telegraph always fits after the phase begins (`black_hole::roll`). A clipped
+/// window piled every short round's arrival onto the first tick of `Playing`.
 pub const BLACK_HOLE_WINDOW: f32 = 60.0;
 
 /// …and no later than this many seconds before the bell. **A builder's call,
@@ -805,38 +812,45 @@ pub const BLACK_HOLE_WINDOW: f32 = 60.0;
 /// `BLACK_HOLE_WINDOW - BLACK_HOLE_LATEST` seconds of the last minute.
 pub const BLACK_HOLE_LATEST: f32 = 10.0;
 
+/// How long before its arrival the hole is telegraphed at the spot it will
+/// open, s (R93). Sent as `black_hole_warn`: the client cannot know the arrival
+/// time (the roll is the server's), so the warning is an event, not a derivation.
+pub const BLACK_HOLE_TELEGRAPH: f32 = 2.0;
+
 /// The event horizon, centre to a body's centre, px: inside it you are dead —
 /// **a state change, not a force** (T22.12). The size of the largest asteroid, so
 /// the hole it leaves where a rock was reads as having swallowed any rock.
+/// **It is the only line the rule draws** (R90): outside it every thrust escapes,
+/// inside it you are dead — the ring on screen is the whole rule.
 pub const BLACK_HOLE_HORIZON_R: f32 = SPACE_ASTEROID_R_MAX as f32;
 
-/// A bound on the strongest thrust any held input can produce, px/s²: `UP + SIDE`,
-/// which is ≥ the diagonal `hypot(UP, SIDE)` by the triangle inequality and ≥ every
-/// single axis (`DOWN` < `UP`). A sum rather than the hypot because `sqrt` is not
-/// `const`, and a bound is all the inverse assertion needs.
-pub const BLACK_HOLE_THRUST_BOUND: f32 = JETPACK_THRUST_UP + JETPACK_THRUST_SIDE;
+/// The pull at the horizon as a share of the **weakest** thrust (R90). Under 1, so
+/// a player one pixel outside the horizon holding the thrust that points away
+/// still climbs out — the asteroid wells' own rule (`SPACE_WELL_ESCAPE_MARGIN`),
+/// with less headroom, because this one is meant to be nearly a trap.
+pub const BLACK_HOLE_ESCAPE_MARGIN: f32 = 0.9;
 
-/// The no-escape radius, px: **inside it the pull beats every thrust a player can
-/// make** (*"if you get within the range of it, you cannot escape"*). Twice the
-/// horizon, so the band where you are already lost but not yet dead is a horizon
-/// wide — room to see it happen, not a wall to mash thrust against (T22.12).
-/// Its guarantee is `black_hole::tests::from_inside_the_capture_radius_full_thrust_does_not_escape`,
-/// **the inverse of `T22.11`'s escape ceiling**, which stays scoped to asteroids.
-/// **A radius inside which no direction escapes — not the only place you are lost.**
-/// Thrust is anisotropic (UP 2200, SIDE 1100), so sideways the pull already wins
-/// out to `BLACK_HOLE_REACH * (1 - SIDE / BLACK_HOLE_ACCEL_MAX)` ≈ 213 px.
-pub const BLACK_HOLE_CAPTURE_R: f32 = 2.0 * BLACK_HOLE_HORIZON_R;
+/// The pull at the horizon, px/s²: `JETPACK_THRUST_DOWN × BLACK_HOLE_ESCAPE_MARGIN`
+/// = 810 (R90). **DOWN, because it is the weakest thrust** (UP 2200, SIDE 1100,
+/// DOWN 900) — the review's correction: sizing against UP + SIDE (T22.12A) put the
+/// no-escape line at a different radius on every side, so the ring drawn at it
+/// promised a rule the physics did not keep. A single-axis thrust off the radial by
+/// up to the bots'/tests' diagonal threshold still carries `900 · cos 16.7° ≈ 862`
+/// of it outward, above this.
+pub const BLACK_HOLE_EDGE_PULL: f32 = JETPACK_THRUST_DOWN * BLACK_HOLE_ESCAPE_MARGIN;
 
-/// How far the hole pulls, centre to cutoff, px — twice the capture radius, the
-/// vortex's shape (`VORTEX_REACH`): linear falloff means the pull equals half its
-/// peak at half the reach, which is where [`BLACK_HOLE_ACCEL_MAX`] puts
-/// [`BLACK_HOLE_THRUST_BOUND`].
-pub const BLACK_HOLE_REACH: f32 = 2.0 * BLACK_HOLE_CAPTURE_R;
+/// How far the hole pulls, centre to cutoff, px: four horizons (R90), 256 at
+/// `SPACE_ASTEROID_R_MAX` 64. **Within it the asteroid wells do not pull — only the
+/// hole does** (R91, `attractors::env_at`): neighbouring rocks summed to 745 px/s²
+/// at the horizon and trapped 20 of 208 flights that the hole alone lets go.
+pub const BLACK_HOLE_REACH: f32 = 4.0 * BLACK_HOLE_HORIZON_R;
 
-/// The pull at the centre, px/s²: twice the thrust bound, so at
-/// `BLACK_HOLE_REACH / 2` = [`BLACK_HOLE_CAPTURE_R`] it is exactly the bound and
-/// inside it more. The same law as every attractor (`world::attractors`, R47).
-pub const BLACK_HOLE_ACCEL_MAX: f32 = 2.0 * BLACK_HOLE_THRUST_BOUND;
+/// The pull at the centre, px/s²: whatever makes the linear falloff (the law every
+/// attractor shares, R47) equal [`BLACK_HOLE_EDGE_PULL`] **at the horizon** —
+/// `EDGE_PULL / (1 − HORIZON_R / REACH)` = 810 / 0.75 = 1080. Nobody alive is ever
+/// nearer the centre than the horizon, so the number past it is never felt.
+pub const BLACK_HOLE_ACCEL_MAX: f32 =
+    BLACK_HOLE_EDGE_PULL / (1.0 - BLACK_HOLE_HORIZON_R / BLACK_HOLE_REACH);
 
 /// Mean ground line, as a fraction of map height. 0.58 leaves the top ~52 % of
 /// the canvas as sky before the profile's amplitude is applied, which is what

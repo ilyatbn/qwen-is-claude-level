@@ -590,6 +590,45 @@ mod world_tests {
         }
     }
 
+    /// **T22.12C F3: a trip never lands inside the black hole's reach** — the
+    /// destination filter at its live binding (`World::step_vortices`' `clear`):
+    /// the same map and the same trip twice, the second with the hole put on the very
+    /// spot the first one landed — which the unfiltered draw would choose again (the
+    /// control asserts the draw repeats without the hole).
+    #[test]
+    fn a_trip_never_lands_inside_the_black_holes_reach() {
+        use crate::world::black_hole::{clearance, BlackHole};
+        let trip = |hole: Option<Vec2>| {
+            let mut w = space_world(7);
+            three_vortices(&mut w);
+            if let Some(pos) = hole {
+                w.black_hole = BlackHole::Here { pos };
+            }
+            let v = w.vortices[0].pos;
+            w.players[0].body = Body::new(v);
+            step(&mut w);
+            w.drain_events()
+                .into_iter()
+                .find_map(|e| match e {
+                    GameEvent::VortexTrip { id: 0, x, y, .. } => Some(Vec2::new(x, y)),
+                    _ => None,
+                })
+                .expect("the vortex took nobody")
+        };
+        let first = trip(None);
+        assert_eq!(
+            trip(None),
+            first,
+            "control: the same trip did not land in the same place"
+        );
+        let dest = trip(Some(first));
+        assert!(
+            clearance(Some(first), dest) >= 0.0,
+            "a trip landed {:.1} px from a hole on the spot the unfiltered draw picks",
+            (dest - first).len()
+        );
+    }
+
     /// **R88: a vortex the cap displaced stops pulling and keeps catching.** Four
     /// breaches; the first is spent. A player at rest beside its hole is not pulled
     /// (the control: the same spot beside a pulling one is), and a player on it is

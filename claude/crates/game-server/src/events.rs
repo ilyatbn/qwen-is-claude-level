@@ -72,8 +72,9 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::Teleport { .. }
         // T22.10: a vortex is in the world for everyone, and so is who it took.
         | GameEvent::VortexOpen { .. }
-        // T22.12: the hole is in the world for everyone.
+        // T22.12: the hole is in the world for everyone — and so is its warning (R93).
         | GameEvent::BlackHole { .. }
+        | GameEvent::BlackHoleWarn { .. }
         | GameEvent::VortexClose { .. }
         | GameEvent::VortexTrip { .. }
         | GameEvent::TombstoneSpawn { .. }
@@ -122,6 +123,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Teleport { .. } => "teleport",
         GameEvent::VortexOpen { .. } => "vortex_open",
         GameEvent::BlackHole { .. } => "black_hole",
+        GameEvent::BlackHoleWarn { .. } => "black_hole_warn",
         GameEvent::VortexClose { .. } => "vortex_close",
         GameEvent::VortexTrip { .. } => "vortex_trip",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
@@ -381,6 +383,9 @@ pub fn payload_with_votes(
         }
         GameEvent::VortexClose { id, .. } => json!({"tick": tick, "id": id}),
         GameEvent::BlackHole { x, y, .. } => json!({"tick": tick, "x": x, "y": y}),
+        GameEvent::BlackHoleWarn {
+            x, y, arrives_in, ..
+        } => json!({"tick": tick, "x": x, "y": y, "arrives_in": arrives_in}),
         GameEvent::VortexTrip {
             id, vortex, x, y, ..
         } => json!({"tick": tick, "id": id, "vortex": vortex, "x": x, "y": y}),
