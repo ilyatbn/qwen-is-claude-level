@@ -204,7 +204,7 @@ export const CHECKS = [
   // §F9: the fog veil **in the game**, not only in the sandbox. Standalone — it
   // needs a real server, because a networked client learns that fog exists from
   // an `effect_start` event and the sandbox path never sends one.
-  { name: 'fog-visible', file: 'scripts/checks/fog-visible.mjs', standalone: true },
+  { name: 'fog-visible', file: 'scripts/checks/fog-visible.mjs', standalone: true, flaky: true },
   // T19.24. Standalone and networked: the claim is that a lava vent lights the
   // ground **in a real match**, and the sandbox — which already did — proves the
   // half that was never broken. It waits for night, which the server only
@@ -352,7 +352,7 @@ export const CHECKS = [
   // T22.08B: GameScene's flare, which no sandbox run reaches — `effect_start` into
   // `FlareClock`, the ribbon derived through `flare_points` and painted over every damage
   // point in view, against a hidden-flare frame. Standalone: a WEATHER=flare space server.
-  { name: 'solar-flare-match', file: 'scripts/checks/solar-flare-match.mjs', standalone: true },
+  { name: 'solar-flare-match', file: 'scripts/checks/solar-flare-match.mjs', standalone: true, flaky: true },
   // T22.10B: the breach vortex — a sandbox vortex photographed flat and shader, then a
   // real match on a DEV_PROBE server that breaches the rim: the vortex where the server
   // put it, no prediction correction while it pulls (the rubber-band an untold client

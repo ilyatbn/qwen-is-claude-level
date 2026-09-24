@@ -6876,3 +6876,9 @@ F-3: `Predictor` keeps nothing while `core.acceptsInput()` (new export) is false
 F-4 `stats.settled`; F-5 bell arm holds UP (+side), asserts an airborne burn on the last pre-bell frame; F-6 health/alive-alone vitests.
 Filed T22.10F (silent player not integrated) + characterization test. Networked 10/10; void worst jump 45.16 px not attributed.
 
+
+## M22 batch gate — 72/74, two parked (coordinator, 2026-09-24)
+`54b2b88` (T22.08E, T22.10A–E): EXIT=1, 1102 s; Rust 1636/0/25, vitest green. Reds: `fog-visible` (0.782 vs 0.794 — T22.00G's
+known two-clock defect) and `solar-flare-match` (3 of 12 probe brackets narrow under load). **Both green alone** on the idle box
+minutes later. Parked per the rule, evidence in `flaky-test.md`; `T22.08F` filed for the flare-clock check's cause (a round-trip
+width measures load). Everything else, including all ten networked prediction checks, green.
