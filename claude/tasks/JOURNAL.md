@@ -7002,3 +7002,10 @@ F7 traced: the any-fuel tail is mostly **summed wells over the weakest thrust** 
 scenes, remotes `null` — re-checked, the wire has only "firing" and move-mods, no direction. `thrusters.mjs` braking arm
 (drift right, LEFT, freeze): red before in WebGL + Canvas, green after (right strip 118–190, left 0). `thrusters-match`
 arm 2b asserts GameScene's wiring (plant `thrust: null` → red); it must lift off first (grounded sideways keys walk).
+
+## T22.03G — the summed wells capped (R96) (builder, 2026-09-24)
+`attractors::wells_at` = wells' sum `clamp_len(SPACE_WELL_ACCEL_MAX)`; `env_at` continues the one sum from it with the
+vortices and hole (uncapped). Pocket (451383, (2194,1235)): DOWN 0 px → ≥28 px by tick 32. Sweep (9 seeds, 8 px), lone
+well bit-equal, wasm parity at the pocket; plants no-clamp / half-cap red. Item goal: `items::world::would_take` (bots
+parked by items `is_full_for`). Any-fuel runs 28 → 7 over four draws; `PINNED_ANY_RUNS_MAX` 0.1 → 0.06 (no-cap plant red
+on offset 32). REPLAY_VERSION 23. Left: runs beside breach vortices, and bots idling on rock with fuel (in the task file).

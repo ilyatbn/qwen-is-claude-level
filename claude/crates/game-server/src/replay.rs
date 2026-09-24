@@ -276,7 +276,14 @@ pub const HEADER_BYTES: usize = 46;
 /// and the day/night cycle move by the old drift (−6..+1 ticks over 600 s), and a
 /// 240/300/600 s round ends 1/2/6 ticks sooner. Every v21 recording diverges. No new
 /// tag, no layout change.
-pub const REPLAY_VERSION: u16 = 22;
+///
+/// **23 (T22.03G, R96: the summed wells are capped)**: the silent-divergence shape.
+/// The asteroid wells' sum is clamped at `SPACE_WELL_ACCEL_MAX` (bit-identical
+/// wherever it was under it), so a v22 space recording diverges the first tick a
+/// body sits where two or more wells piled past 675 px/s². Standard and low
+/// recordings are unchanged, but the version is per file, not per mode. No new tag,
+/// no layout change.
+pub const REPLAY_VERSION: u16 = 23;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

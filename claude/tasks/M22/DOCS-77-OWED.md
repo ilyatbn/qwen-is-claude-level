@@ -87,6 +87,12 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    Ended window 1201 → 1200 ticks. `REPLAY_VERSION` 22. Dev-only: a `relocate {tick, id, x, y}` event (Everyone)
    for the black-hole dev hook's placement (T22.12D F3).
 
+## The summed wells (T22.03G, R96)
+10. **The asteroid wells' sum is capped at `SPACE_WELL_ACCEL_MAX`** (= `JETPACK_THRUST_DOWN` ×
+    `SPACE_WELL_ESCAPE_MARGIN`, 675 px/s²): each well was already under it, their sum was not ((18, −919) px/s² under a
+    rock ceiling at seed 451383 held a body in every direction). One clamp in the one summation, on both sides. **Wells
+    only** — the breach vortex and the black hole add on top, uncapped. `REPLAY_VERSION` 23.
+
 ## Other M22 points already recorded elsewhere
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).
 - `docs/13`, `docs/14`, `docs/10` describe behaviour space overrides; `docs/20-player-movement.md` still refuses fall

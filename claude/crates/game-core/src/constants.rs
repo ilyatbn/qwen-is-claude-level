@@ -3613,7 +3613,9 @@ pub const BOT_SPACE_CRUISE: f32 = 200.0;
 /// still carry `d` px from where it is going is `√(2 · BOT_SPACE_BRAKE · d)`.
 /// **The weakest thrust less the strongest well** — the one brake a bot can count
 /// on in every direction and next to any rock — so an arrival planned with it is
-/// one the bot can actually stop for.
+/// one the bot can actually stop for. *(True of the summed field only since R96,
+/// T22.03G: `attractors::wells_at` caps the wells' sum at `SPACE_WELL_ACCEL_MAX`;
+/// before it, three wells in a crevice summed to 919.)*
 pub const BOT_SPACE_BRAKE: f32 = JETPACK_THRUST_DOWN - SPACE_WELL_ACCEL_MAX;
 /// How far a flying bot's velocity may miss the one it wants, per axis, before it
 /// thrusts, px/s. The dead band is what lets it coast (and refill) instead of

@@ -213,11 +213,43 @@ pub fn asteroid_attractors(map: &Map) -> impl Iterator<Item = Attractor> + '_ {
 /// production adds no allocation to the tick and `T22.10`/`T22.12` can chain their
 /// attractors onto the asteroids without anyone building a `Vec` first.
 pub fn field_at<I: IntoIterator<Item = Attractor>>(attractors: I, pos: Vec2) -> Vec2 {
-    let mut sum = Vec2::ZERO;
+    field_from(Vec2::ZERO, attractors, pos)
+}
+
+/// [`field_at`]'s one summation, started from `start` instead of zero — so
+/// [`env_at`] can add the vortices and the hole onto the **capped** wells in the
+/// same order, and the same float additions, as the single sum it replaced
+/// (`0 + a₁ + … + aₙ + v₁ + … + h`). Wherever the cap does not bind the result is
+/// bit-identical to the pre-R96 sum.
+fn field_from<I: IntoIterator<Item = Attractor>>(start: Vec2, attractors: I, pos: Vec2) -> Vec2 {
+    let mut sum = start;
     for a in attractors {
         sum += a.pull_at(pos);
     }
     sum
+}
+
+/// **The summed asteroid wells at `pos`, capped at [`SPACE_WELL_ACCEL_MAX`]** —
+/// `M22-RULINGS` R96 (T22.03G).
+///
+/// Each well is under the weakest thrust by construction (R46), **but the sum of
+/// two or three is not**: at seed 451383, (2194, 1235), under a rock ceiling, three
+/// wells summed to (18, −919) px/s² against `JETPACK_THRUST_DOWN` 900, and a body
+/// holding any of the 8 directions for 30 ticks moved 0–1.8 px — a human trapped
+/// exactly as a bot was. The cap is **derived, not a new number**: it is the
+/// per-well ceiling itself, `JETPACK_THRUST_DOWN × SPACE_WELL_ESCAPE_MARGIN` (675),
+/// so wherever one rock's well stands alone it is never touched (a lone well is
+/// below 675 at every point a body can reach — `a_well_alone_still_pulls_at_its_full_strength`),
+/// and wherever wells pile up a player keeps the same quarter of the down thrust
+/// that R46 guarantees next to one rock — which is also the premise
+/// `BOT_SPACE_BRAKE` (`DOWN − SPACE_WELL_ACCEL_MAX`) was already stated on.
+///
+/// **Wells only.** The breach vortex is unescapable near its centre by design
+/// (`VORTEX_ACCEL_MAX`), and the black hole kills inside its horizon (R90) — both
+/// are added *after* this cap, uncapped, in [`env_at`]. Inside the hole's reach the
+/// wells are already muted (R91), so the two rules never meet.
+pub fn wells_at(map: &Map, pos: Vec2) -> Vec2 {
+    field_at(asteroid_attractors(map), pos).clamp_len(SPACE_WELL_ACCEL_MAX)
 }
 
 /// **The one composition of [`Env`], called by both sides** — `World::apply_inputs`
@@ -266,12 +298,21 @@ pub fn env_at(
         GravityMode::Standard | GravityMode::Low => Env::field_free(gravity),
         GravityMode::Space => {
             let wells = hole.is_none_or(|h| (pos - h).len() >= BLACK_HOLE_REACH);
+            // R96: the wells' sum is capped, then the vortices and the hole are
+            // added onto it uncapped — one summation, continued from the capped
+            // partial sum (`field_from`), not a second loop.
+            let start = if wells {
+                wells_at(map, pos)
+            } else {
+                Vec2::ZERO
+            };
             Env {
                 gravity,
-                accel: field_at(
-                    asteroid_attractors(map)
-                        .filter(|_| wells)
-                        .chain(vortices.iter().map(|&v| Attractor::vortex(v)))
+                accel: field_from(
+                    start,
+                    vortices
+                        .iter()
+                        .map(|&v| Attractor::vortex(v))
                         .chain(hole.filter(|_| hole_pulls).map(Attractor::black_hole)),
                     pos,
                 ),
@@ -955,5 +996,155 @@ mod tests {
         let space = env_at(&map, GravityMode::Space, &[], None, false, at);
         assert_ne!(space.accel, Vec2::ZERO, "space read no field at all");
         assert_eq!(space.max_speed, Some(SPACE_MAX_SPEED));
+    }
+
+    // ---- R96: the summed wells are capped (T22.03G) --------------------------
+
+    /// The traced pocket (T22.03E F7): seed 451383 on the default scale, a body
+    /// under a rock ceiling that three wells summed to (18, −919) px/s² against
+    /// `JETPACK_THRUST_DOWN` 900 — every direction held for 30 ticks moved it 0–1.8 px.
+    const POCKET_SEED: u64 = 451_383;
+    const POCKET: Vec2 = Vec2::new(2194.0, 1235.0);
+
+    fn pocket_world() -> World {
+        let mut w = World::with_gravity(
+            POCKET_SEED,
+            crate::constants::DEFAULT_MAP_SCALE,
+            0,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(crate::world::RoundPhase::Playing);
+        w
+    }
+
+    /// The raw, uncapped sum of every asteroid well at `pos` — the thing R96 caps.
+    fn raw_wells(map: &Map, pos: Vec2) -> Vec2 {
+        field_at(asteroid_attractors(map), pos)
+    }
+
+    /// **R96: the summed well pull never exceeds `SPACE_WELL_ACCEL_MAX` anywhere a
+    /// body fits**, swept on an 8 px grid over the whole map for 8 seeds.
+    ///
+    /// **The presence half is what makes the sweep mean anything**: the raw sum must
+    /// exceed the cap somewhere in the sweep (it does, at the traced pocket among
+    /// others), or the cap was never exercised and "never exceeded" is a property of
+    /// the maps, not of `env_at`. Planted: `wells_at` returning the raw sum → red here.
+    #[test]
+    fn the_summed_wells_never_exceed_the_cap_anywhere_in_open_air() {
+        // f32 rounding of `clamp_len`'s rescale: a few ulps of the cap, no more.
+        let tol = SPACE_WELL_ACCEL_MAX * 4.0 * f32::EPSILON;
+        let mut over_raw = 0usize;
+        let mut worst_raw = 0.0f32;
+        let mut sampled = 0usize;
+        let seeds: Vec<u64> = std::iter::once(POCKET_SEED)
+            .chain((1..=8u64).map(|i| i * 7919))
+            .collect();
+        for &seed in &seeds {
+            let w = World::with_gravity(
+                seed,
+                crate::constants::DEFAULT_MAP_SCALE,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            assert!(!w.map.meta.asteroids.is_empty(), "seed {seed}: no rocks");
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            for y in (0..mh).step_by(8) {
+                for x in (0..mw).step_by(8) {
+                    if !w.map.body_fits_at(crate::math::Point::new(x, y)) {
+                        continue;
+                    }
+                    sampled += 1;
+                    let at = Vec2::new(x as f32, y as f32);
+                    let raw = raw_wells(&w.map, at).len();
+                    worst_raw = worst_raw.max(raw);
+                    if raw > SPACE_WELL_ACCEL_MAX {
+                        over_raw += 1;
+                    }
+                    let got = env_at(&w.map, GravityMode::Space, &[], None, false, at)
+                        .accel
+                        .len();
+                    assert!(
+                        got <= SPACE_WELL_ACCEL_MAX + tol,
+                        "seed {seed} ({x}, {y}): the wells sum to {got:.1} px/s² \
+                         (raw {raw:.1}) over the cap {SPACE_WELL_ACCEL_MAX}"
+                    );
+                }
+            }
+        }
+        assert!(
+            over_raw > 0,
+            "no sampled point's raw well sum exceeded the cap ({sampled} points, worst \
+             {worst_raw:.1} px/s²) — the sweep never exercised the cap"
+        );
+    }
+
+    /// **R96, the effect: a human holding DOWN leaves the traced pocket** — through
+    /// `World::step`, the server's own path, on a full tank from rest. Red before the
+    /// cap: the body moved 0 px. The control in the same test: the raw sum there
+    /// really does out-pull the down thrust, so this is the trap and not a quiet spot.
+    #[test]
+    fn a_human_holding_down_leaves_the_traced_pocket() {
+        let mut w = pocket_world();
+        let raw = raw_wells(&w.map, POCKET);
+        assert!(
+            raw.y < -JETPACK_THRUST_DOWN,
+            "the pocket moved: the raw wells there are ({:.0}, {:.0}), no longer over \
+             the {JETPACK_THRUST_DOWN} px/s² down thrust — re-trace it",
+            raw.x,
+            raw.y
+        );
+        w.add_player(0, 0, "ana".into());
+        {
+            let p = w.player_mut(0).expect("seated");
+            p.body.pos = POCKET;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let ticks = (POCKET_ESCAPE_S / SIM_DT).round() as u32;
+        for tick in 0..ticks {
+            w.queue_input(0, Input::new(tick + 1, button::DOWN, 0));
+            w.step(SIM_DT);
+        }
+        let p = w.player(0).expect("seated");
+        assert!(p.alive, "died in the pocket");
+        let moved = p.body.pos.y - POCKET.y;
+        assert!(
+            moved >= PLAYER_H,
+            "{POCKET_ESCAPE_S} s of down-thrust from rest moved the body {moved:.1} px \
+             down (from {POCKET:?} to {:?}) — still held by the summed wells",
+            p.body.pos
+        );
+    }
+
+    /// How long the escape from the traced pocket may take: a second. Measured with
+    /// the cap: DOWN clears `PLAYER_H` on tick 32 and is 107 px out at 60; DOWN+LEFT
+    /// / DOWN+RIGHT on tick 21. UP, LEFT, RIGHT and the up-diagonals still move 0–1.8
+    /// px — pressed into the ceiling and a 1 px bump — which is the rock, not the
+    /// field: pushing away from it is the escape R46 guarantees, and now has.
+    const POCKET_ESCAPE_S: f32 = 1.0;
+
+    /// **R96's presence control: a well alone is never clamped.** At the worst
+    /// point the table allows — the smallest rock at the top level, at `d_min`, the
+    /// binding case of `no_well_traps_a_player_on_the_underside_of_a_rock` — `env_at`
+    /// hands out exactly that rock's own `pull_at`, bit for bit. A cap set below the
+    /// per-well ceiling would weaken every rock in the game and pass the sweep above.
+    #[test]
+    fn a_well_alone_still_pulls_at_its_full_strength() {
+        for level in 1..=SPACE_LEVEL_MAX {
+            for r in [SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_R_MAX] {
+                let a = rock(400, 400, r, level);
+                let map = field_map(1024, 1024, &[a]);
+                let at = Vec2::new(400.0, 400.0 + d_min(r));
+                let alone = Attractor::asteroid(&a).pull_at(at);
+                assert!(alone.len() > 0.0, "level {level} r {r}: no pull at all");
+                assert_eq!(
+                    env_at(&map, GravityMode::Space, &[], None, false, at).accel,
+                    alone,
+                    "level {level} r {r}: a lone well was changed by the cap"
+                );
+            }
+        }
     }
 }

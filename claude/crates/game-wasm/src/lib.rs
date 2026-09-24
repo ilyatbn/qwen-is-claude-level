@@ -2165,7 +2165,7 @@ pub fn constants_json() -> String {
         BTN_LEFT => game_core::player::input::button::LEFT,
         BTN_RIGHT => game_core::player::input::button::RIGHT,
         BTN_UP => game_core::player::input::button::UP,
-        BTN_DOWN => game_core::player::input::button::DOWN,
+        BTN_DOWN => game_core::player::button::DOWN,
         BTN_JUMP => game_core::player::input::button::JUMP,
         BTN_FIRE => game_core::player::input::button::FIRE,
         BTN_FLASHLIGHT => game_core::player::input::button::FLASHLIGHT,
@@ -3608,10 +3608,19 @@ mod tests {
     /// shipped before `T22.11C`, which decoded the asteroid section and had
     /// nowhere to put it (R49).
     fn space_world_and_mirror(tell_the_mirror: bool) -> (game_core::world::World, GameCore) {
+        space_world_and_mirror_at(FIELD_SEED, MapScale::Small, tell_the_mirror)
+    }
+
+    /// [`space_world_and_mirror`] on another seed and scale (T22.03G's traced pocket).
+    fn space_world_and_mirror_at(
+        seed: u64,
+        scale: MapScale,
+        tell_the_mirror: bool,
+    ) -> (game_core::world::World, GameCore) {
         use game_core::world::RoundPhase;
         let mut w = game_core::world::World::with_gravity(
-            FIELD_SEED,
-            MapScale::Small,
+            seed,
+            scale,
             0,
             game_core::constants::DEFAULT_MAP_GENERATOR,
             GravityMode::Space,
@@ -4007,7 +4016,7 @@ mod tests {
         core.add_player(1, start.x, start.y);
         let _ = w.drain_events();
 
-        let (mut seq, mut last) = (1000u32, start);
+        let (mut seq, mut last, mut tripped) = (1000u32, start, false);
         for tick in 0..240 {
             seq += 1;
             w.queue_input(1, Input::new(seq, 0, 0));
@@ -4017,6 +4026,7 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, GameEvent::VortexTrip { id: 1, .. }))
             {
+                tripped = true;
                 break;
             }
             let server = w.player(1).expect("seated").body.pos;
@@ -4028,11 +4038,18 @@ mod tests {
             );
             last = server;
         }
+        // The control is the trip: from 1.5 capture radii the server only takes the
+        // player at the capture radius, so a trip is at least half a radius of pull,
+        // every tick of it compared above. (It read `(last - start) > 0.5 R` until
+        // T22.03G, and `last` is the tick *before* the trip — so it measured the
+        // approach speed: R96's cap on the wells pulling the body away from this
+        // vortex, 820 → 658 px/s², brought the trip a tick sooner and `last` to
+        // 61.5 px of the 63.5 the old bound asked for.)
         assert!(
-            (last - start).len() > 0.5 * VORTEX_CAPTURE_R,
-            "control: the body barely moved ({:?} -> {:?}), so agreement proves nothing",
-            start,
-            last
+            tripped,
+            "control: the vortex never took the player ({:?} -> {:?}), so agreement \
+             proves nothing",
+            start, last
         );
     }
 
@@ -4251,6 +4268,74 @@ mod tests {
         eprintln!(
             "bell correction for a body in the pull, heard {HEARD_AFTER} ticks late: \
              {ungated:.2} px without the bell seq, {gated:.3} / {gated_late:.3} px with it"
+        );
+    }
+
+    /// **R96 (T22.03G): the mirror escapes the traced pocket with the server, tick for
+    /// tick.** Seed 451383, (2194, 1235), where three wells summed to (18, −919) px/s²
+    /// over the 900 px/s² down thrust: the server (`World::step`) and the mirror
+    /// (`GameCore::apply_input`, set through the real snapshot codec) hold DOWN from
+    /// rest and agree **exactly** every tick — the cap lives in the one `env_at`
+    /// both call, so a clamp on one side only is a rubber band from the first tick.
+    /// The presence half: the body really leaves (≥ `PLAYER_H`), so this is not two
+    /// sides agreeing about a body the wells still hold — which is what both did
+    /// before the cap (0 px).
+    #[test]
+    fn the_mirror_escapes_the_traced_pocket_with_the_server() {
+        const POCKET: Vec2 = Vec2::new(2194.0, 1235.0);
+        let (mut w, mut core) =
+            space_world_and_mirror_at(451_383, game_core::constants::DEFAULT_MAP_SCALE, true);
+        w.add_player(1, 0, String::new());
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = POCKET;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
+        let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+        let wire = snap
+            .players
+            .iter()
+            .find(|p| p.id == 1)
+            .expect("player 1 is in the snapshot");
+        let p = w.player(1).expect("seated");
+        core.add_player(1, p.body.pos.x, p.body.pos.y);
+        core.set_player_state(
+            1,
+            p.body.pos.x,
+            p.body.pos.y,
+            0.0,
+            0.0,
+            false,
+            p.jetpack.fuel,
+            wire.health as f32,
+            wire.flags & 1 != 0,
+            wire.move_mods,
+        );
+        // Seq 0 on the server — "numbered by the world", stepped on the tick it is
+        // queued (R89), so the two sides step the same input on the same tick; a
+        // client seq would wait out the jitter buffer's lead first.
+        let mut seq = 1000u32;
+        use game_core::player::input::button;
+        for tick in 0..game_core::constants::SIM_HZ {
+            seq += 1;
+            w.queue_input(1, Input::new(0, button::DOWN, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, button::DOWN, 0, SIM_DT);
+            let sp = w.player(1).expect("seated").body.pos;
+            let c = core.player_state(1);
+            assert_eq!(
+                (sp.x, sp.y),
+                (c[0], c[1]),
+                "tick {tick}: the server and the mirror disagree in the pocket"
+            );
+        }
+        let out = w.player(1).expect("seated").body.pos;
+        assert!(
+            out.y - POCKET.y >= PLAYER_H,
+            "a second of DOWN moved the body {:.1} px — still held by the summed wells",
+            out.y - POCKET.y
         );
     }
 

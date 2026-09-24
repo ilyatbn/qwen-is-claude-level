@@ -690,6 +690,14 @@ impl Bot {
                 if crate::world::black_hole::clearance(world.black_hole(), it.pos) < 0.0 {
                     continue;
                 }
+                // T22.03G: nothing the pickup would refuse (a full counter or stack) —
+                // a bot parked on one waited out the round beside it. The pickup's own
+                // rule, shared (`items::world::would_take`), not a second copy.
+                if !world.player(self.player).is_some_and(|me| {
+                    crate::items::world::would_take(it.item, &me.inventory, me.heals, me.batteries)
+                }) {
+                    continue;
+                }
                 // A weapon outranks a medkit **when we have no weapon** (§E10).
                 // Nearest-of-anything sent an unarmed bot past a bazooka to the
                 // battery beyond it; arming yourself is the thing that makes the
@@ -2286,6 +2294,67 @@ mod tests {
             Goal::Item(heal),
             "an armed bot ignored the nearer medkit, so the preference is not conditional",
         );
+    }
+
+    /// **T22.03G: a bot does not go for an item the pickup would refuse.** Traced in
+    /// `space_bots_report`: bots parked 2–12 px from an item for 10–40 s with
+    /// `is_full_for` true, because the goal never checked what `resolve_pickups`
+    /// would take. Two refusals, two arms — a §C9 counter at its cap (medkits at
+    /// `MAX_HEALS`) and a held weapon stack at its `max_stack` — each with the same
+    /// item and the room to take it as the control.
+    #[test]
+    fn a_bot_does_not_go_for_an_item_it_cannot_pick_up() {
+        use crate::constants::MAX_HEALS;
+        use crate::items::registry::max_stack;
+        // Counter arm: a medkit 60 px off, heals full vs empty.
+        let goal_for_heal = |heals: u8| {
+            let mut w = world_with(&[1]);
+            let at = clear_line(&w);
+            give(&mut w, 1, MOLOTOV, 1); // armed, so no weapon ranking in play
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = at;
+                p.heals = heals;
+            }
+            let heal = drop_at(&mut w, MEDKIT, Vec2::new(at.x + 60.0, at.y));
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            b.think(&w, 0.0, SIM_DT);
+            (b.goal, heal)
+        };
+        let (g, heal) = goal_for_heal(0);
+        assert_eq!(
+            g,
+            Goal::Item(heal),
+            "control: room for a heal, and it was not wanted"
+        );
+        let (g, heal) = goal_for_heal(MAX_HEALS);
+        assert_ne!(
+            g,
+            Goal::Item(heal),
+            "went for a medkit with heals at MAX_HEALS"
+        );
+
+        // Inventory arm: a molotov 60 px off, the held molotov stack full vs one.
+        let goal_for_molotov = |held: u8| {
+            let mut w = world_with(&[1]);
+            let at = clear_line(&w);
+            give(&mut w, 1, MOLOTOV, held);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = at;
+                assert_eq!(p.inventory.is_full_for(MOLOTOV), held == max_stack(MOLOTOV));
+            }
+            let m = drop_at(&mut w, MOLOTOV, Vec2::new(at.x + 60.0, at.y));
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            b.think(&w, 0.0, SIM_DT);
+            (b.goal, m)
+        };
+        let (g, m) = goal_for_molotov(1);
+        assert_eq!(
+            g,
+            Goal::Item(m),
+            "control: room for a molotov, and it was not wanted"
+        );
+        let (g, m) = goal_for_molotov(max_stack(MOLOTOV));
+        assert_ne!(g, Goal::Item(m), "went for a molotov with its stack full");
     }
 
     /// **T22.12C F2: a bot does not shop inside the black hole's reach** — the

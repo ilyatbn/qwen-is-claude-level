@@ -116,17 +116,36 @@ fn counter_for<'a>(
     }
 }
 
-/// Increment a counter if it is below its cap. False leaves the item behind.
-fn bump(item: ItemId, counter: &mut u8) -> bool {
-    let cap = match item {
+/// A counter item's cap.
+fn counter_cap(item: ItemId) -> u8 {
+    match item {
         crate::items::registry::MEDKIT => crate::constants::MAX_HEALS,
         _ => crate::constants::MAX_BATTERIES,
-    };
-    if *counter >= cap {
+    }
+}
+
+/// Increment a counter if it is below its cap. False leaves the item behind.
+fn bump(item: ItemId, counter: &mut u8) -> bool {
+    if *counter >= counter_cap(item) {
         return false;
     }
     *counter += 1;
     true
+}
+
+/// Would [`WorldItems::resolve_pickups`] take at least one of `item` into this
+/// inventory and these counters? The same two refusals it applies — a §C9 counter
+/// at its cap, and `Inventory::is_full_for` (which is documented to agree with
+/// `Inventory::add`) — so a caller asking "is it worth going for" gets the answer
+/// the pickup will give. T22.03G: bots chose items they could not take, parked on
+/// them, and waited out the round (seed 261327, 40 s; 3 of 6 ≥ 10 s runs at offset
+/// 96 had the bot within 12 px of an item with `is_full_for` true).
+pub fn would_take(item: ItemId, inventory: &Inventory, heals: u8, batteries: u8) -> bool {
+    match item {
+        crate::items::registry::MEDKIT => heals < counter_cap(item),
+        crate::items::registry::BATTERY_PACK => batteries < counter_cap(item),
+        _ => !inventory.is_full_for(item),
+    }
 }
 
 impl WorldItems {

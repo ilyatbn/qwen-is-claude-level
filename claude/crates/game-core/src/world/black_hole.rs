@@ -523,10 +523,7 @@ mod tests {
             Vec2::ZERO,
             "control: the eaten rock's well does not reach the probe"
         );
-        let expect = crate::world::attractors::field_at(
-            w.map.meta.asteroids.iter().map(Attractor::asteroid),
-            probe,
-        );
+        let expect = crate::world::attractors::wells_at(&w.map, probe);
         let got = env_at(&w.map, GravityMode::Space, &[], Some(centre), true, probe).accel;
         assert_eq!(got, expect);
         let events = w.drain_events();
@@ -785,12 +782,9 @@ mod tests {
     fn inside_the_reach_only_the_hole_pulls_and_outside_it_the_wells_do() {
         use crate::constants::BLACK_HOLE_REACH;
         let (w, hole) = hole_world(5);
-        let wells_at = |p: Vec2| {
-            crate::world::attractors::field_at(
-                w.map.meta.asteroids.iter().map(Attractor::asteroid),
-                p,
-            )
-        };
+        // The hole-free field: the wells' sum, capped (R96, T22.03G) — at 1 px past
+        // the reach some side's wells pile past the cap, so the raw sum is not it.
+        let wells_at = |p: Vec2| crate::world::attractors::wells_at(&w.map, p);
         let mut muted = 0;
         for k in 0..16 {
             let a = k as f32 * std::f32::consts::TAU / 16.0;

@@ -1232,8 +1232,13 @@ const PINNED_RESERVE_MAX: f32 = 0.06;
 const PINNED_ANY_MAX: f32 = 0.2;
 /// T22.03D F1 (as rewritten by T22.03C): any-fuel pinned runs of `PINNED_RUN_S` a bot
 /// a round — measured 0.02–0.04 after (8 and 32 seeds), 2.4–2.5 before; the no-detour
-/// plant 1.25.
-const PINNED_ANY_RUNS_MAX: f32 = 0.1;
+/// plant 1.25. **Re-derived at T22.03G (R96)**: with the summed wells capped and bots
+/// no longer parking on items they cannot pick up, 0 / 0.021 / 0.010 / 0.005 over the
+/// four 32-seed draws (offsets 0/32/64/96; 0.031 / 0.089 / 0.021 / 0.005 before) and
+/// 0.042 over the 8 `SEEDS` — so the worst measured plus ~1.3 points, as F3 did. Every
+/// run left at T22.03G was traced (`zz_probe`, not kept): each is a bot beside a breach
+/// vortex (outside R96's cap by design) or idling on rock with fuel — none is a well.
+const PINNED_ANY_RUNS_MAX: f32 = 0.06;
 
 /// The full report. `cargo test -p game-core --release --test balance -- --ignored --nocapture`
 #[test]
