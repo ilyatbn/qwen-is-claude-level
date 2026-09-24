@@ -224,9 +224,96 @@ export default async function ({ page, shot, log }) {
     }
   }
 
+  /**
+   * T22.04C: the strip just past the drawn body on its left (`side` −1) or right
+   * (+1), in screen space — `strip`'s twin across the other axis, from a tenth to
+   * three fifths of a plume length past the body's side.
+   */
+  const hstrip = async (px, py, side) => {
+    const cy = py - k.PLAYER_H / 2
+    const near = k.PLAYER_W / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
+    const far = k.PLAYER_W / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
+    const a = await toScreen(page, px + side * near, cy - k.THRUSTER_PLUME_WIDTH * 0.3)
+    const b = await toScreen(page, px + side * far, cy + k.THRUSTER_PLUME_WIDTH * 0.3)
+    if (!a.onScreen || !b.onScreen) throw new Error('the body is not on screen')
+    const x = Math.round(Math.min(a.x, b.x))
+    const y = Math.round(Math.min(a.y, b.y))
+    return { x, y, w: Math.max(2, Math.round(Math.abs(b.x - a.x))), h: Math.max(2, Math.round(Math.abs(b.y - a.y))) }
+  }
+
+  /**
+   * T22.04C — **braking: the plume is on the side the push comes from, not opposite
+   * the travel.** Drift right (hold D), then thrust left (hold A) and freeze while the
+   * body is **still moving right** and slowing: the exhaust of a leftward push is on
+   * the **right** — the velocity side, where T22.04's velocity rule drew nothing.
+   * Subject: the strip right of the body; control region: the strip left of it (where
+   * the velocity rule would draw); control frame: the same instant, plume hidden.
+   * Both velocity-agreeing arms above stay the control on the rule.
+   */
+  const brakingArm = async ({ hq }) => {
+    const label = `braking (drifting right, LEFT held), High Quality ${hq ? 'on' : 'off'}`
+    const q = await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    if (q.setting !== hq) throw new Error(`${label}: High Quality would not change: ${JSON.stringify(q)}`)
+    await page.evaluate(([x, y]) => {
+      window.__game.place(x, y)
+      window.__game.watch(x, y)
+    }, [spot.x - k.THRUSTER_PLUME_LENGTH * 2, spot.y])
+    await frames(3)
+    await page.keyboard.down('d')
+    let peak = 0
+    try {
+      await waitFor((v) => window.__game.debug().player.vx > v, k.JETPACK_MAX_SPEED * 0.5, `${label}: never drifted right`)
+      peak = (await dbg()).player.vx
+    } finally {
+      await page.keyboard.up('d')
+    }
+    await page.keyboard.down('a')
+    try {
+      // Firing, slowing (the push is leftward) and still going right.
+      await waitFor(
+        ([peakVx, min]) => {
+          const p = window.__game.debug().player
+          return p.moveState === 2 && p.vx < peakVx - 10 * min && p.vx > min * 20
+        },
+        [peak, k.THRUSTER_PLUME_MIN_SPEED],
+        `${label}: never caught braking while still moving right`,
+      )
+      await page.evaluate(() => window.__game.freeze(true))
+    } finally {
+      await page.keyboard.up('a')
+    }
+    try {
+      const d = await dbg()
+      const p = d.player
+      if (!(p.vx > k.THRUSTER_PLUME_MIN_SPEED)) throw new Error(`${label}: frozen with vx ${p.vx}, not still moving right`)
+      if (!d.plume?.drawn) throw new Error(`${label}: the pack is firing and the view drew no plume: ${JSON.stringify(d.plume)}`)
+      const subjectRect = await hstrip(p.x, p.y, 1)
+      const controlRect = await hstrip(p.x, p.y, -1)
+      const sOn = await samplePatch(page, subjectRect)
+      const cOn = await samplePatch(page, controlRect)
+      await shot(`thrusters-${isCanvas ? 'canvas' : 'webgl'}-braking-hq-${hq ? 'on' : 'off'}`)
+      const hidden = await page.evaluate(() => window.__game.showThrusters(false))
+      if (hidden.drawn) throw new Error(`${label}: the plume would not hide for the control frame`)
+      await frames(2)
+      const sOff = await samplePatch(page, subjectRect)
+      const cOff = await samplePatch(page, controlRect)
+      await page.evaluate(() => window.__game.showThrusters(true))
+      const r = assertChanged(sOff, sOn, {
+        label: `${label}: the strip right of the body (the push's side), plume against no plume (vx ${p.vx.toFixed(0)})`,
+        control: { before: cOff, after: cOn },
+      })
+      assertUnchanged(cOff, cOn, { label: `${label}: the strip left of the body (the way the push goes)` })
+      log(`${label}: right moved ${r.delta.toFixed(1)}, left ${r.controlDelta.toFixed(1)} (vx ${p.vx.toFixed(0)} from ${peak.toFixed(0)})`)
+    } finally {
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+    await frames(IDLE_FRAMES)
+  }
+
   for (const hq of [false, true]) {
     await arm({ key: 's', plumeSide: -1, hq })
     await arm({ key: 'w', plumeSide: 1, hq })
+    await brakingArm({ hq })
   }
   await page.evaluate(() => window.__game.setHighQuality(false))
 }

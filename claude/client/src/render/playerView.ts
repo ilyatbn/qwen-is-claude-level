@@ -81,6 +81,14 @@ export interface PlayerFlags {
    * on the wire, because bit 2 already is one in space.
    */
   space: boolean
+  /**
+   * T22.04C: the thrust being applied, px/s², when the scene knows it — **the local
+   * player's**, off `Core.thrustAt` (the input the mirror stepped with) — or `null`:
+   * a remote's input is not on the wire, so its plume stays on velocity. Required
+   * for `space`'s reason: a scene that forgot it would compile and point the local
+   * plume off velocity again.
+   */
+  thrust: { x: number; y: number } | null
 }
 
 /** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
@@ -393,9 +401,11 @@ export class PlayerView {
     // T21.34. Toggled, never rebuilt.
     this.wings?.setVisible(flags.wings)
     this.wings?.setFlipX(left)
-    // T22.04. Toggled, never rebuilt — and off velocity, so it turns with the body.
+    // T22.04. Toggled, never rebuilt — against the thrust when the scene knows it
+    // (the local player, T22.04C), else off velocity, so it turns with the body.
     this.plume.update(
       plumeOn(flags.alive, flags.jetpack, flags.space),
+      flags.thrust,
       vx,
       vy,
       0,

@@ -2138,6 +2138,9 @@ export class GameScene extends Phaser.Scene {
         boots: this.hasBoots,
         wings: this.hasWings,
         space: this.gravity === SPACE_GRAVITY,
+        // T22.04C: the push the mirror stepped with (the predictor's replay included),
+        // so braking draws the exhaust on the side the push comes from.
+        thrust: this.core.thrustAt(this.me),
       })
       this.crosshair.update(rp.x, rp.y, aim)
       this.crosshairAt = { x: rp.x + Math.cos(aim) * C().AIM_RADIUS, y: rp.y + Math.sin(aim) * C().AIM_RADIUS }
@@ -2539,6 +2542,8 @@ export class GameScene extends Phaser.Scene {
         boots: flag(p.moveMods, MOVE_MOD.boots),
         wings: flag(p.moveMods, MOVE_MOD.wings),
         space: this.gravity === SPACE_GRAVITY,
+        // T22.04C: a remote's input is not on the wire, so its plume stays on velocity.
+        thrust: null,
       })
     }
 

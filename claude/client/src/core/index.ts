@@ -1152,6 +1152,20 @@ export class Core {
     }
   }
 
+  /**
+   * T22.04C: the thrust the mirror last stepped `id` with, px/s², or `null` while
+   * the pack is not firing or no direction is held. **Asked of Rust**
+   * (`jetpack::thrust_delta` of the input `apply_input` consumed) — the buttons →
+   * thrust mapping, unequal axes and all, is not spelled a second time here (R11).
+   * Only meaningful for the local player: a remote's input is not on the wire.
+   */
+  thrustAt(id: number): { x: number; y: number } | null {
+    const a = this.inner.thrust_at(id)
+    const x = a[0] ?? 0
+    const y = a[1] ?? 0
+    return x === 0 && y === 0 ? null : { x, y }
+  }
+
   give(id: number, item: number, count: number): void {
     this.inner.give(id, item, count)
   }

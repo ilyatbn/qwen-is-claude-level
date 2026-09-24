@@ -6995,3 +6995,10 @@ clear heading takes `way_out`, no try counted. 5 plants, 5 reds. F3 bound 6 % (w
 F8 breach-vortex records from before the breach; no-skip plant red ×2 (385 px). F9 ZDBG gone; F1 lazy; F2 loop removed.
 F7 traced: the any-fuel tail is mostly **summed wells over the weakest thrust** ((18,−919) vs 900, humans too) → T22.03G
 (ruling); T22.03F winged, T22.03H walking shovel filed. `--changed 95acb77 --fast` exit 0 (Rust 2992/0/46, vitest 1091).
+
+## T22.04C — the plume follows the thrust input (builder, 2026-09-24)
+`GameCore::thrust_at` = `jetpack::thrust_delta` of the input the mirror last stepped (zero when not firing); TS
+`exhaustDir` points against it, else velocity. `PlayerFlags.thrust` required: local = `core.thrustAt(me)` in both
+scenes, remotes `null` — re-checked, the wire has only "firing" and move-mods, no direction. `thrusters.mjs` braking arm
+(drift right, LEFT, freeze): red before in WebGL + Canvas, green after (right strip 118–190, left 0). `thrusters-match`
+arm 2b asserts GameScene's wiring (plant `thrust: null` → red); it must lift off first (grounded sideways keys walk).

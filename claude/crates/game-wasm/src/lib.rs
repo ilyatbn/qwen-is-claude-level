@@ -812,6 +812,29 @@ impl GameCore {
         ])
     }
 
+    /// T22.04C: the thrust the mirror last stepped this player with, px/s² as
+    /// `[ax, ay]` — **`jetpack::thrust_delta` of the input `apply_input` consumed**
+    /// (`prev_input`, the neutral one once the round is over), and `[0, 0]` while the
+    /// pack is not firing. The plume points against it, so braking draws the exhaust
+    /// on the side the push comes from, not opposite the travel.
+    ///
+    /// **Asked of the core rather than read off the keyboard** (R11): the buttons →
+    /// thrust mapping, with its unequal axes (`JETPACK_THRUST_UP` 2200 against
+    /// `JETPACK_THRUST_DOWN` 900), is Rust's, and a second spelling in TypeScript would
+    /// point a diagonal plume somewhere the body is not being pushed. Only the local
+    /// player has one: a remote's input is not on the wire, so its plume stays on
+    /// velocity (T22.04C).
+    pub fn thrust_at(&self, id: u8) -> Box<[f32]> {
+        let Some(p) = self.players.iter().find(|p| p.id == id) else {
+            return Box::new([0.0, 0.0]);
+        };
+        if !p.jet.active {
+            return Box::new([0.0, 0.0]);
+        }
+        let (x, y) = game_core::player::jetpack::thrust_delta(&p.prev_input, 1.0);
+        Box::new([x, y])
+    }
+
     /// Put charge in a player's battery. Sandbox only, like `give` (T20.08).
     ///
     /// Through `PlayerState::add_battery`, so `BATTERY_MAX`'s clamp applies here
@@ -2336,6 +2359,65 @@ mod tests {
             space.flare_points(seed as u32 ^ 1, (seed >> 32) as u32, 5.25),
             want,
             "control: another seed drew the same ribbon"
+        );
+    }
+
+    /// T22.04C: **`thrust_at` is the thrust of the input the mirror stepped with**,
+    /// so a braking body reports the push, not its travel: a player drifting right who
+    /// holds LEFT is still moving right and reports `(-JETPACK_THRUST_SIDE, 0)`. The
+    /// unequal axes come through (UP + RIGHT is `(SIDE, -UP)`, not a 45° diagonal), and
+    /// nothing held reports zero — the control, and the plume's velocity fallback.
+    #[test]
+    fn thrust_at_is_the_stepped_inputs_thrust_not_the_velocity() {
+        use game_core::constants::{JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H};
+        use game_core::player::input::button;
+        let mut core = GameCore::new();
+        assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
+        // Open air, three bodies clear every way.
+        let clear = |c: &GameCore, x: f32, y: f32| {
+            let pad = 3.0 * PLAYER_H;
+            (0..=12).all(|i| {
+                (0..=12).all(|j| {
+                    let px = x - pad + i as f32 * pad / 6.0;
+                    let py = y - pad + j as f32 * pad / 6.0;
+                    !game_core::physics::collide::solid_at(&c.map, px as i32, py as i32)
+                })
+            })
+        };
+        let (w, h) = (core.map.mask.w as f32, core.map.mask.h as f32);
+        let at = (1..20)
+            .flat_map(|i| (1..20).map(move |j| (w * i as f32 / 20.0, h * j as f32 / 20.0)))
+            .find(|&(x, y)| clear(&core, x, y))
+            .expect("open air on the space map");
+        core.add_player(1, at.0, at.1);
+        core.set_player_state(1, at.0, at.1, 200.0, 0.0, false, 5.0, 100.0, true, 0);
+        let mut seq = 0;
+        let mut step = |core: &mut GameCore, buttons: u8| {
+            seq += 1;
+            core.apply_input(1, seq, buttons, 0, SIM_DT);
+        };
+        for _ in 0..3 {
+            step(&mut core, button::LEFT);
+        }
+        let vx = core.player_state(1)[2];
+        assert!(vx > 0.0 && vx < 200.0, "not braking: vx {vx}");
+        assert_eq!(
+            &*core.thrust_at(1),
+            &[-JETPACK_THRUST_SIDE, 0.0],
+            "braking (vx {vx}) reported the travel, not the push"
+        );
+        step(&mut core, button::UP | button::RIGHT);
+        assert_eq!(
+            &*core.thrust_at(1),
+            &[JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP]
+        );
+        for _ in 0..3 {
+            step(&mut core, 0);
+        }
+        assert_eq!(
+            &*core.thrust_at(1),
+            &[0.0, 0.0],
+            "control: nothing held, a thrust"
         );
     }
 

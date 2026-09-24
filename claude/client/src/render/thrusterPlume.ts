@@ -34,7 +34,7 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { THRUST_FRAGMENT } from './shaders'
 import { isHighQuality } from '../ui/settings'
-import { hullRadius, plumeDir, type Dir } from './thrusterPlume-math'
+import { exhaustDir, hullRadius, type Dir } from './thrusterPlume-math'
 
 const SHEATH = 0x3d9eff
 const CORE = 0xe0faff
@@ -81,9 +81,20 @@ export class ThrusterPlume {
    * `cx`/`cy` are the drawn body's centre in container coordinates and
    * `halfW`/`halfH` its hull, so the nozzle sits on the edge of the body the
    * scene actually drew — not on the physics box, which a scene may offset.
+   * `thrust` (T22.04C) is the push being applied, when the scene knows it — the
+   * local player's — and `null` for a remote, whose plume stays on velocity.
    */
-  update(on: boolean, vx: number, vy: number, cx: number, cy: number, halfW: number, halfH: number): void {
-    this.last = [on, vx, vy, cx, cy, halfW, halfH]
+  update(
+    on: boolean,
+    thrust: Dir | null,
+    vx: number,
+    vy: number,
+    cx: number,
+    cy: number,
+    halfW: number,
+    halfH: number,
+  ): void {
+    this.last = [on, thrust, vx, vy, cx, cy, halfW, halfH]
     const show = on && !this.hidden
     const shader = show && this.webgl && isHighQuality()
     this.drawn = show
@@ -94,7 +105,7 @@ export class ThrusterPlume {
       return
     }
     const c = C()
-    const d = plumeDir(vx, vy, c.THRUSTER_PLUME_MIN_SPEED)
+    const d = exhaustDir(thrust, vx, vy, c.THRUSTER_PLUME_MIN_SPEED)
     this.dir = d
     const r = hullRadius(d, halfW, halfH)
     const x = cx + d.x * r

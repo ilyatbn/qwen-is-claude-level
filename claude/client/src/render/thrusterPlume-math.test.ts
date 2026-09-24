@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hullRadius, plumeDir, plumeOn } from './thrusterPlume-math'
+import { exhaustDir, hullRadius, plumeDir, plumeOn } from './thrusterPlume-math'
 
 describe('plumeDir', () => {
   it('fires from above when you travel down — the owner’s sentence', () => {
@@ -52,5 +52,30 @@ describe('plumeOn', () => {
     expect(plumeOn(false, true, true)).toBe(false)
     expect(plumeOn(true, false, true)).toBe(false)
     expect(plumeOn(true, true, false)).toBe(false)
+  })
+})
+
+describe('exhaustDir (T22.04C)', () => {
+  it('braking: drifting right, pushed left, the exhaust is on the right', () => {
+    const d = exhaustDir({ x: -1100, y: 0 }, 200, 0, 1)
+    expect(d.x).toBeCloseTo(1)
+    expect(d.y).toBeCloseTo(0)
+    // Control: the velocity rule alone points it the other way.
+    expect(plumeDir(200, 0, 1).x).toBeCloseTo(-1)
+  })
+
+  it('climbing out of a well while still falling: the exhaust is below', () => {
+    expect(exhaustDir({ x: 0, y: -2200 }, 0, 150, 1).y).toBeCloseTo(1)
+  })
+
+  it('the unequal axes survive: UP + RIGHT is not a 45° plume', () => {
+    const d = exhaustDir({ x: 1100, y: -2200 }, 0, 0, 1)
+    expect(d.x).toBeCloseTo(-1100 / Math.hypot(1100, 2200))
+    expect(d.y).toBeCloseTo(2200 / Math.hypot(1100, 2200))
+  })
+
+  it('no thrust known (a remote) or none held: the velocity rule, unchanged', () => {
+    expect(exhaustDir(null, 120, -160, 1)).toEqual(plumeDir(120, -160, 1))
+    expect(exhaustDir({ x: 0, y: 0 }, 120, -160, 1)).toEqual(plumeDir(120, -160, 1))
   })
 })

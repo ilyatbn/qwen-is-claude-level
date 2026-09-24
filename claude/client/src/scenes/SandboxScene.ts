@@ -1218,6 +1218,7 @@ export class SandboxScene extends Phaser.Scene {
             wings: false,
             boots: false,
             space: false,
+            thrust: null,
           })
           return v
         })
@@ -1458,6 +1459,8 @@ export class SandboxScene extends Phaser.Scene {
         wings: ((this.core.playerState(0)?.moveMods ?? 0) & MOVE_MOD.wings) !== 0,
         // T22.04: the gravity this map was generated under (R22's parameter).
         space: this.gravity === SPACE_GRAVITY,
+        // T22.04C: the push the mirror stepped with, not the travel.
+        thrust: this.core.thrustAt(0),
       })
       this.crosshair.update(body.x, body.y, aim)
       // `watchPoint` is the e2e `watch` hook's, and only that (T21.31).

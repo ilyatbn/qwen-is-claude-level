@@ -23,6 +23,12 @@
  *    bo's plume, pointing up. bo's own view draws his, the same way. The control
  *    is the frame before, with nothing held: the entry exists and is not drawn.
  * 2. **Letting go** stops it on both clients. Arm 1 is its presence control.
+ *    **2b. Braking, the local plume** (T22.04C): bo drifts one way and thrusts the
+ *    other; while he is still moving the first way, **his own** view draws the plume
+ *    on the velocity side — `GameScene`'s `thrust: core.thrustAt(me)` wiring, which
+ *    the sandbox's pixel arm (`thrusters.mjs`) cannot reach. Read off `debug().plumes`,
+ *    the view's own report; the pixels are the sandbox's. Arm 1's DOWN is the control
+ *    (thrust and velocity agree there, and it stays pointing up).
  * 3. **The round-over bell** (F3): bo burns across it. The last frame before the
  *    bell draws his plume; the frames after it do not, with DOWN still held and
  *    fuel still in the tank — so it is the bell and not an empty tank.
@@ -284,6 +290,50 @@ try {
   if (!boOff || !anaOff) {
     fail(`bo let go and a plume stayed: bo ${JSON.stringify(brief(await dbg(bo), bo))}, ana sees ${JSON.stringify(await plumeOf(ana, bo))}`)
   } else ok('bo lets go: neither client draws his plume')
+
+  // --- arm 2b: braking, bo's own plume (T22.04C) --------------------------
+  // Drift one way, then push the other: the exhaust is on the side he is still
+  // travelling toward. **Off the rock first** — grounded, a sideways key walks and
+  // only UP engages the pack (R42; traced: bo walked right at 80 px/s, and LEFT then
+  // walked him back with no plume at all). Right first; a rock in the way tries left.
+  {
+    let braked = null
+    await bo.page.keyboard.down('w')
+    await waitOn(bo, () => !window.__game.debug().player.grounded && window.__game.debug().player.vy < -60, null, 5, 'lift-off')
+    await bo.page.keyboard.up('w')
+    for (const [go, brake, sign] of [['d', 'a', 1], ['a', 'd', -1]]) {
+      await bo.page.keyboard.down(go)
+      const moving = await waitOn(
+        bo,
+        (s) => !window.__game.debug().player.grounded && window.__game.debug().player.vx * s > 150,
+        sign,
+        5,
+        'drift',
+      )
+      await bo.page.keyboard.up(go)
+      if (!moving) continue
+      await bo.page.keyboard.down(brake)
+      const saw = await waitOn(
+        bo,
+        ([id, s]) => {
+          const d = window.__game.debug()
+          const p = d.plumes?.[id]
+          return d.player.moveState === 2 && d.player.vx * s > 20 && !!p && p.drawn && p.dir.x * s > 0.5
+        },
+        [bo.id, sign],
+        3,
+        'braking plume',
+      )
+      const at = await dbg(bo)
+      await bo.page.keyboard.up(brake)
+      braked = { saw, sign, at: { vx: at?.player?.vx, plume: at?.plumes?.[bo.id] } }
+      break
+    }
+    if (!braked) fail('control: bo never drifted 150 px/s either way, so braking was never tried')
+    else if (!braked.saw) fail(`bo braked (drifting ${braked.sign > 0 ? 'right' : 'left'}) and his own plume never pointed the way he was still going: ${JSON.stringify(braked.at)}`)
+    else ok(`bo brakes (drifting ${braked.sign > 0 ? 'right' : 'left'}, pushing back): his own plume is on the side he is still travelling toward`)
+    await waitOn(bo, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'local off')
+  }
 
   // --- arm 3: the round-over bell (F3) -------------------------------------
   const lead = await waitOn(

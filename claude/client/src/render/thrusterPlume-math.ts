@@ -11,12 +11,17 @@
  * snapshot already carries `vel.x`/`vel.y` per player, so a direction on the wire
  * would be a second answer that can disagree with the body it is drawn on.
  *
- * **Known limit, stated rather than discovered:** while *braking* — drifting right
- * and thrusting left — the true exhaust points right, and velocity still says
- * right until the body stops, so the plume draws on the left. The task's rule is
- * *"opposite the direction you travel"*, which this meets exactly; the braking
- * case would need the thrust vector itself, which only the local player's input
- * knows. Reported to the coordinator with T22.04, not decided here.
+ * **T22.04C: the local player's plume follows the thrust, not the travel.** While
+ * *braking* — drifting right and thrusting left — the exhaust points right, where
+ * the push comes from, and velocity still says right until the body stops; the
+ * same for thrusting up out of a well while still falling onto the rock. So the
+ * local player's plume points against the thrust the mirror stepped with
+ * ([`exhaustDir`], off `Core.thrustAt`), and falls back to velocity only when no
+ * direction is held. **Remote players stay on velocity**: their input is not on
+ * the wire (the snapshot carries bit 2, "firing", and the move-mods byte, neither
+ * of which says which way), and a direction derived from the change in velocity
+ * would need the field subtracted across two interpolated snapshots — a second,
+ * noisier answer for a cosmetic.
  *
  * # One plume, not two, when two axes are held
  *
@@ -45,6 +50,18 @@ export function plumeDir(vx: number, vy: number, minSpeed: number): Dir {
   const speed = Math.hypot(vx, vy)
   if (!(speed > minSpeed)) return { x: 0, y: 1 }
   return { x: -vx / speed, y: -vy / speed }
+}
+
+/**
+ * T22.04C: which way the plume points given the **thrust** being applied: against
+ * it, when there is one — the exhaust of a push leaves the other way, whatever the
+ * body is doing — and otherwise [`plumeDir`]'s velocity rule. `thrust` is the
+ * local player's (`Core.thrustAt`); a remote passes `null`.
+ */
+export function exhaustDir(thrust: Dir | null, vx: number, vy: number, minSpeed: number): Dir {
+  const mag = thrust ? Math.hypot(thrust.x, thrust.y) : 0
+  if (thrust && mag > 0) return { x: -thrust.x / mag, y: -thrust.y / mag }
+  return plumeDir(vx, vy, minSpeed)
 }
 
 /**
