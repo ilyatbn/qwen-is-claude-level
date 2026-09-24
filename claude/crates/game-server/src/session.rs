@@ -52,6 +52,25 @@ impl Ctx {
         Some((id, e.handle.clone(), e.sessions.clone()))
     }
 
+    /// Send `mk(player)` to this socket's room **now, in the handler call** — the
+    /// synchronous form every in-match command uses (T22.10D F2).
+    ///
+    /// socketioxide runs a handler's *closure* inside the socket's read loop, in
+    /// arrival order, and spawns the *future* it returns; tokio runs the newest
+    /// spawned task first. So work done in an `async move` block can reach the room
+    /// out of order — `input` lost 137 seqs to it (T22.10B), and `select_slot` then
+    /// `fire` fired the weapon just put away
+    /// (`integration.rs::select_slot_then_fire_fires_the_newly_selected_weapon`).
+    /// Everything here is synchronous: `resolve` and `player_of` take std locks and
+    /// `RoomHandle::send` is a `try_send`.
+    pub fn send_as_player(&self, sid: Sid, mk: impl FnOnce(PlayerId) -> Command) {
+        if let Some((_, room, sessions)) = self.resolve(sid) {
+            if let Some(id) = sessions.player_of(sid) {
+                room.send(mk(id));
+            }
+        }
+    }
+
     /// The parts of a specific room, by id.
     pub fn room_parts(&self, room: RoomId) -> Option<(RoomHandle, Arc<SessionMap>)> {
         let r = self.lock();
@@ -805,21 +824,26 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             }
 
             // ------------------------------------------------------ item verbs
+            //
+            // **Every in-match verb sends in the handler call, not in a spawned
+            // future** (T22.10D F2, `Ctx::send_as_player`): `use_item`,
+            // `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`,
+            // `quick_throw` and `fire`, beside `input`. They act on one player's
+            // state in the order the player pressed things, and a spawned future
+            // does not keep that order. What stays `async`, and why each may:
+            // `vote_restart` awaits the room's "counted" reply and is one press on
+            // a results screen; `resync_map` and the `debug_*` probes await a read
+            // of the world and change nothing a later command reads;
+            // `start_with_bots` is a lobby verb, and nothing in-match is queued
+            // behind it.
             {
                 let ctx = ctx.clone();
                 socket.on(
                     "use_item",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let ctx = ctx.clone();
-                        async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                                return;
-                            };
-                            if let Some(id) = sessions.player_of(socket.id) {
-                                let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
-                                room.send(Command::UseItem(id, slot.min(255) as u8));
-                            }
-                        }
+                        let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
+                        ctx.send_as_player(socket.id, |id| Command::UseItem(id, slot.min(255) as u8));
+                        async {}
                     },
                 );
             }
@@ -828,16 +852,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 socket.on(
                     "select_slot",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let ctx = ctx.clone();
-                        async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                                return;
-                            };
-                            if let Some(id) = sessions.player_of(socket.id) {
-                                let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
-                                room.send(Command::SelectSlot(id, slot.min(255) as u8));
-                            }
-                        }
+                        let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
+                        ctx.send_as_player(socket.id, |id| Command::SelectSlot(id, slot.min(255) as u8));
+                        async {}
                     },
                 );
             }
@@ -851,18 +868,12 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 socket.on(
                     "move_item",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let ctx = ctx.clone();
-                        async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                                return;
-                            };
-                            if let Some(id) = sessions.player_of(socket.id) {
-                                let g = |k: &str| {
-                                    p.get(k).and_then(|v| v.as_u64()).unwrap_or(255).min(255) as u8
-                                };
-                                room.send(Command::MoveItem(id, g("from"), g("to")));
-                            }
-                        }
+                        let g = |k: &str| {
+                            p.get(k).and_then(|v| v.as_u64()).unwrap_or(255).min(255) as u8
+                        };
+                        let (from, to) = (g("from"), g("to"));
+                        ctx.send_as_player(socket.id, |id| Command::MoveItem(id, from, to));
+                        async {}
                     },
                 );
             }
@@ -877,20 +888,13 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 socket.on(
                     "drop_item",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
-                        let ctx = ctx.clone();
-                        async move {
-                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                                return;
-                            };
-                            if let Some(id) = sessions.player_of(socket.id) {
-                                let slot = p
-                                    .get("slot")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(255)
-                                    .min(255) as u8;
-                                room.send(Command::DropItem(id, slot));
-                            }
-                        }
+                        let slot = p
+                            .get("slot")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(255)
+                            .min(255) as u8;
+                        ctx.send_as_player(socket.id, |id| Command::DropItem(id, slot));
+                        async {}
                     },
                 );
             }
@@ -906,15 +910,8 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             ] {
                 let ctx = ctx.clone();
                 socket.on(event, move |socket: SocketRef| {
-                    let ctx = ctx.clone();
-                    async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
-                        if let Some(id) = sessions.player_of(socket.id) {
-                            room.send(mk(id));
-                        }
-                    }
+                    ctx.send_as_player(socket.id, mk);
+                    async {}
                 });
             }
             {
@@ -939,16 +936,11 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             }
             {
                 let ctx = ctx.clone();
+                // T22.10D F2: in arrival order, like every in-match verb
+                // (`Ctx::send_as_player`) — a `select_slot` just before it must land first.
                 socket.on("fire", move |socket: SocketRef| {
-                    let ctx = ctx.clone();
-                    async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
-                        if let Some(id) = sessions.player_of(socket.id) {
-                            room.send(Command::Fire(id));
-                        }
-                    }
+                    ctx.send_as_player(socket.id, Command::Fire);
+                    async {}
                 });
             }
             // T22.08D F1: **the server's own flare clock, for a check** (`DEV_PROBE=1`).

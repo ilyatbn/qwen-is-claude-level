@@ -409,6 +409,22 @@ export function flag(flags: number, bit: number): boolean {
 }
 
 /**
+ * **A frame's inputs as the packets that carry them** (T22.10D F3): every input,
+ * in seq order, at most `per` to a packet — `per` is `INPUT_REDUNDANCY`, the most
+ * `decode_input_batch` takes and all `encodeInputBatch` keeps.
+ *
+ * Its own function so the rule has a test. `GameScene` did this inline, and
+ * reverting the loop to T22.10B's `slice(-3)` — the bug, only the last three of a
+ * long frame's fifteen sent — left every test green.
+ */
+export function inputPackets<T>(batch: readonly T[], per: number): T[][] {
+  if (!Number.isInteger(per) || per < 1) throw new CodecError(`a packet holds at least one input, not ${per}`)
+  const out: T[][] = []
+  for (let i = 0; i < batch.length; i += per) out.push(batch.slice(i, i + per))
+  return out
+}
+
+/**
  * The last `INPUT_REDUNDANCY` inputs, newest last.
  *
  * Redundancy is why a dropped packet costs nothing: the next one re-delivers the

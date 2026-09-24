@@ -1733,6 +1733,10 @@ pub fn constants_json() -> String {
         CHUNK_SIZE => c::CHUNK_SIZE,
         INPUT_REDUNDANCY => c::INPUT_REDUNDANCY,
         MAX_INPUT_QUEUE => c::MAX_INPUT_QUEUE,
+        // T22.10D: the client's frame ceiling, which now sizes the server's input
+        // intake (`MAX_FRAME_TICKS`) — `constants-parity.test.ts` pins
+        // `autoFire.ts::MAX_FRAME_DT` to it.
+        MAX_FRAME_DT => c::MAX_FRAME_DT,
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,

@@ -593,6 +593,61 @@ fn sending_more_inputs_in_one_tick_does_not_move_you_further() {
     );
 }
 
+/// T22.10D F4: **the catch-up is paid for by silence, so it is not a speed
+/// multiplier.** `World::apply_inputs` consumes a second input in a tick only
+/// against credit earned by ticks that had none. A client sending two per tick is
+/// never starved: over `ticks` ticks it must have consumed exactly `ticks` inputs.
+/// The control is the same client after `ticks` ticks of silence (one long frame's
+/// worth): it consumes more than one per tick while the backlog stands above the
+/// target — the mechanism is live — and still never more than the ticks elapsed.
+#[test]
+fn the_backlog_catch_up_never_consumes_more_inputs_than_ticks() {
+    use game_core::constants::MAX_FRAME_TICKS;
+    // Below the cap, so no trim moves the oldest seq: consumed = oldest − 1.
+    let ticks = (MAX_FRAME_TICKS / 2) as u32;
+    let consumed = |silent: u32| {
+        let mut w = playing();
+        spawn_at(&mut w, 1);
+        for _ in 0..silent {
+            w.step(SIM_DT);
+        }
+        let mut seq = 0u32;
+        for _ in 0..ticks {
+            for _ in 0..2 {
+                seq += 1;
+                w.queue_input(
+                    1,
+                    Input {
+                        seq,
+                        buttons: button::RIGHT,
+                        aim: 0,
+                    },
+                );
+            }
+            w.step(SIM_DT);
+        }
+        w.oldest_queued_seq(1).expect("a backlog is left") - 1
+    };
+    let flooding = consumed(0);
+    assert_eq!(
+        flooding, ticks,
+        "a client sending two inputs every tick consumed {flooding} in {ticks} ticks — \
+         packet rate is a speed multiplier again (§A30)"
+    );
+    let silent = MAX_FRAME_TICKS as u32;
+    let owed = consumed(silent);
+    assert!(
+        owed > ticks,
+        "control: after {silent} silent ticks the backlog was never caught up \
+         ({owed} consumed in {ticks} ticks), so the first assertion proves nothing"
+    );
+    assert!(
+        owed <= ticks + silent,
+        "consumed {owed} inputs in {} ticks",
+        ticks + silent
+    );
+}
+
 /// The surplus is a *backlog*, not a discard: a jitter burst catches up on the
 /// following ticks rather than being thrown away.
 #[test]

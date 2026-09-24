@@ -6862,3 +6862,10 @@ Mirror list in opening order (`WorldMirror.vortices`, by id, close = fade) → n
 `breach-vortex` (standalone, DEV_PROBE `debug_breach` + `dev_place_inward_of`): vortex where the server breached; worst correction **jump** ≤ ε while pulled (new `lastJumpPx`; the correction count is not a rubber-band measure); trip inside the rim; ring in its own colour both paths vs hidden frame + control; minimap unchanged.
 **It found three pre-existing netcode defects** (all outside Touch-only, decided and flagged): async `input` handler reordered packets (137 gaps/match → 0), `slice(-3)` dropped inputs on 4+-tick frames (now chunked), ack on receipt not consumption (room test red first). Jumps 11–14 px → 0.72 px.
 Plants red: no `setVortices` 12.36 px; no ring 0/17 in ring colour; async handler back 11.67 px; unguarded verb answered. Done-when 1053 vitest + e2e ok; clippy 0; `--changed HEAD --fast` 1629 Rust 0 failed; networked 9/9.
+
+## T22.10D — the input path's follow-ups (2026-09-24)
+F4: room takes a whole long frame (`MAX_INPUT_QUEUE` = `MAX_FRAME_TICKS` = 15, derived); world consumes a 2nd input/tick while backlog > `INPUT_BACKLOG_TARGET` 2, only against credit earned by empty ticks (§A30 kept: `the_backlog_catch_up_never_consumes_more_inputs_than_ticks`). Room test red first: *"body at ack 15 is 17.89 px"*.
+F2: 8 in-match verbs via `Ctx::send_as_player` (sync); red 5/5 before. F3 `inputPackets` + source check. F8 gate on the prediction at the ack (+ velocity, alive, health), snap on jump, acked entry kept: `thrusters-match` render snaps 76 → 1 on one client.
+F7 `teleport` was a check bug (u8 health 0 ≠ dead) → `death.meAlive`; green ×3, flag left. F9 blame by ack step then ack error. F11 `vortex::retire`.
+Ten networked checks 10/10 ×3; worst non-relocation jump/ack error per check in the task file. `harness.mjs` now prints them per client.
+Owed by the coordinator: `docs/40` §2 and `docs/70` §A30 amendments (MAX_INPUT_QUEUE 8, "exactly one per tick", redundancy).

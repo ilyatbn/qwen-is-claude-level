@@ -7,6 +7,7 @@ import {
   ASTEROID_WIRE_BYTES,
   decodeSnapshot,
   encodeInputBatch,
+  inputPackets,
   CodecError,
   MAP_MAGIC,
   OBJECT_WIRE_BYTES,
@@ -408,6 +409,40 @@ describe('input batch', () => {
   it('never sets the reserved bit', () => {
     const b = encodeInputBatch([{ seq: 1, aim: 0, buttons: 0xff }])
     expect(new DataView(b).getUint8(7)).toBe(0x7f)
+  })
+})
+
+/**
+ * T22.10D F3. A frame of `MAX_FRAME_DT` steps fifteen inputs; all fifteen go, in
+ * order, none dropped by `encodeInputBatch`'s keep-the-last rule — and
+ * `GameScene` sends through this function, not a loop of its own.
+ */
+describe('input packets', () => {
+  const f = (seq: number) => ({ seq, aim: 0, buttons: 0 })
+  const seqsOnTheWire = (packets: ReturnType<typeof f>[][]) =>
+    packets.flatMap((p) => {
+      const v = new DataView(encodeInputBatch(p))
+      return Array.from({ length: v.getUint8(0) }, (_, k) => v.getUint32(1 + k * 7, true))
+    })
+
+  it('sends a long frame whole: fifteen inputs, five packets, seqs 1..15 in order', () => {
+    const per = C().INPUT_REDUNDANCY
+    const frame = Array.from({ length: Math.ceil(C().MAX_FRAME_DT / C().SIM_DT) }, (_, i) => f(i + 1))
+    expect(frame.length).toBe(15)
+    const packets = inputPackets(frame, per)
+    expect(packets.length).toBe(Math.ceil(frame.length / per))
+    expect(seqsOnTheWire(packets)).toEqual(frame.map((i) => i.seq))
+  })
+
+  it('a one-input frame is one packet, and an empty frame none', () => {
+    expect(inputPackets([f(7)], C().INPUT_REDUNDANCY)).toEqual([[f(7)]])
+    expect(inputPackets([], C().INPUT_REDUNDANCY)).toEqual([])
+  })
+
+  it("is GameScene's send path", () => {
+    const src = readFileSync(fileURLToPath(new URL('../scenes/GameScene.ts', import.meta.url)), 'utf8')
+    expect(src).toMatch(/for \(const packet of inputPackets\(batch, C\(\)\.INPUT_REDUNDANCY\)\)\s*this\.conn\.sendInput\(packet\)/)
+    expect(src).not.toMatch(/batch\.slice\(/)
   })
 })
 

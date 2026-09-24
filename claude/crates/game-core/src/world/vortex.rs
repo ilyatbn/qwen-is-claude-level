@@ -60,6 +60,25 @@ pub fn open(vortices: &mut Vec<Vortex>, seq: &mut u32, at: Vec2) -> Opened {
     Opened::New { id, replaced }
 }
 
+/// A vortex the cap displaced joins the spent list, where it keeps catching
+/// (R88) — **unless a spent one already sits within `VORTEX_CAPTURE_R` of it**
+/// (T22.10D F11). `open` merges only against the *pulling* list, so a hole whose
+/// vortex was displaced opens a fresh one when it is breached again, and that one
+/// is displaced in its turn: without this, every cycle appended a second spent
+/// vortex at the same hole — the list grew without bound for a hole that was one
+/// hole, and every capture and clearance walked all of them. The earlier entry
+/// already catches there. Returns whether it was added.
+pub fn retire(spent: &mut Vec<Vortex>, old: Vortex) -> bool {
+    if spent
+        .iter()
+        .any(|v| (v.pos - old.pos).len() <= VORTEX_CAPTURE_R)
+    {
+        return false;
+    }
+    spent.push(old);
+    true
+}
+
 /// The vortex that catches a body centred at `pos`, if any: the first within
 /// `VORTEX_CAPTURE_R`, the pulling ones in opening order and then the spent ones.
 /// **Everyone** — wings included (R9, point 1). Wings refuse pads and gun
@@ -160,6 +179,47 @@ mod tests {
             open(&mut vs, &mut seq, Vec2::new(0.0, 0.0)),
             Opened::New { .. }
         ));
+    }
+
+    /// T22.10D F11: one hole, breached again every time its vortex is
+    /// displaced, is one spent entry — not one per cycle. The control: a hole
+    /// just past the radius is retired as its own.
+    #[test]
+    fn a_hole_re_breached_after_it_was_displaced_is_spent_once() {
+        let (mut vs, mut seq, mut spent) = (Vec::new(), 0, Vec::new());
+        let apart = VORTEX_CAPTURE_R * 3.0;
+        let hole = Vec2::new(0.0, 0.0);
+        let cycles = 4 * MAX_ACTIVE_VORTICES;
+        for i in 0..cycles {
+            // The hole again, then enough other holes to push it out.
+            for at in std::iter::once(hole).chain(
+                (1..=MAX_ACTIVE_VORTICES).map(|k| Vec2::new((i * 10 + k) as f32 * apart, 0.0)),
+            ) {
+                if let Opened::New {
+                    replaced: Some(old),
+                    ..
+                } = open(&mut vs, &mut seq, at)
+                {
+                    retire(&mut spent, old);
+                }
+            }
+        }
+        let at_hole = spent
+            .iter()
+            .filter(|v| (v.pos - hole).len() <= VORTEX_CAPTURE_R)
+            .count();
+        assert_eq!(
+            at_hole, 1,
+            "{cycles} displacements of one hole left {at_hole} spent vortices on it"
+        );
+        let beside = Vortex {
+            id: 99,
+            pos: hole + Vec2::new(0.0, VORTEX_CAPTURE_R * 1.1),
+        };
+        assert!(
+            retire(&mut spent, beside),
+            "control: a hole of its own was refused"
+        );
     }
 
     #[test]
@@ -375,6 +435,72 @@ mod world_tests {
             "control: three breaches, three vortices"
         );
         let _ = w.drain_events();
+    }
+
+    /// T22.10D F11, **through the world's own step** — `retire`'s live call site.
+    /// Three vortices, a fourth displaces the top one; then a narrow carve just
+    /// clear of the top hole's probe box, but inside its capture radius, breaches
+    /// the rim again there: `open` merges only against the pulling list, so that is
+    /// a new vortex at the same hole. Three more fresh holes displace it too. The
+    /// top hole must then be spent **once**, not twice.
+    #[test]
+    fn a_hole_re_breached_after_it_was_displaced_is_spent_once_in_the_world() {
+        use crate::constants::{SPACE_RIM_THICKNESS, VORTEX_CAPTURE_R};
+        let mut w = space_world(4242);
+        three_vortices(&mut w);
+        let geo = w.map.space_geometry().expect("space");
+        let top = Vec2::new(geo.cx, geo.cy - geo.ry);
+        let breach = |w: &mut World, (x, y): (i32, i32), r: i32| {
+            w.players[0].body = Body::new(Vec2::new(geo.cx, geo.cy));
+            let _ = w.map.carve_circle(x, y, r);
+            step(w);
+            opened(&w.drain_events())
+        };
+        let at = |t: f32| geo.onto_rim(geo.cx + geo.rx * t.cos(), geo.cy + geo.ry * t.sin());
+        use std::f32::consts::PI;
+        assert_eq!(
+            breach(&mut w, at(PI / 2.0), METEOR_CARVE_R as i32),
+            1,
+            "control: the fourth"
+        );
+        assert_eq!(w.spent_vortices.len(), 1, "control: the top one displaced");
+        // Just wide enough to cut the rim; far enough along it that its probe box
+        // misses the top hole, near enough to be inside that hole's capture radius.
+        let narrow = (SPACE_RIM_THICKNESS / 2 + 2) as i32;
+        let along = (VORTEX_CAPTURE_R - 12.0).round();
+        let again = geo.onto_rim(top.x + along, top.y);
+        assert!(
+            (Vec2::new(again.0 as f32, again.1 as f32) - top).len() <= VORTEX_CAPTURE_R,
+            "control: the re-breach is not at the top hole"
+        );
+        assert_eq!(
+            breach(&mut w, again, narrow),
+            1,
+            "control: the re-breach opened nothing"
+        );
+        for t in [PI / 4.0, 3.0 * PI / 4.0, 5.0 * PI / 4.0] {
+            assert_eq!(
+                breach(&mut w, at(t), METEOR_CARVE_R as i32),
+                1,
+                "control: a fresh hole at {t}"
+            );
+        }
+        let at_top = w
+            .spent_vortices
+            .iter()
+            .filter(|v| (v.pos - top).len() <= VORTEX_CAPTURE_R)
+            .count();
+        assert!(
+            w.spent_vortices
+                .iter()
+                .any(|v| (v.pos - top).len() > VORTEX_CAPTURE_R),
+            "control: nothing else was spent, so the count below is not about retiring"
+        );
+        assert_eq!(
+            at_top, 1,
+            "the top hole is spent {at_top} times: {:?}",
+            w.spent_vortices
+        );
     }
 
     /// **An idle player caught by a vortex never dies in the void** (T22.10C F1,

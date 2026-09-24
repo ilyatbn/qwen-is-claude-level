@@ -22,8 +22,8 @@ use birds::{BirdId, BirdKind, Birds};
 use tombstones::Tombstones;
 
 use crate::constants::{
-    GravityMode, MapScale, ENDED_SECONDS, MAX_INPUT_QUEUE, MAX_PLAYERS, ROUND_SECONDS,
-    TELEPORT_PADS, WARMUP_SECONDS,
+    GravityMode, MapScale, ENDED_SECONDS, INPUT_BACKLOG_TARGET, MAX_FRAME_TICKS, MAX_INPUT_QUEUE,
+    MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS, WARMUP_SECONDS,
 };
 use crate::items::registry::{ItemId, WeaponId, WEAPON_PLATFORM_GUN};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
@@ -897,6 +897,11 @@ pub struct World {
     /// Per-player queued inputs, parallel to `players` by id lookup.
     pending: Vec<(PlayerId, Input)>,
     prev_input: Vec<(PlayerId, Input)>,
+    /// Ticks each player is owed (T22.10D F4): ticks that passed with no input
+    /// to consume, capped at `MAX_FRAME_TICKS`. `apply_inputs` spends one per
+    /// extra input it consumes to drain a backlog, so a player never consumes
+    /// more inputs than ticks have passed — §A30's invariant, kept while catching up.
+    input_credit: Vec<(PlayerId, u32)>,
     phase_started_at: f32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
     round_seconds: f32,
@@ -1116,6 +1121,7 @@ impl World {
             carve_seq: 0,
             pending: Vec::new(),
             prev_input: Vec::new(),
+            input_credit: Vec::new(),
             phase_started_at: 0.0,
             last_day_phase: cycle_at(0.0).phase,
             toxic: None,
@@ -1147,6 +1153,7 @@ impl World {
         self.players.sort_by_key(|p| p.id);
         self.prev_input.push((id, Input::default()));
         self.prev_input.sort_by_key(|(i, _)| *i);
+        self.input_credit.push((id, 0));
     }
 
     /// A fresh spacesuit: the battery full, in a suit mode (T22.09A, R24).
@@ -1213,6 +1220,7 @@ impl World {
     pub fn remove_player(&mut self, id: PlayerId) {
         self.players.retain(|p| p.id != id);
         self.prev_input.retain(|(i, _)| *i != id);
+        self.input_credit.retain(|(i, _)| *i != id);
         self.pending.retain(|(i, _)| *i != id);
     }
 
@@ -1785,10 +1793,52 @@ impl World {
                 this_tick.push((id, input));
             }
         }
+        // **T22.10D F4: a backlog is caught up, one extra input per owed tick.**
+        //
+        // A client frame of `MAX_FRAME_DT` sends `MAX_FRAME_TICKS` inputs at once,
+        // after as many ticks in which this player had nothing to consume. Taken
+        // strictly one per tick, that burst became a *standing* queue — measured at
+        // 7 inputs, ~117 ms of input delay for the rest of the match, and every
+        // shot fired from where the player stood 117 ms earlier. Dropping the
+        // oldest instead would snap the client back by every tick it dropped.
+        //
+        // So a player whose backlog is above `INPUT_BACKLOG_TARGET` consumes a
+        // second input this tick — **only against credit**: one tick of credit is
+        // earned per tick that passed with no input to consume. Inputs consumed
+        // therefore never exceed ticks elapsed, which is §A30's invariant (packet
+        // rate is not a speed multiplier): a client that sends two per tick is
+        // never starved, earns nothing, and moves at one input per tick exactly as
+        // before. Each input still integrates with one `dt`, in seq order, so the
+        // state after seq `k` is exactly what the client predicted after `k`.
+        //
+        // Consume-twice rather than drop-oldest, the other shape the ruling
+        // offered, for that last sentence: a dropped input is travel the client
+        // predicted and the server never ran, which is a snap on every burst.
+        let accepts = self.phase.accepts_input();
+        for (id, credit) in self.input_credit.iter_mut() {
+            if !accepts {
+                *credit = 0;
+            } else if !taken.contains(id) {
+                *credit = (*credit + 1).min(MAX_FRAME_TICKS as u32);
+            } else if *credit > 0
+                && backlog.iter().filter(|(i, _)| i == id).count() > INPUT_BACKLOG_TARGET
+            {
+                if let Some(at) = backlog.iter().position(|(i, _)| i == id) {
+                    let extra = backlog.remove(at);
+                    let after = this_tick
+                        .iter()
+                        .rposition(|(i, _)| i == id)
+                        .map_or(this_tick.len(), |p| p + 1);
+                    this_tick.insert(after, extra);
+                    *credit -= 1;
+                }
+            }
+        }
         // A backlog longer than the queue cap means the client is sending faster
-        // than the sim runs, indefinitely. Dropping the *oldest* keeps the player
-        // responsive to their most recent intent rather than replaying stale
-        // stick positions.
+        // than the sim runs, indefinitely — a flood, since an honest client's
+        // largest burst is one frame's (`MAX_INPUT_QUEUE` = `MAX_FRAME_TICKS`).
+        // Dropping the *oldest* keeps the player responsive to their most recent
+        // intent rather than replaying stale stick positions.
         for id in &taken {
             let count = backlog.iter().filter(|(i, _)| i == id).count();
             if count > MAX_INPUT_QUEUE {
@@ -3544,7 +3594,8 @@ impl World {
                     // R88: it stops pulling and fades; its hole still catches.
                     self.events
                         .push(GameEvent::VortexClose { tick, id: old.id });
-                    self.spent_vortices.push(old);
+                    // T22.10D F11: once per hole, not once per displacement.
+                    vortex::retire(&mut self.spent_vortices, old);
                 }
                 self.events.push(GameEvent::VortexOpen {
                     tick,
@@ -5284,6 +5335,10 @@ mod state_hash_coverage {
             // every point a hash is taken.
             pending: _,
             prev_input: _,
+            // T22.10D: `input_credit` is `pending`'s bookkeeping — a count of the
+            // ticks the input stream left empty, which the replay reproduces by
+            // recording each input on the tick it arrived.
+            input_credit: _,
             // `irradiated_this_tick` (T22.09A, R75) is filled and taken inside
             // one `step` and cleared at its top, so it is empty at every point a
             // hash is taken — `the_radiation_list_never_survives_a_step`.

@@ -221,6 +221,24 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
       return ctx
     },
     close: async () => {
+      // T22.10D: every networked check reports its clients' rubber-band measures —
+      // the worst correction jump and the worst error at an acknowledged input, over
+      // the snapshots that did not relocate the body (`PredictorStats.maxEasedJumpPx`) —
+      // so a netcode change is measured across the suite, not only by the check
+      // that asserts on it. A page with no predictor (sandbox, menu) prints nothing.
+      for (const c of contexts) {
+        for (const pg of c.pages()) {
+          const v = await pg
+            .evaluate(() => window.__game?.debug?.()?.vortex ?? null)
+            .catch(() => null)
+          if (v && typeof v.maxEasedJumpPx === 'number' && (v.corrections > 0 || v.maxAckErrorPx > 0)) {
+            console.log(
+              `  predictor: worst jump ${v.maxEasedJumpPx.toFixed(2)} px, worst ack error ${v.maxAckErrorPx.toFixed(2)} px ` +
+                `(${v.corrections} corrections; ${v.snaps} relocations excluded)`,
+            )
+          }
+        }
+      }
       for (const c of contexts) await c.close().catch(() => {})
       await real.close()
     },

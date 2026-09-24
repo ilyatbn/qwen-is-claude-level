@@ -81,7 +81,7 @@ import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
 import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
 import { fuelText, fuelTrend, jetReadoutText } from '../ui/jetpackReadout-math'
-import { FLAG, MOVE_MOD, flag } from '../net/codec'
+import { FLAG, MOVE_MOD, flag, inputPackets } from '../net/codec'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { feedCause } from '../ui/killfeed-state'
 import { RadiationFx } from '../render/radiationFx'
@@ -1981,8 +1981,11 @@ export class GameScene extends Phaser.Scene {
       batch.push(input)
       this.acc -= step
     }
-    // Redundant sends: the last few inputs go with every packet, so a dropped
-    // one costs nothing (`docs/40` §2).
+    // **No redundancy: each input is sent once** (T22.10D F5 — this said "the last
+    // few inputs go with every packet, so a dropped one costs nothing", `docs/40`
+    // §2, and it has been false since T22.10B). The transport is TCP (socket.io,
+    // no volatile emits), so a packet is never dropped, only late; what the
+    // packets must do is carry *every* input of the frame, in order.
     //
     // Not while the results screen is up. The server freezes the simulation in
     // `Ended` (`docs/41` §3) but keeps accepting input, so a client that carries
@@ -1991,7 +1994,8 @@ export class GameScene extends Phaser.Scene {
     // reading a scoreboard.
     //
     // **Every input this frame is sent, in packets of at most `INPUT_REDUNDANCY`**
-    // (T22.10B) — the most `decode_input_batch` takes. This sent only the last
+    // (T22.10B; `codec.ts::inputPackets` since T22.10D, so it has a test) — the
+    // most `decode_input_batch` takes. This sent only the last
     // three, so a frame that stepped four or more ticks (a 15–20 fps page, which is
     // what a headless browser drawing the vortex shader runs at) applied an input
     // locally that the server never received: the server acked past it without
@@ -1999,8 +2003,7 @@ export class GameScene extends Phaser.Scene {
     // such snapshot — 4–12 px under a vortex's pull, measured by `breach-vortex`
     // off `lastAckErrorPx` (ack deltas +4/+2 alternating, the big errors on the +4s).
     if (batch.length && !this.results.isUp) {
-      const per = C().INPUT_REDUNDANCY
-      for (let i = 0; i < batch.length; i += per) this.conn.sendInput(batch.slice(i, i + per))
+      for (const packet of inputPackets(batch, C().INPUT_REDUNDANCY)) this.conn.sendInput(packet)
       this.inputsSent++
       this.debugHud?.noteInputs(performance.now(), batch.length)
     }
@@ -3583,6 +3586,10 @@ export class GameScene extends Phaser.Scene {
             maxCorrectionPx: self.predictor?.stats.maxCorrectionPx ?? 0,
             lastJumpPx: self.predictor?.stats.lastJumpPx ?? 0,
             lastAckErrorPx: self.predictor?.stats.lastAckErrorPx ?? null,
+            lastAck: self.predictor?.stats.lastAck ?? 0,
+            maxEasedJumpPx: self.predictor?.stats.maxEasedJumpPx ?? 0,
+            maxAckErrorPx: self.predictor?.stats.maxAckErrorPx ?? 0,
+            snaps: self.predictor?.stats.snaps ?? 0,
           },
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte

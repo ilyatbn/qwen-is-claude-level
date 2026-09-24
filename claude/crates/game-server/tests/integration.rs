@@ -754,6 +754,81 @@ async fn the_flare_probe_answers_only_on_a_dev_probe_server() {
     }
 }
 
+// ------------------------------------------------------- command ordering
+
+/// T22.10D F2: **a player's commands reach the room in the order they were sent.**
+///
+/// T22.10B moved `input`'s work into the handler call because an `async`
+/// handler's future is *spawned*, and tokio runs the newest spawned task first —
+/// so two packets from one socket could reach the room in either order. Every
+/// other command handler kept the spawn. The player-visible case: switch weapon,
+/// then fire, in one frame — and the room fires the weapon you just put away.
+///
+/// The control is the precondition: the SMG is held but not selected, so a fire
+/// that lands before the switch swings what *is* selected and spends no SMG round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn select_slot_then_fire_fires_the_newly_selected_weapon() {
+    use game_core::items::registry::SMG;
+    let s = spawn_server(Config {
+        dev_loadout: true,
+        ..test_config()
+    })
+    .await;
+    let (addr, room) = (s.addr, s.room.clone());
+    let rt = tokio::runtime::Handle::current();
+    let (before, after, slot) = tokio::task::spawn_blocking(move || {
+        let (c, inbox, rx) = join_and_ready(addr, "ana", &["inventory"]);
+        let id = got(&inbox, "welcome")[0]["player_id"].as_u64().expect("id") as u8;
+        c.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        wait_for(&rx, "inventory", 30);
+        let bag = move || {
+            let room = room.clone();
+            rt.block_on(room.inspect(move |w| {
+                let inv = &w.player(id)?.inventory;
+                let smg = (0..=u8::MAX).find(|&k| inv.slot(k).is_some_and(|st| st.item == SMG))?;
+                Some((inv.selected(), smg, inv.slot(smg)?.count))
+            }))
+            .flatten()
+        };
+        let (selected, smg, before) = bag().expect("the dev loadout carries an smg");
+        assert_ne!(
+            selected, smg,
+            "control: the smg is already selected, so order cannot show"
+        );
+        c.emit("select_slot", serde_json::json!({ "slot": smg }))
+            .expect("select");
+        c.emit("fire", serde_json::json!({})).expect("fire");
+        // Until the fire has landed too, not only the switch: the two arrive as two
+        // websocket frames, and a read taken between them saw the switch and an
+        // untouched smg — red under a loaded `check.sh --changed`, never alone.
+        // Before the fix the fire lands first, on the old weapon, and this waits
+        // out the deadline.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut after = bag();
+        while after.is_some_and(|(sel, _, n)| sel != smg || n == before)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+            after = bag();
+        }
+        assert_eq!(
+            after.map(|a| a.0),
+            Some(smg),
+            "control: the switch never landed"
+        );
+        let _ = c.disconnect();
+        (before, after.map_or(before, |a| a.2), smg)
+    })
+    .await
+    .expect("client thread");
+    assert!(
+        after < before,
+        "select_slot({slot}) then fire, back to back: the smg still holds {after} of {before} — \
+         the fire reached the room before the switch and fired the old weapon"
+    );
+}
+
 /// **The seed is stated, not inherited** (T20.18/T20.20).
 #[test]
 fn the_fixture_states_its_seed() {

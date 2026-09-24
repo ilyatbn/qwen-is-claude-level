@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`).** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`) and T22.10D.** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -45,13 +45,17 @@ different story (see § 1).
   + 4-byte footer (per-recipient ack: since T22.10B the last *consumed* seq, `min(World::oldest_queued_seq − 1, last_seq)`
   in `Room::last_seqs` — before, the last *received*). 132 B at 6 players before base64. (Its doc comment still says 102.)
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
-  `select_slot` are separate events. **Since T22.10B the `input` handler runs synchronously in arrival order**
-  (socketioxide runs the closure inside the ws read loop; only the returned future is spawned — tokio ran the newest
-  spawned first, which reordered inputs: 137 dropped seqs in one match). The other command handlers (`fire`,
-  `use_item`, `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`, `quick_throw`) still spawn and can
-  reorder relative to each other and to `input` (T22.10D). `World::apply_inputs` consumes one input per player per tick, backlog capped at
-  `MAX_INPUT_QUEUE` 8, and the room also accepts at most 8 per tick, dropping the *newest* (the world trims the
-  *oldest* — two policies, T22.10D); **no input that tick → not integrated**.
+  `select_slot` are separate events. **Every in-match verb runs synchronously in arrival order** — `input` since
+  T22.10B, and `fire`, `use_item`, `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`, `quick_throw`
+  since T22.10D (`Ctx::send_as_player`). socketioxide runs the closure inside the ws read loop and spawns only the
+  returned future; tokio ran the newest spawned first (137 dropped seqs in one match; `select_slot` then `fire` fired
+  the old weapon 5 of 5 runs). Still `async`: `vote_restart`, `resync_map`, `debug_*`, `start_with_bots`.
+  **Intake (T22.10D):** the room accepts up to `MAX_INPUT_QUEUE` per player per tick, now `MAX_FRAME_TICKS` =
+  `ceil(MAX_FRAME_DT / SIM_DT)` = 15 (one long client frame; was 8, which dropped the newest 7 of such a frame). The
+  world consumes one input per player per tick, **plus one more while the backlog is above `INPUT_BACKLOG_TARGET` (2)
+  and the player has credit** — one credit per tick that passed with no input, capped at `MAX_FRAME_TICKS` — so a
+  burst drains without dropping and inputs consumed never exceed ticks elapsed (§A30). Above `MAX_INPUT_QUEUE` queued
+  it trims the *oldest* (a flood guard only). **No input that tick → not integrated**.
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
   (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
   effects, hazards, phase, round).
@@ -64,13 +68,16 @@ different story (see § 1).
 ## 3. Prediction and reconciliation
 - `prediction.ts::Predictor`, local player only. GameScene runs a fixed-step accumulator at `SIM_DT`; each step
   `localInput.sample(++seq)` → `pushInput` → `core.applyInput`; since T22.10B sends **every** input of the frame, in packets of ≤ `INPUT_REDUNDANCY` (no
-  overlap, so no actual redundancy). A 15-tick frame (`MAX_FRAME_DT` 0.25 s) sends 15; the room keeps 8 and drops 7,
-  leaving a standing 7-tick queue (~117 ms of server-side input delay) — T22.10D. (Before T22.10B only the last 3 were
-  sent.)
-- `reconcile`: drop acked inputs; if error ≤ `RECONCILE_EPSILON_PX` (2.0) and move_mods unchanged do nothing; else
-  `setPlayerState` (pos, vel, grounded, fuel, health, alive, move_mods) and replay pending. **The epsilon compares the post-pending prediction with the acked server
-  state, so it almost never fires while moving** (T22.10D). `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B)
-  are the honest rubber-band measures. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
+  overlap, so no actual redundancy; `codec.ts::inputPackets` since T22.10D). A 15-tick frame (`MAX_FRAME_DT` 0.25 s,
+  now also in `constants.rs` and pinned by `constants-parity.test.ts`) sends 15, all accepted, drained to ≤ 2 queued
+  within 15 ticks (T22.10D; before, 7 dropped and a standing 7-tick queue). (Before T22.10B only the last 3 were sent.)
+- `reconcile`: drop acked inputs; **since T22.10D the gate compares the prediction *at the acked input* with the
+  server's state there** (position ≤ `RECONCILE_EPSILON_PX` 2.0, and velocity error × one snapshot interval ≤ the
+  same), with move_mods, alive and health unchanged → do nothing; else `setPlayerState` (pos, vel, grounded, fuel,
+  health, alive, move_mods) and replay pending. (Before, it compared the *post-pending* prediction, so it almost never
+  held while moving.) The render hard-snaps on how far the correction moved the body (`lastJumpPx` > `SNAP_PX`), not
+  on that error. `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B) are the honest rubber-band measures;
+  `maxEasedJumpPx`/`maxAckErrorPx` (T22.10D) exclude relocations and are printed per client by `harness.mjs` at close. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
   handle pad `teleport` and `vortex_trip`. Render eases at
   `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server state is i16-truncated; `JumpState` and `prev_input`
   are not on the wire.

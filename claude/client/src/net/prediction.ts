@@ -37,6 +37,20 @@ export interface PredictorStats {
    * this predictor applied.
    */
   lastAckErrorPx: number
+  /**
+   * T22.10D: the worst `lastAckErrorPx` and the worst jump over the snapshots that
+   * did **not** relocate the body — a spawn, a respawn, a pad or a vortex trip is a
+   * correction of hundreds of pixels by design, and a maximum that includes them
+   * measures the map, not the netcode. The harness prints both per client.
+   */
+  maxAckErrorPx: number
+  maxEasedJumpPx: number
+  /**
+   * T22.10D: the seq the last snapshot acknowledged. A step between two snapshots
+   * larger than the ticks between them is inputs the server skipped — the other
+   * cause of a rubber-band, beside a wrong prediction (`breach-vortex`'s report).
+   */
+  lastAck: number
 }
 
 /** What a snapshot tells us about ourselves. */
@@ -76,9 +90,15 @@ export class Predictor {
     lastJumpPx: 0,
     maxJumpPx: 0,
     lastAckErrorPx: Number.NaN,
+    maxAckErrorPx: 0,
+    maxEasedJumpPx: 0,
+    lastAck: 0,
   }
-  /** Where each unacknowledged input left the body, by seq — `lastAckErrorPx`'s other end. */
-  private readonly predicted = new Map<number, { x: number; y: number }>()
+  /**
+   * Where each unacknowledged input left the body, by seq — `lastAckErrorPx`'s
+   * other end, and the prediction `reconcile`'s gate compares (T22.10D F8).
+   */
+  private readonly predicted = new Map<number, { x: number; y: number; vx: number; vy: number }>()
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -99,7 +119,7 @@ export class Predictor {
     this.core.applyInput(this.localId, input.seq, input.buttons, input.aim, dt)
     this.stats.pending = this.pending.length
     const s = this.state
-    if (s) this.predicted.set(input.seq, { x: s.x, y: s.y })
+    if (s) this.predicted.set(input.seq, { x: s.x, y: s.y, vx: s.vx, vy: s.vy })
     if (s && !this.started) {
       this.render = { x: s.x, y: s.y }
       this.started = true
@@ -114,8 +134,13 @@ export class Predictor {
    */
   reconcile(snap: LocalSnapshotView): void {
     const at = this.predicted.get(snap.lastInputSeq)
-    if (at) this.stats.lastAckErrorPx = Math.hypot(at.x - snap.state.x, at.y - snap.state.y)
-    for (const seq of this.predicted.keys()) if (seq <= snap.lastInputSeq) this.predicted.delete(seq)
+    this.stats.lastAck = snap.lastInputSeq
+    const ackErr = at ? Math.hypot(at.x - snap.state.x, at.y - snap.state.y) : Number.NaN
+    if (at) this.stats.lastAckErrorPx = ackErr
+    // The acked one is kept (T22.10D): the next snapshot may ack the same seq — a
+    // player whose inputs stopped reaching the world (the results screen stops
+    // sending) — and the gate needs the prediction there to compare with.
+    for (const seq of this.predicted.keys()) if (seq < snap.lastInputSeq) this.predicted.delete(seq)
     while (this.pending.length && this.pending[0]!.input.seq <= snap.lastInputSeq) {
       this.pending.shift()
     }
@@ -145,8 +170,36 @@ export class Predictor {
     //
     // T20.19 and T20.21 were both a value the mirror needed arriving on a path
     // that could skip it. This is the third, caught before it shipped.
-    const modsChanged = local.moveMods !== snap.state.moveMods
-    if (err <= C().RECONCILE_EPSILON_PX && !modsChanged) return
+    // `alive` and `health` beside `moveMods`, for the same reason (T22.10D): the
+    // mirror reads both every predicted tick (`alive` stops the body, `health` is
+    // `speed_multiplier`'s input, T20.21), prediction never changes either, and the
+    // gate below now holds while moving — so it can no longer be relied on to
+    // carry them in on the position error.
+    const modsChanged =
+      local.moveMods !== snap.state.moveMods ||
+      local.alive !== snap.state.alive ||
+      local.health !== snap.state.health
+    // **T22.10D F8: the gate compares the prediction *at the ack* with the server's
+    // state at the ack** — like with like. It compared the *current* prediction,
+    // which is `pending` inputs further on: a body moving at `v` read `v·p·dt`
+    // there however right it was, so the gate almost never held while moving (11
+    // of 12 snapshots "corrected" under a vortex). With nothing pending the current
+    // state *is* the prediction at the ack; with pending inputs and no record of
+    // the acked one, there is nothing to compare, so it corrects.
+    //
+    // Velocity too: a knockback the prediction lacks leaves the position right at
+    // the ack and wrong a snapshot later, so a velocity error that would carry the
+    // body past the epsilon within one snapshot interval is corrected now.
+    const eps = C().RECONCILE_EPSILON_PX
+    const ref = at ?? (this.pending.length === 0 ? local : null)
+    const agrees =
+      ref !== null &&
+      Math.hypot(ref.x - snap.state.x, ref.y - snap.state.y) <= eps &&
+      Math.hypot(ref.vx - snap.state.vx, ref.vy - snap.state.vy) / C().SNAPSHOT_HZ <= eps
+    if (agrees && !modsChanged) {
+      this.noteAckError(ackErr)
+      return
+    }
 
     this.stats.corrections++
     this.stats.lastCorrectionPx = err
@@ -156,10 +209,12 @@ export class Predictor {
     // error into every prediction after it.
     const was = { x: local.x, y: local.y }
     this.core.setPlayerState(this.localId, snap.state)
+    // The truth at the ack is now the prediction there, for a snapshot that acks it again.
+    this.predicted.set(snap.lastInputSeq, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
     for (const { input, dt } of this.pending) {
       this.core.applyInput(this.localId, input.seq, input.buttons, input.aim, dt)
       const s = this.state
-      if (s) this.predicted.set(input.seq, { x: s.x, y: s.y })
+      if (s) this.predicted.set(input.seq, { x: s.x, y: s.y, vx: s.vx, vy: s.vy })
     }
     const now = this.state
     if (now) {
@@ -167,11 +222,26 @@ export class Predictor {
       this.stats.maxJumpPx = Math.max(this.stats.maxJumpPx, this.stats.lastJumpPx)
     }
 
-    if (err > SNAP_PX) {
+    // On how far the correction **moved** the body (T22.10D F8), not on `err`:
+    // `err` includes the pending travel, so a fast body on a slow page read past
+    // `SNAP_PX` on a correction of a few pixels and teleported the render.
+    if (now && this.stats.lastJumpPx > SNAP_PX) {
       this.stats.snaps++
-      const s = this.state
-      if (s) this.render = { x: s.x, y: s.y }
+      this.render = { x: now.x, y: now.y }
+    } else {
+      this.stats.maxEasedJumpPx = Math.max(this.stats.maxEasedJumpPx, this.stats.lastJumpPx)
+      this.noteAckError(ackErr)
     }
+  }
+
+  /**
+   * Fold an error at the ack into `maxAckErrorPx`, **unless it is a relocation**:
+   * past `SNAP_PX` the prediction there was across the map (a `relocate` already
+   * moved the body, and the snapshot arrives acking an input from before it), and
+   * a maximum that includes those measures the map, not the netcode.
+   */
+  private noteAckError(err: number): void {
+    if (Number.isFinite(err) && err <= SNAP_PX) this.stats.maxAckErrorPx = Math.max(this.stats.maxAckErrorPx, err)
   }
 
   /**

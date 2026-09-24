@@ -82,12 +82,13 @@ describe('the reconciliation identity', () => {
     }
     const serverState = mirror.playerState(0)!
 
+    // Force a correction: the client starts 40 px off, so its prediction *at the
+    // ack* is wrong (T22.10D F8 gates on that one, not on the current state).
+    core.setPlayerState(0, { ...core.playerState(0)!, x: core.playerState(0)!.x + 40 })
     // Client predicts all 12.
     for (const f of all) p.pushInput(f, DT)
-
-    // Now force a correction by nudging the client off, then reconciling.
-    core.setPlayerState(0, { ...core.playerState(0)!, x: core.playerState(0)!.x + 40 })
     p.reconcile({ lastInputSeq: 4, state: serverState })
+    expect(p.stats.corrections).toBe(1)
 
     // The server then processes 5..12 itself.
     for (const f of all.slice(4)) {
@@ -108,9 +109,9 @@ describe('the reconciliation identity', () => {
     for (let i = 1; i <= 12; i++) all.push(inp(i, BTN.RIGHT))
     for (const f of all.slice(0, 4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
     const serverState = mirror.playerState(0)!
+    core.setPlayerState(0, { ...core.playerState(0)!, x: core.playerState(0)!.x + 40 })
     for (const f of all) p.pushInput(f, DT)
 
-    core.setPlayerState(0, { ...core.playerState(0)!, x: core.playerState(0)!.x + 40 })
     // Acknowledge *everything*, so nothing is replayed — the client should then
     // sit at the server state rather than 8 inputs ahead of it.
     p.reconcile({ lastInputSeq: 12, state: serverState })
@@ -393,14 +394,86 @@ describe('the correction jump', () => {
     // The server's state at seq 3, computed by the same code on the second core.
     for (let i = 1; i <= 3; i++) mirror.applyInput(0, i, BTN.RIGHT, 0, DT)
     const at3 = mirror.playerState(0)!
+    const before = core.playerState(0)!
     p.reconcile({ lastInputSeq: 3, state: at3 })
-    // The control that the correction path ran at all: the pending inputs' travel
-    // is past the epsilon, which is exactly what `lastCorrectionPx` reports.
-    expect(p.stats.corrections).toBe(1)
-    expect(p.stats.lastCorrectionPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
-    expect(p.stats.lastJumpPx).toBeLessThan(0.01)
-    // And the prediction's own error at the acked input is ~0 too.
+    // The prediction's own error at the acked input is ~0 …
     expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
+    // … while the pending inputs' travel is past the epsilon (the control that this
+    // is the moving case the old gate got wrong).
+    expect(Math.hypot(before.x - at3.x, before.y - at3.y)).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+    // T22.10D F8: so nothing is corrected, and nothing moves.
+    expect(p.stats.corrections).toBe(0)
+    expect(core.playerState(0)!.x).toBeCloseTo(before.x, 5)
+  })
+
+  /**
+   * T22.10D F8, the other way: the gate reads the prediction **at the ack**, so a
+   * wrong one is corrected even when the current prediction happens to sit on the
+   * server's state. The old gate compared those two and returned early.
+   */
+  it('corrects a wrong prediction at the ack however close the current one is', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 6; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
+    const now = core.playerState(0)!
+    // The server says: after seq 3 the body is where this client has it after 6.
+    p.reconcile({ lastInputSeq: 3, state: now })
+    expect(p.stats.lastAckErrorPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.lastJumpPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+  })
+
+  /**
+   * T22.10D: a snapshot may ack the **same** seq as the last one — the results
+   * screen stops sending while the prediction keeps stepping. A right prediction
+   * there is still left alone; the server moving the body without input (it
+   * steps a neutral tick after the bell) is still corrected.
+   */
+  it('a repeated ack compares against the same prediction, both ways', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 4; i++) p.pushInput(inp(i, BTN.LEFT), DT)
+    mirror.applyInput(0, 1, BTN.LEFT, 0, DT)
+    const at1 = mirror.playerState(0)!
+    p.reconcile({ lastInputSeq: 1, state: at1 })
+    p.reconcile({ lastInputSeq: 1, state: at1 })
+    expect(p.stats.corrections).toBe(0)
+    p.reconcile({ lastInputSeq: 1, state: { ...at1, y: at1.y + 10 } })
+    expect(p.stats.corrections).toBe(1)
+  })
+
+  /**
+   * T22.10D F8: the render snaps on how far the correction **moved** the body, not
+   * on the pending travel. A fast body with many inputs in flight is more than
+   * `SNAP_PX` from the acked state however right its prediction; a small real
+   * error there must be eased, not snapped.
+   */
+  it('does not snap the render for a small error on a fast body', () => {
+    const p = new Predictor(core, 0)
+    // Left: this seed's spawn has open ground that way (right meets a wall at ~42 px).
+    const n = 40
+    for (let i = 1; i <= n; i++) p.pushInput(inp(i, BTN.LEFT), DT)
+    for (let i = 1; i <= 3; i++) mirror.applyInput(0, i, BTN.LEFT, 0, DT)
+    const at3 = mirror.playerState(0)!
+    const now = core.playerState(0)!
+    // The control: the pending travel is past the render's snap distance (64 px,
+    // `prediction.ts::SNAP_PX`), so the old gate snapped on it.
+    expect(Math.hypot(now.x - at3.x, now.y - at3.y)).toBeGreaterThan(64)
+    p.reconcile({ lastInputSeq: 3, state: { ...at3, x: at3.x + 5 } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.snaps).toBe(0)
+  })
+
+  /**
+   * A velocity the prediction does not have (a knockback applied on the server)
+   * leaves the position right at the ack and wrong a snapshot later. The gate
+   * takes it now rather than one snapshot late.
+   */
+  it('corrects a velocity the prediction missed although the position agrees', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    p.reconcile({ lastInputSeq: 3, state: { ...s, vx: s.vx + 400 } })
+    expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
+    expect(p.stats.corrections).toBe(1)
   })
 
   it('is the error when the server disagrees', () => {

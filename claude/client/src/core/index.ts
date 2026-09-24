@@ -302,6 +302,8 @@ export interface Constants {
   CHUNK_SIZE: number
   INPUT_REDUNDANCY: number
   MAX_INPUT_QUEUE: number
+  /** T22.10D: `input/autoFire.ts::MAX_FRAME_DT` is pinned to this. */
+  MAX_FRAME_DT: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number

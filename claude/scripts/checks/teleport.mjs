@@ -100,6 +100,17 @@ const k = await page.evaluate(() => window.__game.constants())
  * respawned, producing a second, louder failure that blamed §C5's respawn rule
  * for what was a stuck fixture. One cause must produce one message.
  */
+/**
+ * **Dead is the server's word, not a health reading** (T22.10D F7). Health crosses
+ * the wire as a `u8` truncated from an `f32`, so a body at 0.4 hp reads 0 and is
+ * alive — this check read that as death, stopped firing, and waited 30 s for a
+ * respawn that could never come: red on every run, not a flake. `death.meAlive` is
+ * the snapshot's alive flag *and* the death event (`GameScene.meAlive`); the
+ * overlay is the other half of the same fact.
+ */
+const dead = (d) => d.death?.meAlive === false || d.death?.visible === true
+const respawned = (d) => d.death?.meAlive === true && !d.death?.visible && (d.health ?? 0) > 0
+
 async function until(pred, deadlineMs, what) {
   const end = Date.now() + deadlineMs
   let last = null
@@ -110,7 +121,7 @@ async function until(pred, deadlineMs, what) {
   }
   fail(
     `timed out after ${deadlineMs / 1000} s waiting for ${what} — last seen: ` +
-      `health ${last?.health}, alive ${last?.player?.alive}, ` +
+      `health ${last?.health}, alive ${last?.death?.meAlive} (predicted ${last?.player?.alive}), ` +
       `death overlay ${last?.death?.visible}, grounded ${last?.player?.grounded}, ` +
       `at (${last?.player?.x?.toFixed(0)}, ${last?.player?.y?.toFixed(0)})`,
   )
@@ -162,7 +173,7 @@ async function toScreen(wx, wy) {
 const killDeadline = Date.now() + 90_000
 for (let i = 0; Date.now() < killDeadline; i++) {
   const d = await dbg()
-  if (!d.player || d.health <= 0 || d.death?.visible) break
+  if (!d.player || dead(d)) break
   // The stack empties into the smg, and an SMG round cannot hurt the player who
   // fired it (§F1: outside the body before the owner grace ends). Re-select by
   // name.
@@ -201,12 +212,12 @@ for (let i = 0; Date.now() < killDeadline; i++) {
   // fixed sleep makes this a measurement of the box (§A28).
   for (let w = 0; w < 24; w++) {
     const now = await dbg()
-    if ((now.health ?? 0) < hpBefore || now.death?.visible) break
+    if ((now.health ?? 0) < hpBefore || dead(now)) break
     await sleep(100)
   }
 }
 
-const died = await until((d) => d.health <= 0 || d.death?.visible, 20_000, 'the player to die')
+const died = await until(dead, 20_000, 'the player to die')
 if (!died) {
   fail('the player never died, so no respawn could be observed')
 } else {
@@ -214,7 +225,7 @@ if (!died) {
 }
 
 // `alive` again, and then let the body settle onto the pad.
-const back = await until((d) => d.health > 0 && !d.death?.visible, 30_000, 'the respawn')
+const back = await until(respawned, 30_000, 'the respawn')
 if (back) {
   await until((d) => d.player?.grounded, 10_000, 'the respawned body to land')
 }

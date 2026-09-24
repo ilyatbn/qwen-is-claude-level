@@ -242,3 +242,16 @@ describe('deadlineMs refuses a wait that could never time out (T20.15)', () => {
     }
   })
 })
+
+/**
+ * T22.10D: **the client's frame ceiling is the server's.** `MAX_FRAME_DT` decides
+ * how many inputs one client frame sends at once, and the server sizes its intake
+ * from it (`constants.rs::MAX_FRAME_TICKS`, `MAX_INPUT_QUEUE`). A client ceiling
+ * raised alone would send bursts the room drops again, which is T22.10D's F4.
+ */
+describe('the frame ceiling is one number (T22.10D)', () => {
+  it('autoFire.ts::MAX_FRAME_DT is constants.rs::MAX_FRAME_DT', async () => {
+    const { MAX_FRAME_DT } = await import('../input/autoFire')
+    expect(MAX_FRAME_DT).toBe(C().MAX_FRAME_DT)
+  })
+})

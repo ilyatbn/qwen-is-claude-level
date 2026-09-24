@@ -19,8 +19,11 @@
  *    player sees snap). A client not told the list predicts no pull while the server
  *    pulls, and every correction is the pull it missed. Plant: skip `Core.setVortices`
  *    → red. **Not the correction count**, and not `lastCorrectionPx`: those compare the
- *    current prediction with the acknowledged state, so any fast body corrects every
- *    snapshot (measured here: 11 of 12 snapshots, 3–16 px, with the list told);
+ *    current prediction with the acknowledged state (measured at T22.10B: 11 of 12
+ *    snapshots, 3–16 px, with the list told). Since T22.10D F8 a right prediction is
+ *    not corrected at all, so the error **at each acknowledged input**
+ *    (`lastAckErrorPx`) is measured beside the jump and bounded the same, and a red
+ *    names which half moved: the prediction, or the ack skipping inputs (F9);
  * 3. **the trip**: the player is taken, snapped to where the server put them, and that
  *    is inside the rim (the server's own geometry, off `debug_breach`) and clear of the
  *    vortex's pull (R86);
@@ -280,7 +283,7 @@ try {
           const d = window.__game.debug()
           const p = d.player && { x: d.player.x, y: d.player.y }
           const atPlace = p && Math.hypot(p.x - placed.x, p.y - placed.y) < near
-          if (out.length || atPlace) out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, tick: d.lastServerTick, trips: d.vortex.myTrips.length, p })
+          if (out.length || atPlace) out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, trips: d.vortex.myTrips.length, p })
           if (d.vortex.myTrips.length > 0 || performance.now() - t0 > budgetMs) resolve(out)
           else requestAnimationFrame(tick)
         }
@@ -298,22 +301,46 @@ try {
   let worst = 0
   let corrections = 0
   let worstAck = 0
+  let acked = 0
+  // T22.10D F9: the ack's own step per snapshot, against the ticks between them. A
+  // step past the ticks is inputs the server skipped — a rubber-band from the
+  // transport, not from the pull, and the report has to be able to say so.
+  let ackStep = null
   for (let i = 1; i < pull.length; i++) {
     if (pull[i].c !== pull[i - 1].c) {
       corrections++
       worst = Math.max(worst, pull[i].jump)
     }
     // The prediction's own error at each acknowledged input (`lastAckErrorPx`) —
-    // reported beside the jump, so a red says whether the model or the bookkeeping moved.
-    if (pull[i].tick !== pull[i - 1].tick && Number.isFinite(pull[i].ack)) worstAck = Math.max(worstAck, pull[i].ack)
+    // since T22.10D F8 **the** measure: a right prediction is no longer corrected at
+    // all, so the jump is only sampled when something was wrong.
+    if (pull[i].tick !== pull[i - 1].tick && Number.isFinite(pull[i].ack)) {
+      acked++
+      worstAck = Math.max(worstAck, pull[i].ack)
+      const step = { seqs: pull[i].seq - pull[i - 1].seq, ticks: pull[i].tick - pull[i - 1].tick }
+      if (!ackStep || step.seqs - step.ticks > ackStep.seqs - ackStep.ticks) ackStep = step
+    }
   }
   const secs = first ? (lastBefore.tick - first.tick) / k.SIM_HZ : 0
-  const summary = `worst correction jump ${worst.toFixed(2)} px (worst error at an acked input ${worstAck.toFixed(2)} px) over ${corrections} corrections in ${secs.toFixed(2)} s of pull; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
+  const rubber = Math.max(worst, worstAck)
+  const summary = `worst error at an acked input (lastAckErrorPx) ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, in ${secs.toFixed(2)} s of pull; largest ack step ${ackStep ? `${ackStep.seqs} seqs in ${ackStep.ticks} ticks` : 'none measured'}; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} corrections in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
+  // Which half moved, so a red names its cause rather than always the vortex list.
+  // **The ack's step first**: a skipped input also makes the prediction at the ack
+  // wrong (the server's state lacks it), so an ack error alone cannot tell the two
+  // apart — measured with the async input handler planted back: 9–11 px at the
+  // ack, and the step 5 seqs in 3 ticks. With the list untold the step is 3 in 3;
+  // green, 4 in 3 (the backlog catch-up consuming a second input in one tick).
+  const blame =
+    ackStep && ackStep.seqs > ackStep.ticks
+      ? `the ack ran ${ackStep.seqs - ackStep.ticks} inputs ahead of the ticks in one snapshot — skipped inputs the server never ran (the transport, not the pull); a backlog catch-up (T22.10D) also runs ahead, by one per tick, and is not a rubber-band by itself`
+      : worstAck > k.RECONCILE_EPSILON_PX
+        ? 'the prediction at an acknowledged input disagreed with the server — the client predicts a different pull (is it told the vortex list?)'
+        : 'a correction moved the body although the prediction at the ack agreed — the replay of pending inputs diverged'
   if (!first) fail(`the prediction never reached the placed body: ${JSON.stringify({ placed: breach.placed, last: series[series.length - 1] ?? null, player: d2.player })}`)
   else if (d2.vortex.myTrips.length === 0) fail(`the vortex never took the player in ${TRIP_BUDGET_S} s (moved ${travelled.toFixed(0)} px): ${JSON.stringify({ first, last: lastBefore })}`)
   else if (travelled < k.VORTEX_CAPTURE_R / 4) fail(`control: the player moved only ${travelled.toFixed(0)} px before the trip — nothing was pulled, so no correction proves nothing`)
-  else if (corrections === 0) fail(`control: no correction at all during ${secs.toFixed(2)} s of pull, so the jump was never measured`)
-  else if (worst > k.RECONCILE_EPSILON_PX) fail(`rubber-band: ${summary} — over RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX}: the client predicts a different pull from the server's (is it told the vortex list?)`)
+  else if (acked === 0) fail(`control: no snapshot acknowledged a predicted input during ${secs.toFixed(2)} s of pull, so the error was never measured`)
+  else if (rubber > k.RECONCILE_EPSILON_PX) fail(`rubber-band: ${summary} — over RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX}: ${blame}`)
   else ok(`no rubber-band while the vortex pulled the player ${travelled.toFixed(0)} px: ${summary} (bound RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX})`)
 
   if (d2.vortex.myTrips.length > 0) {

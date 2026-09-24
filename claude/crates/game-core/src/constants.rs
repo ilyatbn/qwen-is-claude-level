@@ -1410,8 +1410,47 @@ pub const SNAPSHOT_PLAYER_BYTES: usize = 20;
 pub const SNAPSHOT_HEADER_BYTES: usize = 8;
 /// Trailing `last_input_seq`.
 pub const SNAPSHOT_FOOTER_BYTES: usize = 4;
-/// Per player per tick; excess is dropped and logged.
-pub const MAX_INPUT_QUEUE: usize = 8;
+/// The longest frame a client steps, seconds: a tab that stalled for ten seconds
+/// is not simulated ten seconds forward in one frame. **The client's
+/// `input/autoFire.ts::MAX_FRAME_DT` is this number** — exported through
+/// `constants_json` and pinned there by `constants-parity.test.ts` (T22.10D), because
+/// the server now sizes its input intake from it.
+pub const MAX_FRAME_DT: f32 = 0.25;
+/// The most inputs one client frame produces: `ceil(MAX_FRAME_DT / SIM_DT)` = 15
+/// (T22.10D F4). A frame that long sends every one of them in the same instant, so
+/// this is the burst an honest client can put into one server tick.
+pub const MAX_FRAME_TICKS: usize = {
+    let exact = MAX_FRAME_DT * SIM_HZ as f32;
+    let whole = exact as usize;
+    if (whole as f32) < exact {
+        whole + 1
+    } else {
+        whole
+    }
+};
+/// Inputs a player may keep queued before the world starts catching up (T22.10D
+/// F4) — the backlog it drains down to, not a cap.
+///
+/// **Two, not zero:** a client sending one input per frame over TCP delivers
+/// them in uneven clumps — two one tick, none the next. With nothing held back,
+/// the second tick has no input and the body stops, then double-steps: a stutter
+/// every remote sees. Two queued ticks ride that out at one input per tick, for
+/// ~33 ms of standing input delay — the price of smooth motion, and a seventh of
+/// the 117 ms a 7-input standing queue cost before this (`World::apply_inputs`).
+pub const INPUT_BACKLOG_TARGET: usize = 2;
+/// The flood guard on input, per player: the most the room accepts in one tick
+/// (`Room::apply`'s `Command::Input`) **and** the most the world keeps queued
+/// (`World::apply_inputs`); excess is dropped and logged.
+///
+/// **`MAX_FRAME_TICKS`, derived, not a number of its own** (T22.10D F4, the
+/// coordinator's ruling). It was 8 — below the 15 inputs one long client frame
+/// sends at once — so the room dropped the newest 7 of every such frame (never
+/// re-sent), and the world kept the other 7 as a standing queue. A guard that
+/// honest traffic trips is not a guard; at one frame's worth it bites only a
+/// client sending faster than any frame could, and the *backlog* policy is
+/// `INPUT_BACKLOG_TARGET`'s. `docs/40` §2 and `docs/70` §A30 still say 8 — the
+/// amendment is owed.
+pub const MAX_INPUT_QUEUE: usize = MAX_FRAME_TICKS;
 
 // ---------------------------------------------------------------------------
 // Rendering
