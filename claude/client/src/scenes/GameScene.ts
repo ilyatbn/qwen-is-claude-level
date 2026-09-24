@@ -733,6 +733,8 @@ export class GameScene extends Phaser.Scene {
     this.mirror?.clearBlackHole()
     this.bellEndsTick = null
     this.endedAtTick = null
+    // T22.00H: a check's held sky is that round's; the next draws on its own clock.
+    this.skyHeldAt = null
     this.core?.setBell(null)
     this.vortexFx?.clear()
     this.blackHoleFx?.clear()

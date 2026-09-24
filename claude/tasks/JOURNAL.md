@@ -7062,3 +7062,4 @@ at every commit. All green runs were batched (flicker ~17 s into the round), all
 show only the sky moving, ~12/channel on `KEYFRAMES` 0→0.12. `__game.holdSky(t)` pins the sky's clock (`skyHeldAt ??
 roundTime`); `beams-shader` holds it across `flicker`. Green 2/2 alone, stroked 0.0 %; plants red: hold ignored (75.2 %),
 ripple `time` zeroed (painted 0.0 %). Other shader checks alone: all green, flat 0.0 %. No threshold touched.
+First `--changed` red: `gameScene-reset.test.ts` caught `skyHeldAt` missing from `resetForNewRound` — reset there.
