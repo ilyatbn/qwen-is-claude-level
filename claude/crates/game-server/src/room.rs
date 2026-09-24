@@ -636,6 +636,50 @@ struct Seat {
     last_seq: u32,
     accepted_this_tick: u8,
     dropped_this_tick: u32,
+    /// How this seat's ticks were simulated (T22.10G) — logged when it leaves.
+    stream: StreamStats,
+}
+
+/// T22.10G: **what R89's one step a tick ran, per seat, read off the ack** — so a
+/// stand-in rate is a measurement and not a guess (the T22.10F review had to
+/// instrument it by hand: 57 % of `teleport`'s ticks on a 59 fps page). Derived in
+/// `Room::tick_once` from the ack before and after each step and the last seq
+/// received before it, not counted inside the world, so there is no second
+/// counter for `World::apply_inputs` to keep in step. Logged on `Leave`
+/// (`game::net`, info).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct StreamStats {
+    /// Ticks the phase took input, this seat was in the world and had an ack.
+    ticks: u32,
+    /// The ack moved to a seq that had arrived: a real input ran.
+    real: u32,
+    /// The ack moved past every seq received: a stand-in claimed it.
+    stood: u32,
+    /// The ack stood still: not started yet (before the first input, or its
+    /// wait), or a stand-in past the claim ceiling (lost time).
+    still: u32,
+    /// Seqs the ack skipped in one tick: the jitter buffer's trim.
+    trimmed: u32,
+}
+
+impl StreamStats {
+    /// One tick: the ack `before` and `after` it, and the newest seq received before it.
+    fn note(&mut self, before: u32, after: u32, received: u32) {
+        self.ticks += 1;
+        if after <= before {
+            // `<`: a rematch's fresh world, whose seat starts again at ack 0.
+            self.still += 1;
+        } else if after > received {
+            self.stood += 1;
+        } else {
+            self.real += 1;
+        }
+        // From ack 0 the first input's seq is wherever the client's count stands
+        // (a rematch's is thousands): a start, not a trim.
+        if before > 0 {
+            self.trimmed += after.saturating_sub(before).saturating_sub(1);
+        }
+    }
 }
 
 impl Seats {
@@ -717,6 +761,7 @@ impl Seats {
             last_seq: 0,
             accepted_this_tick: 0,
             dropped_this_tick: 0,
+            stream: StreamStats::default(),
         });
         Some(id)
     }
@@ -1870,6 +1915,19 @@ impl Room {
             Command::ResyncMap(_) => {}
             Command::Leave(id) => {
                 self.note(R::Leave(id));
+                if let Some(s) = self.seats.seats.iter().find(|s| s.id == id && !s.bot) {
+                    let st = s.stream;
+                    tracing::info!(
+                        target: "game::net",
+                        player = id,
+                        ticks = st.ticks,
+                        real = st.real,
+                        stood = st.stood,
+                        still = st.still,
+                        trimmed = st.trimmed,
+                        "input stream"
+                    );
+                }
                 self.seats.free_seat(id);
                 self.note_lobby_change();
                 if let Some(world) = self.world.as_mut() {
@@ -2420,7 +2478,26 @@ impl Room {
                 p.poison(now);
             }
         }
+        // T22.10G: the ack before the step and the newest seq received by then, per
+        // human seat, for `StreamStats` — while the phase takes input (`Ended`'s
+        // neutral ticks freeze the ack by design).
+        let takes_input = world.phase.accepts_input();
+        let acks_before: Vec<(PlayerId, u32, u32)> = self
+            .seats
+            .seats
+            .iter()
+            .filter(|s| !s.bot && takes_input)
+            .filter_map(|s| Some((s.id, world.last_simulated_seq(s.id)?, s.last_seq)))
+            .collect();
         world.step(dt);
+        for (id, before, received) in acks_before {
+            let Some(after) = world.last_simulated_seq(id) else {
+                continue;
+            };
+            if let Some(s) = self.seats.seats.iter_mut().find(|s| s.id == id) {
+                s.stream.note(before, after, received);
+            }
+        }
 
         // T21.38: the vote is counted against humans, not seats — bots never vote.
         let (mut events, outcome) = self.round.tick(world, humans, dt);
@@ -3580,10 +3657,12 @@ mod tests {
         for tick in 1..=total {
             reference.apply(Command::Input(id, vec![walk(tick)]));
             reference.tick_inline(SIM_DT);
+            // T22.10G: one a tick, `INPUT_BACKLOG_TARGET` behind the newest sent —
+            // the jitter buffer's lead, which the first input waits out.
             assert_eq!(
                 ack(&reference),
-                tick,
-                "control: the reference runs one a tick"
+                tick.saturating_sub(INPUT_BACKLOG_TARGET as u32),
+                "control: the reference runs one a tick, the buffer's lead behind"
             );
             // The client: a stream, a frame of silence, the frame's burst, a stream.
             let due = if tick <= warm || tick > warm + frame + 1 {
@@ -3624,6 +3703,73 @@ mod tests {
             "control: the walk moved nobody, so no position above can disagree"
         );
         assert_eq!(sent, total, "control: the client sent every seq");
+    }
+
+    /// T22.10G: `StreamStats` reads R89's tick kinds off the ack. A client's first
+    /// input waits out the lead (`still`), a stream runs `real`, a silence past the
+    /// buffer is `stood`, and a burst past it is `trimmed` — each counted exactly,
+    /// and the four kinds sum to the ticks.
+    #[test]
+    fn the_stream_stats_count_each_kind_of_tick() {
+        use game_core::constants::{INPUT_BACKLOG_TARGET, MAX_FRAME_TICKS};
+        let mut room = Room::new(Arc::new(Config {
+            bot_count: 0,
+            fixed_seed: Some(4242),
+            weather_mode: game_core::world::WeatherMode::Off,
+            ..Config::default()
+        }));
+        let (reply, _rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "a".into(),
+            look: Default::default(),
+            reply,
+        });
+        let id = 0;
+        room.apply(Command::Ready(id, true));
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        room.world_for_test()
+            .set_phase(game_core::world::RoundPhase::Playing);
+        let before = room.seats.get_mut(id).expect("seat").stream;
+        let lead = INPUT_BACKLOG_TARGET as u32;
+        let (stream, silent, burst) = (10u32, lead + 3, MAX_FRAME_TICKS as u32);
+        let mut sent = 0;
+        for _ in 0..stream {
+            sent += 1;
+            room.apply(Command::Input(id, vec![Input::new(sent, 0, 0)]));
+            room.tick_inline(SIM_DT);
+        }
+        for _ in 0..silent {
+            room.tick_inline(SIM_DT);
+        }
+        // A frame's worth past what was stood in: the buffer trims to its lead.
+        let from = sent + silent - lead + 1;
+        let batch: Vec<Input> = (from..from + burst).map(|q| Input::new(q, 0, 0)).collect();
+        for packet in batch.chunks(game_core::constants::INPUT_REDUNDANCY) {
+            room.apply(Command::Input(id, packet.to_vec()));
+        }
+        room.tick_inline(SIM_DT);
+        let got = room.seats.get_mut(id).expect("seat").stream;
+        let d = StreamStats {
+            ticks: got.ticks - before.ticks,
+            real: got.real - before.real,
+            stood: got.stood - before.stood,
+            still: got.still - before.still,
+            trimmed: got.trimmed - before.trimmed,
+        };
+        assert_eq!(
+            d,
+            StreamStats {
+                ticks: stream + silent + 1,
+                // The stream less its wait, the buffer drained in the silence, the burst's tick.
+                real: stream - lead + lead + 1,
+                stood: silent - lead,
+                still: lead,
+                // The ack ran from the last stand-in to `newest − lead`.
+                trimmed: (from + burst - 1 - lead) - (sent + silent - lead) - 1,
+            },
+            "the stream stats misread the ticks"
+        );
     }
 
     #[test]

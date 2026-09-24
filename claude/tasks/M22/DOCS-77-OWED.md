@@ -21,11 +21,17 @@ that surface mid-milestone are collected here so they are not lost. Each names i
    and none before the first (a client that lost time past one capped frame is otherwise locked out). An input with
    seq 0 is numbered next by the world (bots; no client can send 0). **The T22.10D/E catch-up credit is withdrawn** —
    it was never in a doc; do not add it.
+   **R89's buffer, as built (T22.10G):** the expected seq *starts* `INPUT_BACKLOG_TARGET` behind the newest sent — a
+   client's first input waits that many ticks unless more are already queued (a trim, which runs newest − target and
+   keeps the target: the same lead). World-numbered (seq 0) inputs do not wait. **Before its first input a player is
+   not stepped in `Lobby`/`Warmup`** (what the client predicts from; bounded by the warmup, since joins are refused
+   mid-match); in `Playing` it gets a neutral step claiming no seq. `REPLAY_VERSION` 19.
 4. **docs/42 §2:** the reconcile gate compares the prediction *at the acked seq* (position ≤ eps and
    |Δv|/`SNAPSHOT_HZ` ≤ eps) plus moveMods, alive, health; the acked prediction is kept for repeated acks; the render
    snap keys on the correction jump > 64 px. **The client's fixed step runs on the wall clock** (`performance.now()`),
    capped per frame at `MAX_FRAME_DT` — under R89 a client simulating slower than real time disagrees with every
-   stand-in (Phaser's smoothed `delta` clamps unfocused pages to 16.7 ms/frame). **In a phase that takes no input
+   stand-in (Phaser's smoothed `delta` clamps unfocused pages to 16.7 ms/frame). Its first frame elapses 0 (T22.10G: the boot's
+   `delta` sent a first burst of 14–15 inputs the jitter buffer trimmed). **In a phase that takes no input
    (`Ended`, T22.10E F-3)** the client keeps no inputs for replay (pending and the per-seq predictions are cleared at
    the bell), steps its own body one neutral tick per local step exactly as the server does
    (`RoundPhase::accepts_input`, read through the wasm core), and reconciles on the snapshot's **tick** instead of the

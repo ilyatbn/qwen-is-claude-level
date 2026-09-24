@@ -628,6 +628,55 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
 })
 
 /**
+ * T22.10G: the two hitch events the T22.10F review found counted as rubber-band — each
+ * with its control, the next ordinary correction, which is counted.
+ */
+describe('the rubber-band maxima leave out the startup and a trim (T22.10G)', () => {
+  const off = () => C().RECONCILE_EPSILON_PX * 10
+
+  it('leave out an ack-0 correction while inputs are pending', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    // The server has not run seq 1 yet (the jitter buffer's lead): ack 0, and a body
+    // that differs from the spawn this client predicted from.
+    const s = core.playerState(0)!
+    p.reconcile({ tick: 3, lastInputSeq: 0, state: { ...s, x: s.x + off() } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.settled).toBe(1)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    expect(p.stats.maxAckErrorPx).toBe(0)
+    // The first ack is the anchor (T22.10F), then the control: counted.
+    p.reconcile({ tick: 6, lastInputSeq: 1, state: core.playerState(0)! })
+    p.pushInput(inp(4, 0), DT)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 9, lastInputSeq: 4, state: { ...t, x: t.x + off() } })
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+  })
+
+  it('leave out a correction whose ack ran more seqs than ticks — a server trim', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    p.reconcile({ tick: 3, lastInputSeq: 1, state: core.playerState(0)! })
+    expect(p.stats.settled).toBe(1)
+    for (let i = 4; i <= 9; i++) p.pushInput(inp(i, 0), DT)
+    // Three ticks, six seqs acked: the buffer dropped its oldest past the target.
+    const s = core.playerState(0)!
+    p.reconcile({ tick: 6, lastInputSeq: 7, state: { ...s, x: s.x + off() } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.settled).toBe(2)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    expect(p.stats.maxAckErrorPx).toBe(0)
+    // The control: three seqs in three ticks, off — counted.
+    p.pushInput(inp(10, 0), DT)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 9, lastInputSeq: 10, state: { ...t, x: t.x + off() } })
+    expect(p.stats.corrections).toBe(2)
+    expect(p.stats.settled).toBe(2)
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+  })
+})
+
+/**
  * T22.10F (R89): **the server stands in for a late input with the held one.** Every
  * tick simulates every player once; when input `k` has not arrived, the server runs
  * the newest input's held buttons under seq `k` and acks `k`. A client that held

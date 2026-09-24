@@ -6890,3 +6890,11 @@ Plants red for every rule (task file). `--changed 0e160a9 --fast` EXIT=0; its 72
 **Space checks' harness maxima rose** (breach-vortex 1.41→53 px ack, thrusters ≤3→19): stand-ins bridging key changes on 15 fps pages. Not all attributed; per-check assertions green.
 For the coordinator: wire velocity is whole px/s — a free-flying body drifts past the 2 px gate in ~1.5 s (results screen bound now 2×eps).
 
+
+## T22.10G — the buffer R89 asked for (2026-09-24)
+Server: a client's first input waits `INPUT_BACKLOG_TARGET` ticks (`input_wait`; a trim keeps the same lead); before it a player is not stepped in Lobby/Warmup (neutral seq-less step in Playing). `REPLAY_VERSION` 19. Room `StreamStats` (real/stood/still/trimmed, logged on leave; harness honours `GAME_LOG`).
+Client: first frame elapses 0; ack-0-while-pending and ack>ticks (trim) are hitch events; `stats.worstJump` + harness line attribute the worst jump.
+Tests: jittered stream never stood in; warmup-only no-step; held JUMP into silence jumps once (review's plant now red). All plants red (task file).
+Before → after, worst jump/ack: breach-vortex 61/56 & 19/13 → ≤2.95; radiation-match 20/16 → ≤2.7. The three HEAD reds green 4/4.
+Not fixed: stand-ins still 23–28 % on thrusters-match (4-tick frames vs 2-tick lead); thrusters' worst is the bell's first correction (counted). teleport 5.7/6.1 % before (57 % not reproduced), 2.5–15 % after.
+Seen once, not mine, not parked: death countdown 5.1 s; rematch "CONTROL frame frozen".

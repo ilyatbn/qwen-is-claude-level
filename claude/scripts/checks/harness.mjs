@@ -129,7 +129,10 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
       ...process.env,
       BIND_ADDR: `127.0.0.1:${port}`,
       MAP_SCALE: 'small',
-      GAME_LOG: 'warn',
+      // T22.10G: an operator's `GAME_LOG` wins, so a run can ask for the server's
+      // per-seat `input stream` line (`GAME_LOG=warn,game::net=info`: R89's real /
+      // stood-in / trimmed ticks, logged when the seat leaves). Default unchanged.
+      GAME_LOG: process.env.GAME_LOG ?? 'warn',
       ...env,
     },
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -237,6 +240,14 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
                 `(${v.corrections} corrections; ${v.snaps} relocations and ${v.settled ?? 0} ` +
                 `post-relocation/ack-gap snapshots excluded)`,
             )
+            // T22.10G: the worst jump's context, so it is attributed from the log.
+            const w = v.worstJump
+            if (w && w.px > 0) {
+              console.log(
+                `    worst jump at tick ${w.tick}: ack +${w.ackStep} in ${w.tickStep} ticks, ${w.pending} pending, ` +
+                  `${w.stoodIn ? 'stood in locally, ' : ''}ack error ${Number(w.ackErrorPx).toFixed(2)} px, server speed ${w.speed.toFixed(0)} px/s`,
+              )
+            }
           }
         }
       }

@@ -1985,8 +1985,13 @@ export class GameScene extends Phaser.Scene {
     // slower than real time then disagrees with every stand-in and its seqs fall
     // ever further behind the server's. The fixed step's clock is the wall clock;
     // `MAX_FRAME_DT` still caps one frame.
+    // **The first frame starts the clock at zero** (T22.10G). It took the frame's `dt`
+    // (Phaser's first delta is the scene's whole boot): a first burst of 14–15 inputs,
+    // which the server's jitter buffer trimmed to its lead — 11 dropped, a 63.7 px
+    // correction in the T22.10F review. The server now waits out the lead on the
+    // first input itself; this client need only start sending one a tick.
     const wall = performance.now()
-    const elapsed = this.stepClockAt === null ? dt : (wall - this.stepClockAt) / 1000
+    const elapsed = this.stepClockAt === null ? 0 : (wall - this.stepClockAt) / 1000
     this.stepClockAt = wall
     this.acc = Math.min(this.acc + elapsed, MAX_FRAME_DT)
     const batch = []
@@ -3608,6 +3613,7 @@ export class GameScene extends Phaser.Scene {
             maxAckErrorPx: self.predictor?.stats.maxAckErrorPx ?? 0,
             snaps: self.predictor?.stats.snaps ?? 0,
             settled: self.predictor?.stats.settled ?? 0,
+            worstJump: self.predictor?.stats.worstJump ?? null,
           },
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte

@@ -558,11 +558,14 @@ fn sending_more_inputs_in_one_tick_does_not_move_you_further() {
     fn one_tick(inputs: u32) -> f32 {
         let mut w = playing();
         let start = spawn_at(&mut w, 1);
-        for seq in 1..=inputs {
+        // Seq 0, numbered by the world (T22.10G): a client-numbered first input
+        // waits out the jitter buffer's lead, so one or two of them would not
+        // move on this tick at all while eight (a trim) would.
+        for _ in 1..=inputs {
             w.queue_input(
                 1,
                 Input {
-                    seq,
+                    seq: 0,
                     buttons: button::RIGHT,
                     aim: 0,
                 },
@@ -753,6 +756,11 @@ fn a_bank_then_a_burst_of_future_seqs_is_no_dash() {
                 w.step(SIM_DT);
                 ticks += 1;
             }
+            // T22.10G: settle the respawn's fall, silent. The comparison below is
+            // shifted by the stream's lead, so it holds only from a body at rest.
+            for _ in 0..SIM_HZ {
+                w.step(SIM_DT);
+            }
             w
         }),
         ("warmup", |silent| {
@@ -764,6 +772,12 @@ fn a_bank_then_a_burst_of_future_seqs_is_no_dash() {
             }
             assert_eq!(w.phase, RoundPhase::Warmup, "control: warmup ended early");
             w.set_phase(RoundPhase::Playing);
+            // T22.10G: before its first input a body is not stepped in warmup, so
+            // it is still at its spawn; settle it (silent) for the shifted
+            // comparison below, as the dead bank does its respawn.
+            for _ in 0..game_core::constants::SIM_HZ {
+                w.step(SIM_DT);
+            }
             w
         }),
     ];
@@ -803,7 +817,12 @@ fn a_bank_then_a_burst_of_future_seqs_is_no_dash() {
                 (reference[reference.len() - 1] - reference[0]).len() > 1.0,
                 "control: bank {bank}, {honest} honest: the reference did not move"
             );
-            for (t, (got, want)) in burst.iter().zip(&reference).enumerate() {
+            // T22.10G: the stream runs `INPUT_BACKLOG_TARGET` behind the newest
+            // sent (the jitter buffer's lead), while the burst is a trim and runs
+            // newest − target at once — so the burst's tick `t` is the stream's
+            // `t + target`. A tick that ran two is still ahead of that.
+            let reference = &reference[game_core::constants::INPUT_BACKLOG_TARGET..];
+            for (t, (got, want)) in burst.iter().zip(reference).enumerate() {
                 assert!(
                     (*got - *want).len() < 1e-4,
                     "banked {bank}, then {honest} honest ticks: {t} ticks into a burst of \
@@ -877,10 +896,21 @@ fn the_expected_seq_runs_one_a_tick_and_stops_a_frame_ahead() {
         w.queue_input(1, walk(seq));
         w.step(SIM_DT);
     }
+    // T22.10G: the first input waits out the buffer's lead, so three ticks of one
+    // a tick have simulated `3 − INPUT_BACKLOG_TARGET` and hold the rest.
+    let lead = game_core::constants::INPUT_BACKLOG_TARGET as u32;
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(3 - lead),
+        "the first input did not wait out the jitter buffer's lead"
+    );
+    for _ in 0..lead {
+        w.step(SIM_DT);
+    }
     assert_eq!(
         w.last_simulated_seq(1),
         Some(3),
-        "control: one real input a tick"
+        "control: the buffer drained one real input a tick"
     );
     let x = w.player(1).expect("seated").body.pos.x;
     w.step(SIM_DT);
@@ -933,6 +963,169 @@ fn the_expected_seq_runs_one_a_tick_and_stops_a_frame_ahead() {
         w.last_simulated_seq(1),
         Some(5 + frame + 1),
         "the client's first input after the lost time was not simulated on its tick"
+    );
+}
+
+/// **T22.10G — the jitter buffer R89 asked for.** A client's inputs arrive a tick
+/// late or two at once (a 59 fps page against a 60 Hz server, TCP), and with no
+/// lead every late one was a stand-in — 57 % of `teleport`'s ticks. The first
+/// input now waits `INPUT_BACKLOG_TARGET` ticks, so a stream jittered by one tick
+/// either way is simulated from real inputs only: the same path, tick for tick,
+/// as the same stream arriving one a tick. The inputs change direction every few
+/// seqs, so a stand-in (the newest held input run under the wrong seq) is off the
+/// path; the control is that the jittered arrivals really did leave ticks with
+/// nothing new to run, and that the reference walks at all.
+#[test]
+fn a_stream_jittered_by_a_tick_is_never_stood_in() {
+    const TICKS: u32 = 120;
+    let dir = |seq: u32| {
+        if (seq / 5).is_multiple_of(2) {
+            button::RIGHT
+        } else {
+            button::LEFT
+        }
+    };
+    // Arrivals per tick: one a tick, or a tick late then two at once.
+    let run = |jitter: bool| {
+        let mut w = playing();
+        spawn_at(&mut w, 1);
+        let (mut sent, mut path, mut starved) = (0u32, Vec::new(), 0u32);
+        for t in 0..TICKS {
+            let n = match (jitter, t % 3) {
+                (false, _) | (true, 0) => 1,
+                (true, 1) => 0,
+                (true, _) => 2,
+            };
+            for _ in 0..n {
+                sent += 1;
+                w.queue_input(1, Input::new(sent, dir(sent), 0));
+            }
+            // A server with no lead runs seq `t + 1` on tick `t`: starved when it
+            // has not arrived — a stand-in there.
+            if sent < t + 1 {
+                starved += 1;
+            }
+            w.step(SIM_DT);
+            path.push(w.player(1).expect("seated").body.pos);
+        }
+        (path, starved)
+    };
+    let (reference, _) = run(false);
+    let span = reference
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::NEG_INFINITY, f32::max)
+        - reference.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    assert!(span > 1.0, "control: the reference walked {span:.2} px");
+    let (jittered, starved) = run(true);
+    assert!(
+        starved > 0,
+        "control: the jittered arrivals never starved a server with no lead — they \
+         test no jitter"
+    );
+    for (t, (got, want)) in jittered.iter().zip(&reference).enumerate() {
+        assert!(
+            (*got - *want).len() < 1e-4,
+            "a stream a tick late every third tick: at tick {t} the body is {:.2} px off \
+             the same stream arriving one a tick — a stand-in ran where the jitter \
+             buffer should have held a real input",
+            (*got - *want).len()
+        );
+    }
+}
+
+/// **T22.10G: before its first input, a body waits in warmup and falls in
+/// `Playing`.** Warmup is the one window a player is not stepped — the pre-T22.10F
+/// behaviour, which is what the client predicts from (its first seq runs from the
+/// spawn it was handed) — and it is bounded by the warmup, since joins are refused
+/// mid-match. `a_silent_player_falls_under_gravity` is the `Playing` half; this
+/// pins the warmup half and its control in one place.
+#[test]
+fn a_body_is_not_stepped_before_its_first_input_only_in_warmup() {
+    use game_core::constants::{MAX_FRAME_TICKS, PLAYER_H};
+    let drop = |phase: RoundPhase| {
+        let mut w = world();
+        w.set_phase(phase);
+        spawn_at(&mut w, 1);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos.y -= PLAYER_H * 8.0;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let from = w.player(1).expect("seated").body.pos.y;
+        for _ in 0..MAX_FRAME_TICKS {
+            w.step(SIM_DT);
+        }
+        assert_eq!(w.phase, phase, "control: the phase moved on");
+        w.player(1).expect("seated").body.pos.y - from
+    };
+    let playing = drop(RoundPhase::Playing);
+    assert!(
+        playing > 1.0,
+        "a silent body in Playing fell {playing:.2} px — it hangs in the air mid-round"
+    );
+    let warmup = drop(RoundPhase::Warmup);
+    assert!(
+        warmup.abs() < 1e-6,
+        "a body that never sent an input moved {warmup:.2} px in warmup — the server \
+         stepped it before its first input, so the client's first seq (run from the \
+         spawn) disagrees with every ack-0 snapshot"
+    );
+}
+
+/// **T22.10G, from the T22.10F review: a held JUMP that goes silent jumps once.**
+/// A stand-in repeats the newest input's held buttons, and every edge is `current`
+/// against `prev` — so the stood-in ticks of a held JUMP press nothing. The review
+/// planted "a stand-in steps against a released previous input" (every stood-in
+/// tick a fresh press) and nothing went red. The controls: the silence really was
+/// stood in (the ack ran past the last seq sent), the jump happened, and the body
+/// came back to the ground during the silence, so a second jump was possible.
+#[test]
+fn a_held_jump_that_goes_silent_jumps_exactly_once() {
+    use game_core::constants::SIM_HZ;
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    let mut sent = 0u32;
+    // Settle, sending neutral one a tick (the stream the stand-ins continue).
+    for _ in 0..SIM_HZ {
+        sent += 1;
+        w.queue_input(1, Input::new(sent, 0, 0));
+        w.step(SIM_DT);
+    }
+    let settled = w.player(1).expect("seated").body.grounded;
+    assert!(settled, "control: the body never settled");
+    let (mut jumps, mut landed_after, mut airborne) = (0u32, false, false);
+    let mut was_grounded = true;
+    let hold = 3;
+    for t in 0..3 * SIM_HZ {
+        if t < hold {
+            sent += 1;
+            w.queue_input(1, Input::new(sent, button::JUMP, 0));
+        }
+        w.step(SIM_DT);
+        let p = w.player(1).expect("seated");
+        if was_grounded && !p.body.grounded && p.body.vel.y < 0.0 {
+            jumps += 1;
+        }
+        airborne |= !p.body.grounded;
+        if airborne && p.body.grounded && t > hold {
+            landed_after = true;
+        }
+        was_grounded = p.body.grounded;
+    }
+    let acked = w.last_simulated_seq(1).expect("seated");
+    assert!(
+        acked > sent,
+        "control: the silence was not stood in (ack {acked}, last sent {sent})"
+    );
+    assert!(
+        landed_after,
+        "control: the body never came down during the silence"
+    );
+    assert_eq!(
+        jumps, 1,
+        "a JUMP held into silence jumped {jumps} times — a stood-in tick fired the \
+         jump edge again"
     );
 }
 

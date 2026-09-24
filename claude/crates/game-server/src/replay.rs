@@ -252,7 +252,13 @@ pub const HEADER_BYTES: usize = 46;
 /// the jitter buffer drops its oldest past `INPUT_BACKLOG_TARGET` where v17 ran
 /// two a tick against catch-up credit. A v17 recording with any late or missing
 /// input diverges at that tick.
-pub const REPLAY_VERSION: u16 = 18;
+///
+/// **19 (T22.10G, the jitter buffer's lead)**: the silent-divergence shape. No
+/// new tag, no layout change, no new hashed field. A client's first input now
+/// waits `INPUT_BACKLOG_TARGET` ticks before its tick, and a player who has sent
+/// nothing is not stepped in `Lobby`/`Warmup` (v18 stood in a neutral step), so
+/// every v18 recording of a client diverges from its first input.
+pub const REPLAY_VERSION: u16 = 19;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

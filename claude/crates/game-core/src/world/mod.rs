@@ -905,6 +905,11 @@ pub struct World {
     /// the held state a stand-in tick repeats when the next input has not
     /// arrived. Newer than `prev_input` exactly when a late input was discarded.
     newest_input: Vec<(PlayerId, Input)>,
+    /// Ticks a player's first client-numbered input still waits before its tick
+    /// (T22.10G, R89's jitter buffer): set to `INPUT_BACKLOG_TARGET` when it
+    /// arrives, so the expected seq starts `INPUT_BACKLOG_TARGET` behind the
+    /// newest sent — the lead the buffer exists for. See `apply_inputs`.
+    input_wait: Vec<(PlayerId, usize)>,
     phase_started_at: f32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
     round_seconds: f32,
@@ -1125,6 +1130,7 @@ impl World {
             pending: Vec::new(),
             prev_input: Vec::new(),
             newest_input: Vec::new(),
+            input_wait: Vec::new(),
             phase_started_at: 0.0,
             last_day_phase: cycle_at(0.0).phase,
             toxic: None,
@@ -1157,6 +1163,7 @@ impl World {
         self.prev_input.push((id, Input::default()));
         self.prev_input.sort_by_key(|(i, _)| *i);
         self.newest_input.push((id, Input::default()));
+        self.input_wait.push((id, 0));
     }
 
     /// A fresh spacesuit: the battery full, in a suit mode (T22.09A, R24).
@@ -1224,6 +1231,7 @@ impl World {
         self.players.retain(|p| p.id != id);
         self.prev_input.retain(|(i, _)| *i != id);
         self.newest_input.retain(|(i, _)| *i != id);
+        self.input_wait.retain(|(i, _)| *i != id);
         self.pending.retain(|(i, _)| *i != id);
     }
 
@@ -1248,6 +1256,15 @@ impl World {
         let Some(slot) = self.newest_input.iter_mut().find(|(i, _)| *i == id) else {
             return;
         };
+        // T22.10G: **a client's first input waits `INPUT_BACKLOG_TARGET` ticks**
+        // — the jitter buffer's lead. A world-numbered one (seq 0: a bot, a test)
+        // does not: it was made in this process, on its tick, and has no network
+        // to be late on.
+        if slot.1.seq == 0 && input.seq != 0 {
+            if let Some(w) = self.input_wait.iter_mut().find(|(i, _)| *i == id) {
+                w.1 = INPUT_BACKLOG_TARGET;
+            }
+        }
         if input.seq == 0 {
             let last = self
                 .prev_input
@@ -1829,9 +1846,30 @@ impl World {
         // the client's next frame (at most `MAX_FRAME_TICKS` inputs) lands on or
         // past the expected seq. Said here because R89 does not say it: it is
         // the one place this departs from "advances by one every simulated tick".
+        //
+        // **T22.10G — the buffer R89 asked for, and the body before its first
+        // input.** T22.10F ran a client's first input on the tick it arrived: zero
+        // lead, so every later input had to beat its own tick and any jitter at
+        // all was a stand-in (57 % of `teleport`'s ticks on a 59 fps page). Now
+        // the expected seq starts at **newest − `INPUT_BACKLOG_TARGET`**: a
+        // client's first input waits `INPUT_BACKLOG_TARGET` ticks (`input_wait`)
+        // unless more than that many are already queued, which is the trim below
+        // — and a trim runs newest − target and keeps the target, so it re-sets
+        // the same lead. A stand-in then needs a gap longer than the lead (~33 ms).
+        //
+        // Before its first input a player is **not stepped** while the phase is
+        // `Lobby` or `Warmup` — the pre-T22.10F behaviour, and what the client
+        // predicts: it runs its first seq from the spawn it was handed, so a server
+        // that had stepped the body meanwhile corrected every ack-0 snapshot (80
+        // corrections in the T22.10F review, a space body drifting to its rock).
+        // Bounded: joins are refused mid-match (§E4), so every join waits out at
+        // most the warmup; in `Playing` a player still silent — never sent, or
+        // inside its first input's wait — is stepped a neutral tick claiming no
+        // seq, so nobody hangs in the air mid-round (T22.10F's point).
         self.pending.sort_by_key(|(id, inp)| (*id, inp.seq));
         let mut queued = std::mem::take(&mut self.pending);
         let mut this_tick: Vec<(PlayerId, Input)> = Vec::new();
+        let seating = matches!(self.phase, RoundPhase::Lobby | RoundPhase::Warmup);
         if self.phase.accepts_input() {
             for &(id, prev) in &self.prev_input {
                 let newest = self
@@ -1846,6 +1884,24 @@ impl World {
                     .collect();
                 let excess = mine.len().saturating_sub(INPUT_BACKLOG_TARGET + 1);
                 mine.drain(..excess);
+                let waiting = match self.input_wait.iter_mut().find(|(i, _)| *i == id) {
+                    Some((_, w)) if *w > 0 && mine.len() <= INPUT_BACKLOG_TARGET => {
+                        *w -= 1;
+                        true
+                    }
+                    Some((_, w)) => {
+                        *w = 0;
+                        false
+                    }
+                    None => false,
+                };
+                if newest.seq == 0 || waiting {
+                    if !seating {
+                        this_tick.push((id, Input::new(prev.seq, 0, prev.aim)));
+                    }
+                    self.pending.extend(mine.into_iter().map(|v| (id, v)));
+                    continue;
+                }
                 let input = if mine.is_empty() {
                     let claims = newest.seq > 0 && prev.seq < newest.seq + MAX_FRAME_TICKS as u32;
                     let seq = if claims { prev.seq + 1 } else { prev.seq };
@@ -5342,6 +5398,7 @@ mod state_hash_coverage {
             pending: _,
             prev_input: _,
             newest_input: _,
+            input_wait: _,
             // `irradiated_this_tick` (T22.09A, R75) is filled and taken inside
             // one `step` and cleared at its top, so it is empty at every point a
             // hash is taken — `the_radiation_list_never_survives_a_step`.
@@ -10002,9 +10059,12 @@ mod fall_damage {
             p.iframes_until = 0.0;
         }
         let mut seq = 0u32;
+        // Seq 0, "numbered by the world" (T22.10G): a client-numbered first input
+        // waits out the jitter buffer's lead, which put the jump two ticks after
+        // the tick this reads it on and cut the low-gravity apex short.
         let tick = |w: &mut World, buttons: u8, seq: &mut u32| {
             *seq += 1;
-            w.queue_input(0, crate::player::input::Input::new(*seq, buttons, 0));
+            w.queue_input(0, crate::player::input::Input::new(0, buttons, 0));
             w.step(SIM_DT);
         };
         for _ in 0..90 {

@@ -55,9 +55,30 @@ export interface PredictorStats {
    * T22.10E F-4: reconciles left out of both maxima because they followed a
    * relocation or an ack gap (a rematch's skipped seqs, or a stand-in's seqs run
    * ahead of a client that lost time, T22.10F), or flipped `alive` — the event's
-   * numbers.
+   * numbers. Since T22.10G also an ack-0 correction with inputs pending (the startup)
+   * and an ack that ran more seqs than server ticks (a jitter-buffer trim).
    */
   settled: number
+  /**
+   * T22.10G: **where `maxEasedJumpPx` was taken** — so the worst rubber-band a check
+   * reports can be attributed from its log rather than guessed: the ack's step and
+   * the server ticks between that snapshot and the one before, the inputs pending,
+   * whether the ack ran past the last pushed seq (a local stand-in), the error at
+   * the ack and the server's speed there. Null until a counted correction.
+   */
+  worstJump: WorstJump | null
+}
+
+/** The context of the correction behind `maxEasedJumpPx` (T22.10G). */
+export interface WorstJump {
+  px: number
+  ackStep: number
+  tickStep: number
+  pending: number
+  stoodIn: boolean
+  ackErrorPx: number
+  speed: number
+  tick: number
 }
 
 /** What a snapshot tells us about ourselves. */
@@ -119,7 +140,10 @@ export class Predictor {
     maxEasedJumpPx: 0,
     lastAck: 0,
     settled: 0,
+    worstJump: null,
   }
+  /** This reconcile's context, for `stats.worstJump` (T22.10G). */
+  private step: Omit<WorstJump, 'px' | 'ackErrorPx'> | null = null
   /**
    * Where each unacknowledged input left the body, by seq — `lastAckErrorPx`'s
    * other end, and the prediction `reconcile`'s gate compares (T22.10D F8).
@@ -146,6 +170,8 @@ export class Predictor {
   private lastPushed = 0
   private lastButtons = 0
   private stoodIn = 0
+  /** The server tick of the last snapshot reconciled (T22.10G's trim rule); null before one. */
+  private lastTick: number | null = null
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -234,6 +260,34 @@ export class Predictor {
     // predictor starts from the spawn it was handed — so the first correction
     // measures the loading screen, not the netcode.
     if (prevAck === 0 && snap.lastInputSeq > 0) this.unsettled = true
+    // T22.10G, from the T22.10F review's classification of every counted correction:
+    // - **ack 0 with inputs pending**: the server has not simulated this client's first
+    //   input yet (it waits out the jitter buffer's lead, `World::apply_inputs`), so there
+    //   is no prediction at the ack to compare, and the correction installs the spawn and
+    //   replays — the loading screen's, not the netcode's (80 of them in the review, all
+    //   the server stepping a body before any input reached it);
+    // - **a server trim**: the ack advanced by more seqs than the server ran ticks since
+    //   the last snapshot, so the jitter buffer dropped inputs this client simulated (a
+    //   burst past `INPUT_BACKLOG_TARGET`: the review's startup frame of 14, 11 trimmed,
+    //   63.7 px). One step per tick is the rule (R89); more acked than ticked is a hitch.
+    //   Only when the tick moved: two snapshots never share a tick outside a test.
+    if (snap.lastInputSeq === 0 && this.pending.length > 0) this.unsettled = true
+    if (
+      this.lastTick !== null &&
+      snap.tick > this.lastTick &&
+      snap.lastInputSeq - prevAck > snap.tick - this.lastTick
+    ) {
+      this.unsettled = true
+    }
+    this.step = {
+      ackStep: snap.lastInputSeq - prevAck,
+      tickStep: snap.tick - (this.lastTick ?? snap.tick),
+      pending: this.pending.filter((q) => q.input.seq > snap.lastInputSeq).length,
+      stoodIn: explained,
+      speed: Math.hypot(snap.state.vx, snap.state.vy),
+      tick: snap.tick,
+    }
+    this.lastTick = snap.tick
     this.stats.lastAck = snap.lastInputSeq
     const ackErr = at ? Math.hypot(at.x - snap.state.x, at.y - snap.state.y) : Number.NaN
     if (at) this.stats.lastAckErrorPx = ackErr
@@ -330,6 +384,16 @@ export class Predictor {
   private reconcileNeutral(snap: LocalSnapshotView): void {
     const n = this.enterNeutral()
     this.stats.lastAck = snap.lastInputSeq
+    // `ackStep` 0 marks a results-screen correction in `worstJump`.
+    this.step = {
+      ackStep: 0,
+      tickStep: snap.tick - (this.lastTick ?? snap.tick),
+      pending: 0,
+      stoodIn: false,
+      speed: Math.hypot(snap.state.vx, snap.state.vy),
+      tick: snap.tick,
+    }
+    this.lastTick = snap.tick
     const local = this.state
     if (!local) return
     const dt = C().SIM_DT
@@ -477,6 +541,9 @@ export class Predictor {
       this.unsettled = false
       this.stats.settled++
     } else {
+      if (this.stats.lastJumpPx > this.stats.maxEasedJumpPx && this.step) {
+        this.stats.worstJump = { ...this.step, px: this.stats.lastJumpPx, ackErrorPx: ackErr }
+      }
       this.stats.maxEasedJumpPx = Math.max(this.stats.maxEasedJumpPx, this.stats.lastJumpPx)
       this.noteAckError(ackErr)
     }

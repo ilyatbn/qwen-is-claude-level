@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D and T22.10F (R89).** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D, T22.10F (R89) and T22.10G.** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -59,6 +59,12 @@ different story (see § 1).
   future ones wait in a jitter buffer of `INPUT_BACKLOG_TARGET` (2), oldest excess dropped. A stand-in claims a seq only
   within `MAX_FRAME_TICKS` of the newest sent, and none before the first. Seq 0 = "numbered by the world" (bots). No
   hover, no two-step ticks; the T22.10D/E catch-up credit is gone. `Ended`: neutral ticks, seq frozen (T21.30).
+  **Since T22.10G the buffer has its lead:** a client's first input waits `INPUT_BACKLOG_TARGET` ticks (`input_wait`)
+  unless more are queued (a trim, which keeps the same lead), so a stand-in needs a gap longer than ~33 ms; before its
+  first input a player is not stepped in `Lobby`/`Warmup` (a neutral, seq-less step in `Playing`). Seq-0 inputs start
+  at once. **Measured, not guessed:** `Room`'s per-seat `StreamStats` (real / stood / still / trimmed ticks, read off
+  the ack) is logged `game::net` info on leave — `GAME_LOG=warn,game::net=info` makes `harness.mjs` print it. Stood-in
+  share after T22.10G: 23–28 % on `thrusters-match` (a ~4-tick frame against a 2-tick lead), 1–19 % in the other networked checks.
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
   (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
   effects, hazards, phase, round).
@@ -88,8 +94,10 @@ different story (see § 1).
   on that error. `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B) are the honest rubber-band measures;
   `maxEasedJumpPx`/`maxAckErrorPx` (T22.10D) exclude relocations and are printed per client by `harness.mjs` at close;
   since T22.10E/F they also leave out (as `settled`) the first ack (an anchor), an ack gap, an `alive` flip, a repeated
-  ack while the phase takes input and the first new ack after it (lost time: frames over `MAX_FRAME_DT`), and a
-  results-screen re-anchor past the catch-up cap. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
+  ack while the phase takes input and the first new ack after it (lost time: frames over `MAX_FRAME_DT`), a
+  results-screen re-anchor past the catch-up cap, and since T22.10G an ack-0 correction with inputs pending and an ack
+  that ran more seqs than server ticks (a trim). `stats.worstJump` (T22.10G) holds the worst counted jump's context
+  (ack/tick step, pending, ack error, speed) and `harness.mjs` prints it. The fixed step's first frame elapses 0. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
   handle pad `teleport` and `vortex_trip`. Render eases at
   `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server state is i16-truncated; `JumpState` and `prev_input`
   are not on the wire.
@@ -109,7 +117,7 @@ different story (see § 1).
 - **No test compares wasm vs native output**; game-wasm tests run natively. `golden.rs` is native only.
 - game-core: `f32` 1820 lines, `f64` 61; 50 transcendental calls (map gen, `effects/flare.rs` 6, `world/mod.rs` 5);
   no `libm` dependency (wasm32 gets Rust's libm port, native gets glibc — they can differ in the last bit).
-- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 17. The
+- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 19 (T22.10G). The
   header does not record the weather mode.
 
 ## 5. Authority and exposure
