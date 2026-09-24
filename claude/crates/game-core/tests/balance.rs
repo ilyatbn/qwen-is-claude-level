@@ -686,6 +686,294 @@ fn space_radiation_report() {
     );
 }
 
+/// One whole round of bots under `gravity` (T22.03B): **what they die of, and whether
+/// they fight** — the before/after instrument for bots in space. Deaths by cause,
+/// a flare's burn told from other weather by the `effect` of the victim's last
+/// weather damage (`Weather` names both), trigger pulls the bots asked for, shots
+/// the world took (`fire` returned `Ok`), player-caused deaths, and damage between
+/// players.
+#[derive(Debug, Default, Clone)]
+struct BotRound {
+    black_hole: u32,
+    void: u32,
+    radiation: u32,
+    flare: u32,
+    weather: u32,
+    player: u32,
+    selfd: u32,
+    wanted: u32,
+    shots: u32,
+    player_dmg: f32,
+    vortex_trips: u32,
+    packs_picked: u32,
+    /// Alive bot-ticks, and of them: tank below `JETPACK_MIN_FUEL_TO_ENGAGE`
+    /// (dry), grounded, unsealed (radiation getting through); and the speed sum.
+    alive: u32,
+    dry: u32,
+    grounded: u32,
+    unsealed: u32,
+    speed: f32,
+    /// Distinct (bot, 256 px cell) pairs visited — how much of the map they cover.
+    cells: u32,
+    /// Thrown zone weapons (the molotov's flames, toxic's cloud): alive ticks a bot
+    /// held one selected, and shots taken with one.
+    zone_held: u32,
+    zone_shots: u32,
+}
+
+/// A generated map under `gravity`, the shipping seat count, `Playing` for the whole
+/// `ROUND_SECONDS` — so a space round reaches its last minute and the black hole.
+///
+/// `hold`: every bot starts with 60 of it, selected — the thrown-weapon arm, since
+/// nobody in a natural round ever holds a zone weapon (measured: 0.0 % of alive time
+/// in both modes), so a natural round cannot see whether a bot throws one.
+fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
+    use game_core::constants::DEFAULT_MAP_GENERATOR;
+    use game_core::constants::JETPACK_MIN_FUEL_TO_ENGAGE;
+    use game_core::items::registry::{def as def_item, BATTERY_PACK};
+    use game_core::weapons::explode::EffectKind;
+    let mut w = World::with_gravity(seed, DEFAULT_MAP_SCALE, 0, DEFAULT_MAP_GENERATOR, gravity);
+    w.set_phase(RoundPhase::Playing);
+    let mut bots = Vec::new();
+    for i in 0..BOTS {
+        let id = i as u8;
+        w.add_player(id, 0, format!("Bot {i}"));
+        if let Some(item) = hold {
+            give(&mut w, id, item, 60);
+            if let Some(slot) = (0..INVENTORY_SLOTS as u8).find(|s| {
+                w.player(id)
+                    .and_then(|p| p.inventory.slot(*s))
+                    .is_some_and(|st| st.item == item)
+            }) {
+                w.select_slot(id, slot);
+            }
+        }
+        bots.push(Bot::new(id, seed, i as u32, SKILL));
+    }
+    let mut what: BTreeMap<u32, u16> = w.items.iter().map(|i| (i.id, i.item)).collect();
+    let mut last_weather: BTreeMap<u8, Option<EffectKind>> = BTreeMap::new();
+    let _ = w.drain_events();
+    let mut r = BotRound::default();
+    let mut cells = std::collections::BTreeSet::new();
+    while w.phase == RoundPhase::Playing {
+        let now = w.round_time;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            let zone = w
+                .player(b.player)
+                .filter(|p| p.alive)
+                .and_then(|p| p.inventory.slot(p.inventory.selected()))
+                .and_then(|st| def_item(st.item))
+                .and_then(|d| match d.kind {
+                    ItemKind::Weapon(wid) => def(wid),
+                    _ => None,
+                })
+                .is_some_and(|wd| {
+                    matches!(
+                        wd.burst,
+                        game_core::weapons::defs::Burst::Zone { .. }
+                            | game_core::weapons::defs::Burst::Flames { .. }
+                    )
+                });
+            r.zone_held += u32::from(zone);
+            if inp.buttons & button::FIRE != 0 {
+                r.wanted += 1;
+                if w.fire(b.player, now).is_ok() {
+                    r.shots += 1;
+                    r.zone_shots += u32::from(zone);
+                }
+            }
+            if let Some(slot) = b.wants_use() {
+                let _ = w.use_item(b.player, slot, now);
+            }
+        }
+        w.step(SIM_DT);
+        let suit = w.gravity == GravityMode::Space;
+        for p in w.players.iter().filter(|p| p.alive) {
+            r.alive += 1;
+            r.dry += u32::from(p.jetpack.fuel < JETPACK_MIN_FUEL_TO_ENGAGE);
+            r.grounded += u32::from(p.body.grounded);
+            r.unsealed += u32::from(p.irradiated(w.round_time, suit));
+            r.speed += p.body.vel.len();
+            cells.insert((p.id, p.body.pos.x as i32 / 256, p.body.pos.y as i32 / 256));
+        }
+        for e in w.drain_events() {
+            match e {
+                GameEvent::Death { cause, victim, .. } => match cause {
+                    DeathCause::BlackHole => r.black_hole += 1,
+                    DeathCause::Void => r.void += 1,
+                    DeathCause::Radiation => r.radiation += 1,
+                    DeathCause::Weather => {
+                        if last_weather.get(&victim) == Some(&Some(EffectKind::SolarFlare)) {
+                            r.flare += 1
+                        } else {
+                            r.weather += 1
+                        }
+                    }
+                    DeathCause::Player(_) => r.player += 1,
+                    DeathCause::SelfInflicted => r.selfd += 1,
+                },
+                GameEvent::Damage {
+                    victim,
+                    amount,
+                    attacker,
+                    cause,
+                    effect,
+                    ..
+                } => {
+                    if cause == DeathCause::Weather {
+                        last_weather.insert(victim, effect);
+                    }
+                    if matches!(cause, DeathCause::Player(_)) && attacker != Some(victim) {
+                        r.player_dmg += amount;
+                    }
+                }
+                GameEvent::VortexTrip { .. } => r.vortex_trips += 1,
+                GameEvent::ItemSpawn {
+                    world_item_id,
+                    item_id,
+                    ..
+                } => {
+                    what.insert(world_item_id, item_id);
+                }
+                GameEvent::ItemPickup { world_item_id, .. }
+                    if what.get(&world_item_id) == Some(&BATTERY_PACK) =>
+                {
+                    r.packs_picked += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    r.cells = cells.len() as u32;
+    r
+}
+
+/// **T22.03B — bots in space, measured.** Per bot per round, over `SEEDS`, a whole
+/// shipping round each: deaths by cause, trigger pulls wanted and taken, player
+/// deaths (kills) and damage. The standard-gravity arm is the control on the same
+/// instrument: a space arm that reads like it is a space game with fights in it.
+///
+/// `cargo test -p game-core --release --test balance space_bots_report -- --ignored --nocapture`
+#[test]
+#[ignore = "measurement: ~1 min in release"]
+fn space_bots_report() {
+    // `BOTS_SEEDS=n` runs n seeds instead of `SEEDS` — the deaths this counts are
+    // rare events, and eight rounds decide a one-in-forty difference by a coin.
+    let seeds: Vec<u64> = std::env::var("BOTS_SEEDS")
+        .ok()
+        .and_then(|n| n.parse::<u64>().ok())
+        .map_or(SEEDS.to_vec(), |n| (1..=n).map(|i| i * 7919).collect());
+    println!(
+        "\n== BOTS BY MODE — {} seeds x {BOTS} bots x {ROUND_SECONDS} s, per bot per round ==",
+        seeds.len()
+    );
+    println!(
+        "{:>9}{:>7}{:>7}{:>7}{:>7}{:>7}{:>7}{:>7}{:>8}{:>8}{:>8}{:>7}{:>7}",
+        "mode",
+        "hole",
+        "void",
+        "rad",
+        "flare",
+        "wthr",
+        "kills",
+        "self",
+        "wanted",
+        "shots",
+        "dmg",
+        "trips",
+        "packs"
+    );
+    use game_core::items::registry::MOLOTOV;
+    let mut arms = Vec::new();
+    for (hold, gravity) in [
+        (None, GravityMode::Standard),
+        (None, GravityMode::Space),
+        (Some(MOLOTOV), GravityMode::Standard),
+        (Some(MOLOTOV), GravityMode::Space),
+    ] {
+        let rs: Vec<BotRound> = seeds.iter().map(|&s| run_bots(s, gravity, hold)).collect();
+        if hold.is_some() {
+            println!("  -- every bot starts holding a molotov --");
+        }
+        let n = (seeds.len() * BOTS) as f32;
+        let per = |f: fn(&BotRound) -> f32| rs.iter().map(f).sum::<f32>() / n;
+        println!(
+            "{:>9}{:>7.2}{:>7.2}{:>7.2}{:>7.2}{:>7.2}{:>7.2}{:>7.2}{:>8.0}{:>8.0}{:>8.0}{:>7.2}{:>7.2}",
+            format!("{gravity:?}"),
+            per(|r| r.black_hole as f32),
+            per(|r| r.void as f32),
+            per(|r| r.radiation as f32),
+            per(|r| r.flare as f32),
+            per(|r| r.weather as f32),
+            per(|r| r.player as f32),
+            per(|r| r.selfd as f32),
+            per(|r| r.wanted as f32),
+            per(|r| r.shots as f32),
+            per(|r| r.player_dmg),
+            per(|r| r.vortex_trips as f32),
+            per(|r| r.packs_picked as f32),
+        );
+        let ticks = |f: fn(&BotRound) -> u32| {
+            100.0 * rs.iter().map(|r| f(r) as f32).sum::<f32>()
+                / rs.iter().map(|r| r.alive as f32).sum::<f32>().max(1.0)
+        };
+        println!(
+            "          of alive time: dry {:.1}% grounded {:.1}% unsealed {:.1}%, mean speed {:.0} px/s, \
+             {:.1} cells a bot",
+            ticks(|r| r.dry),
+            ticks(|r| r.grounded),
+            ticks(|r| r.unsealed),
+            rs.iter().map(|r| r.speed).sum::<f32>() / rs.iter().map(|r| r.alive as f32).sum::<f32>(),
+            per(|r| r.cells as f32)
+        );
+        println!(
+            "          zone weapons: held {:.1}% of alive time, {:.2} throws a bot",
+            ticks(|r| r.zone_held),
+            per(|r| r.zone_shots as f32)
+        );
+        if std::env::var("BOTS_PER_SEED").is_ok() {
+            for (s, r) in seeds.iter().zip(&rs) {
+                println!("    seed {s:>8}: {r:?}");
+            }
+        }
+        arms.push(rs);
+    }
+    // The control: the standard arm must show a fight, or the instrument is blind.
+    let total = |arm: &[BotRound], f: fn(&BotRound) -> u32| arm.iter().map(f).sum::<u32>();
+    assert!(
+        total(&arms[0], |r| r.shots) > 0,
+        "no shot taken under standard gravity — the harness is blind"
+    );
+    // T22.03B's claims, on the natural space arm: **a fight** (at least the standard
+    // control's player kills), **not a hazard course** (the environment kills fewer than
+    // the players), and **the black hole rare** — under one death in two rounds. At
+    // `888ee4c`, before bots flew, it took 8 in 8 rounds (and 0.18 a bot a round over 32).
+    let space = &arms[1];
+    let kills = total(space, |r| r.player);
+    let env = total(space, |r| {
+        r.black_hole + r.void + r.radiation + r.flare + r.weather
+    });
+    assert!(
+        kills >= total(&arms[0], |r| r.player),
+        "space: {kills} player kills, under the standard control's"
+    );
+    assert!(
+        env < kills,
+        "space: the environment killed {env}, the players {kills}"
+    );
+    let hole = total(space, |r| r.black_hole) as usize;
+    assert!(
+        2 * hole < seeds.len(),
+        "space: {hole} black-hole deaths in {} rounds",
+        seeds.len()
+    );
+}
+
 /// The full report. `cargo test -p game-core --release --test balance -- --ignored --nocapture`
 #[test]
 #[ignore = "measurement: minutes in release"]

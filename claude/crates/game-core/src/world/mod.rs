@@ -3391,6 +3391,17 @@ impl World {
             .map(|(id, start, _)| (*id, self.round_time - start))
     }
 
+    /// T22.03B: the running flare's ribbon — where it is while it burns, and where it
+    /// will be during its telegraph — or `None`. What a player sees on screen, which
+    /// is why a bot may read it; after the ribbon is gone (the burn's tail) there is
+    /// nothing to see.
+    pub fn flare_ribbon(&self) -> Option<Vec<Vec2>> {
+        let (_, start, f) = self.flare.as_ref()?;
+        let elapsed = self.round_time - start;
+        (elapsed < crate::constants::EFFECT_TELEGRAPH + crate::constants::SOLAR_FLARE_DURATION)
+            .then(|| f.points_at(elapsed))
+    }
+
     /// Test seam: the vents the *installed* lava burst is using.
     ///
     /// Exists so a test can compare what the server simulates against what it

@@ -3603,6 +3603,35 @@ pub const BOT_FLEE_HEALTH: f32 = 35.0;
 /// five bots on a large map is 5 x 128 bits.
 pub const BOT_EXPLORE_CELL: i32 = 256;
 
+// --- T22.03B: bots in space (M22-RULINGS R5) ---
+
+/// The speed a bot flies at in space, px/s. Under `JETPACK_MAX_SPEED` so the
+/// thrust that reaches it is short and the tank refills while it coasts — nothing
+/// damps in space, so cruising costs no fuel once the speed is bought.
+pub const BOT_SPACE_CRUISE: f32 = 200.0;
+/// The deceleration a flying bot plans its arrival with, px/s²: the speed it may
+/// still carry `d` px from where it is going is `√(2 · BOT_SPACE_BRAKE · d)`.
+/// **The weakest thrust less the strongest well** — the one brake a bot can count
+/// on in every direction and next to any rock — so an arrival planned with it is
+/// one the bot can actually stop for.
+pub const BOT_SPACE_BRAKE: f32 = JETPACK_THRUST_DOWN - SPACE_WELL_ACCEL_MAX;
+/// How far a flying bot's velocity may miss the one it wants, per axis, before it
+/// thrusts, px/s. The dead band is what lets it coast (and refill) instead of
+/// firing the thrusters every tick over a rounding error.
+pub const BOT_SPACE_DEADBAND: f32 = 40.0;
+/// Fuel a flying bot keeps back, s of burn: it cruises and brakes only above it,
+/// and spends it only to get out of something that kills (the black hole, a
+/// vortex's pull, a flare).
+pub const BOT_SPACE_FUEL_RESERVE: f32 = 1.5;
+/// How far outside a hazard's edge a bot in space starts leaving it, px — the
+/// black hole's reach (and its telegraph), a vortex's no-escape disc, a flare's
+/// ribbon.
+pub const BOT_SPACE_HAZARD_MARGIN: f32 = 64.0;
+/// A bot in a suit goes for a battery pack in sight when its battery is at or
+/// below this fraction of `BATTERY_MAX` and it carries none — past a visible
+/// enemy: an unsealed suit loses `RADIATION_DPS` for the rest of the round.
+pub const BOT_SUIT_SHOP_BELOW: f32 = 0.5;
+
 // ---- v7 amendments ----  mirrors docs/75-amendments-v7.md
 
 // --- F1: a bullet is a thing that flies ---

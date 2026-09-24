@@ -10,9 +10,12 @@
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
+mod space;
+
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, FLAME_GRAVITY_SCALE, FLAME_LIFE,
-    FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, STEP_UP,
+    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, BOT_SUIT_SHOP_BELOW,
+    FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS,
+    JETPACK_MAX_FUEL, PICKUP_RADIUS, SPACE_RIM_CLEARANCE, STEP_UP,
 };
 
 /// **The trap fired, and this is what it caught** (T22.03).
@@ -99,6 +102,8 @@ const STUCK_WINDOW: f32 = 0.5;
 /// walks at a wall for the rest of the round. Local like the rest of the bot's
 /// tuning; `BOT_EXPLORE_CELL` is in `constants.rs` because §E15 names it.
 const WANDER_GIVE_UP: f32 = 6.0;
+/// Near enough a wander target to count as there, px — a quarter cell.
+const WANDER_ARRIVED: f32 = BOT_EXPLORE_CELL as f32 / 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Goal {
@@ -166,6 +171,25 @@ impl Coverage {
     fn mark(&mut self, i: usize) {
         if let Some(w) = self.seen.get_mut(i / 64) {
             *w |= 1 << (i % 64);
+        }
+    }
+
+    /// T22.03B: in space, count every cell whose middle is not inside the arena
+    /// (clear of the rim by `SPACE_RIM_CLEARANCE`) as seen, so exploring never
+    /// heads for the rim or the void beyond it. Nothing elsewhere.
+    fn mark_outside(&mut self, world: &World) {
+        let Some(geo) = world.map.space_geometry() else {
+            return;
+        };
+        for cy in 0..self.rows {
+            for cx in 0..self.cols {
+                let x = (cx * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32;
+                let y = (cy * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32;
+                if !geo.inside(x, y) || geo.distance_to_rim(x, y) < SPACE_RIM_CLEARANCE {
+                    let i = self.index(cx, cy);
+                    self.mark(i);
+                }
+            }
         }
     }
 
@@ -479,6 +503,13 @@ impl Bot {
             buttons |= button::DOWN;
         }
 
+        // **In space the walking model's buttons are replaced, not amended**
+        // (T22.03B, R5): the goal and the point it resolves to are the same, and
+        // only how a body nothing damps gets there differs — `space::steer`.
+        if space::flies(world, me) {
+            buttons = self.space_buttons(world, me, pos, aim_at);
+        }
+
         // --- aim --------------------------------------------------------
         let err = (self.rng.gen::<f32>() - 0.5) * 2.0 * self.aim_error;
         let angle = (aim_at.y - pos.y).atan2(aim_at.x - pos.x) + err;
@@ -515,6 +546,47 @@ impl Bot {
         }
     }
 
+    /// T22.03B: the goal as a destination for `space::steer`, and its buttons.
+    /// Fleeing is a point a sight radius away from the enemy; an enemy is held at
+    /// the stand-off; an item is flown onto; a wander cell is reached when the
+    /// bot is within the quarter-cell `choose_goal` counts as arrived.
+    fn space_buttons(
+        &mut self,
+        world: &World,
+        me: &crate::player::state::PlayerState,
+        pos: Vec2,
+        aim_at: Vec2,
+    ) -> u8 {
+        let dest = match self.goal {
+            Goal::Flee(_) => {
+                let off = pos - aim_at;
+                let away = if off.len() > f32::EPSILON {
+                    off.normalized()
+                } else {
+                    Vec2::new(1.0, 0.0)
+                };
+                space::Dest {
+                    at: pos + away * FOV_DAY,
+                    stop: 0.0,
+                }
+            }
+            Goal::Enemy(_) => space::Dest {
+                at: aim_at,
+                stop: self.stand_off(world),
+            },
+            Goal::Item(_) => space::Dest {
+                at: aim_at,
+                stop: PICKUP_RADIUS * 0.5,
+            },
+            Goal::Wander => space::Dest {
+                at: aim_at,
+                stop: WANDER_ARRIVED,
+            },
+        };
+        let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
+        space::steer(world, me, Some(dest), fire)
+    }
+
     fn choose_goal(&mut self, world: &World, pos: Vec2, dt: f32) {
         let mut best: Option<(f32, Goal)> = None;
 
@@ -545,7 +617,21 @@ impl Bot {
         // Unarmed, or nothing in sight: go shopping. **Any** firable slot counts,
         // not just the one in hand — see `has_firable_weapon`.
         let armed = self.has_firable_weapon(world);
-        if best.is_none() || !armed {
+        // T22.03B: **a suit running flat is the one errand that beats a fight** — an
+        // unsealed suit loses `RADIATION_DPS` for the rest of the round, and the bot
+        // that ignored it was radiation's commonest victim (0.54 deaths a bot a round,
+        // measured). Only when it carries no battery to use (`choose_item` does that).
+        let charge = world.player(self.player).is_some_and(|me| {
+            world.gravity.wears_suit()
+                && me.battery <= BATTERY_MAX * BOT_SUIT_SHOP_BELOW
+                && !(0..INVENTORY_SLOTS as u8).any(|s| {
+                    me.inventory
+                        .slot(s)
+                        .and_then(|st| def(st.item))
+                        .is_some_and(|d| matches!(d.kind, ItemKind::Battery { .. }))
+                })
+        });
+        if best.is_none() || !armed || charge {
             let mut item_best: Option<(bool, f32, Goal)> = None;
             for it in world.items.iter() {
                 let d = (it.pos - pos).len();
@@ -568,14 +654,25 @@ impl Bot {
                 // battery beyond it; arming yourself is the thing that makes the
                 // next ten seconds go differently.
                 let is_weapon = def(it.item).is_some_and(|d| matches!(d.kind, ItemKind::Weapon(_)));
-                let rank = !armed && is_weapon;
+                let is_charge =
+                    def(it.item).is_some_and(|d| matches!(d.kind, ItemKind::Battery { .. }));
+                let rank = if charge {
+                    is_charge
+                } else {
+                    !armed && is_weapon
+                };
+                // Space (T22.03B): nothing a flight to it would end in a keep-out disc for.
+                if space::forbidden(world, it.pos) && world.gravity == GravityMode::Space {
+                    continue;
+                }
                 if item_best.is_none_or(|(br, bd, _)| (rank, -d) > (br, -bd)) {
                     item_best = Some((rank, d, Goal::Item(it.id)));
                 }
             }
-            if let Some((_, d, g)) = item_best {
-                // A visible enemy still wins if we are armed.
-                if !armed || best.is_none() {
+            if let Some((rank, d, g)) = item_best {
+                // A visible enemy still wins if we are armed — unless the suit needs
+                // the pack (T22.03B).
+                if !armed || best.is_none() || (charge && rank) {
                     best = Some((d, g));
                 }
             } else if !armed && !flee {
@@ -599,7 +696,9 @@ impl Bot {
         if self.goal == Goal::Wander {
             self.wander_for += dt;
             let cov = self.coverage.get_or_insert_with(|| {
-                Coverage::new(world.map.mask.w as i32, world.map.mask.h as i32)
+                let mut c = Coverage::new(world.map.mask.w as i32, world.map.mask.h as i32);
+                c.mark_outside(world);
+                c
             });
             let (cx, cy) = cov.cell_of(pos);
             let here = cov.index(cx, cy);
@@ -610,7 +709,7 @@ impl Bot {
             // be entered and a bot that insists on it stops exploring.
             let arrived = self
                 .wander_to
-                .is_some_and(|w| cov.cell_of(w) == (cx, cy) || (w - pos).len() < 64.0);
+                .is_some_and(|w| cov.cell_of(w) == (cx, cy) || (w - pos).len() < WANDER_ARRIVED);
             let gave_up = self.wander_for > WANDER_GIVE_UP;
             if arrived || gave_up {
                 if let Some(w) = self.wander_to {
@@ -628,6 +727,7 @@ impl Bot {
                 // lap is not a wasted one.
                 if cov.all_seen() {
                     cov.clear();
+                    cov.mark_outside(world);
                     cov.mark(here);
                 }
                 self.wander_to = cov.nearest_unseen(pos);
@@ -1816,6 +1916,104 @@ mod tests {
             Goal::Item(heal),
             "an unarmed bot did not settle for the medkit clear of the hole (the gun, item \
              {gun}, is inside its reach)"
+        );
+    }
+
+    /// **T22.03B: a suit running flat sends an armed bot to a pack in sight, past a
+    /// visible enemy** — radiation was the commonest environmental death in space.
+    /// Three arms on one fixture: battery at a third (goes for the pack); full
+    /// (fights — the control); low but carrying a battery (fights, and uses it via
+    /// `choose_item`). And the mode gate: the same low battery under standard gravity
+    /// has no suit to seal, so it fights.
+    #[test]
+    fn a_bot_whose_suit_runs_flat_goes_for_a_battery_pack() {
+        use crate::items::registry::{BATTERY_PACK, PISTOL};
+        let goal = |battery: f32, carry: bool, gravity: GravityMode| {
+            let mut w = world_with(&[1, 2]);
+            w.gravity = gravity;
+            let at = clear_line(&w);
+            crate::world::give(&mut w, 1, PISTOL, 1);
+            if carry {
+                crate::world::give(&mut w, 1, BATTERY_PACK, 1);
+            }
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = at;
+                p.battery = battery;
+            }
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = Vec2::new(at.x + 100.0, at.y);
+            }
+            let pack = drop_at(&mut w, BATTERY_PACK, Vec2::new(at.x + 150.0, at.y));
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            b.think(&w, 0.0, SIM_DT);
+            (b.goal, pack)
+        };
+        let low = BATTERY_MAX * crate::constants::BOT_SUIT_SHOP_BELOW * 0.6;
+        let (g, pack) = goal(low, false, GravityMode::Space);
+        assert_eq!(
+            g,
+            Goal::Item(pack),
+            "a flat suit in space fought instead of charging"
+        );
+        let (g, _) = goal(BATTERY_MAX, false, GravityMode::Space);
+        assert_eq!(g, Goal::Enemy(2), "control: a full suit should fight");
+        let (g, _) = goal(low, true, GravityMode::Space);
+        assert_eq!(
+            g,
+            Goal::Enemy(2),
+            "carrying a battery, it should fight and use it"
+        );
+        let (g, _) = goal(low, false, GravityMode::Standard);
+        assert_eq!(
+            g,
+            Goal::Enemy(2),
+            "no suit under standard gravity, yet it went shopping"
+        );
+    }
+
+    /// T22.03B: in space a bot never explores toward the rim or the void past it —
+    /// every cell whose middle is outside the arena (or within `SPACE_RIM_CLEARANCE`
+    /// of the rim) starts seen, on eight maps. Control: some cells stay unseen, and a
+    /// standard map pre-marks none.
+    #[test]
+    fn a_space_bot_never_explores_past_the_rim() {
+        for seed in [1u64, 7, 42, 99, 4242, 12345, 31337, 8675309] {
+            let w = World::with_gravity(
+                seed,
+                MapScale::Small,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            let geo = w.map.space_geometry().expect("space");
+            let mut c = Coverage::new(w.map.mask.w as i32, w.map.mask.h as i32);
+            c.mark_outside(&w);
+            let mut open = 0;
+            for cy in 0..c.rows {
+                for cx in 0..c.cols {
+                    if c.is_seen(c.index(cx, cy)) {
+                        continue;
+                    }
+                    open += 1;
+                    let x = (cx * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32;
+                    let y = (cy * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32;
+                    assert!(
+                        geo.inside(x, y) && geo.distance_to_rim(x, y) >= SPACE_RIM_CLEARANCE,
+                        "seed {seed}: cell ({cx}, {cy}) at ({x}, {y}) is past the rim, and unseen"
+                    );
+                }
+            }
+            assert!(
+                open > 0,
+                "seed {seed}: control — every cell pre-marked, nowhere to go"
+            );
+        }
+        let w = World::for_test(SEED, MapScale::Small);
+        let mut c = Coverage::new(w.map.mask.w as i32, w.map.mask.h as i32);
+        c.mark_outside(&w);
+        assert!(
+            !c.all_seen() && c.seen.iter().all(|&b| b == 0),
+            "a standard map pre-marked cells"
         );
     }
 
