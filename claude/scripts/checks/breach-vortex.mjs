@@ -397,17 +397,27 @@ try {
   else ok(`no rubber-band while the vortex pulled the player ${travelled.toFixed(0)} px: ${summary} (bound RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX})`)
 
   if (d2.vortex.myTrips.length > 0) {
+    // T22.00H: **the predicted body is read at the first drawn frame that heard the trip** —
+    // the recording's last sample, which ends on exactly that frame. Until then it was read
+    // ten frames *after* the recording's 500 ms-polled end, and the body goes on moving
+    // after a trip: 10.9–12.1 px alone (4/4), **101 px** in a `--jobs 4` gate
+    // (`gate-t2200h-changed2.txt`), where those frames and that poll take longer — so it
+    // measured the box, not the snap. A glide or a missed snap leaves the body back by
+    // the pull (~975 px here) at this frame, so the bound is unchanged.
+    const atTrip = recorded[recorded.length - 1]
     await frames(page, 10)
     const d3 = await dbg()
     const trip = d3.vortex.myTrips[0]
     const norm = Math.hypot((trip.x - breach.cx) / breach.rx, (trip.y - breach.cy) / breach.ry)
     const clear = Math.hypot(trip.x - v.x, trip.y - v.y)
-    const at = d3.player
+    const at = atTrip && atTrip.trips > 0 ? atTrip.p : null
     const drift = at ? Math.hypot(at.x - trip.x, at.y - trip.y) : Infinity
+    const later = d3.player ? Math.hypot(d3.player.x - trip.x, d3.player.y - trip.y) : Infinity
     if (!(norm < 1)) fail(`the trip put the player outside the rim: ${JSON.stringify({ trip, norm, breach })}`)
     else if (clear < k.VORTEX_REACH / 2) fail(`the trip put the player ${clear.toFixed(0)} px from the vortex, inside its pull (R86)`)
-    else if (drift > k.VORTEX_CAPTURE_R / 2) fail(`the predicted body is ${drift.toFixed(0)} px from where the server put it, ten frames after the trip — it glided or never snapped`)
-    else ok(`the trip put the player inside the rim (norm ${norm.toFixed(2)}), ${clear.toFixed(0)} px from the vortex, and the prediction is there (${drift.toFixed(1)} px; snapped by the event: ${trip.snapped})`)
+    else if (!at) fail(`control: the recording holds no drawn frame after the trip, so the snap was never seen: ${JSON.stringify(atTrip ?? null)}`)
+    else if (drift > k.VORTEX_CAPTURE_R / 2) fail(`the predicted body is ${drift.toFixed(0)} px from where the server put it at the first frame after the trip — it glided or never snapped`)
+    else ok(`the trip put the player inside the rim (norm ${norm.toFixed(2)}), ${clear.toFixed(0)} px from the vortex, and the prediction is there at the first frame after it (${drift.toFixed(1)} px; ${later.toFixed(1)} px ten frames on, reported; snapped by the event: ${trip.snapped})`)
   }
 
   // --- 4. coverage, flat and shader; 5. not on the minimap -----------------------------

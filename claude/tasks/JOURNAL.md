@@ -7063,3 +7063,9 @@ show only the sky moving, ~12/channel on `KEYFRAMES` 0→0.12. `__game.holdSky(t
 roundTime`); `beams-shader` holds it across `flicker`. Green 2/2 alone, stroked 0.0 %; plants red: hold ignored (75.2 %),
 ripple `time` zeroed (painted 0.0 %). Other shader checks alone: all green, flat 0.0 %. No threshold touched.
 First `--changed` red: `gameScene-reset.test.ts` caught `skyHeldAt` missing from `resetForNewRound` — reset there.
+
+## T22.00H — breach-vortex's trip is read at its own frame (builder, 2026-09-25)
+The 91/101 px "trip drift" is the body moving on after the trip, read ten frames past a 500 ms-polled end: 11 px alone,
+41–49 at `--jobs 4`, 101 in the gate. Now read off the recording's last sample (the first frame that heard the trip):
+≤ 0.8 px; bound unchanged; no-snap plant red at 867 px. Rubber-band 2.12 px: 0/8 runs, worst 0.13 px — not parked.
+Found, not fixed: `thrusters` braking arm red once at `--jobs 4` (freezes a round trip after its predicate; see task).
