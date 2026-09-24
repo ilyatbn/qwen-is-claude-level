@@ -812,6 +812,14 @@ describe('the results screen (T22.10E F-3)', () => {
       const [, ...later] = r.jumps
       expect(Math.max(0, ...later)).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
     })
+
+    it(`counts the bell's anchoring correction as settled, not in the maxima (${name})`, () => {
+      const r = bell([...jitter])
+      // The control: the anchoring correction really moved the body.
+      expect(r.jumps[0]!).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+      expect(r.stats.maxEasedJumpPx).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
+      expect(r.stats.settled).toBeGreaterThanOrEqual(1)
+    })
   }
 })
 

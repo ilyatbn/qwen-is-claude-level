@@ -10058,17 +10058,15 @@ mod fall_damage {
             p.body.vel = Vec2::ZERO;
             p.iframes_until = 0.0;
         }
-        let mut seq = 0u32;
         // Seq 0, "numbered by the world" (T22.10G): a client-numbered first input
         // waits out the jitter buffer's lead, which put the jump two ticks after
         // the tick this reads it on and cut the low-gravity apex short.
-        let tick = |w: &mut World, buttons: u8, seq: &mut u32| {
-            *seq += 1;
+        let tick = |w: &mut World, buttons: u8| {
             w.queue_input(0, crate::player::input::Input::new(0, buttons, 0));
             w.step(SIM_DT);
         };
         for _ in 0..90 {
-            tick(w, 0, &mut seq);
+            tick(w, 0);
         }
         assert!(
             w.player(0).expect("ana").body.grounded,
@@ -10076,7 +10074,7 @@ mod fall_damage {
         );
         let before = w.player(0).expect("ana").health;
         let ground_y = w.player(0).expect("ana").body.pos.y;
-        tick(w, button::JUMP, &mut seq);
+        tick(w, button::JUMP);
         assert!(
             !w.player(0).expect("ana").body.grounded,
             "the jump never left the ground"
@@ -10086,7 +10084,7 @@ mod fall_damage {
         // it — 74 ticks against 37 — and this is still an order of magnitude of
         // slack rather than a wait tuned to a tunable.
         for _ in 0..600 {
-            tick(w, 0, &mut seq);
+            tick(w, 0);
             peak = peak.min(w.player(0).expect("ana").body.pos.y);
             if w.player(0).expect("ana").body.grounded {
                 break;

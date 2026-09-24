@@ -6905,3 +6905,10 @@ Seen once, not mine, not parked: death countdown 5.1 s; rematch "CONTROL frame f
 vitest 1076/1076, Rust 1640/0/25. Idle box, no subagents during the run. T22.10G review: accept + one fix (the results screen's anchoring
 neutral reconcile is a hitch event — set `unsettled` when `n.label === null`), plus the task file's stand-in arithmetic ((N−2)/N of an
 N-tick frame, not 1 in 4) and "harmless" claim to correct; dead `seq` counter in `fall_damage::jump_from_flat`. Folded into the next builder.
+
+## T22.10G review follow-ups — done (builder, 2026-09-24)
+`Predictor.reconcileNeutral`: the anchoring reconcile at the bell (`n.label === null`) sets `unsettled`, so it is a hitch event
+counted in `settled`, not in `maxEasedJumpPx`. vitest red first (*"expected 10.016848688804584 to be less than or equal to 2"*, on time
+and jittered), green after. T22.10G's task file: stand-in share ≈(N−2)/N, 36–46 %/seat at ~17 fps, not harmless on slow pages.
+Dead `seq` counter removed from `fall_damage::jump_from_flat`. `--changed e5abc46 --fast` EXIT=0 (cargo 1640/0/25, vitest 1078),
+clippy EXIT=0, `thrusters-match` 1/1 (`gate-t2212-job1.txt`).

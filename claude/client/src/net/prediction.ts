@@ -383,6 +383,10 @@ export class Predictor {
    */
   private reconcileNeutral(snap: LocalSnapshotView): void {
     const n = this.enterNeutral()
+    // The anchoring reconcile at the bell (T22.10G review): nothing is labelled yet,
+    // so this correction installs the server's post-bell state over inputs it dropped —
+    // the bell's event, like a relocation, not a misprediction; kept out of the maxima.
+    if (n.label === null) this.unsettled = true
     this.stats.lastAck = snap.lastInputSeq
     // `ackStep` 0 marks a results-screen correction in `worstJump`.
     this.step = {
