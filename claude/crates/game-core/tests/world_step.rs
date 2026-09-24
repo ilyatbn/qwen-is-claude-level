@@ -593,193 +593,236 @@ fn sending_more_inputs_in_one_tick_does_not_move_you_further() {
     );
 }
 
-/// T22.10D F4: **the catch-up is paid for by silence, so it is not a speed
-/// multiplier.** `World::apply_inputs` consumes a second input in a tick only
-/// against credit earned by ticks that had none. A client sending two per tick is
-/// never starved: over `ticks` ticks it must have consumed exactly `ticks` inputs.
-/// The control is the same client after `ticks` ticks of silence (one long frame's
-/// worth, whose inputs all arrive on the first tick after it): it consumes more
-/// than one per tick while the backlog stands above the target — the mechanism is
-/// live — and still never more than the ticks elapsed.
+// ---------------------------------------------------------------------------
+// T22.10F (coordinator ruling R89) — one simulated step per player per tick
+// ---------------------------------------------------------------------------
+
+fn walk(seq: u32) -> Input {
+    Input::new(seq, button::RIGHT, 0)
+}
+
+/// What a scenario sends on one tick: `Stream` is the one input a steady client's
+/// tick carries, `Burst(n)` the next `n` seqs at once, `Silent` nothing.
+#[derive(Clone, Copy)]
+enum Send {
+    Stream,
+    Burst(u32),
+    Silent,
+}
+
+/// Plays `plan` into a walking world — `warm` one-per-tick inputs first, so a
+/// stream exists to stand in for — and returns the body's position after every
+/// tick, the backlog (inputs sent minus the last simulated seq) after every tick,
+/// and the most any tick left queued. Every input is a walk, so **any world that
+/// steps each player exactly once a tick walks the same path whatever the plan**:
+/// a tick that steps twice (a dash) or not at all (a hover) is a different path.
+fn play(warm: u32, plan: &[Send]) -> (Vec<Vec2>, Vec<u32>, usize) {
+    let mut w = playing();
+    spawn_at(&mut w, 1);
+    let mut sent = 0u32;
+    let (mut path, mut backlog, mut most) = (Vec::new(), Vec::new(), 0usize);
+    let warmup = std::iter::repeat_n(Send::Stream, warm as usize);
+    for (t, send) in warmup.chain(plan.iter().copied()).enumerate() {
+        let n = match send {
+            Send::Stream => 1,
+            Send::Burst(n) => n,
+            Send::Silent => 0,
+        };
+        for _ in 0..n {
+            sent += 1;
+            w.queue_input(1, walk(sent));
+        }
+        w.step(SIM_DT);
+        if t >= warm as usize {
+            path.push(w.player(1).expect("seated").body.pos);
+            let acked = w.last_simulated_seq(1).expect("seated");
+            backlog.push(sent.saturating_sub(acked));
+            most = most.max(w.pending_len());
+        }
+    }
+    (path, backlog, most)
+}
+
+/// §A30 under R89: **packet rate is not a speed multiplier, and neither is a
+/// burst.** A client sending two inputs every tick, one frame's burst after a
+/// long frame, and the review's split bursts (T22.10E: silence, then 2|6, 3|5
+/// and 3|12 across two ticks, then one a tick — under the catch-up credit the
+/// last left 13 inputs, ~217 ms, standing forever) all walk the one-a-tick path
+/// exactly, and none leaves more than `INPUT_BACKLOG_TARGET` behind once the
+/// burst is over. The control is that the path moves at all, and that each
+/// burst really did arrive more than the target at once.
 #[test]
-fn the_backlog_catch_up_never_consumes_more_inputs_than_ticks() {
-    use game_core::constants::MAX_FRAME_TICKS;
-    // Below the cap, so no trim moves the oldest seq: consumed = oldest − 1.
-    let ticks = (MAX_FRAME_TICKS / 2) as u32;
-    let consumed = |silent: u32| {
-        let mut w = playing();
-        spawn_at(&mut w, 1);
-        for _ in 0..silent {
-            w.step(SIM_DT);
-        }
-        let mut seq = 0u32;
-        for t in 0..ticks {
-            // After silence, the first tick carries the long frame's burst (T22.10E
-            // F-1: credit pays only for the gap just before a *burst* — a stream
-            // that never stands above the target clears it on its first tick).
-            let n = if t == 0 { silent.max(2) } else { 2 };
-            for _ in 0..n {
-                seq += 1;
-                w.queue_input(
-                    1,
-                    Input {
-                        seq,
-                        buttons: button::RIGHT,
-                        aim: 0,
-                    },
-                );
-            }
-            w.step(SIM_DT);
-        }
-        w.oldest_queued_seq(1).expect("a backlog is left") - 1
+fn every_tick_steps_each_player_once_whatever_arrives() {
+    use game_core::constants::{INPUT_BACKLOG_TARGET, MAX_FRAME_TICKS};
+    const WARM: u32 = 10;
+    const AFTER: usize = 3 * MAX_FRAME_TICKS;
+    let frame = MAX_FRAME_TICKS as u32;
+    let stream = |n: usize| std::iter::repeat_n(Send::Stream, n);
+    let silent = |n: u32| std::iter::repeat_n(Send::Silent, n as usize);
+    let split = |gap: u32, a: u32, b: u32| -> Vec<Send> {
+        silent(gap)
+            .chain([Send::Burst(a), Send::Burst(b)])
+            .chain(stream(AFTER))
+            .collect()
     };
-    let flooding = consumed(0);
-    assert_eq!(
-        flooding, ticks,
-        "a client sending two inputs every tick consumed {flooding} in {ticks} ticks — \
-         packet rate is a speed multiplier again (§A30)"
-    );
-    let silent = MAX_FRAME_TICKS as u32;
-    let owed = consumed(silent);
-    assert!(
-        owed > ticks,
-        "control: after {silent} silent ticks the backlog was never caught up \
-         ({owed} consumed in {ticks} ticks), so the first assertion proves nothing"
+    let (reference, _, _) = play(
+        WARM,
+        &stream(AFTER + 2 * frame as usize).collect::<Vec<_>>(),
     );
     assert!(
-        owed <= ticks + silent,
-        "consumed {owed} inputs in {} ticks",
-        ticks + silent
+        (reference[AFTER] - reference[0]).len() > 1.0,
+        "control: the walk moved nobody, so no path below can differ"
+    );
+    let scenarios: Vec<(&str, Vec<Send>)> = vec![
+        (
+            "two a tick",
+            std::iter::repeat_n(Send::Burst(2), AFTER).collect(),
+        ),
+        (
+            "a long frame",
+            silent(frame)
+                .chain([Send::Burst(frame)])
+                .chain(stream(AFTER))
+                .collect(),
+        ),
+        ("2|6", split(8, 2, 6)),
+        ("3|5", split(8, 3, 5)),
+        ("3|12", split(frame, 3, 12)),
+    ];
+    for (name, plan) in scenarios {
+        let (path, backlog, _) = play(WARM, &plan);
+        for (t, (got, want)) in path.iter().zip(&reference).enumerate() {
+            assert!(
+                (*got - *want).len() < 1e-4,
+                "{name}: at tick {t} the body is {:.2} px off the one-step-a-tick path — \
+                 a tick stepped it twice or not at all",
+                (*got - *want).len()
+            );
+        }
+        let settled = &backlog[backlog.len() - MAX_FRAME_TICKS..];
+        assert!(
+            settled.iter().all(|b| *b as usize <= INPUT_BACKLOG_TARGET),
+            "{name}: {settled:?} inputs still stood behind the simulation a frame's worth \
+             of ticks before the end — a standing delay (bound {INPUT_BACKLOG_TARGET})"
+        );
+    }
+    let (_, backlog, most) = play(
+        WARM,
+        &std::iter::repeat_n(Send::Burst(2), AFTER).collect::<Vec<_>>(),
+    );
+    assert!(
+        backlog.iter().any(|b| *b as usize > INPUT_BACKLOG_TARGET) || most == INPUT_BACKLOG_TARGET,
+        "control: two a tick never filled the jitter buffer (backlog {backlog:?})"
     );
 }
 
-/// T22.10E F-1: **catch-up credit is not a bank.** The review of `d2d4c07`
-/// measured the exploit: credit accrued on every tick with no input — dead, in
-/// warmup, or merely silent — survived respawn and the start of `Playing`, and an
-/// honest one-per-tick client never spent it; so a client could bank a frame's
-/// worth while dead and later send a burst of future seqs for a 2× dash (5.00
-/// px/tick for 10 ticks against a walk's 2.50).
-///
-/// The ruling: credit accrues only while alive and while the phase accepts
-/// input, and is cleared at the end of any tick in which the player consumed an
-/// input and was left with no more than `INPUT_BACKLOG_TARGET` — so it pays only
-/// for the gap just before a burst. Each bank is followed by `honest` ticks at
-/// one input per tick, then one frame's burst of future seqs in one tick; the
-/// assertion is that no tick consumes two. The control is the honest long frame
-/// — silence straight into the burst — which must still consume two a tick, or
-/// the assertion is satisfied by a world that never catches up at all.
+/// T22.10E F-1's exploit, under R89: **silence is not a bank.** Silent while
+/// alive, dead through a respawn, or silent through warmup; then honest ticks (or
+/// none); then a frame's worth of *future* seqs in one tick — the 2× dash the
+/// review of `d2d4c07` measured at 5.00 px/tick against a walk's 2.50. The honest
+/// ticks stand still (a walk would reach a wall before the burst). Each run
+/// is compared, tick by tick, with the same bank followed by one input a tick:
+/// any tick that ran two of the burst is ahead of that path. The control is that
+/// the reference path moves during the burst's ticks.
 #[test]
-fn catch_up_credit_cannot_be_banked_for_a_later_burst() {
+fn a_bank_then_a_burst_of_future_seqs_is_no_dash() {
     use game_core::constants::{MAX_FRAME_TICKS, RESPAWN_DELAY, SIM_HZ};
-    let walk = |seq: u32| Input {
-        seq,
-        buttons: button::RIGHT,
-        aim: 0,
-    };
-    // Last consumed seq: everything below the oldest still queued, or all sent.
-    let consumed = |w: &World, sent: u32| w.oldest_queued_seq(1).map_or(sent, |s| s - 1);
-    // After the bank: `honest` ticks at one input per tick, then one burst of a
-    // frame's inputs; returns the most any single tick consumed.
-    let then_burst = |w: &mut World, honest: u32| {
-        let mut sent = 0u32;
-        let mut worst = 0u32;
-        let step = |w: &mut World, sent: u32, worst: &mut u32| {
-            let before = consumed(w, sent);
-            w.step(SIM_DT);
-            *worst = (*worst).max(consumed(w, sent) - before);
-        };
-        for _ in 0..honest {
-            sent += 1;
-            w.queue_input(1, walk(sent));
-            step(w, sent, &mut worst);
-        }
-        assert!(
-            honest == 0 || worst == 1,
-            "control: honest ticks consumed at most {worst} a tick, not one"
-        );
-        for _ in 0..MAX_FRAME_TICKS {
-            sent += 1;
-            w.queue_input(1, walk(sent));
-        }
-        for _ in 0..MAX_FRAME_TICKS {
-            step(w, sent, &mut worst);
-        }
-        assert_eq!(consumed(w, sent), sent, "the burst was never drained");
-        worst
-    };
     let silent = MAX_FRAME_TICKS as u32;
-
-    // Silent while alive in `Playing` — the honest long frame's gap — then honest.
-    let silent_bank = || {
-        let mut w = playing();
-        spawn_at(&mut w, 1);
-        for _ in 0..silent {
+    type Bank = fn(u32) -> World;
+    let banks: [(&str, Bank); 3] = [
+        ("silent", |silent| {
+            let mut w = playing();
+            spawn_at(&mut w, 1);
+            for _ in 0..silent {
+                w.step(SIM_DT);
+            }
+            w
+        }),
+        ("dead", |_| {
+            let mut w = playing();
+            spawn_at(&mut w, 1);
+            if let Some(p) = w.player_mut(1) {
+                p.health = 0.0;
+            }
             w.step(SIM_DT);
+            assert!(!w.player(1).expect("seated").alive, "control: not killed");
+            let limit = ((RESPAWN_DELAY + 1.0) * SIM_HZ as f32) as u32;
+            let mut ticks = 0;
+            while !w.player(1).expect("seated").alive {
+                assert!(ticks < limit, "control: never respawned");
+                w.step(SIM_DT);
+                ticks += 1;
+            }
+            w
+        }),
+        ("warmup", |silent| {
+            let mut w = world();
+            w.set_phase(RoundPhase::Warmup);
+            spawn_at(&mut w, 1);
+            for _ in 0..silent {
+                w.step(SIM_DT);
+            }
+            assert_eq!(w.phase, RoundPhase::Warmup, "control: warmup ended early");
+            w.set_phase(RoundPhase::Playing);
+            w
+        }),
+    ];
+    let ticks = 2 * MAX_FRAME_TICKS as u32;
+    for (bank, make) in banks {
+        for honest in [0u32, 60] {
+            let run = |burst: bool| {
+                let mut w = make(silent);
+                let mut sent = 0u32;
+                for _ in 0..honest {
+                    sent += 1;
+                    w.queue_input(1, Input::new(sent, 0, 0));
+                    w.step(SIM_DT);
+                }
+                let mut path = Vec::new();
+                for t in 0..ticks {
+                    let n = if burst {
+                        if t == 0 {
+                            silent
+                        } else {
+                            0
+                        }
+                    } else {
+                        1
+                    };
+                    for _ in 0..n {
+                        sent += 1;
+                        w.queue_input(1, walk(sent));
+                    }
+                    w.step(SIM_DT);
+                    path.push(w.player(1).expect("seated").body.pos);
+                }
+                path
+            };
+            let (reference, burst) = (run(false), run(true));
+            assert!(
+                (reference[reference.len() - 1] - reference[0]).len() > 1.0,
+                "control: bank {bank}, {honest} honest: the reference did not move"
+            );
+            for (t, (got, want)) in burst.iter().zip(&reference).enumerate() {
+                assert!(
+                    (*got - *want).len() < 1e-4,
+                    "banked {bank}, then {honest} honest ticks: {t} ticks into a burst of \
+                     future seqs the body is {:.2} px off the one-a-tick path — a dash",
+                    (*got - *want).len()
+                );
+            }
         }
-        w
-    };
-    // Dead for a respawn delay (no input can be consumed), then respawned.
-    let dead_bank = || {
-        let mut w = playing();
-        spawn_at(&mut w, 1);
-        if let Some(p) = w.player_mut(1) {
-            p.health = 0.0;
-        }
-        w.step(SIM_DT);
-        assert!(!w.player(1).expect("seated").alive, "control: not killed");
-        let limit = ((RESPAWN_DELAY + 1.0) * SIM_HZ as f32) as u32;
-        let mut ticks = 0;
-        while !w.player(1).expect("seated").alive {
-            assert!(ticks < limit, "control: never respawned");
-            w.step(SIM_DT);
-            ticks += 1;
-        }
-        w
-    };
-    // Silent through warmup, then `Playing` starts.
-    let warmup_bank = || {
-        let mut w = world();
-        w.set_phase(RoundPhase::Warmup);
-        spawn_at(&mut w, 1);
-        for _ in 0..silent {
-            w.step(SIM_DT);
-        }
-        assert_eq!(w.phase, RoundPhase::Warmup, "control: warmup ended early");
-        w.set_phase(RoundPhase::Playing);
-        w
-    };
-
-    let control = then_burst(&mut silent_bank(), 0);
-    assert_eq!(
-        control, 2,
-        "control: the honest long frame (silence, then its burst) consumed at most \
-         {control} a tick, so it no longer catches up and nothing below is proven"
-    );
-    for (bank, mut w, honest) in [
-        ("silent", silent_bank(), 60),
-        ("dead", dead_bank(), 60),
-        ("warmup", warmup_bank(), 60),
-        ("dead", dead_bank(), 0),
-        ("warmup", warmup_bank(), 0),
-    ] {
-        let worst = then_burst(&mut w, honest);
-        assert_eq!(
-            worst, 1,
-            "credit banked {bank}, then {honest} honest ticks: a later burst consumed \
-             {worst} inputs in one tick — a dash paid for by a bank (T22.10E F-1)"
-        );
     }
 }
 
-/// **T22.10F, filed not fixed: a player whose inputs stop hangs in the air.**
-/// `World::apply_inputs` integrates only the players it has an input for (outside
-/// `Ended`), so a body with no input queued is not stepped at all — no gravity, no
-/// field, no drift — until inputs arrive again. This pins today's behaviour so the
-/// task that decides it (neutral-integrate the missing ticks, or let T22.10E's
-/// catch-up credit pay for them — the two interact) turns it red on purpose. The
-/// control is the same body sent neutral inputs: it falls.
+/// **T22.10F: a silent player falls** (was `t2210f_a_silent_player_hangs_in_the_air_today`,
+/// which pinned 0.00 px). A body lifted into open air and sent nothing for a
+/// second is stepped every tick by a stand-in — here the neutral held state of a
+/// player who never pressed anything — so it falls exactly as far as the control,
+/// the same body sent a neutral input every tick (224.78 px, measured when this
+/// was filed). A lag switch no longer hovers.
 #[test]
-fn t2210f_a_silent_player_hangs_in_the_air_today() {
+fn a_silent_player_falls_under_gravity() {
     use game_core::constants::{PLAYER_H, SIM_HZ};
     let run = |send: bool| {
         let mut w = playing();
@@ -804,69 +847,116 @@ fn t2210f_a_silent_player_hangs_in_the_air_today() {
         "control: a body sent neutral inputs fell only {neutral:.2} px in a second"
     );
     let silent = run(false);
-    assert_eq!(
-        silent, 0.0,
-        "a silent player fell {silent:.2} px — T22.10F has changed this; flip the test"
+    assert!(
+        (silent - neutral).abs() < 1e-3,
+        "a silent player fell {silent:.2} px in a second against {neutral:.2} px for one \
+         sent neutral inputs — the silent ticks were not integrated (T22.10F)"
     );
 }
 
-/// The surplus is a *backlog*, not a discard: a jitter burst catches up on the
-/// following ticks rather than being thrown away.
+/// The expected seq (R89): **a stand-in claims the next seq, a late input is
+/// discarded but still steers, and a client that lost time is not locked out.**
+/// A stand-in claims a seq only within `MAX_FRAME_TICKS` of the newest sent: past
+/// that the client's clock has fallen behind the server's (a hidden tab's frames
+/// are capped at `MAX_FRAME_DT`) and a claimed seq would discard its every input.
 #[test]
-fn a_burst_is_consumed_over_later_ticks() {
+fn the_expected_seq_runs_one_a_tick_and_stops_a_frame_ahead() {
+    use game_core::constants::MAX_FRAME_TICKS;
+    let frame = MAX_FRAME_TICKS as u32;
     let mut w = playing();
-    let start = spawn_at(&mut w, 1);
-    for seq in 1..=8u32 {
-        w.queue_input(
-            1,
-            Input {
-                seq,
-                buttons: button::RIGHT,
-                aim: 0,
-            },
-        );
-    }
-    // One tick consumes one input.
-    w.step(SIM_DT);
-    let after_one = w.player(1).expect("player").body.pos.x;
-    // The remaining seven are consumed over the next seven ticks, with no more
-    // input arriving.
-    for _ in 0..7 {
+    spawn_at(&mut w, 1);
+    for _ in 0..frame {
         w.step(SIM_DT);
     }
-    let after_eight = w.player(1).expect("player").body.pos.x;
-    assert!(
-        after_eight > after_one,
-        "the backlog was discarded rather than consumed: {after_one:.2} -> {after_eight:.2}"
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(0),
+        "a player who never sent claimed a seq — there is no stream to stand in for"
     );
+    for seq in 1..=3 {
+        w.queue_input(1, walk(seq));
+        w.step(SIM_DT);
+    }
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(3),
+        "control: one real input a tick"
+    );
+    let x = w.player(1).expect("seated").body.pos.x;
+    w.step(SIM_DT);
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(4),
+        "a stand-in claims the next seq"
+    );
+    let walked = w.player(1).expect("seated").body.pos.x - x;
     assert!(
-        after_eight - start.x > 0.0,
-        "the burst produced no movement at all"
+        walked > 0.0,
+        "the stand-in did not hold the walk ({walked:.3} px)"
+    );
+    // Seq 4 arrives after its tick, pressing LEFT: discarded, but the next
+    // stand-in steers by it.
+    w.queue_input(1, Input::new(4, button::LEFT, 0));
+    let vx = w.player(1).expect("seated").body.vel.x;
+    w.step(SIM_DT);
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(5),
+        "the late seq 4 moved the expected seq"
+    );
+    assert_eq!(w.pending_len(), 0, "the late seq 4 was queued");
+    let now = w.player(1).expect("seated").body.vel.x;
+    assert!(
+        now < vx,
+        "the stand-in after a late LEFT did not steer left (vx {vx:.2} -> {now:.2})"
+    );
+    // Lost time: silent far longer than a frame. The seq stops a frame ahead of
+    // the newest sent (4) while the body goes on being stepped.
+    for _ in 0..3 * frame {
+        w.step(SIM_DT);
+    }
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(4 + frame),
+        "the seq ran past a frame ahead"
+    );
+    // The client's next frame — capped at a frame's inputs — is all at or below
+    // it, and the input after it is simulated on the next tick.
+    for seq in 5..=4 + frame {
+        w.queue_input(1, walk(seq));
+    }
+    w.step(SIM_DT);
+    assert_eq!(w.pending_len(), 0, "a frame of already-run seqs was kept");
+    w.queue_input(1, walk(5 + frame + 1));
+    w.step(SIM_DT);
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(5 + frame + 1),
+        "the client's first input after the lost time was not simulated on its tick"
     );
 }
 
 /// A client that sends faster than the sim runs, forever, must not queue an
-/// unbounded future.
+/// unbounded future: the jitter buffer keeps `INPUT_BACKLOG_TARGET` after a tick.
 #[test]
 fn the_input_backlog_is_bounded() {
+    use game_core::constants::INPUT_BACKLOG_TARGET;
     let mut w = playing();
     spawn_at(&mut w, 1);
     for seq in 1..=500u32 {
-        w.queue_input(
-            1,
-            Input {
-                seq,
-                buttons: button::RIGHT,
-                aim: 0,
-            },
-        );
+        w.queue_input(1, walk(seq));
     }
     w.step(SIM_DT);
-    assert!(
-        w.pending_len() <= game_core::constants::MAX_INPUT_QUEUE,
-        "backlog grew to {} against a cap of {}",
+    assert_eq!(
         w.pending_len(),
-        game_core::constants::MAX_INPUT_QUEUE
+        INPUT_BACKLOG_TARGET,
+        "the jitter buffer kept {} against a target of {INPUT_BACKLOG_TARGET}",
+        w.pending_len()
+    );
+    assert_eq!(
+        w.last_simulated_seq(1),
+        Some(500 - INPUT_BACKLOG_TARGET as u32),
+        "the excess was not the oldest"
     );
 }
 

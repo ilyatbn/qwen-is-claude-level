@@ -46,12 +46,15 @@ const K = rustConstants()
 const NAME_KEY = clientKey('NAME_KEY')
 
 /**
- * How long before the bell bo starts to burn. Long enough that the burn is
- * certainly under way when the bell rings, short enough that the tank (5 s at
- * 1/s) cannot run dry before it — asserted before the burn against the fuel and
- * `JETPACK_DRAIN`, not assumed.
+ * How long before the bell bo starts to burn (T22.10E review, (b)). It was 3 s,
+ * long enough for UP to carry him into the first rock overhead and park him
+ * there — measured `v 0.0, 0.0` at the bell in a green run — and a parked body
+ * cannot show a rubber-band. Half a second is a burn still accelerating in open
+ * air when the bell rings; the arm now *requires* that (a speed floor at the last
+ * pre-bell frame, below) instead of hoping. The tank cannot run dry in it —
+ * asserted against the fuel and `JETPACK_DRAIN`, not assumed.
  */
-const BELL_LEAD_S = 3
+const BELL_LEAD_S = 0.5
 /** Rendered frames after an edge (release, bell, death) before reading the views. */
 const SETTLE_FRAMES = 6
 /**
@@ -339,13 +342,29 @@ try {
         await bo.page.screenshot({ path: join(shotsDir, 'thrusters-match-bell.png') })
         const seen = await watch
         const last = seen?.pre
+        const minSpeed = K.get('RECONCILE_EPSILON_PX') * K.get('SNAPSHOT_HZ')
         if (!rang) fail(`the round never ended: ${JSON.stringify(brief(after, bo))}`)
-        else if (!last || last.moveState !== 2 || last.grounded !== false || !last.drawn) {
+        else if (
+          !last ||
+          last.moveState !== 2 ||
+          last.grounded !== false ||
+          !last.drawn ||
+          !(Math.hypot(last.vx, last.vy) >= minSpeed)
+        ) {
           // F-5: the frame the bell interrupted must be a burn in the air, or the
-          // plume going out after it is the landing, not the bell.
-          fail(`control: the last frame before the bell was not an airborne burn, so the bell arm proves nothing: ${JSON.stringify(last)}`)
+          // plume going out after it is the landing, not the bell. And **moving**
+          // (T22.10E review (b)): a body pinned against rock drifts nowhere after
+          // the bell, so a stale prediction there reads right — at least the speed
+          // that carries it past the reconcile epsilon within one snapshot.
+          fail(
+            `control: the last frame before the bell was not a moving airborne burn ` +
+              `(speed floor ${minSpeed} px/s), so the bell arm proves nothing: ${JSON.stringify(last)}`,
+          )
         } else {
-          ok(`control: the last frame before the bell is an airborne burn (moveState 2, v ${last.vx.toFixed(1)}, ${last.vy.toFixed(1)})`)
+          ok(
+            `control: the last frame before the bell is an airborne burn (moveState 2, v ${last.vx.toFixed(1)}, ` +
+              `${last.vy.toFixed(1)}; floor ${minSpeed} px/s)`,
+          )
           if (after.plumes?.[bo.id]?.drawn !== false) {
             fail(`the round is over and bo's plume still fires, thrust held: ${JSON.stringify(brief(after, bo))}`)
           } else ok(`the bell rang with thrust held: bo's own plume is out`)

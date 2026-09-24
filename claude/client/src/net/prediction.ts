@@ -53,7 +53,9 @@ export interface PredictorStats {
   lastAck: number
   /**
    * T22.10E F-4: reconciles left out of both maxima because they followed a
-   * relocation or an ack gap (a rematch's skipped seqs) — the event's numbers.
+   * relocation or an ack gap (a rematch's skipped seqs, or a stand-in's seqs run
+   * ahead of a client that lost time, T22.10F), or flipped `alive` — the event's
+   * numbers.
    */
   settled: number
 }
@@ -129,6 +131,12 @@ export class Predictor {
    * numbers are the event's, not the prediction's — kept out of the maxima.
    */
   private unsettled = false
+  /**
+   * The aim of the newest input (T22.10E review, (d)): what the server's neutral
+   * tick carries (`World::apply_inputs` keeps the last aim), so the catch-up and
+   * the replay step with it too — one answer to "which aim", not 0 in two places.
+   */
+  private lastAim = 0
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -145,6 +153,7 @@ export class Predictor {
 
   /** Sample, buffer, and apply locally — all in the same frame, at zero latency. */
   pushInput(input: InputFrame, dt: number): void {
+    this.lastAim = input.aim
     // T22.10E F-3: in a phase that takes no input the server integrates a neutral
     // tick and drops what was sent, so this does exactly that and keeps nothing.
     // It kept every input (`pending` grew 14 → 301 over a results screen), then
@@ -256,6 +265,7 @@ export class Predictor {
     // Snap the simulation immediately. Letting it lag the truth compounds the
     // error into every prediction after it.
     const was = { x: local.x, y: local.y }
+    const lifeChanged = local.alive !== snap.state.alive
     this.core.setPlayerState(this.localId, snap.state)
     // The truth at the ack is now the prediction there, for a snapshot that acks it again.
     this.predicted.set(snap.lastInputSeq, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
@@ -264,7 +274,7 @@ export class Predictor {
       const s = this.state
       if (s) this.predicted.set(input.seq, { x: s.x, y: s.y, vx: s.vx, vy: s.vy })
     }
-    this.corrected(was, err, ackErr)
+    this.corrected(was, err, ackErr, lifeChanged)
   }
 
   /**
@@ -288,7 +298,7 @@ export class Predictor {
     // own ceiling); further behind than that, the local clock has lost the server's
     // (a hidden tab) and the correction re-anchors instead.
     if (n.label !== null && snap.tick - n.label > Math.ceil(C().MAX_FRAME_DT / dt)) n.label = null
-    while (n.label !== null && n.label < snap.tick) this.stepNeutral(n, snap.lastInputSeq, 0, dt)
+    while (n.label !== null && n.label < snap.tick) this.stepNeutral(n, snap.lastInputSeq, this.lastAim, dt)
     const at = n.label !== null ? n.at.get(snap.tick) : undefined
     for (const t of n.at.keys()) if (t < snap.tick) n.at.delete(t)
     const ackErr = at ? Math.hypot(at.x - snap.state.x, at.y - snap.state.y) : Number.NaN
@@ -305,8 +315,8 @@ export class Predictor {
     n.label = snap.tick
     n.at.clear()
     n.at.set(snap.tick, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
-    for (let i = 0; i < ahead; i++) this.stepNeutral(n, snap.lastInputSeq, 0, dt)
-    this.corrected(was, err, ackErr)
+    for (let i = 0; i < ahead; i++) this.stepNeutral(n, snap.lastInputSeq, this.lastAim, dt)
+    this.corrected(was, err, ackErr, local.alive !== snap.state.alive)
   }
 
   /** Enter the no-input prediction (T22.10E F-3): nothing kept is worth replaying. */
@@ -364,8 +374,15 @@ export class Predictor {
     } else this.noteAckError(ackErr)
   }
 
-  /** The bookkeeping of a correction that moved the body from `was`. */
-  private corrected(was: { x: number; y: number }, err: number, ackErr: number): void {
+  /**
+   * The bookkeeping of a correction that moved the body from `was`. `lifeChanged`:
+   * the snapshot flips `alive` (T22.10E review, (a)) — a void death freezes the
+   * server's body where it died while the local copy fell on, so its jump is the
+   * death's, not the prediction's, and stays out of the maxima like a relocation.
+   * (Explosion knockback is not excluded: it is unpredictable by design — the
+   * client never simulates projectiles — and its correction is a real one.)
+   */
+  private corrected(was: { x: number; y: number }, err: number, ackErr: number, lifeChanged = false): void {
     this.stats.corrections++
     this.stats.lastCorrectionPx = err
     this.stats.maxCorrectionPx = Math.max(this.stats.maxCorrectionPx, err)
@@ -381,9 +398,10 @@ export class Predictor {
       this.stats.snaps++
       this.render = { x: now.x, y: now.y }
       this.unsettled = false
-    } else if (this.unsettled) {
+    } else if (this.unsettled || lifeChanged) {
       // T22.10E F-4: the first correction after a relocation or an ack gap is
       // the event's, whatever its size — counted, not folded into the maxima.
+      // So is a death or a respawn (above).
       this.unsettled = false
       this.stats.settled++
     } else {

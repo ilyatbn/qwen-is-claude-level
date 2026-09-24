@@ -1387,7 +1387,11 @@ mod tests {
         // The control: refilled, but unmounted — the bag decides, and it cannot reach.
         w.platform_ammo[g.id as usize] = crate::constants::GUN_PLATFORM_AMMO;
         w.player_mut(0).expect("seated").mount.mounted = None;
-        let (pressed, _, rounds) = run(&mut w, &mut b, ticks);
+        // Under the mount time (T22.10F): a silent player is stepped every tick
+        // now, and one left standing on the platform mounts it again after
+        // `GUN_PLATFORM_MOUNT_TIME` — the fixture's own doing, not the bot's.
+        let unmounted = (crate::constants::GUN_PLATFORM_MOUNT_TIME / SIM_DT) as usize / 2;
+        let (pressed, _, rounds) = run(&mut w, &mut b, unmounted);
         assert_eq!(
             (pressed, rounds),
             (0, 0),

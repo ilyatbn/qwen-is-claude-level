@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, beforeEach } from 'vitest'
+import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, MapScale, type PlayerState } from '../core'
@@ -572,6 +572,64 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
     p.reconcile({ tick: 0, lastInputSeq: 4, state: { ...t, x: t.x + off() } })
     expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
   })
+
+  // T22.10E review (a): a void death freezes the server's body where it died while
+  // the local copy falls on — `void` read 45–63 px of "rubber-band" that was the death.
+  it('leave out a correction that flips alive, and only that one', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...s, x: s.x + off(), alive: false } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.lastJumpPx).toBeGreaterThan(off() / 2)
+    expect(p.stats.settled).toBe(1)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    expect(p.stats.maxAckErrorPx).toBe(0)
+    // The control: still dead, off again — no flip, so it counts.
+    p.pushInput(inp(4, 0), DT)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 4, state: { ...t, x: t.x + off(), alive: false } })
+    expect(p.stats.corrections).toBe(2)
+    expect(p.stats.settled).toBe(1)
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+  })
+})
+
+/**
+ * T22.10F (R89): **the server stands in for a late input with the held one.** Every
+ * tick simulates every player once; when input `k` has not arrived, the server runs
+ * the newest input's held buttons under seq `k` and acks `k`. A client that held
+ * the same buttons predicted exactly that tick; one whose input changed on it takes
+ * one correction, and the tick after — the real input again — agrees.
+ */
+describe('a stood-in tick (T22.10F)', () => {
+  function hitch(fifth: number) {
+    const p = new Predictor(core, 0)
+    const sent = [BTN.RIGHT, BTN.RIGHT, BTN.RIGHT, BTN.RIGHT, fifth, fifth, fifth]
+    sent.forEach((b, i) => p.pushInput(inp(i + 1, b), DT))
+    // The server: 1..4 arrived on time; 5 is late, so it stands in with 4's held RIGHT.
+    for (let s = 1; s <= 4; s++) mirror.applyInput(0, s, BTN.RIGHT, 0, DT)
+    mirror.applyInput(0, 5, BTN.RIGHT, 0, DT)
+    p.reconcile({ tick: 5, lastInputSeq: 5, state: mirror.playerState(0)! })
+    const first = p.stats.corrections
+    // 5 arrives late and is discarded; 6 and 7 arrive on time and run.
+    for (const s of [6, 7]) {
+      mirror.applyInput(0, s, fifth, 0, DT)
+      p.reconcile({ tick: s, lastInputSeq: s, state: mirror.playerState(0)! })
+    }
+    return { first, total: p.stats.corrections }
+  }
+
+  it('agrees when the held input did not change', () => {
+    expect(hitch(BTN.RIGHT)).toEqual({ first: 0, total: 0 })
+  })
+
+  it('corrects once when it did', () => {
+    // The control for the case above: the stood-in tick is visible to the gate —
+    // at the stood-in ack or, while one tick's difference is still under the
+    // epsilon, at the next; once either way, and the replay then agrees.
+    expect(hitch(BTN.LEFT).total).toBe(1)
+  })
 })
 
 /**
@@ -652,4 +710,38 @@ describe('the results screen (T22.10E F-3)', () => {
       expect(Math.max(0, ...later)).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
     })
   }
+})
+
+/**
+ * T22.10E review (c): **the results screen's catch-up is capped at one frame.** A
+ * local body behind the snapshot's tick runs the ticks it owes — at most
+ * `MAX_FRAME_TICKS` (`MAX_FRAME_DT`, the fixed step's own ceiling); further behind
+ * than that the local clock has lost the server's (a hidden tab) and the
+ * correction re-anchors instead of running them all in one frame.
+ */
+describe('the results screen catch-up cap (T22.10E review)', () => {
+  const frameTicks = () => Math.ceil(C().MAX_FRAME_DT * C().SIM_HZ)
+  function behind(by: number): number {
+    core.setPhase('ended')
+    const p = new Predictor(core, 0)
+    p.pushInput(inp(1, 0), DT)
+    // Anchors the label on tick 100.
+    p.reconcile({ tick: 100, lastInputSeq: 0, state: core.playerState(0)! })
+    const spy = vi.spyOn(core, 'applyInput')
+    try {
+      p.reconcile({ tick: 100 + by, lastInputSeq: 0, state: core.playerState(0)! })
+      return spy.mock.calls.length
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('runs the owed ticks within a frame', () => {
+    // The control: the counter sees catch-up steps at all.
+    expect(behind(3)).toBeGreaterThanOrEqual(3)
+  })
+
+  it('re-anchors past a frame, stepping fewer than a frame', () => {
+    expect(behind(10 * frameTicks())).toBeLessThan(frameTicks())
+  })
 })

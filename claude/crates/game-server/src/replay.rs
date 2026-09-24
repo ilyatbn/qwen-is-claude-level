@@ -243,7 +243,16 @@ pub const HEADER_BYTES: usize = 46;
 ///  - **A space round rolls different weather**: meteor and flare alternate where
 ///    it used to roll fog (R43, R78). A standard round's *schedule* is unchanged —
 ///    `the_flare_does_not_move_the_grounds_schedule` — but its hashes still move.
-pub const REPLAY_VERSION: u16 = 17;
+///
+/// **18 (T22.10F, one step per player per tick — R89)**: the silent-divergence
+/// shape. No new tag, no layout change, no new hashed field. **The same recorded
+/// inputs simulate differently**: a tick with no input for a player is now a
+/// stand-in step (the held state) where v17 did not integrate the player at all;
+/// an input at or below the last simulated seq is discarded where v17 queued it;
+/// the jitter buffer drops its oldest past `INPUT_BACKLOG_TARGET` where v17 ran
+/// two a tick against catch-up credit. A v17 recording with any late or missing
+/// input diverges at that tick.
+pub const REPLAY_VERSION: u16 = 18;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

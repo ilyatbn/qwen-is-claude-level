@@ -22,8 +22,8 @@ use birds::{BirdId, BirdKind, Birds};
 use tombstones::Tombstones;
 
 use crate::constants::{
-    GravityMode, MapScale, ENDED_SECONDS, INPUT_BACKLOG_TARGET, MAX_FRAME_TICKS, MAX_INPUT_QUEUE,
-    MAX_PLAYERS, ROUND_SECONDS, TELEPORT_PADS, WARMUP_SECONDS,
+    GravityMode, MapScale, ENDED_SECONDS, INPUT_BACKLOG_TARGET, MAX_FRAME_TICKS, MAX_PLAYERS,
+    ROUND_SECONDS, TELEPORT_PADS, WARMUP_SECONDS,
 };
 use crate::items::registry::{ItemId, WeaponId, WEAPON_PLATFORM_GUN};
 use crate::items::spawning::{assign_buried_items, place_initial, reveal_buried, SpawnSchedule};
@@ -894,14 +894,17 @@ pub struct World {
     events: Vec<GameEvent>,
     rng: ChaCha8Rng,
     carve_seq: u32,
-    /// Per-player queued inputs, parallel to `players` by id lookup.
+    /// Per-player queued inputs, parallel to `players` by id lookup: the jitter
+    /// buffer, only ever seqs *after* the last simulated one (T22.10F, R89).
     pending: Vec<(PlayerId, Input)>,
+    /// The input each player's last simulated tick ran — real or stand-in — so
+    /// **its `seq` is the last simulated seq, the snapshot's ack** (T22.10F), and
+    /// its buttons are the next tick's `edges` baseline.
     prev_input: Vec<(PlayerId, Input)>,
-    /// Ticks each player is owed (T22.10D F4): ticks that passed with no input
-    /// to consume, capped at `MAX_FRAME_TICKS`. `apply_inputs` spends one per
-    /// extra input it consumes to drain a backlog, so a player never consumes
-    /// more inputs than ticks have passed — §A30's invariant, kept while catching up.
-    input_credit: Vec<(PlayerId, u32)>,
+    /// The newest input each player has sent, simulated or not (T22.10F, R89):
+    /// the held state a stand-in tick repeats when the next input has not
+    /// arrived. Newer than `prev_input` exactly when a late input was discarded.
+    newest_input: Vec<(PlayerId, Input)>,
     phase_started_at: f32,
     /// `Playing` duration. Defaults to `ROUND_SECONDS`; overridden for tests.
     round_seconds: f32,
@@ -1121,7 +1124,7 @@ impl World {
             carve_seq: 0,
             pending: Vec::new(),
             prev_input: Vec::new(),
-            input_credit: Vec::new(),
+            newest_input: Vec::new(),
             phase_started_at: 0.0,
             last_day_phase: cycle_at(0.0).phase,
             toxic: None,
@@ -1153,7 +1156,7 @@ impl World {
         self.players.sort_by_key(|p| p.id);
         self.prev_input.push((id, Input::default()));
         self.prev_input.sort_by_key(|(i, _)| *i);
-        self.input_credit.push((id, 0));
+        self.newest_input.push((id, Input::default()));
     }
 
     /// A fresh spacesuit: the battery full, in a suit mode (T22.09A, R24).
@@ -1220,7 +1223,7 @@ impl World {
     pub fn remove_player(&mut self, id: PlayerId) {
         self.players.retain(|p| p.id != id);
         self.prev_input.retain(|(i, _)| *i != id);
-        self.input_credit.retain(|(i, _)| *i != id);
+        self.newest_input.retain(|(i, _)| *i != id);
         self.pending.retain(|(i, _)| *i != id);
     }
 
@@ -1232,25 +1235,47 @@ impl World {
         self.players.iter_mut().find(|p| p.id == id)
     }
 
-    pub fn queue_input(&mut self, id: PlayerId, input: Input) {
+    /// Hand the world an input for `id`'s next ticks (T22.10F, R89).
+    ///
+    /// **Seq 0 is "the next one"**: a bot has no packets to order, and neither
+    /// does a test that queues one input a tick, so the world numbers it after
+    /// everything this player has sent. No client input can carry 0 — the room
+    /// rejects any seq at or below its last received, which starts at 0
+    /// (`Room::apply`'s `Command::Input`) — so the sentinel cannot collide with a
+    /// real stream. Without it every such input would read as already simulated
+    /// and be discarded.
+    pub fn queue_input(&mut self, id: PlayerId, mut input: Input) {
+        let Some(slot) = self.newest_input.iter_mut().find(|(i, _)| *i == id) else {
+            return;
+        };
+        if input.seq == 0 {
+            let last = self
+                .prev_input
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map_or(0, |(_, v)| v.seq);
+            input.seq = last.max(slot.1.seq) + 1;
+        }
+        if input.seq > slot.1.seq {
+            slot.1 = input;
+        }
         self.pending.push((id, input));
     }
 
-    /// The oldest input still queued for `id` — received, not yet consumed by a
-    /// tick — or `None` when nothing is waiting (T22.10B). The room acks one
-    /// below it: a snapshot's state includes every input **before** this one and
-    /// none from it on, and the ack has to say exactly that or the client drops
-    /// inputs from its replay that the state never saw (`Room::last_seqs`).
-    pub fn oldest_queued_seq(&self, id: PlayerId) -> Option<u32> {
-        self.pending
+    /// The seq of `id`'s last simulated tick — a real input's, or the one a
+    /// stand-in claimed — and so **the snapshot's ack** (T22.10F, R89;
+    /// `Room::last_seqs`). The state after this tick is exactly what a client
+    /// that predicted every seq up to it with the inputs the server ran would
+    /// hold, and every seq after it is still to be simulated.
+    pub fn last_simulated_seq(&self, id: PlayerId) -> Option<u32> {
+        self.prev_input
             .iter()
-            .filter(|(i, _)| *i == id)
-            .map(|(_, input)| input.seq)
-            .min()
+            .find(|(i, _)| *i == id)
+            .map(|(_, v)| v.seq)
     }
 
-    /// Unconsumed inputs still queued. Bounded by `MAX_INPUT_QUEUE` per player
-    /// after each tick (`docs/70-amendments-v2.md` §A30).
+    /// Unconsumed inputs still queued. At most `INPUT_BACKLOG_TARGET` per player
+    /// after each tick (T22.10F, R89).
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
@@ -1361,11 +1386,6 @@ impl World {
         }
         self.phase = phase;
         self.phase_started_at = self.round_time;
-        // T22.10E F-1: catch-up credit is owed within a phase, never carried
-        // across one — warmup's silence must not pay for `Playing`'s first burst.
-        for (_, credit) in self.input_credit.iter_mut() {
-            *credit = 0;
-        }
         let tick = self.tick;
         self.events.push(GameEvent::RoundState {
             tick,
@@ -1770,145 +1790,95 @@ impl World {
     }
 
     fn apply_inputs(&mut self, now: f32, dt: f32) {
-        // Ascending id, and **exactly one input per player per tick**.
+        // **T22.10F (coordinator ruling R89): every live player is simulated
+        // exactly one step every tick** — the next input if it has arrived, else a
+        // *stand-in* — and never more than one.
         //
-        // Applying every queued input in one tick, each with a full `dt`, makes
-        // packet rate a speed multiplier: measured over 60 ticks, 1 input/tick
-        // moved 140.79 px and 2 input/tick moved 290.80 px — 2.06x, from the
-        // client simply choosing to send more often. Server-authoritative
-        // movement means the server decides how much time an input is worth, and
-        // one input is worth one tick (`docs/70-amendments-v2.md` §A30).
+        // One input is worth one tick (`docs/70-amendments-v2.md` §A30: applying
+        // every queued input with a full `dt` made packet rate a speed multiplier,
+        // 2.06× measured). What replaced T22.10D/E's catch-up credit is the other
+        // half of the same sentence: **one tick is worth one input.** The credit
+        // let a tick run two inputs to drain a burst, and three reviews each found
+        // a new failure of it — a 2× dash paid for by a bank, and a burst split
+        // across two ticks left standing at 13 inputs (~217 ms) forever — while a
+        // player whose inputs stopped was not integrated at all: no gravity, no
+        // field, hanging in the air on every other screen (a lag-switch hover).
         //
-        // The surplus stays in `pending` as a bounded backlog and is consumed on
-        // later ticks, which is also what makes a jitter burst catch up smoothly
-        // instead of teleporting.
+        // The model, per player, in a phase that takes input:
+        // - an **expected seq** advances by one every simulated tick: the last
+        //   simulated seq is `prev_input`'s, and it is the snapshot's ack;
+        // - an input at or below it arrives after its tick already happened (a
+        //   stand-in ran it) and is discarded — after `queue_input` has recorded
+        //   it as the newest held state, so the next stand-in steers by it;
+        // - inputs above it wait in `pending`, a jitter buffer of at most
+        //   `INPUT_BACKLOG_TARGET` after the tick: an excess is the **oldest**
+        //   dropped and the expected seq jumps past them — one bounded correction
+        //   after a hitch, never a standing delay and never two steps in a tick;
+        // - with nothing queued, a **stand-in**: the newest input's held buttons
+        //   and aim under the next seq. Every edge (`input::edges`: jump press and
+        //   release) is `current` against `prev`, so a repeated held input cannot
+        //   fire one twice; `fire`, `use_item` and `select_slot` are commands, not
+        //   buttons, and a stand-in never issues them.
+        //
+        // A stand-in claims the next seq only while it is within
+        // `MAX_FRAME_TICKS` of the newest seq the player has sent, and never
+        // before the first: past that the client has lost time (a hidden tab's
+        // frames are capped at `MAX_FRAME_DT`), its seqs will never catch the
+        // server's, and a claimed seq would discard every input it sends from
+        // then on. The body still steps — the seq just stops running ahead — so
+        // the client's next frame (at most `MAX_FRAME_TICKS` inputs) lands on or
+        // past the expected seq. Said here because R89 does not say it: it is
+        // the one place this departs from "advances by one every simulated tick".
         self.pending.sort_by_key(|(id, inp)| (*id, inp.seq));
-
-        // Take the first (lowest-seq) input for each distinct player, leaving the
-        // rest queued. `pending` is sorted by (id, seq), so the first entry for an
-        // id is the oldest unconsumed input for that player.
+        let mut queued = std::mem::take(&mut self.pending);
         let mut this_tick: Vec<(PlayerId, Input)> = Vec::new();
-        let mut backlog: Vec<(PlayerId, Input)> = Vec::new();
-        let mut taken: Vec<PlayerId> = Vec::new();
-        for (id, input) in std::mem::take(&mut self.pending) {
-            if taken.contains(&id) {
-                backlog.push((id, input));
-            } else {
-                taken.push(id);
+        if self.phase.accepts_input() {
+            for &(id, prev) in &self.prev_input {
+                let newest = self
+                    .newest_input
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .map_or(prev, |(_, v)| *v);
+                let mut mine: Vec<Input> = queued
+                    .iter()
+                    .filter(|(i, v)| *i == id && v.seq > prev.seq)
+                    .map(|(_, v)| *v)
+                    .collect();
+                let excess = mine.len().saturating_sub(INPUT_BACKLOG_TARGET + 1);
+                mine.drain(..excess);
+                let input = if mine.is_empty() {
+                    let claims = newest.seq > 0 && prev.seq < newest.seq + MAX_FRAME_TICKS as u32;
+                    let seq = if claims { prev.seq + 1 } else { prev.seq };
+                    Input::new(seq, newest.buttons, newest.aim)
+                } else {
+                    mine.remove(0)
+                };
                 this_tick.push((id, input));
+                self.pending.extend(mine.into_iter().map(|v| (id, v)));
             }
-        }
-        // **T22.10D F4: a backlog is caught up, one extra input per owed tick.**
-        //
-        // A client frame of `MAX_FRAME_DT` sends `MAX_FRAME_TICKS` inputs at once,
-        // after as many ticks in which this player had nothing to consume. Taken
-        // strictly one per tick, that burst became a *standing* queue — measured at
-        // 7 inputs, ~117 ms of input delay for the rest of the match, and every
-        // shot fired from where the player stood 117 ms earlier. Dropping the
-        // oldest instead would snap the client back by every tick it dropped.
-        //
-        // So a player whose backlog is above `INPUT_BACKLOG_TARGET` consumes a
-        // second input this tick — **only against credit**: one tick of credit is
-        // earned per tick that passed with no input to consume. Inputs consumed
-        // therefore never exceed ticks elapsed, which is §A30's invariant (packet
-        // rate is not a speed multiplier): a client that sends two per tick is
-        // never starved, earns nothing, and moves at one input per tick exactly as
-        // before. Each input still integrates with one `dt`, in seq order, so the
-        // state after seq `k` is exactly what the client predicted after `k`.
-        //
-        // Consume-twice rather than drop-oldest, the other shape the ruling
-        // offered, for that last sentence: a dropped input is travel the client
-        // predicted and the server never ran, which is a snap on every burst.
-        //
-        // **T22.10E F-1: credit is owed for the gap just before a burst, never
-        // banked.** As first built it accrued on every input-less tick in any
-        // state and was only spent by a backlog, so an honest one-per-tick client
-        // never spent it: a client could bank a frame's worth while dead, in
-        // warmup or silent, and cash it minutes later as a 2× dash (the review
-        // of `d2d4c07` measured 5.00 px/tick for 10 ticks against a walk's 2.50).
-        // The coordinator's ruling, all three halves here:
-        // - it accrues only while the player is **alive** and the phase accepts
-        //   input — dead or in `Ended` it is zero, which is also what resets it
-        //   at respawn (a respawn always follows at least one dead tick);
-        // - it is **cleared at the end of any tick in which the player consumed
-        //   an input and was left with at most `INPUT_BACKLOG_TARGET`** — caught
-        //   up means nothing is owed any more;
-        // - `set_phase` zeroes it on every transition, so warmup's silence does
-        //   not pay for `Playing`'s first burst.
-        let accepts = self.phase.accepts_input();
-        for (id, credit) in self.input_credit.iter_mut() {
-            let alive = self.players.iter().any(|p| p.id == *id && p.alive);
-            if !accepts || !alive {
-                *credit = 0;
-                continue;
-            }
-            if !taken.contains(id) {
-                *credit = (*credit + 1).min(MAX_FRAME_TICKS as u32);
-                continue;
-            }
-            let queued = |b: &[(PlayerId, Input)]| b.iter().filter(|(i, _)| i == id).count();
-            if *credit > 0 && queued(&backlog) > INPUT_BACKLOG_TARGET {
-                if let Some(at) = backlog.iter().position(|(i, _)| i == id) {
-                    let extra = backlog.remove(at);
-                    let after = this_tick
-                        .iter()
-                        .rposition(|(i, _)| i == id)
-                        .map_or(this_tick.len(), |p| p + 1);
-                    this_tick.insert(after, extra);
-                    *credit -= 1;
-                }
-            }
-            if queued(&backlog) <= INPUT_BACKLOG_TARGET {
-                *credit = 0;
-            }
-        }
-        // A backlog longer than the queue cap means the client is sending faster
-        // than the sim runs, indefinitely — a flood, since an honest client's
-        // largest burst is one frame's (`MAX_INPUT_QUEUE` = `MAX_FRAME_TICKS`).
-        // Dropping the *oldest* keeps the player responsive to their most recent
-        // intent rather than replaying stale stick positions.
-        for id in &taken {
-            let count = backlog.iter().filter(|(i, _)| i == id).count();
-            if count > MAX_INPUT_QUEUE {
-                let mut excess = count - MAX_INPUT_QUEUE;
-                backlog.retain(|(i, _)| {
-                    if i == id && excess > 0 {
-                        excess -= 1;
-                        false
-                    } else {
-                        true
-                    }
-                });
-            }
-        }
-        self.pending = backlog;
-
-        // **T21.30: once the round is over, input does nothing — but gravity
-        // does.** Everything queued is dropped rather than kept, or it would be
-        // applied the moment the next round starts, and every alive player gets
-        // a **neutral** tick whether their client sent anything or not: the
-        // results screen stops the client sending, and a player who is not sent
-        // an input is not integrated at all, so without this a player mid-air
-        // when the round ended would hang there for the whole results window.
-        //
-        // Through the same loop below, not a second integration path, so the
-        // mount rule, the fall and the aim are treated exactly as on any tick.
-        if !self.phase.accepts_input() {
-            self.pending.clear();
+        } else {
+            // **T21.30: once the round is over, input does nothing — but gravity
+            // does.** Everything queued is dropped rather than kept, or it would
+            // be applied the moment the next round starts, and every alive player
+            // gets a **neutral** tick under the last simulated seq, so the ack
+            // stands still (the client's results screen keys on the tick,
+            // T22.10E F-3). The stand-in rule above is for a phase that takes
+            // input; this is the neutral tick it would otherwise be.
+            //
+            // Through the same loop below, not a second integration path, so the
+            // mount rule, the fall and the aim are treated exactly as on any tick.
+            queued.clear();
             this_tick = self
                 .players
                 .iter()
                 .filter(|p| p.alive)
                 .map(|p| {
-                    let seq = self
-                        .prev_input
-                        .iter()
-                        .find(|(i, _)| *i == p.id)
-                        .map_or(0, |(_, v)| v.seq);
+                    let seq = self.last_simulated_seq(p.id).unwrap_or(0);
                     (p.id, Input::new(seq, 0, p.aim))
                 })
                 .collect();
         }
+        drop(queued);
 
         // Collected rather than applied in the loop: `apply_damage_log` takes
         // `&mut self` and the loop holds a `&mut` borrow of one player.
@@ -1918,6 +1888,12 @@ impl World {
                 continue;
             };
             if !self.players[idx].alive {
+                // Dead, the tick still happens to the input stream: the seq
+                // advances (so a respawn does not face a queue of inputs sent
+                // while dead) and the body does not move.
+                if let Some(slot) = self.prev_input.iter_mut().find(|(i, _)| *i == id) {
+                    slot.1 = input;
+                }
                 continue;
             }
             let prev = self
@@ -5358,15 +5334,14 @@ mod state_hash_coverage {
             // output, not state, and two runs that produced identical state have
             // by construction produced identical events.
             events: _,
-            // `pending` and `prev_input` are consumed within the tick that fills
-            // them (§A30: one input per player per tick), so they are empty at
-            // every point a hash is taken.
+            // The input stream's bookkeeping (T22.10F): the jitter buffer, the
+            // last simulated input and the newest sent. All three are a function
+            // of the inputs and the ticks they arrived on, which the replay
+            // records, and any divergence in them moves a body within a tick —
+            // which *is* hashed.
             pending: _,
             prev_input: _,
-            // T22.10D: `input_credit` is `pending`'s bookkeeping — a count of the
-            // ticks the input stream left empty, which the replay reproduces by
-            // recording each input on the tick it arrived.
-            input_credit: _,
+            newest_input: _,
             // `irradiated_this_tick` (T22.09A, R75) is filled and taken inside
             // one `step` and cleared at its top, so it is empty at every point a
             // hash is taken — `the_radiation_list_never_survives_a_step`.
@@ -7688,6 +7663,12 @@ mod teleport_wiring {
             }
             w.step(SIM_DT);
             evs.extend(w.drain_events());
+            // Stop on arrival (T22.10F): a silent player is now stepped every
+            // tick, so the ticks after it refill a grounded tank at the rate
+            // that has nothing to do with the pad.
+            if !teleports(&evs).is_empty() {
+                break;
+            }
         }
         assert_eq!(teleports(&evs).len(), 1, "the fixture never teleported");
 
@@ -10923,8 +10904,9 @@ mod unicorn_wings {
 
     /// `n` ticks holding `buttons`, and the y afterwards.
     fn fly(w: &mut World, buttons: u8, n: u32) -> f32 {
-        for t in 0..n {
-            w.queue_input(0, Input::new(t + 1, buttons, 0));
+        for _ in 0..n {
+            // Seq 0, numbered by the world (T22.10F): `t + 1` restarted per call.
+            w.queue_input(0, Input::new(0, buttons, 0));
             w.step(SIM_DT);
         }
         w.player(0).expect("ana").body.pos.y
@@ -11201,12 +11183,14 @@ mod mount_wiring {
     /// the physics of standing on a slope is not what this measures.
     fn drive(w: &mut World, id: PlayerId, g: &GunPlatform, input: Input, seconds: f32) {
         let steps = (seconds / SIM_DT).ceil() as usize;
-        for i in 0..steps {
+        for _ in 0..steps {
             if w.player(id).is_some_and(|p| !p.mount.is_mounted()) {
                 plant(w, id, g);
             }
+            // Seq 0: the world numbers it after the last (T22.10F) — `i + 1`
+            // restarted at every call, and a restarted seq reads as already run.
             let mut inp = input;
-            inp.seq = i as u32 + 1;
+            inp.seq = 0;
             w.queue_input(id, inp);
             w.step(SIM_DT);
             w.drain_events();

@@ -2134,23 +2134,24 @@ impl Room {
     /// It is also just what `docs/40-net-protocol.md` §1 says: a client that has
     /// not sent `ready` is seated but not simulated.
     ///
-    /// **The last *consumed*, not the last received** (T22.10B). The world takes
-    /// one input per player per tick and queues the rest, so the newest received
-    /// input can be several ticks from reaching the state this snapshot carries.
-    /// Acking it told the client to drop inputs the state never saw: it replayed
-    /// without them, predicted behind the server, snapped back, and snapped
-    /// forward a snapshot later — a rubber-band on anything moving fast, measured
-    /// at 9–14 px under a vortex's pull. Derived from the queue the world already
-    /// holds (`World::oldest_queued_seq`), not a second counter to keep in step.
+    /// **The last *simulated* seq — a real input's or a stand-in's** (T22.10F,
+    /// R89; T22.10B made it the last consumed, not the last received). The world
+    /// steps every player once a tick, standing in with the newest held state when
+    /// the next input is late, and a stand-in claims that seq: the snapshot's
+    /// state is exactly the tick that seq names. A client that predicted it with
+    /// the same held input agrees; one whose input changed on it takes one
+    /// bounded correction. Acking the last *received* instead told the client to
+    /// drop inputs the state never saw (a 9–14 px rubber-band under a vortex's
+    /// pull, T22.10B). Read from the world (`World::last_simulated_seq`), not a
+    /// second counter to keep in step; before a world exists, the last received.
     pub fn last_seqs(&self) -> Vec<(PlayerId, u32)> {
         self.seats
             .seats
             .iter()
             .filter(|s| s.ready)
             .map(|s| {
-                let queued = self.world.as_ref().and_then(|w| w.oldest_queued_seq(s.id));
-                let acked = queued.map_or(s.last_seq, |q| q.saturating_sub(1).min(s.last_seq));
-                (s.id, acked)
+                let simulated = self.world.as_ref().and_then(|w| w.last_simulated_seq(s.id));
+                (s.id, simulated.unwrap_or(s.last_seq))
             })
             .collect()
     }
@@ -3521,21 +3522,22 @@ mod tests {
         assert_eq!(ack(&room), Some(3), "control: all three, once consumed");
     }
 
-    /// T22.10D F4: **a long frame's burst is caught up — not dropped, and not left
-    /// standing.** One client frame of `MAX_FRAME_DT` steps `MAX_FRAME_TICKS` inputs
-    /// and sends them in one instant, after `MAX_FRAME_TICKS` ticks in which the
-    /// server heard nothing (that is what a long frame *is*). The room accepted 8
-    /// and dropped the newest 7, never re-sent; the world then held a standing
-    /// queue of 7 for the rest of the match (~117 ms of input delay), and the
-    /// dropped seqs made the ack jump past inputs the client had predicted.
+    /// T22.10F (R89; was T22.10D F4's catch-up): **a long frame costs nothing —
+    /// no hover, no snap, no standing queue.** A client walking one input a tick
+    /// hits a frame of `MAX_FRAME_DT`: for `MAX_FRAME_TICKS` ticks the server hears
+    /// nothing, then every input of the frame arrives in one instant (in packets of
+    /// `INPUT_REDUNDANCY`, as `inputPackets` sends them), then one a tick again.
+    /// The server stands in for the silent ticks with the held walk under the seqs
+    /// the client was sending, so the burst arrives already simulated.
     ///
-    /// Three claims, each against a reference room fed the same inputs one per
-    /// tick: (1) **no snap** — at every tick the burst room's body is where the
-    /// reference's was after the acked seq, which is exactly what the client
-    /// predicted there; (2) **nothing lost** — every seq is consumed; (3) the queue
-    /// is back at `INPUT_BACKLOG_TARGET` within `MAX_FRAME_TICKS` ticks and stays.
+    /// Against a reference room fed the same walk one a tick: (1) **no hover** —
+    /// at every tick, silent ones included, the body is where the reference's is;
+    /// (2) **no snap** — the ack is the reference's, so the state at it is what the
+    /// client predicted there; (3) **no standing queue** — inputs sent minus the
+    /// ack never exceed `INPUT_BACKLOG_TARGET`. Under T22.10D the body froze for
+    /// the silence and a 3|12 split of the burst left 13 standing forever.
     #[test]
-    fn a_long_frame_s_burst_is_caught_up_not_dropped_or_left_standing() {
+    fn a_long_frame_neither_hovers_nor_snaps_nor_leaves_a_queue() {
         use game_core::constants::{INPUT_BACKLOG_TARGET, INPUT_REDUNDANCY, MAX_FRAME_TICKS};
         use game_core::player::input::button;
         let cfg = Arc::new(Config {
@@ -3569,77 +3571,59 @@ mod tests {
                 .map(|(_, s)| *s)
                 .expect("ready")
         };
-        let burst = MAX_FRAME_TICKS as u32;
-        let total = 4 * burst;
+        let frame = MAX_FRAME_TICKS as u32;
+        let (warm, total) = (frame, 4 * frame);
 
-        // The reference: one input per tick, so the body after seq `k` is at[k].
         let mut reference = started();
-        let mut at = vec![pos(&mut reference)];
-        for seq in 1..=total {
-            reference.apply(Command::Input(id, vec![walk(seq)]));
+        let mut room = started();
+        let mut sent = 0u32;
+        for tick in 1..=total {
+            reference.apply(Command::Input(id, vec![walk(tick)]));
             reference.tick_inline(SIM_DT);
             assert_eq!(
                 ack(&reference),
-                seq,
-                "control: the reference consumes one per tick"
+                tick,
+                "control: the reference runs one a tick"
             );
-            at.push(pos(&mut reference));
-        }
-        assert!(
-            (at[total as usize] - at[0]).len() > 1.0,
-            "control: the walk moved nobody, so no position below can disagree"
-        );
-
-        // The long frame: silence, then every input of it in one tick, in packets
-        // of `INPUT_REDUNDANCY` the way `inputPackets` sends them.
-        let mut room = started();
-        for _ in 0..burst {
-            room.tick_inline(SIM_DT);
-        }
-        let frame: Vec<Input> = (1..=burst).map(walk).collect();
-        for packet in frame.chunks(INPUT_REDUNDANCY) {
-            room.apply(Command::Input(id, packet.to_vec()));
-        }
-        let mut drained_at = None;
-        let mut worst = (0.0f32, 0u32);
-        for seq in burst..=total {
-            if seq > burst {
-                room.apply(Command::Input(id, vec![walk(seq)]));
-            }
-            room.tick_inline(SIM_DT);
-            let acked = ack(&room);
-            let off = (pos(&mut room) - at[acked as usize]).len();
-            if off > worst.0 {
-                worst = (off, acked);
-            }
-            let queued = seq - acked;
-            if queued as usize <= INPUT_BACKLOG_TARGET {
-                drained_at.get_or_insert(seq - burst);
+            // The client: a stream, a frame of silence, the frame's burst, a stream.
+            let due = if tick <= warm || tick > warm + frame + 1 {
+                // (After the burst the stream resumes where the clock is: the
+                // first packet carries two, this tick's and the one the frame
+                // ended on.)
+                tick
+            } else if tick == warm + frame + 1 {
+                warm + frame
             } else {
-                assert!(
-                    drained_at.is_none(),
-                    "the queue drained and then grew back to {queued} at seq {seq}"
-                );
+                sent
+            };
+            let batch: Vec<Input> = (sent + 1..=due).map(walk).collect();
+            for packet in batch.chunks(INPUT_REDUNDANCY) {
+                room.apply(Command::Input(id, packet.to_vec()));
             }
+            sent = due;
+            room.tick_inline(SIM_DT);
+            let off = (pos(&mut room) - pos(&mut reference)).len();
+            assert!(
+                off < 1e-3,
+                "tick {tick}: the body is {off:.2} px from the one-a-tick walk — it hovered \
+                 through the silence or stepped twice after it"
+            );
+            assert_eq!(
+                ack(&room),
+                ack(&reference),
+                "tick {tick}: the ack is not the seq the state stands for — a snap"
+            );
+            assert!(
+                (sent - ack(&room).min(sent)) as usize <= INPUT_BACKLOG_TARGET,
+                "tick {tick}: {} inputs stand behind the simulation (bound {INPUT_BACKLOG_TARGET})",
+                sent - ack(&room).min(sent)
+            );
         }
         assert!(
-            worst.0 < 1e-3,
-            "the server's body at ack {} is {:.2} px from where every input up to it \
-             leaves it — a client predicting those inputs snaps by that much",
-            worst.1,
-            worst.0
+            (pos(&mut reference) - pos(&mut started())).len() > 1.0,
+            "control: the walk moved nobody, so no position above can disagree"
         );
-        assert!(
-            ack(&room) + INPUT_BACKLOG_TARGET as u32 >= total,
-            "sent {total} inputs, consumed {} — the rest were dropped or are still queued",
-            ack(&room)
-        );
-        let drained = drained_at.expect("the burst's queue never drained to the target");
-        assert!(
-            drained <= burst,
-            "the burst's queue took {drained} ticks to drain to {INPUT_BACKLOG_TARGET}; \
-             the bound is one frame's worth, {burst}"
-        );
+        assert_eq!(sent, total, "control: the client sent every seq");
     }
 
     #[test]

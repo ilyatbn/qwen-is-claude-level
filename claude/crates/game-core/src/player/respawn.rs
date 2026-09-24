@@ -293,6 +293,12 @@ mod tests {
             for _ in 0..((RESPAWN_DELAY / SIM_DT) as i32 + 20) {
                 w.step(SIM_DT);
                 now += SIM_DT;
+                // Read on the respawn tick (T22.10F): a silent player is stepped
+                // every tick now, so a body left to the field drifts off the
+                // point it landed on.
+                if w.player(0).is_some_and(|p| p.alive) {
+                    break;
+                }
             }
             let p = w.player(0).expect("there");
             assert!(p.alive, "death {d}: never respawned by {now}");

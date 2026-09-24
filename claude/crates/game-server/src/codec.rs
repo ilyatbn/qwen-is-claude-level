@@ -1233,8 +1233,11 @@ mod tests {
             w
         };
         let hold = |w: &mut World, buttons: u8, ticks: u32| {
-            for t in 0..ticks {
-                w.queue_input(0, Input::new(w.tick + t + 1, buttons, 0));
+            for _ in 0..ticks {
+                // Seq 0, numbered by the world (T22.10F): `w.tick + t + 1` rose
+                // two a tick, so the idle input landed below the last simulated
+                // seq and was discarded as late.
+                w.queue_input(0, Input::new(0, buttons, 0));
                 w.step(SIM_DT);
             }
         };

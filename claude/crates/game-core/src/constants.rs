@@ -1418,7 +1418,9 @@ pub const SNAPSHOT_FOOTER_BYTES: usize = 4;
 pub const MAX_FRAME_DT: f32 = 0.25;
 /// The most inputs one client frame produces: `ceil(MAX_FRAME_DT / SIM_DT)` = 15
 /// (T22.10D F4). A frame that long sends every one of them in the same instant, so
-/// this is the burst an honest client can put into one server tick.
+/// this is the burst an honest client can put into one server tick — and, since
+/// T22.10F, how far a stand-in tick's seq may run ahead of the newest a player has
+/// sent (`World::apply_inputs`): the frame after a stall is at most this many.
 pub const MAX_FRAME_TICKS: usize = {
     let exact = MAX_FRAME_DT * SIM_HZ as f32;
     let whole = exact as usize;
@@ -1428,19 +1430,19 @@ pub const MAX_FRAME_TICKS: usize = {
         whole
     }
 };
-/// Inputs a player may keep queued before the world starts catching up (T22.10D
-/// F4) — the backlog it drains down to, not a cap.
+/// The jitter buffer: future inputs a player may keep queued after a tick
+/// (T22.10F, R89; T22.10D F4 introduced it as a catch-up target). Past it the
+/// **oldest** are dropped and the expected seq jumps past them — one bounded
+/// correction after a hitch, never a standing delay (`World::apply_inputs`).
 ///
 /// **Two, not zero:** a client sending one input per frame over TCP delivers
-/// them in uneven clumps — two one tick, none the next. With nothing held back,
-/// the second tick has no input and the body stops, then double-steps: a stutter
-/// every remote sees. Two queued ticks ride that out at one input per tick, for
-/// ~33 ms of standing input delay — the price of smooth motion, and a seventh of
-/// the 117 ms a 7-input standing queue cost before this (`World::apply_inputs`).
+/// them in uneven clumps — two one tick, none the next. Two held let such a
+/// clump be run on the ticks it was meant for, where zero would drop one of
+/// every clump; at most ~33 ms of delay, and only while clumps keep arriving.
 pub const INPUT_BACKLOG_TARGET: usize = 2;
 /// The flood guard on input, per player: the most the room accepts in one tick
-/// (`Room::apply`'s `Command::Input`) **and** the most the world keeps queued
-/// (`World::apply_inputs`); excess is dropped and logged.
+/// (`Room::apply`'s `Command::Input`); excess is dropped and logged. (The world
+/// keeps at most `INPUT_BACKLOG_TARGET` since T22.10F.)
 ///
 /// **`MAX_FRAME_TICKS`, derived, not a number of its own** (T22.10D F4, the
 /// coordinator's ruling). It was 8 — below the 15 inputs one long client frame
@@ -1449,7 +1451,7 @@ pub const INPUT_BACKLOG_TARGET: usize = 2;
 /// honest traffic trips is not a guard; at one frame's worth it bites only a
 /// client sending faster than any frame could, and the *backlog* policy is
 /// `INPUT_BACKLOG_TARGET`'s. `docs/40` §2 and `docs/70` §A30 still say 8 — the
-/// amendment is owed.
+/// amendment is owed (`tasks/M22/DOCS-77-OWED.md`).
 pub const MAX_INPUT_QUEUE: usize = MAX_FRAME_TICKS;
 
 // ---------------------------------------------------------------------------
