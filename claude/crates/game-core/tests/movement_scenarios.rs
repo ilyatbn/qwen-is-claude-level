@@ -60,6 +60,7 @@ fn make_map(w: u32, h: u32, build: impl FnOnce(&mut Mask)) -> Map {
         traversable_fraction: 1.0,
         asteroids: Vec::new(),
         largest_component: Vec::new(),
+        generator: game_core::constants::MapGenerator::V1,
     };
     Map::from_parts(mask, coarse, meta)
 }

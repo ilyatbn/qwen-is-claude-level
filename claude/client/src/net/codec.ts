@@ -23,12 +23,21 @@ export interface MapObject {
   flip: boolean
 }
 
+/** `MapGenerator::Space`'s byte, the highest a `map_init` may carry (T22.14A). */
+export const MAP_GENERATOR_MAX = 2
+
 export interface MapInit {
   width: number
   height: number
   seed: bigint
   scale: number
   theme: number
+  /**
+   * T22.14A B3: which generator made the map — `MapGenerator::to_u8` (0 v1, 1 v2,
+   * 2 space). The one answer to "is this a space map?" (`Map::space_geometry`);
+   * handed to `Core.setMapGenerator` before `loadMask`.
+   */
+  generator: number
   wind: number
   /** The last carve `seq` this mask already contains. */
   carveSeq: number
@@ -218,6 +227,11 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const seed = r.u64()
   const scale = r.u8()
   const theme = r.u8()
+  const generator = r.u8()
+  // Refused, not guessed: a byte naming no generator would otherwise be some map.
+  if (generator > MAP_GENERATOR_MAX) {
+    throw new CodecError(`generator ${generator} names no map generator`)
+  }
   const wind = r.f32()
   const carveSeq = r.u32()
 
@@ -294,6 +308,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     seed,
     scale,
     theme,
+    generator,
     wind,
     carveSeq,
     spawnPoints,

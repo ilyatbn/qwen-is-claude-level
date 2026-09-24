@@ -82,6 +82,7 @@ mod roof_tests {
             traversable_fraction: 1.0,
             asteroids: Vec::new(),
             largest_component: Vec::new(),
+            generator: crate::constants::MapGenerator::V1,
         };
         Map::from_parts(mask, coarse, meta)
     }

@@ -103,6 +103,11 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
     b.extend_from_slice(&m.seed.to_le_bytes());
     b.push(scale_byte(m.scale));
     b.push(m.theme);
+    // T22.14A B3: which generator made the map — the one answer to "is this a
+    // space map?" (`Map::space_geometry`), which a client cannot derive from the
+    // rocks (the black hole eats one) and should not have to derive from the
+    // gravity it may hear after this.
+    b.push(m.generator.to_u8());
     b.extend_from_slice(&m.wind.to_le_bytes());
     b.extend_from_slice(&carve_seq.to_le_bytes());
 
@@ -185,6 +190,9 @@ pub struct MapInitParts {
     /// networked round never runs the generator, it is handed the finished mask
     /// by `load_mask`, and the mask carries a rock's shape but not its level.
     pub asteroids: Vec<game_core::map::meta::Asteroid>,
+    /// Which generator made the map (T22.14A B3): `MapMeta::generator`, the one
+    /// answer to *"is this a space map?"*.
+    pub generator: game_core::constants::MapGenerator,
     /// The carve sequence this mask is stamped at (`docs/70` §A40).
     ///
     /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
@@ -218,6 +226,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     r.take(8)?; // seed
     r.u8()?; // scale
     r.u8()?; // theme
+    let generator = game_core::constants::MapGenerator::from_u8(r.u8()?)
+        .ok_or(CodecError::BadMapInit("generator"))?;
     r.take(4)?; // wind
     let carve_seq = r.u32()?;
 
@@ -286,6 +296,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         teleport_pads,
         gun_platforms,
         asteroids,
+        generator,
         carve_seq,
     })
 }
@@ -764,6 +775,7 @@ mod tests {
             + 8
             + 1
             + 1
+            + 1 // generator (T22.14A)
             + 4
             + 4 // carve_seq
             + 2
@@ -791,8 +803,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes([b[8], b[9], b[10], b[11]]), map.mask.h);
         let seed = u64::from_le_bytes(b[12..20].try_into().expect("8 bytes"));
         assert_eq!(seed, map.meta.seed);
-        // 4 magic + 4 w + 4 h + 8 seed + 1 scale + 1 theme + 4 wind + 4 carve_seq
-        let sc = u16::from_le_bytes([b[30], b[31]]) as usize;
+        // 4 magic + 4 w + 4 h + 8 seed + 1 scale + 1 theme + 1 generator + 4 wind + 4 carve_seq
+        let sc = u16::from_le_bytes([b[31], b[32]]) as usize;
         assert_eq!(sc, map.meta.spawn_points.len());
     }
 
@@ -827,7 +839,7 @@ mod tests {
 
         // Walk to the object section by replaying the layout, so this reads the
         // bytes rather than trusting the encoder's own arithmetic.
-        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4;
+        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 1 + 4 + 4; // … theme, generator (T22.14A), wind, carve_seq
         let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
         let i16_at = |b: &[u8], i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
         at += 2 + u16_at(&b, at) as usize * 4; // spawns
@@ -923,6 +935,26 @@ mod tests {
         assert_eq!(parts.mask.hash(), map.mask.hash());
     }
 
+    /// **T22.14A B3: the generator crosses the wire** — a space map says it is
+    /// one, a normal map says which it is, and a byte naming no generator is refused
+    /// rather than read as some map.
+    #[test]
+    fn map_init_carries_the_generator_and_refuses_an_unknown_one() {
+        for g in [MapGenerator::V1, MapGenerator::V2, MapGenerator::Space] {
+            let map = game_core::map::generate_with(7, MapScale::Small, g);
+            assert_eq!(map.meta.generator, g, "premise: generation records it");
+            let parts = decode_map_init_parts(&encode_map_init(&map)).expect("decode");
+            assert_eq!(parts.generator, g);
+        }
+        let mut b = encode_map_init(&game_core::map::generate(7, MapScale::Small));
+        // 4 magic + 4 w + 4 h + 8 seed + 1 scale + 1 theme, then the generator.
+        b[22] = 0xEE;
+        assert!(matches!(
+            decode_map_init_parts(&b),
+            Err(CodecError::BadMapInit("generator"))
+        ));
+    }
+
     /// The control for the section above: a normal map spends two bytes on it
     /// and decodes to nothing.
     ///
@@ -967,7 +999,7 @@ mod tests {
         let b = encode_map_init(&map);
 
         // Straight past the fixed header and the spawn section.
-        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4;
+        let mut at = 4 + 4 + 4 + 8 + 1 + 1 + 1 + 4 + 4; // … theme, generator (T22.14A), wind, carve_seq
         let spawns = u16::from_le_bytes([b[at], b[at + 1]]) as usize;
         at += 2 + spawns * 4;
 

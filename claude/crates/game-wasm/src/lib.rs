@@ -315,15 +315,12 @@ impl GameCore {
         // different sets — which is the failure T19.24 was, in the other
         // direction.
         //
-        // The generator is **derived from the gravity this core was set to**
-        // (R15), which is the same derivation `generate` makes. A networked
-        // client gets that from `set_gravity` off `lobby_state`, before
-        // `map_init` — which is the order `set_gravity`'s own doc describes.
-        let generator = game_core::constants::MapGenerator::for_gravity(
-            self.gravity,
-            game_core::constants::DEFAULT_MAP_GENERATOR,
-        );
-        meta.surface_points = game_core::map::gen::surface_for(generator, &mask);
+        // The generator is **the map's own** (T22.14A B3): `map_init` carries it and
+        // `set_map_generator` installs it before this call (`worldMirror.applyMapInit`).
+        // It was derived here from the gravity this core was set to (R15's
+        // derivation, the server's too), which held only while `lobby_state` came
+        // first; the map now says what it is whichever order they arrive in.
+        meta.surface_points = game_core::map::gen::surface_for(meta.generator, &mask);
         self.map = Map::from_parts(mask, coarse, meta);
         true
     }
@@ -457,6 +454,22 @@ impl GameCore {
     /// [`GameCore::teleport_pads`] because `meta_json` already serialises the whole
     /// `MapMeta` — `Core.meta.asteroids` in `client/src/core/index.ts` is the
     /// readback, and the browser check reads it there.
+    /// T22.14A B3: which generator made the map `map_init` carries (`MapGenerator`'s
+    /// byte) — the one answer to *"is this a space map?"* (`Map::space_geometry`),
+    /// which was the asteroid list being non-empty until the black hole could eat
+    /// rocks. **Before `load_mask`**, which derives the surface from it.
+    /// `WorldMirror.applyMapInit` is the one production caller. `false` for a byte
+    /// that names no generator (nothing changes).
+    pub fn set_map_generator(&mut self, generator: u8) -> bool {
+        match game_core::constants::MapGenerator::from_u8(generator) {
+            Some(g) => {
+                self.map.meta.generator = g;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn set_asteroids(&mut self, xs: &[i32], ys: &[i32], rs: &[i32], levels: &[u8]) {
         let n = xs.len().min(ys.len()).min(rs.len()).min(levels.len());
         self.map.meta.asteroids = (0..n)
@@ -2696,6 +2709,8 @@ mod tests {
 
             let mut client = GameCore::new();
             assert!(client.set_gravity(gravity), "{gravity}: unknown spelling");
+            // T22.14A B3: told the map's generator, as `applyMapInit` does first.
+            assert!(client.set_map_generator(server.meta.generator.to_u8()));
             assert!(client.load_mask(server.mask.w, server.mask.h, &bytes));
 
             assert_eq!(
@@ -3674,6 +3689,7 @@ mod tests {
         // map. `map_init_before_lobby_state_still_predicts_the_field` runs the
         // other one.
         assert!(core.set_gravity(GravityMode::Space.as_str()));
+        assert!(core.set_map_generator(parts.generator.to_u8()));
         assert!(core.load_mask(
             parts.mask.w,
             parts.mask.h,
@@ -3947,11 +3963,10 @@ mod tests {
     /// **They are not symmetric, and both halves are asserted.** The setter reads
     /// no mode — it installs the table, and `env_at` consults `self.gravity` at
     /// the tick — so prediction is identical either way round. `load_mask` is
-    /// not: it re-extracts the surface through the generator derived from the
-    /// mode it is *currently* set to, so a `map_init` that beat `lobby_state`
-    /// gets the landscape's surface on a space map. That is pre-existing and
-    /// outside this task, but it is the reason this test cannot simply say "order
-    /// does not matter" and leave it there.
+    /// not: it re-extracted the surface through the generator derived from the
+    /// mode it was *currently* set to, so a `map_init` that beat `lobby_state`
+    /// got the landscape's surface on a space map. **Since T22.14A B3 the map
+    /// carries its generator**, and both halves say order does not matter.
     #[test]
     fn map_init_before_lobby_state_still_predicts_the_field() {
         let mut w = game_core::world::World::with_gravity(
@@ -3973,6 +3988,8 @@ mod tests {
             if gravity_first {
                 assert!(core.set_gravity(GravityMode::Space.as_str()));
             }
+            // T22.14A B3: the map says what it is, first, as `applyMapInit` does.
+            assert!(core.set_map_generator(parts.generator.to_u8()));
             assert!(core.load_mask(parts.mask.w, parts.mask.h, &rle_bytes));
             install_asteroids(&mut core, &parts.asteroids);
             if !gravity_first {
@@ -4004,15 +4021,19 @@ mod tests {
             swapped.x, swapped.y, ordered.x, ordered.y
         );
 
-        // And the half that *is* order-dependent, measured rather than assumed:
-        // `load_mask` re-extracts the surface through the generator the mode
-        // implies, so the swapped order gets the landscape's. Asserted so that a
-        // future change making `load_mask` order-proof is reported here rather
-        // than leaving this comment claiming something untrue.
-        assert_ne!(
+        // **And the half that used to be order-dependent is not** (T22.14A B3):
+        // `load_mask` re-extracted the surface through the generator the *mode*
+        // implied, so a `map_init` that beat `lobby_state` got the landscape's
+        // surface on a space map. `map_init` now carries the generator, so the
+        // surface is the map's whichever message came first — and the server's.
+        assert_eq!(
             ordered_surface, swapped_surface,
-            "`load_mask` now re-extracts the same surface whichever order the two \
-             messages arrive in — good news, and this test's second half is stale"
+            "`load_mask` re-extracted a different surface when `map_init` beat `lobby_state`"
+        );
+        assert_eq!(
+            ordered_surface,
+            w.map.meta.surface_points.len(),
+            "not the server's surface"
         );
     }
 

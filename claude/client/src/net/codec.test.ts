@@ -41,6 +41,8 @@ function mapInitFixture(opts: Partial<{
   rle: Uint8Array
   rleLenLie: number
   carveSeq: number
+  /** The generator byte (T22.14A); space by default so a decoder that ignores it fails. */
+  generator: number
 }> = {}): ArrayBuffer {
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
@@ -51,12 +53,12 @@ function mapInitFixture(opts: Partial<{
   const objects = opts.objectCount ?? 2
   const asteroids = opts.asteroidCount ?? 3
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
-  // magic, w, h, seed, scale, theme, wind, carve_seq, then the counted sections.
+  // magic, w, h, seed, scale, theme, generator, wind, carve_seq, then the counted sections.
   // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
   // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
   const size =
     // §D6's object section sits between the decorations and the RLE length.
-    4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 +
+    4 + 4 + 4 + 8 + 1 + 1 + 1 + 4 + 4 + 2 + spawns * 4 + 2 + pads * 4 +
     // T21.11's platforms ride between the pads and the decorations.
     2 + platforms * 4 +
     2 + decos * 7 +
@@ -72,6 +74,7 @@ function mapInitFixture(opts: Partial<{
   v.setBigUint64(at, 8123491234n, true); at += 8
   v.setUint8(at++, 1)
   v.setUint8(at++, 2)
+  v.setUint8(at++, opts.generator ?? 2)
   v.setFloat32(at, -42.5, true); at += 4
   v.setUint32(at, opts.carveSeq ?? 0, true); at += 4
   v.setUint16(at, spawns, true); at += 2
@@ -177,6 +180,8 @@ describe('map_init', () => {
     expect(m.seed).toBe(8123491234n)
     expect(m.scale).toBe(1)
     expect(m.theme).toBe(2)
+    // T22.14A B3: the generator, between the theme and the wind.
+    expect(m.generator).toBe(2)
     expect(m.wind).toBeCloseTo(-42.5, 4)
     expect(m.spawnPoints).toEqual([
       { x: 100, y: 200 },
@@ -221,6 +226,11 @@ describe('map_init', () => {
    * RLE still lines up — so the two bytes this costs every other map are paid
    * and read.
    */
+  it('refuses a generator byte that names no generator (T22.14A)', () => {
+    expect(decodeMapInit(mapInitFixture({ generator: 0 })).generator).toBe(0)
+    expect(() => decodeMapInit(mapInitFixture({ generator: 3 }))).toThrow(/names no map generator/)
+  })
+
   it('decodes a map with no asteroids and still finds the mask', () => {
     const m = decodeMapInit(mapInitFixture({ asteroidCount: 0 }))
     expect(m.asteroids).toEqual([])
@@ -267,7 +277,7 @@ describe('map_init', () => {
     // Overwrite spawn_count with 65535; the payload cannot hold it.
     // Derived, not a magic 26: this offset silently rotted when `carve_seq`
     // was inserted ahead of it, and the test then poked the wrong field.
-    const SPAWN_COUNT_AT = 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4
+    const SPAWN_COUNT_AT = 4 + 4 + 4 + 8 + 1 + 1 + 1 + 4 + 4
     new DataView(b).setUint16(SPAWN_COUNT_AT, 0xffff, true)
     expect(() => decodeMapInit(b)).toThrow(/exceeds the payload/)
   })

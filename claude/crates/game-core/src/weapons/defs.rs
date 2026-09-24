@@ -1549,6 +1549,7 @@ mod ballistics {
                 traversable_fraction: 1.0,
                 asteroids: Vec::new(),
                 largest_component: Vec::new(),
+                generator: crate::constants::MapGenerator::V1,
             }
         }
 
@@ -1716,6 +1717,7 @@ mod ballistics {
                     traversable_fraction: 1.0,
                     asteroids: Vec::new(),
                     largest_component: Vec::new(),
+                    generator: crate::constants::MapGenerator::V1,
                 },
             );
             let mut dealt = 0.0f32;

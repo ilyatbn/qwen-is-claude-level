@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { C, Core, MapGenerator, MapScale } from '../core'
 import { WorldMirror, hex } from './worldMirror'
 
+/** `MapGenerator::to_u8`, keyed by serde's spelling in `Core.meta` (T22.14A B3). */
+const GENERATOR_BYTE = { V1: 0, V2: 1, Space: 2 } as const
+
 /**
  * These run against the **real** wasm core, not a fake. The bug this file exists
  * to catch — a mask that diverges from the server's — only exists against a real
@@ -74,6 +77,7 @@ function initMirror(
     seed: 4242n,
     scale: 0,
     theme: 0,
+    generator: GENERATOR_BYTE[c.meta.generator],
     wind: 0,
     carveSeq,
     spawnPoints: [],
@@ -105,6 +109,7 @@ function freshMirror(): { mirror: WorldMirror; resyncs: number[] } {
     seed: 4242n,
     scale: 0,
     theme: 0,
+    generator: GENERATOR_BYTE[core.meta.generator],
     wind: 0,
     carveSeq: 0,
     spawnPoints: [],
@@ -487,6 +492,7 @@ describe('roster and entities', () => {
         seed: 4242n,
         scale: 0,
         theme: 0,
+        generator: GENERATOR_BYTE[core.meta.generator],
         wind: 0,
         carveSeq: 0,
         spawnPoints: [],
@@ -537,6 +543,7 @@ describe('carve stream resumption', () => {
       seed: 4242n,
       scale: 0,
       theme: 0,
+      generator: GENERATOR_BYTE[core.meta.generator],
       wind: 0,
       // The mask already contains carves 1..41; the next one will be 42.
       carveSeq: 41,
@@ -567,6 +574,7 @@ describe('carve stream resumption', () => {
       seed: 4242n,
       scale: 0,
       theme: 0,
+      generator: GENERATOR_BYTE[core.meta.generator],
       wind: 0,
       carveSeq: 41,
       spawnPoints: [],
@@ -705,6 +713,7 @@ describe('the black hole (T22.12)', () => {
       seed: 4242n,
       scale: 0,
       theme: 0,
+      generator: GENERATOR_BYTE[core.meta.generator],
       wind: 0,
       carveSeq: 0,
       spawnPoints: [],

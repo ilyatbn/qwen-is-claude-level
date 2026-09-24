@@ -254,10 +254,17 @@ pub struct MapMeta {
     pub decorations: Vec<Decoration>,
     pub wind: f32,
     pub traversable_fraction: f32,
-    /// `MapGenerator::Space`'s rocks. **Empty for every other generator**, which
-    /// is how a space map is told apart from a normal one downstream without a
-    /// second flag to keep in sync.
+    /// `MapGenerator::Space`'s rocks. Empty for every other generator — **but not
+    /// how a space map is told apart any more** (T22.14A B3): the black hole removes
+    /// a rock at runtime (`World::arrive_black_hole`), so "no rocks left" could one
+    /// day mean "not space" mid-round. [`MapMeta::generator`] says it.
     pub asteroids: Vec<Asteroid>,
+    /// **Which generator made this map** (T22.14A B3) — set once at generation
+    /// (`R15`: derived from the gravity mode, never chosen beside it) and carried by
+    /// `map_init`, so a client that never runs the generator is told. The one answer
+    /// to *"is this a space map?"*, read through [`Map::space_geometry`]; it cannot
+    /// change during a round, which `asteroids` can.
+    pub generator: MapGenerator,
     /// Indices into `surface_points` forming the validated strongly connected set.
     ///
     /// Shipped because nothing downstream can otherwise tell "every cave is
@@ -316,32 +323,15 @@ impl Map {
     /// today: R14 takes crates off the sky drop and items off the ground, and
     /// both need somewhere inside the rim to put the thing.
     ///
-    /// **Derived from `meta.asteroids`, which is the discriminator that field's
-    /// own doc already names** — *"Empty for every other generator, which is
-    /// how a space map is told apart from a normal one downstream without a
-    /// second flag to keep in sync"*. It is sound in both directions: v1 and v2
-    /// never fill it, and no space map ships without rocks, because
-    /// `rocks_are_within_reach` returns `false` for an empty scatter and
-    /// `analyse_space` folds that into `passed` — so a rockless space map fails
-    /// every attempt, falls to the safe preset, and the safe preset asks for
-    /// `max(count/2, 4)`.
-    ///
-    /// **And it is now sound on a networked client too** (`T22.11C`, R49; the
-    /// caveat `T22.05B`'s review filed as F6 is closed). `T22.05C` recorded here
-    /// that the claim held server-side only, because `meta.asteroids` on a
-    /// client was whatever the core last generated locally — empty, in practice,
-    /// since `GameCore::new()` runs the standard generator — and
-    /// `worldMirror.ts::applyMapInit` had no third setter to call beside
-    /// `setTeleportPads` and `setGunPlatforms`. It has one:
-    /// `GameCore::set_asteroids`, wired at that line and pinned by
-    /// `worldMirror.test.ts::the rocks from map_init put a field under the
-    /// client`.
-    ///
-    /// A `MapMeta.generator` field would be the more direct spelling and is the
-    /// obvious next step if a third consumer appears; it was not worth the
-    /// twenty struct literals in fixtures for one.
+    /// **Keyed on [`MapMeta::generator`]** (T22.14A B3). It was derived from
+    /// `meta.asteroids` being non-empty — sound at generation (no space map ships
+    /// without rocks), but the list is **runtime state**: the black hole removes a
+    /// rock on arrival, and only its "never the last one" branch kept a one-rock
+    /// map from switching the round out of space. The generator is set once and
+    /// carried by `map_init` (the wasm core's `set_map_generator`), so the client's
+    /// answer is the server's.
     pub fn space_geometry(&self) -> Option<crate::map::gen::space::SpaceGeometry> {
-        (!self.meta.asteroids.is_empty())
+        (self.meta.generator == MapGenerator::Space)
             .then(|| crate::map::gen::space::SpaceGeometry::for_dims(self.mask.w, self.mask.h))
     }
 
@@ -914,6 +904,7 @@ pub(crate) fn generate_full_with(
             wind,
             traversable_fraction,
             largest_component,
+            generator,
         },
         mask,
         coarse,

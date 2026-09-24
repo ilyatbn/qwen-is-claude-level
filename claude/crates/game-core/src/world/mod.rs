@@ -1825,11 +1825,15 @@ impl World {
     /// **Nothing alive is ever stranded**, and that immutability is why: the
     /// subject of this guard cannot change during a round, so there is no
     /// moment at which a living animal is on the wrong side of it. A round
-    /// cannot become a space round after it started.
+    /// cannot become a space round after it started. *(T22.14A B3: this was only
+    /// true by luck until then — `space_geometry` read `meta.asteroids`, which the
+    /// black hole mutates, and only its "never the last rock" branch kept a round
+    /// in space. It reads `MapMeta::generator` now, written once at generation.)*
     ///
-    /// **Which side this runs on.** `T22.11C` has since landed
-    /// `GameCore::set_asteroids`, so `space_geometry` is now sound on both
-    /// sides and the caveat this paragraph used to cite is gone. The analysis
+    /// **Which side this runs on.** `T22.11C` landed `GameCore::set_asteroids`
+    /// and T22.14A `set_map_generator` (the generator rides `map_init`), so
+    /// `space_geometry` is sound on both sides and the caveat this paragraph used
+    /// to cite is gone. The analysis
     /// is kept because it is what makes that irrelevant here rather than
     /// merely fixed: every live caller of `World::step` is server-side —
     /// `game-server::room` and `game-server::round`. The only other is
@@ -4910,8 +4914,12 @@ impl World {
     /// on under a sky that no longer shows it. The client derives the same zero at
     /// `sky-math.ts::sceneDarkness`, because its fallback reads a server `0` as
     /// "no byte yet" and substitutes its own clock.
+    ///
+    /// **Keyed on the map, not `self.gravity`** (T22.14A B4) — the one answer to
+    /// "is this space?" (`Map::space_geometry`, `MapMeta::generator`), which the
+    /// weather table, the wildlife gate and the void already read.
     pub fn darkness(&self) -> f32 {
-        if self.gravity == GravityMode::Space {
+        if self.map.space_geometry().is_some() {
             return 0.0;
         }
         darkness_at(cycle_u(self.round_time))
@@ -6332,6 +6340,7 @@ mod toxic_rain_falls {
             traversable_fraction: 1.0,
             asteroids: Vec::new(),
             largest_component: Vec::new(),
+            generator: crate::constants::MapGenerator::V1,
         };
         // The surface points the pre-§C21 code placed the hazard on directly.
         // Under the cave the "surface" is the CAVE FLOOR — under a roof — which
@@ -6839,6 +6848,7 @@ mod toxic_rain_falls {
             traversable_fraction: 1.0,
             asteroids: Vec::new(),
             largest_component: Vec::new(),
+            generator: crate::constants::MapGenerator::V1,
         };
         meta.surface_points.push(crate::math::Point {
             x: x as i32,
@@ -7196,6 +7206,7 @@ mod toxic_rain_falls {
                 traversable_fraction: 1.0,
                 asteroids: Vec::new(),
                 largest_component: Vec::new(),
+                generator: crate::constants::MapGenerator::V1,
             };
             Map::from_parts(mask, coarse, meta)
         };
@@ -12865,10 +12876,19 @@ mod start_clock_at_tests {
     /// T22.06: no night in orbit. The standard world at the same moment is the
     /// control — it is dark — so this cannot pass for a clock that never reached
     /// night.
+    ///
+    /// T22.14A B4: a real space world (`with_gravity`, so the map is space too), and
+    /// the key is the map — the old fixture, a ground map with `gravity` assigned
+    /// `Space` afterwards, is a ground round by the one answer and has its night.
     #[test]
     fn space_has_no_night() {
-        let mut space = World::for_test(4242, MapScale::Small);
-        space.gravity = GravityMode::Space;
+        let mut space = World::with_gravity(
+            4242,
+            MapScale::Small,
+            0,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
         space.start_clock_at(NIGHT_START * CYCLE_LENGTH);
         let mut ground = World::for_test(4242, MapScale::Small);
         ground.start_clock_at(NIGHT_START * CYCLE_LENGTH);
@@ -12878,6 +12898,14 @@ mod start_clock_at_tests {
             ground.darkness()
         );
         assert_eq!(space.darkness(), 0.0);
+        let mut relabelled = World::for_test(4242, MapScale::Small);
+        relabelled.gravity = GravityMode::Space;
+        relabelled.start_clock_at(NIGHT_START * CYCLE_LENGTH);
+        assert_eq!(
+            relabelled.darkness(),
+            ground.darkness(),
+            "darkness read the gravity field, not the map"
+        );
     }
 }
 

@@ -123,15 +123,17 @@ export interface MapMeta {
   wind: number
   traversable_fraction: number
   /**
-   * T22.05A's asteroids, empty on any map but a space one — which is how a
-   * locally generated space map is told apart from a normal one without a
-   * second flag.
+   * T22.05A's asteroids, empty on any map but a space one. **Not** how a space
+   * map is told apart — that is `generator` (T22.14A B3): the black hole eats a
+   * rock at runtime.
    *
    * Arrives for free: `meta_json` serialises the whole `MapMeta`. A *networked*
    * round never runs the generator, so there the same list comes off the wire
    * in `map_init` instead — `net/codec.ts::MapInit.asteroids`.
    */
   asteroids: Asteroid[]
+  /** Which generator made the map (`MapMeta::generator`, serde's spelling). T22.14A B3. */
+  generator: 'V1' | 'V2' | 'Space'
 }
 
 /** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
@@ -872,6 +874,19 @@ export class Core {
    * as a sequence and rebuilt in read order by `decodeMapInit`; `.map` below
    * keeps it, and nothing on the path sorts.
    */
+  /**
+   * T22.14A B3: which generator made the map `map_init` carries (`MapInit.generator`)
+   * — the one answer to "is this a space map?" (`Map::space_geometry`). **Before
+   * `loadMask`**, which re-extracts the surface through it. `false` for a byte that
+   * names no generator (nothing changes).
+   */
+  setMapGenerator(generator: number): boolean {
+    const ok = this.inner.set_map_generator(generator)
+    // `meta.generator` is the readback, and `meta` is cached.
+    this.invalidate()
+    return ok
+  }
+
   setAsteroids(rocks: readonly { x: number; y: number; r: number; level: number }[]): void {
     const xs = new Int32Array(rocks.map((a) => a.x))
     const ys = new Int32Array(rocks.map((a) => a.y))

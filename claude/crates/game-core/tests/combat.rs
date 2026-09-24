@@ -37,6 +37,7 @@ fn meta() -> MapMeta {
         traversable_fraction: 1.0,
         asteroids: Vec::new(),
         largest_component: Vec::new(),
+        generator: game_core::constants::MapGenerator::V1,
     }
 }
 

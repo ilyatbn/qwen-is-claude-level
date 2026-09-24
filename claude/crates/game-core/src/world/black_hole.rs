@@ -1139,6 +1139,39 @@ mod tests {
         );
     }
 
+    /// **T22.14A B3: a space round is space by its map's generator, not by its
+    /// rocks.** The hole takes a rock at runtime; with one left it opens at the
+    /// arena's centre and keeps it (never the last one) — and even with none left
+    /// the map is still a space map: its geometry, its weather table, its void. The
+    /// control: a ground map with no rocks is not.
+    #[test]
+    fn a_space_round_stays_in_space_whatever_the_rocks() {
+        use crate::effects::scheduler::WeatherTable;
+        let mut w = world(GravityMode::Space, 7, 600.0);
+        w.map.meta.asteroids.truncate(1);
+        let geo = w.map.space_geometry().expect("space");
+        let hole = w
+            .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
+            .expect("summoned");
+        assert_eq!(
+            hole,
+            Vec2::new(geo.cx, geo.cy),
+            "one rock: the arena's centre"
+        );
+        assert_eq!(w.map.meta.asteroids.len(), 1, "the last rock was eaten");
+        w.map.meta.asteroids.clear();
+        assert_eq!(
+            w.map.space_geometry(),
+            Some(geo),
+            "no rocks left: out of space"
+        );
+        assert_eq!(WeatherTable::of(&w.map), WeatherTable::Space);
+        assert_eq!(w.darkness(), 0.0);
+        let ground = world(GravityMode::Standard, 7, 600.0);
+        assert!(ground.map.meta.asteroids.is_empty(), "premise");
+        assert_eq!(ground.map.space_geometry(), None, "control");
+    }
+
     /// Nothing in the other modes — with the presence control in space.
     #[test]
     fn nothing_happens_in_the_other_modes() {
