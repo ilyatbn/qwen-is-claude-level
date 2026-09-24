@@ -770,17 +770,21 @@ pub const MAX_ACTIVE_VORTICES: usize = 3;
 /// further than this from every vortex makes its own (`World::open_vortex`).
 pub const VORTEX_CAPTURE_R: f32 = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + SPACE_VOID_GRACE;
 
-/// A vortex's pull at its centre, px/s² — **twice the strongest thrust**
+/// A vortex's pull at its centre, px/s² — **twice the weakest thrust**
 /// (`JETPACK_THRUST_DOWN`), so it sucks. It falls off linearly to
-/// [`VORTEX_REACH`] (R47's shape, through `world::attractors`), so thrust wins
+/// [`VORTEX_REACH`] (R47's shape, through `world::attractors`). *Was: "thrust wins
 /// beyond half the reach and loses inside it: the no-escape radius is exactly
-/// `VORTEX_REACH / 2`.
+/// `VORTEX_REACH / 2`" — superseded by R97 (T22.03I):* the vortex's pull is summed
+/// with the wells and capped with them at [`SPACE_WELL_ACCEL_MAX`]
+/// (`attractors::capped_at`), so outside [`VORTEX_CAPTURE_R`] thrust always wins;
+/// this number now shapes how far out the cap binds (the vortex alone reaches the
+/// cap at `(1 − 675/1800) × REACH` ≈ 318 px), not where escape ends.
 pub const VORTEX_ACCEL_MAX: f32 = 2.0 * JETPACK_THRUST_DOWN;
 
-/// How far a vortex pulls, centre to cutoff, px. **Four capture radii**, so the
-/// no-escape radius (half the reach) is twice the capture radius: a player who
-/// drifts into the band where thrust no longer wins has a capture radius of warning
-/// — the swirl — before they are taken.
+/// How far a vortex pulls, centre to cutoff, px. **Four capture radii**. *Was: "so
+/// the no-escape radius (half the reach) is twice the capture radius" — since R97
+/// (T22.03I) there is no no-escape band outside the capture radius* (see
+/// [`VORTEX_ACCEL_MAX`]); the swirl drawn at half the reach no longer marks one.
 pub const VORTEX_REACH: f32 = 4.0 * VORTEX_CAPTURE_R;
 
 /// Most breaches a map holds for the world to drain in one tick. The world drains
@@ -3615,7 +3619,8 @@ pub const BOT_SPACE_CRUISE: f32 = 200.0;
 /// on in every direction and next to any rock — so an arrival planned with it is
 /// one the bot can actually stop for. *(True of the summed field only since R96,
 /// T22.03G: `attractors::wells_at` caps the wells' sum at `SPACE_WELL_ACCEL_MAX`;
-/// before it, three wells in a crevice summed to 919.)*
+/// before it, three wells in a crevice summed to 919. And beside a vortex only since
+/// R97, T22.03I: `attractors::capped_at` puts the vortices inside the same cap.)*
 pub const BOT_SPACE_BRAKE: f32 = JETPACK_THRUST_DOWN - SPACE_WELL_ACCEL_MAX;
 /// How far a flying bot's velocity may miss the one it wants, per axis, before it
 /// thrusts, px/s. The dead band is what lets it coast (and refill) instead of

@@ -283,7 +283,12 @@ pub const HEADER_BYTES: usize = 46;
 /// body sits where two or more wells piled past 675 px/s². Standard and low
 /// recordings are unchanged, but the version is per file, not per mode. No new tag,
 /// no layout change.
-pub const REPLAY_VERSION: u16 = 23;
+///
+/// **24 (T22.03I, R97: the wells and the vortices are capped together)**: the same
+/// shape. Every live vortex's pull joins the wells inside the one clamp, so a v23
+/// space recording diverges the first tick a body sits where a vortex and the wells
+/// together passed 675 px/s² outside the capture radius. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 24;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

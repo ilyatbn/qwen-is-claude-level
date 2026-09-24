@@ -753,12 +753,16 @@ struct BotRound {
     /// reach `PINNED_RUN_S`.
     longest_wings: u32,
     runs_wings: u32,
-    /// T22.03G/F: an any-fuel pinned run **within `VORTEX_REACH` of a live vortex**,
-    /// counted here and **not** in `runs_any` — every such run traced at T22.03G was a
-    /// bot a vortex held against rock (outside R96's cap by design, filed), and mixing
-    /// them in made the wells' bound a coin flip on which seed a vortex opened near a bot.
-    longest_vortex: u32,
+    /// ...of `runs_any`, the runs that reached `PINNED_RUN_S` **within `VORTEX_REACH` of
+    /// a live vortex** — printed, not excluded. T22.03G/F counted these apart and left
+    /// them out of the bound (a vortex's outer pull was outside R96's cap); the review
+    /// of `c3f7861` (F2) found the 508 px disc hid real pins (planted at `REACH / 2`:
+    /// runs to 79 s). R97 caps the vortices with the wells, so T22.03I counts every run.
     runs_vortex: u32,
+    /// T22.03I F4: the bots' own winged stuck ticks, and of them the ones moving
+    /// sideways faster than half `WINGS_FLY_SPEED` (`BotStats`).
+    winged_stuck: u32,
+    winged_stuck_moving: u32,
 }
 
 /// T22.03D's instrument: slower than this, px/s, is "not moving" (the review's).
@@ -804,7 +808,7 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let mut r = BotRound::default();
     let mut cells = std::collections::BTreeSet::new();
     // Per player: the current pinned run (at the reserve, any fuel), in ticks.
-    let mut run: BTreeMap<u8, (u32, u32, u32, u32)> = BTreeMap::new();
+    let mut run: BTreeMap<u8, (u32, u32, u32)> = BTreeMap::new();
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
@@ -877,21 +881,12 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                 &mut r.longest,
                 &mut r.runs,
             );
-            let by_vortex = w
-                .vortices
-                .iter()
-                .any(|v| (v.pos - p.body.pos).len() < game_core::constants::VORTEX_REACH);
-            step(
-                &mut cur.1,
-                touching && !by_vortex,
-                &mut r.longest_any,
-                &mut r.runs_any,
-            );
-            step(
-                &mut cur.3,
-                touching && by_vortex,
-                &mut r.longest_vortex,
-                &mut r.runs_vortex,
+            step(&mut cur.1, touching, &mut r.longest_any, &mut r.runs_any);
+            r.runs_vortex += u32::from(
+                cur.1 == run_ticks
+                    && w.vortices
+                        .iter()
+                        .any(|v| (v.pos - p.body.pos).len() < game_core::constants::VORTEX_REACH),
             );
             step(
                 &mut cur.2,
@@ -902,7 +897,7 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
         }
         // A dead bot's run ends.
         for p in w.players.iter().filter(|p| !p.alive) {
-            run.insert(p.id, (0, 0, 0, 0));
+            run.insert(p.id, (0, 0, 0));
         }
         // Is `v` inside its own fire or cloud right now?
         let in_own = |w: &World, v: u8| {
@@ -983,6 +978,10 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
         }
     }
     r.cells = cells.len() as u32;
+    for b in &bots {
+        r.winged_stuck += b.stats().ticks_winged_stuck;
+        r.winged_stuck_moving += b.stats().ticks_winged_stuck_moving;
+    }
     r
 }
 
@@ -1113,8 +1112,9 @@ fn space_bots_report() {
         println!(
             "          pinned (T22.03D): airborne & still {:.1}%, against rock at the reserve {:.1}% \
              (runs >= {PINNED_RUN_S} s: {}, longest {:.0} s), against rock at any fuel {:.1}% \
-             (runs: {}, longest {:.0} s; beside a vortex, not counted: runs {}, longest {:.0} s); \
-             winged bots against rock {:.1}% (runs: {}, longest {:.0} s)",
+             (runs: {}, longest {:.0} s; of them beside a vortex: {}); winged bots against rock \
+             {:.1}% (runs: {}, longest {:.0} s); winged stuck ticks {}, {:.0}% of them moving; \
+             void deaths {}",
             ticks(|r| r.still_air),
             ticks(|r| r.pinned),
             total_runs(&rs, |r| r.runs),
@@ -1123,10 +1123,13 @@ fn space_bots_report() {
             total_runs(&rs, |r| r.runs_any),
             secs(rs.iter().map(|r| r.longest_any).max().unwrap_or(0)),
             total_runs(&rs, |r| r.runs_vortex),
-            secs(rs.iter().map(|r| r.longest_vortex).max().unwrap_or(0)),
             ticks(|r| r.pinned_wings),
             total_runs(&rs, |r| r.runs_wings),
             secs(rs.iter().map(|r| r.longest_wings).max().unwrap_or(0)),
+            total_runs(&rs, |r| r.winged_stuck),
+            100.0 * total_runs(&rs, |r| r.winged_stuck_moving) as f32
+                / total_runs(&rs, |r| r.winged_stuck).max(1) as f32,
+            total_runs(&rs, |r| r.void),
         );
         if std::env::var("BOTS_PER_SEED").is_ok() {
             for (s, r) in seeds.iter().zip(&rs) {
@@ -1215,6 +1218,13 @@ fn space_bots_report() {
             longest(|r| r.longest_any),
         ));
     }
+    // T22.03I F1: standard bots do not walk into pits (the natural standard arm).
+    let void = total(&arms[0], |r| r.void) as f32 / n_bots;
+    if void > STANDARD_VOID_MAX {
+        failed.push(format!(
+            "standard void deaths {void:.3} a bot a round (bound {STANDARD_VOID_MAX})"
+        ));
+    }
     // T22.03F: winged bots, both natural arms pooled (the walking model's, in both).
     let natural = [&arms[0], space];
     let wing_runs: u32 = natural.iter().map(|a| total(a, |r| r.runs_wings)).sum();
@@ -1279,7 +1289,15 @@ const PINNED_RESERVE_MAX: f32 = 0.06;
 const PINNED_ANY_MAX: f32 = 0.2;
 /// T22.03D F1 (as rewritten by T22.03C): any-fuel pinned runs of `PINNED_RUN_S` a bot
 /// a round — measured 0.02–0.04 after (8 and 32 seeds), 2.4–2.5 before; the no-detour
-/// plant 1.25. **Re-derived at T22.03G/F: none at all, beside a vortex excepted.** Every
+/// plant 1.25. **Re-derived at T22.03I (F2, R97): every run counted, bound 0.01.** With
+/// the vortices inside the cap nothing is excluded: runs 8 `SEEDS` / offsets 0/32/64/96
+/// of 32 went **4 / 1 / 4 / 2 / 1 → 0 / 1 / 0 / 0 / 0** (`gate-t2203i-{before,after}.txt`;
+/// the one left, offset 0 seed 79190, is a bot with a full tank idling on a rock face
+/// 429 px from a vortex, the pull capped at 610, its enemy behind the rock — the
+/// "idles on rock with fuel pressing nothing" T22.03G filed, not a trap). So 0.01 a bot
+/// a round is the worst after (0.005) with room for one more run in a 32-seed draw, and
+/// the R97 plant (the vortices back outside the cap) is red on the default run
+/// (`gate-t2203i-bound-plant.txt`). *History:* **Re-derived at T22.03G/F: none at all, beside a vortex excepted.** Every
 /// run left after R96's well cap and `would_take` was traced to a bot a breach vortex
 /// held against rock (outside the cap by design, filed in T22.03G), so those are now
 /// counted apart (`runs_vortex`, printed, not bounded). The rest, 8 `SEEDS` / offsets
@@ -1287,7 +1305,18 @@ const PINNED_ANY_MAX: f32 = 0.2;
 /// item filter 1/1/2/0/4, without both 1/2/9/4/0 (`gate-t2203f-split-*.txt`) — so the
 /// default run is red under each plant. (At 0.06 on the mixed count, the 8 seeds went
 /// 0.042 → 0.083 under T22.03F's unrelated change: four vortex runs on seed 4242.)
-const PINNED_ANY_RUNS_MAX: f32 = 0.0;
+const PINNED_ANY_RUNS_MAX: f32 = 0.01;
+/// T22.03I F1: standard void deaths a bot a round, the natural standard arm. T22.03H put
+/// the shovel's reach on wandering bots and they walked nearer every wander cell's middle
+/// (over pits): **four 32-seed draws 0.34 / 0.60 / 0.65 / 0.62 with that plant (425 of
+/// 768 bot-rounds pooled, 0.55), 0.46 / 0.42 / 0.41 / 0.51 after (344, 0.45)**; the 8
+/// `SEEDS` 0.42 → 0.23 (`gate-t2203i-plant-f1-void.txt`, `gate-t2203i-after.txt`). The
+/// bound is over every draw after and under three of four draws with the plant and the
+/// pooled 128 — **not** under the plant's offset-0 draw or the 8 `SEEDS`: a void death is
+/// a map-shaped event (one seed died 12 times at one pit), so one short run cannot tell
+/// the two apart. `bots::tests::the_walking_stop_is_the_weapons_range_only_for_an_enemy`
+/// is the guard on the default run; this is the effect, read at 32 seeds and up.
+const STANDARD_VOID_MAX: f32 = 0.53;
 /// T22.03F: a **winged** bot's pinned runs of `PINNED_RUN_S`, a bot a round, **pooled
 /// over both natural arms** — wings drive the walking model in every mode (R5), and the
 /// traced cause (the stuck-jump refused under wings) is the same in both. Measured over

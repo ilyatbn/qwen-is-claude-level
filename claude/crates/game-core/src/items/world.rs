@@ -103,34 +103,46 @@ pub struct PickupTarget<'a> {
     pub batteries: &'a mut u8,
 }
 
-/// Which counter an item belongs to, if any.
-fn counter_for<'a>(
-    item: ItemId,
-    heals: &'a mut &mut u8,
-    batteries: &'a mut &mut u8,
-) -> Option<&'a mut u8> {
-    match item {
-        crate::items::registry::MEDKIT => Some(heals),
-        crate::items::registry::BATTERY_PACK => Some(batteries),
-        _ => None,
-    }
+/// The §C9 counters an item can be routed to instead of a slot.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Counter {
+    Heals,
+    Batteries,
 }
 
-/// A counter item's cap.
-fn counter_cap(item: ItemId) -> u8 {
-    match item {
-        crate::items::registry::MEDKIT => crate::constants::MAX_HEALS,
-        _ => crate::constants::MAX_BATTERIES,
+impl Counter {
+    /// **The one routing** (T22.03I F5): which counter an item belongs to, if any.
+    /// [`would_take`] and [`WorldItems::resolve_pickups`] both read it — before, each
+    /// had its own `match` on the two item ids.
+    fn of(item: ItemId) -> Option<Self> {
+        match item {
+            crate::items::registry::MEDKIT => Some(Counter::Heals),
+            crate::items::registry::BATTERY_PACK => Some(Counter::Batteries),
+            _ => None,
+        }
     }
-}
 
-/// Increment a counter if it is below its cap. False leaves the item behind.
-fn bump(item: ItemId, counter: &mut u8) -> bool {
-    if *counter >= counter_cap(item) {
-        return false;
+    fn cap(self) -> u8 {
+        match self {
+            Counter::Heals => crate::constants::MAX_HEALS,
+            Counter::Batteries => crate::constants::MAX_BATTERIES,
+        }
     }
-    *counter += 1;
-    true
+
+    /// This counter's value among the two.
+    fn pick(self, heals: u8, batteries: u8) -> u8 {
+        match self {
+            Counter::Heals => heals,
+            Counter::Batteries => batteries,
+        }
+    }
+
+    fn pick_mut<'a>(self, heals: &'a mut u8, batteries: &'a mut u8) -> &'a mut u8 {
+        match self {
+            Counter::Heals => heals,
+            Counter::Batteries => batteries,
+        }
+    }
 }
 
 /// Would [`WorldItems::resolve_pickups`] take at least one of `item` into this
@@ -140,11 +152,15 @@ fn bump(item: ItemId, counter: &mut u8) -> bool {
 /// the pickup will give. T22.03G: bots chose items they could not take, parked on
 /// them, and waited out the round (seed 261327, 40 s; 3 of 6 ≥ 10 s runs at offset
 /// 96 had the bot within 12 px of an item with `is_full_for` true).
+///
+/// **And the pickup refuses through it** (T22.03I F5), so the two cannot drift: an
+/// item this answers `false` for is skipped by `resolve_pickups` before it moves
+/// anything; `tests::would_take_is_what_the_pickup_takes_for_every_item` compares the
+/// two for every item in the registry, empty-handed and full.
 pub fn would_take(item: ItemId, inventory: &Inventory, heals: u8, batteries: u8) -> bool {
-    match item {
-        crate::items::registry::MEDKIT => heals < counter_cap(item),
-        crate::items::registry::BATTERY_PACK => batteries < counter_cap(item),
-        _ => !inventory.is_full_for(item),
+    match Counter::of(item) {
+        Some(c) => c.pick(heals, batteries) < c.cap(),
+        None => !inventory.is_full_for(item),
     }
 }
 
@@ -387,6 +403,10 @@ impl WorldItems {
                 if d.x * d.x + d.y * d.y > r2 {
                     continue;
                 }
+                // T22.03I F5: the refusal a bot's goal asks about, asked here too.
+                if !would_take(it.item, inv, **heals, **batteries) {
+                    continue;
+                }
 
                 // §C9: heals and battery packs are **counters**, not inventory.
                 // Routed here rather than in `Inventory::add` because they never
@@ -397,11 +417,11 @@ impl WorldItems {
                 // ground**, which is the same rule a full inventory gets
                 // (`docs/30` §2) and is what makes birds worth shooting when you
                 // are already topped up (§C9's own note).
-                if let Some(counter) = counter_for(it.item, heals, batteries) {
-                    let mut moved = 0u8;
-                    while it.count > moved && bump(it.item, counter) {
-                        moved += 1;
-                    }
+                if let Some(c) = Counter::of(it.item) {
+                    let counter = c.pick_mut(heals, batteries);
+                    let room = c.cap().saturating_sub(*counter);
+                    let moved = it.count.min(room);
+                    *counter += moved;
                     if moved > 0 {
                         it.count -= moved;
                         taken.push((it.id, *pid));
@@ -665,6 +685,54 @@ mod tests {
             assert_eq!(a.count_of(BAZOOKA), 1);
             assert_eq!(b.count_of(BAZOOKA), 0);
         }
+    }
+
+    /// **T22.03I F5: `would_take` answers what the pickup does, for every item in the
+    /// registry** — empty-handed (it must take it, and say so) and full (a counter at
+    /// its cap, or eight stacks of the item at `max_stack`: it must leave it, and say
+    /// so). The pickup is the ground truth on both sides, so a `would_take` that is too
+    /// strict (a counter refused below its cap) and one that is too loose (a full one
+    /// let through to be refused later) are both red. Planted: the battery arm answering
+    /// `true` → the full arm red; answering `false` → the empty arm red.
+    #[test]
+    fn would_take_is_what_the_pickup_takes_for_every_item() {
+        use crate::constants::{INVENTORY_SLOTS, MAX_BATTERIES, MAX_HEALS};
+        use crate::items::registry::{max_stack, ITEMS};
+        let pos = Vec2::new(256.0, 380.0);
+        let mut checked = 0;
+        for d in ITEMS {
+            for full in [false, true] {
+                let mut inv = Inventory::new();
+                let (mut h, mut bt) = if full {
+                    (MAX_HEALS, MAX_BATTERIES)
+                } else {
+                    (0, 0)
+                };
+                if full && Counter::of(d.id).is_none() {
+                    for _ in 0..INVENTORY_SLOTS {
+                        inv.add(d.id, max_stack(d.id));
+                    }
+                }
+                let says = would_take(d.id, &inv, h, bt);
+                let mut w = WorldItems::new();
+                w.spawn(d.id, 1, pos, Vec2::ZERO, SpawnSource::Initial, 0.0);
+                let took = !w
+                    .resolve_pickups(&mut [target(0, pos, &mut inv, &mut h, &mut bt)], 1.0)
+                    .is_empty();
+                assert_eq!(
+                    took, !full,
+                    "{} (full: {full}): the pickup's own answer moved",
+                    d.key
+                );
+                assert_eq!(
+                    says, took,
+                    "{} (full: {full}): would_take says {says}, the pickup took: {took}",
+                    d.key
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2 * ITEMS.len());
     }
 
     #[test]

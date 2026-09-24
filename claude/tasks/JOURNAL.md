@@ -7021,3 +7021,11 @@ Measured: winged runs ≥ 10 s standard 6/6/3/10, space 4/0/6/4 — both modes, 
 Traced: wings refuse the stuck-jump; bot held RIGHT into rock. Stuck winged bot now sweeps UP 1 window, DOWN 2, UP 3…
 (UP alone trapped them under overhangs). Unit red both gravities, plant red. `PINNED_WINGS_RUNS_MAX` 0.015 pooled: parent
 red 5/5, after green. G's any-fuel bound went red on 8 seeds (vortex runs, seed 4242) → vortex runs counted apart, rest 0.
+
+## T22.03I — what the cap review found (builder, 2026-09-24)
+R97: `attractors::capped_at` sums wells + live vortices under one `SPACE_WELL_ACCEL_MAX` clamp, hole on top; sweep (9 seeds ×
+3 vortices), under-a-rock escape, capture control, wasm parity; R96-composition plant red. REPLAY_VERSION 24. F1: `stop_within`
+— `hold_off` on Enemy only; std void 424 → 344 (four draws), `STANDARD_VOID_MAX` 0.53 (red 3/4 draws + pooled; unit guards
+default). F2: vortex exclusion removed, any-fuel runs 0/1/0/0/0, bound 0.01 (plant 0.042). F4: winged stuck = displacement per
+window, give-up after 4 legs, legs keep out of void/keep-outs; walkers keep per-tick (load-bearing). F5: `Counter::of`, pickup
+refuses via `would_take`, all-ITEMS unit. F6 done. Filed: pits under wander cells, vertical blocks, walker hop, swirl ruling.

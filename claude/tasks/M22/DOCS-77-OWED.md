@@ -92,6 +92,11 @@ that surface mid-milestone are collected here so they are not lost. Each names i
     `SPACE_WELL_ESCAPE_MARGIN`, 675 px/s²): each well was already under it, their sum was not ((18, −919) px/s² under a
     rock ceiling at seed 451383 held a body in every direction). One clamp in the one summation, on both sides. **Wells
     only** — the breach vortex and the black hole add on top, uncapped. `REPLAY_VERSION` 23.
+    **Superseded in part by R97 (T22.03I):** the wells **and every live vortex's pull** are summed and capped
+    together at `SPACE_WELL_ACCEL_MAX`; only the black hole adds on top, uncapped. So outside a vortex's capture
+    radius (`VORTEX_CAPTURE_R`) thrust always escapes; inside it the vortex takes the body (unchanged). The vortex's
+    own doc text — "thrust wins only beyond half the reach", "no-escape radius `VORTEX_REACH / 2`" — must not reach
+    docs/77. `REPLAY_VERSION` 24.
 
 ## Other M22 points already recorded elsewhere
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).

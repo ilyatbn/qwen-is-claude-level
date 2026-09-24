@@ -100,8 +100,9 @@ pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2) -> Option<u32> {
 /// inside one. The clearance `World::step_vortices` hands the shared picker
 /// (`Map::random_body_site_where`, `M22-RULINGS` R86): **a caught player is put
 /// down beyond `VORTEX_REACH / 2` of every hole**, where thrust beats the pull
-/// (`VORTEX_ACCEL_MAX`'s basis), so the trip cannot deliver them into a second
-/// vortex's mouth. Spent holes are held to the same distance although they no
+/// (`VORTEX_ACCEL_MAX`'s basis — *since R97 thrust beats it everywhere outside the
+/// capture radius; the distance stands as R86 set it, a margin rather than the
+/// escape line*), so the trip cannot deliver them into a second vortex's mouth. Spent holes are held to the same distance although they no
 /// longer pull: one number, and the stricter one.
 pub fn clearance(vortices: &[Vortex], spent: &[Vortex], centre: Vec2) -> f32 {
     vortices
@@ -761,25 +762,44 @@ mod world_tests {
     /// **It pulls, through the one summation** (R11): a player near a vortex is
     /// accelerated toward it by `env_at`, and the same world with the vortex gone is
     /// not. Speed toward the hole after a quarter second, both ways.
+    ///
+    /// **Measured where R97's cap does not bind** (T22.03I): at 1.5 capture radii the
+    /// vortex alone is 1125 px/s², over the cap, so the shape is read at
+    /// `PROBE_REACH_FRAC` of the reach, where the capped sum equals the raw one —
+    /// asserted, or the shape below would be the cap's.
     #[test]
     fn a_vortex_pulls_toward_itself_and_the_control_without_one_does_not() {
+        use crate::constants::SPACE_WELL_ACCEL_MAX;
+        let d = crate::constants::VORTEX_REACH * PROBE_REACH_FRAC;
+        let (dir, hole) = {
+            let mut w = space_world(4242);
+            let hole = breach_top(&mut w);
+            // Both arms under the cap for the whole approach's start: the wells alone
+            // (the control) and the wells with the vortex.
+            let under = |wells: Vec2, with: Vec2| {
+                wells.len() < SPACE_WELL_ACCEL_MAX * 0.9 && with.len() < SPACE_WELL_ACCEL_MAX * 0.9
+            };
+            (
+                probe(&w, hole, d, under).expect("no probe point under the cap"),
+                hole,
+            )
+        };
         let mut pulled = Vec::new();
         for with_vortex in [true, false] {
             let mut w = space_world(4242);
-            let hole = breach_top(&mut w);
+            assert_eq!(breach_top(&mut w), hole);
             if !with_vortex {
                 w.vortices.clear();
             }
-            let at = hole + Vec2::new(0.0, crate::constants::VORTEX_CAPTURE_R * 1.5);
+            let at = hole + dir * d;
             w.players[0].body = Body::new(at);
             for _ in 0..15 {
                 step(&mut w);
             }
-            pulled.push(-w.players[0].body.vel.y);
+            pulled.push(w.players[0].body.vel.dot(-dir));
         }
         // The control is not zero — an asteroid's well reaches this point too — so
         // what is the vortex's is the difference, against the shape it is built on.
-        let d = crate::constants::VORTEX_CAPTURE_R * 1.5;
         let want = crate::constants::VORTEX_ACCEL_MAX
             * (1.0 - d / crate::constants::VORTEX_REACH)
             * 15.0
@@ -796,6 +816,77 @@ mod world_tests {
         assert!(
             ((1.0 - band) * want..(1.0 + band) * want).contains(&got),
             "the vortex added {got} px/s toward itself, its shape says {want}: {pulled:?}"
+        );
+    }
+
+    /// A direction into the arena from `hole` (the lower half-turn, 5° steps) whose
+    /// point `d` px out a body fits at and where `ok(raw wells, raw wells + vortex)`
+    /// holds — so a fixture states the condition it needs rather than trusting one
+    /// map's layout.
+    fn probe(w: &World, hole: Vec2, d: f32, ok: impl Fn(Vec2, Vec2) -> bool) -> Option<Vec2> {
+        use crate::world::attractors::{asteroid_attractors, field_at, Attractor};
+        (2..=34).find_map(|k| {
+            let a = (k as f32 * 5.0).to_radians();
+            let dir = Vec2::new(a.cos(), a.sin());
+            let at = hole + dir * d;
+            let fits = w.map.body_fits_at(crate::math::Point::new(
+                at.x.round() as i32,
+                at.y.round() as i32,
+            ));
+            let wells = field_at(asteroid_attractors(&w.map), at);
+            let with = wells + Attractor::vortex(hole).pull_at(at);
+            (fits && ok(wells, with)).then_some(dir)
+        })
+    }
+
+    /// Where [`a_vortex_pulls_toward_itself_and_the_control_without_one_does_not`]
+    /// reads the shape: three quarters of the reach, where the vortex alone is a
+    /// quarter of `VORTEX_ACCEL_MAX` (450 px/s²) and under R97's cap with room for the
+    /// wells there.
+    const PROBE_REACH_FRAC: f32 = 0.75;
+
+    /// **R97's presence control (T22.03I): capping the pull did not stop the vortex
+    /// taking people.** Beside it the pull is the cap — no more — while the raw sum
+    /// there is over it (so the cap is what binds); an idle body there is still drawn
+    /// in and taken; a body inside the capture radius is taken on the next tick.
+    #[test]
+    fn beside_a_vortex_the_pull_is_the_cap_and_an_idle_body_is_still_taken() {
+        use crate::constants::{SPACE_WELL_ACCEL_MAX, VORTEX_CAPTURE_R};
+        use crate::world::attractors::{env_at, field_at, Attractor};
+        let mut w = space_world(4242);
+        let hole = breach_top(&mut w);
+        let d = 1.5 * VORTEX_CAPTURE_R;
+        let dir = probe(&w, hole, d, |_, with| with.len() > SPACE_WELL_ACCEL_MAX)
+            .expect("control: nowhere 1.5 capture radii off is the raw sum over the cap");
+        let at = hole + dir * d;
+        let raw = field_at(
+            crate::world::attractors::asteroid_attractors(&w.map)
+                .chain(std::iter::once(Attractor::vortex(hole))),
+            at,
+        );
+        let got = env_at(&w.map, GravityMode::Space, &[hole], None, false, at).accel;
+        assert!(
+            got.len() <= SPACE_WELL_ACCEL_MAX * (1.0 + 4.0 * f32::EPSILON) && got.dot(dir) < 0.0,
+            "beside the vortex: {got:?} (raw {raw:?}), cap {SPACE_WELL_ACCEL_MAX}"
+        );
+
+        let taken_within = |w: &mut World, from: Vec2, ticks: u32| {
+            w.players[0].body = Body::new(from);
+            let _ = w.drain_events();
+            (0..ticks).any(|_| {
+                step(w);
+                w.drain_events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. }))
+            })
+        };
+        assert!(
+            taken_within(&mut w, at, (2.0 / SIM_DT) as u32),
+            "an idle body 1.5 capture radii from the vortex was not taken in 2 s"
+        );
+        assert!(
+            taken_within(&mut w, hole + Vec2::new(0.0, 0.9 * VORTEX_CAPTURE_R), 1),
+            "a body inside the capture radius was not taken on the next tick"
         );
     }
 

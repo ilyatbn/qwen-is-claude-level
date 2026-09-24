@@ -85,9 +85,10 @@ use crate::player::Env;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     Asteroid,
-    /// T22.10's breach vortex. **Not escapable near its centre, by design** — its
-    /// basis is on `VORTEX_ACCEL_MAX` — so the asteroid escape guarantee must never
-    /// widen to it.
+    /// T22.10's breach vortex. *Was "not escapable near its centre, by design" —
+    /// superseded by R97 (T22.03I):* its pull is summed with the wells and capped
+    /// with them ([`capped_at`]), so outside its capture radius it is escapable; inside
+    /// that radius the capture takes the body, which is the vortex's guarantee now.
     Vortex,
     /// T22.12's black hole. **Escapable everywhere outside its horizon and death
     /// inside it** (R90): its own guarantee is
@@ -217,10 +218,10 @@ pub fn field_at<I: IntoIterator<Item = Attractor>>(attractors: I, pos: Vec2) -> 
 }
 
 /// [`field_at`]'s one summation, started from `start` instead of zero — so
-/// [`env_at`] can add the vortices and the hole onto the **capped** wells in the
-/// same order, and the same float additions, as the single sum it replaced
-/// (`0 + a₁ + … + aₙ + v₁ + … + h`). Wherever the cap does not bind the result is
-/// bit-identical to the pre-R96 sum.
+/// [`capped_at`] can add the vortices onto the wells and [`env_at`] the hole onto
+/// the **capped** sum, in the same order and the same float additions as the single
+/// sum it replaced (`0 + a₁ + … + aₙ + v₁ + … + h`). Wherever the cap does not bind
+/// the result is bit-identical to the pre-R96 sum.
 fn field_from<I: IntoIterator<Item = Attractor>>(start: Vec2, attractors: I, pos: Vec2) -> Vec2 {
     let mut sum = start;
     for a in attractors {
@@ -244,12 +245,41 @@ fn field_from<I: IntoIterator<Item = Attractor>>(start: Vec2, attractors: I, pos
 /// that R46 guarantees next to one rock — which is also the premise
 /// `BOT_SPACE_BRAKE` (`DOWN − SPACE_WELL_ACCEL_MAX`) was already stated on.
 ///
-/// **Wells only.** The breach vortex is unescapable near its centre by design
-/// (`VORTEX_ACCEL_MAX`), and the black hole kills inside its horizon (R90) — both
-/// are added *after* this cap, uncapped, in [`env_at`]. Inside the hole's reach the
-/// wells are already muted (R91), so the two rules never meet.
+/// *R96's "wells only" is superseded by R97* — the vortices are inside the cap
+/// now ([`capped_at`]); this is that sum with no vortex in it.
 pub fn wells_at(map: &Map, pos: Vec2) -> Vec2 {
-    field_at(asteroid_attractors(map), pos).clamp_len(SPACE_WELL_ACCEL_MAX)
+    capped_at(map, true, &[], pos)
+}
+
+/// **Everything that is escapable, summed and capped** — `M22-RULINGS` R97
+/// (T22.03I): the asteroid wells (when `wells`, R91) **and every live vortex's pull**,
+/// in that order, clamped together to [`SPACE_WELL_ACCEL_MAX`].
+///
+/// R96 capped the wells alone and added the vortices on top, so beside a vortex the
+/// capped wells (675) and the vortex's outer pull (900 at `VORTEX_REACH / 2`) summed
+/// to 1575 px/s² against `JETPACK_THRUST_DOWN` 900 — a body against rock there was
+/// held for the round. **Outside a vortex's capture radius escape is now always
+/// possible**, by the same margin R46 guarantees beside one rock. Inside the capture
+/// radius the vortex captures, unchanged: `World::step_vortices` takes every body
+/// within `VORTEX_CAPTURE_R` on the tick it arrives, cooldown or not (R86), so the
+/// pull there is never what holds anyone — which is why the cap needs no carve-out
+/// for it (builder's reading of R97, recorded in T22.03I). What the vortex's pull
+/// still does is draw an idle body in: a body left alone near one is taken
+/// (`vortex::tests::…_still_takes_an_idle_body`).
+///
+/// **The black hole is not in it** (R90/R91: death inside the horizon, the one rule
+/// a player can see) — [`env_at`] adds it after this cap, uncapped.
+///
+/// One summation, continued: `0 + a₁ + … + aₙ + v₁ + …`, then one clamp — wherever
+/// the cap does not bind, bit-identical to the single sum before R96.
+pub fn capped_at(map: &Map, wells: bool, vortices: &[Vec2], pos: Vec2) -> Vec2 {
+    let start = if wells {
+        field_at(asteroid_attractors(map), pos)
+    } else {
+        Vec2::ZERO
+    };
+    field_from(start, vortices.iter().map(|&v| Attractor::vortex(v)), pos)
+        .clamp_len(SPACE_WELL_ACCEL_MAX)
 }
 
 /// **The one composition of [`Env`], called by both sides** — `World::apply_inputs`
@@ -298,22 +328,15 @@ pub fn env_at(
         GravityMode::Standard | GravityMode::Low => Env::field_free(gravity),
         GravityMode::Space => {
             let wells = hole.is_none_or(|h| (pos - h).len() >= BLACK_HOLE_REACH);
-            // R96: the wells' sum is capped, then the vortices and the hole are
-            // added onto it uncapped — one summation, continued from the capped
-            // partial sum (`field_from`), not a second loop.
-            let start = if wells {
-                wells_at(map, pos)
-            } else {
-                Vec2::ZERO
-            };
+            // R97 (was R96's wells-only cap): the wells and the vortices are summed
+            // and capped together, then the hole is added onto that uncapped — one
+            // summation, continued from the capped partial sum (`field_from`), not a
+            // second loop.
             Env {
                 gravity,
                 accel: field_from(
-                    start,
-                    vortices
-                        .iter()
-                        .map(|&v| Attractor::vortex(v))
-                        .chain(hole.filter(|_| hole_pulls).map(Attractor::black_hole)),
+                    capped_at(map, wells, vortices, pos),
+                    hole.filter(|_| hole_pulls).map(Attractor::black_hole),
                     pos,
                 ),
                 max_speed: Some(SPACE_MAX_SPEED),
@@ -1146,5 +1169,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- R97: the wells and the vortices are capped together (T22.03I) --------
+
+    /// Three breaches through the rim (top, left, right), opened by the world's own
+    /// step — three live vortices, the most that pull (R9). Returns their centres.
+    fn three_live_vortices(w: &mut World) -> Vec<Vec2> {
+        let geo = w.map.space_geometry().expect("space");
+        for (x, y) in [
+            (geo.cx, geo.cy - geo.ry),
+            (geo.cx - geo.rx, geo.cy),
+            (geo.cx + geo.rx, geo.cy),
+        ] {
+            let _ = w.map.carve_circle(
+                x.round() as i32,
+                y.round() as i32,
+                crate::constants::METEOR_CARVE_R as i32,
+            );
+        }
+        w.step(SIM_DT);
+        w.vortices.iter().map(|v| v.pos).collect()
+    }
+
+    /// **R97: outside every capture radius, the summed pull never exceeds the cap** —
+    /// wells and live vortices together, swept on an 8 px grid over the whole map for
+    /// 9 seeds, three vortices each. Red at `c3f7861`, where the vortices were added
+    /// on top of the capped wells (675 + up to 900 at `VORTEX_REACH / 2`).
+    ///
+    /// The presence half: the raw sum (wells + vortices) must exceed the cap
+    /// somewhere in the sweep, or "never exceeded" is a property of the maps.
+    #[test]
+    fn beside_live_vortices_the_summed_pull_never_exceeds_the_cap() {
+        use crate::constants::VORTEX_CAPTURE_R;
+        let tol = SPACE_WELL_ACCEL_MAX * 4.0 * f32::EPSILON;
+        let (mut over_raw, mut near_vortex) = (0usize, 0usize);
+        for seed in std::iter::once(POCKET_SEED).chain((1..=8u64).map(|i| i * 7919)) {
+            let mut w = World::with_gravity(
+                seed,
+                crate::constants::DEFAULT_MAP_SCALE,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            w.set_phase(crate::world::RoundPhase::Playing);
+            let vs = three_live_vortices(&mut w);
+            assert_eq!(
+                vs.len(),
+                3,
+                "seed {seed}: the three breaches opened {} vortices",
+                vs.len()
+            );
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            for y in (0..mh).step_by(8) {
+                for x in (0..mw).step_by(8) {
+                    let at = Vec2::new(x as f32, y as f32);
+                    if vs.iter().any(|&v| (v - at).len() <= VORTEX_CAPTURE_R)
+                        || !w.map.body_fits_at(crate::math::Point::new(x, y))
+                    {
+                        continue;
+                    }
+                    let raw = field_at(
+                        asteroid_attractors(&w.map).chain(vs.iter().map(|&v| Attractor::vortex(v))),
+                        at,
+                    )
+                    .len();
+                    if raw > SPACE_WELL_ACCEL_MAX {
+                        over_raw += 1;
+                        near_vortex += usize::from(
+                            vs.iter()
+                                .any(|&v| (v - at).len() < crate::constants::VORTEX_REACH),
+                        );
+                    }
+                    let got = env_at(&w.map, GravityMode::Space, &vs, None, false, at)
+                        .accel
+                        .len();
+                    assert!(
+                        got <= SPACE_WELL_ACCEL_MAX + tol,
+                        "seed {seed} ({x}, {y}): wells and vortices pull {got:.1} px/s² (raw \
+                         {raw:.1}) over the cap {SPACE_WELL_ACCEL_MAX}, outside every capture radius"
+                    );
+                }
+            }
+        }
+        assert!(
+            near_vortex > 0 && over_raw > near_vortex,
+            "the sweep never exercised the cap beside a vortex ({near_vortex}) or away from \
+             one ({} of {over_raw})",
+            over_raw - near_vortex
+        );
+    }
+
+    /// Where the escape below sits from the vortex, as a fraction of `VORTEX_REACH`:
+    /// just past half the reach, where the vortex alone pulls 0.45 × `VORTEX_ACCEL_MAX`
+    /// (810 px/s²) — under the down thrust by itself, over it with the wells R96 left
+    /// on top of it.
+    const ESCAPE_REACH_FRAC: f32 = 0.55;
+
+    /// **R97, the effect: a human under a rock, a vortex beyond it, holds DOWN and
+    /// leaves** — through `World::step`, from rest, on a full tank. The rock is the
+    /// binding case of R46 (the smallest rock at the top level, the body at `d_min`
+    /// on its underside) stamped into open air on a real space map, and the vortex
+    /// sits `ESCAPE_REACH_FRAC` of the reach above the body, through the rock. Red at
+    /// `c3f7861`: the well (≈ 647) plus the vortex (810) held the body against the rock.
+    ///
+    /// The control in the same test: at `c3f7861`'s composition — the capped wells
+    /// with the vortex added on top — the up-pull there really does out-pull the down
+    /// thrust, so this is the trap and not a quiet spot.
+    #[test]
+    fn a_human_under_a_rock_beside_a_vortex_holds_down_and_leaves() {
+        use crate::constants::{SPACE_ASTEROID_CORE_FRAC, VORTEX_REACH};
+        let mut w = pocket_world();
+        let r = SPACE_ASTEROID_R_MIN;
+        let clear = |w: &World, c: Vec2| {
+            (-4..=4).all(|i| {
+                (-20..=10).all(|j| {
+                    w.map.body_fits_at(crate::math::Point::new(
+                        c.x as i32 + i * 16,
+                        c.y as i32 + j * 16,
+                    ))
+                })
+            })
+        };
+        let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+        let centre = (0..mh)
+            .step_by(32)
+            .flat_map(|y| {
+                (0..mw)
+                    .step_by(32)
+                    .map(move |x| Vec2::new(x as f32, y as f32))
+            })
+            .find(|&c| clear(&w, c))
+            .expect("no open column on the map to build the fixture in");
+        let _ = w.map.fill_circle(
+            centre.x as i32,
+            centre.y as i32,
+            (SPACE_ASTEROID_CORE_FRAC * r as f32).round() as i32,
+        );
+        w.map
+            .meta
+            .asteroids
+            .push(rock(centre.x as i32, centre.y as i32, r, SPACE_LEVEL_MAX));
+        // Against the underside: the body's box clear of the rock, and touching it
+        // once grown by a pixel (`balance.rs::touches`' definition).
+        let start = centre + Vec2::new(0.0, d_min(r) + 1.0);
+        let boxed = |grow: f32| {
+            crate::physics::collide::aabb_overlaps_solid(
+                &w.map,
+                crate::math::Aabb::from_center_size(
+                    start,
+                    crate::constants::PLAYER_W + grow,
+                    PLAYER_H + grow,
+                ),
+            )
+        };
+        assert!(
+            !boxed(0.0) && boxed(2.0),
+            "fixture: the body is not resting against the rock"
+        );
+        let vortex = start - Vec2::new(0.0, VORTEX_REACH * ESCAPE_REACH_FRAC);
+        let mut seq = 0;
+        let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, vortex);
+        let old = wells_at(&w.map, start) + Attractor::vortex(vortex).pull_at(start);
+        assert!(
+            old.y < -JETPACK_THRUST_DOWN,
+            "control: at c3f7861's composition the pull under the rock is ({:.0}, {:.0}), not \
+             over the {JETPACK_THRUST_DOWN} px/s² down thrust — no trap to leave",
+            old.x,
+            old.y
+        );
+        w.add_player(0, 0, "ana".into());
+        {
+            let p = w.player_mut(0).expect("seated");
+            p.body.pos = start;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let ticks = (POCKET_ESCAPE_S / SIM_DT).round() as u32;
+        for tick in 0..ticks {
+            w.queue_input(0, Input::new(tick + 1, button::DOWN, 0));
+            w.step(SIM_DT);
+        }
+        let p = w.player(0).expect("seated");
+        let moved = p.body.pos.y - start.y;
+        assert!(
+            p.alive && moved >= PLAYER_H,
+            "{POCKET_ESCAPE_S} s of down-thrust from rest under the rock moved the body {moved:.1} \
+             px (to {:?}) — still held by the wells and the vortex beyond",
+            p.body.pos
+        );
     }
 }

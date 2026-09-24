@@ -77,9 +77,10 @@ pub(super) fn flies(world: &World, me: &PlayerState) -> bool {
 
 /// The hazards a bot keeps out of, each as a centre and the radius it keeps clear
 /// of: the black hole's reach (arrived, or telegraphed — the ring on screen says
-/// where), and a live vortex's no-escape disc (`VORTEX_REACH / 2`, where thrust
-/// stops beating its pull). Spent vortices do not pull; a trip is survivable, so
-/// they are not worth fuel.
+/// where), and a live vortex's disc (`VORTEX_REACH / 2` — *once where thrust stopped
+/// beating its pull; since R97 (T22.03I) thrust wins outside the capture radius, and
+/// the disc stays as the bots' margin: a bot flies through a capped pull slowly*).
+/// Spent vortices do not pull; a trip is survivable, so they are not worth fuel.
 fn keep_out(world: &World) -> impl Iterator<Item = (Vec2, f32)> + '_ {
     let hole = [world.black_hole(), world.black_hole_warned_at()]
         .into_iter()

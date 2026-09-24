@@ -4094,6 +4094,46 @@ mod tests {
         assert_eq!((told[0], told[1]), (server.x, server.y));
     }
 
+    /// **R97 (T22.03I): where the vortex and the wells are capped together, the
+    /// mirror reports the server's capped pull bit for bit.** The test above probes one
+    /// point, where the cap need not bind; this one probes a ring of points out to
+    /// three capture radii and compares only those where the raw sum is over the cap —
+    /// the control that the cap is what is being compared (at least one such point).
+    #[test]
+    fn the_mirror_caps_the_vortex_with_the_wells_as_the_server_does() {
+        use game_core::constants::{SPACE_WELL_ACCEL_MAX, VORTEX_CAPTURE_R};
+        use game_core::world::attractors::{asteroid_attractors, env_at, field_at, Attractor};
+        let (mut w, mut core) = space_world_and_mirror(true);
+        let geo = w.map.space_geometry().expect("space");
+        let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+        let _ = w
+            .map
+            .carve_circle(tx, ty, game_core::constants::METEOR_CARVE_R as i32);
+        w.step(SIM_DT);
+        assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
+        let v = w.vortices[0].pos;
+        core.set_vortices(&[v.x], &[v.y]);
+        let mut binding = 0;
+        for k in 0..36 {
+            for m in [1.2f32, 1.6, 2.0, 2.5, 3.0] {
+                let a = (k as f32 * 5.0).to_radians();
+                let at = v + Vec2::new(a.cos(), a.sin()) * (m * VORTEX_CAPTURE_R);
+                let raw = field_at(
+                    asteroid_attractors(&w.map).chain(std::iter::once(Attractor::vortex(v))),
+                    at,
+                );
+                if raw.len() <= SPACE_WELL_ACCEL_MAX {
+                    continue;
+                }
+                binding += 1;
+                let server = env_at(&w.map, GravityMode::Space, &[v], None, false, at).accel;
+                let told = core.field_accel_at(at.x, at.y);
+                assert_eq!((told[0], told[1]), (server.x, server.y), "at {at:?}");
+            }
+        }
+        assert!(binding > 0, "control: the cap bound nowhere on the ring");
+    }
+
     /// **T22.12: the prediction pulls as the server does near the black hole** —
     /// once the mirror is told what a client is told: the `carve` of the eaten rock,
     /// the asteroid list without it, and `set_black_hole`. `GameCore::apply_input`
@@ -4345,8 +4385,9 @@ mod tests {
     /// body is about to be pulled and puts its subject patch there and its
     /// control patch opposite. A readback that answered plausibly but wrongly
     /// would aim both patches at nothing and the check would go red for the wrong
-    /// reason, so it is pinned here against `field_at` — the summation the server
-    /// runs — rather than trusted.
+    /// reason, so it is pinned here against `wells_at` — the **capped** summation
+    /// the server runs (R96/R97; T22.03I F6: it read the raw `field_at` until then,
+    /// which agrees only where the cap does not bind) — rather than trusted.
     ///
     /// The `[0, 0]` arms are the two the check depends on: clearing the table is
     /// how it takes the field away for its control frame, and a standard match
@@ -4355,10 +4396,7 @@ mod tests {
     fn field_accel_at_reports_the_summation_the_server_runs() {
         let (w, core) = space_world_and_mirror(true);
         let (_, start) = start_inside_a_well(&w);
-        let server = game_core::world::attractors::field_at(
-            game_core::world::attractors::asteroid_attractors(&w.map),
-            start,
-        );
+        let server = game_core::world::attractors::wells_at(&w.map, start);
         assert!(
             server.len() > 0.0,
             "the fixture point has no field on the server, so every arm below is \
