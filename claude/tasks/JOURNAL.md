@@ -6899,3 +6899,9 @@ Before → after, worst jump/ack: breach-vortex 61/56 & 19/13 → ≤2.95; radia
 Not fixed: stand-ins still 23–28 % on thrusters-match (4-tick frames vs 2-tick lead); thrusters' worst is the bell's first correction (counted). teleport 5.7/6.1 % before (57 % not reproduced), 2.5–15 % after.
 Seen once, not mine, not parked: death countdown 5.1 s; rematch "CONTROL frame frozen".
 `4d64a01`: `--changed 0587320 --fast` EXIT=0 (cargo 1640/0, vitest 1076); 72 mapped browser checks 72/72; net smoke 25/25.
+
+## M22 batch gate — green, 1163 s (coordinator, 2026-09-24)
+`39d2069` (T22.10F R89 + T22.10G buffer, after the T22.10G review): **EXIT=0** — browser **72/72** (two parked: fog-visible, solar-flare-match),
+vitest 1076/1076, Rust 1640/0/25. Idle box, no subagents during the run. T22.10G review: accept + one fix (the results screen's anchoring
+neutral reconcile is a hitch event — set `unsettled` when `n.label === null`), plus the task file's stand-in arithmetic ((N−2)/N of an
+N-tick frame, not 1 in 4) and "harmless" claim to correct; dead `seq` counter in `fall_damage::jump_from_flat`. Folded into the next builder.
