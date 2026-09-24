@@ -6898,3 +6898,4 @@ Tests: jittered stream never stood in; warmup-only no-step; held JUMP into silen
 Before → after, worst jump/ack: breach-vortex 61/56 & 19/13 → ≤2.95; radiation-match 20/16 → ≤2.7. The three HEAD reds green 4/4.
 Not fixed: stand-ins still 23–28 % on thrusters-match (4-tick frames vs 2-tick lead); thrusters' worst is the bell's first correction (counted). teleport 5.7/6.1 % before (57 % not reproduced), 2.5–15 % after.
 Seen once, not mine, not parked: death countdown 5.1 s; rematch "CONTROL frame frozen".
+`4d64a01`: `--changed 0587320 --fast` EXIT=0 (cargo 1640/0, vitest 1076); 72 mapped browser checks 72/72; net smoke 25/25.
