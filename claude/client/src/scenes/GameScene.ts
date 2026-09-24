@@ -443,6 +443,8 @@ export class GameScene extends Phaser.Scene {
   private vents: VentSpec[] = []
   private seq = 0
   private acc = 0
+  /** `performance.now()` at the last fixed-step update — see `update`'s clock (T22.10F). */
+  private stepClockAt: number | null = null
   private roundTime = 0
   /**
    * The last round time the **server** sent, never advanced locally.
@@ -636,6 +638,7 @@ export class GameScene extends Phaser.Scene {
     // Input bookkeeping and the send clock.
     this.seq = 0
     this.acc = 0
+    this.stepClockAt = null
     this.stepAcc = 0
     this.inputsSent = 0
     this.lastRtt = 0
@@ -1973,7 +1976,19 @@ export class GameScene extends Phaser.Scene {
     // the frame rate, and the whole point of shipping game-core to the browser
     // is that it runs the simulation the server runs.
     const step = C().SIM_DT
-    this.acc = Math.min(this.acc + dt, MAX_FRAME_DT)
+    // **Real time, not Phaser's `delta`** (T22.10F). Phaser smooths `delta` and
+    // clamps it to one 60 Hz frame whenever the page is not focused (and for the
+    // first `panicMax` frames): an unfocused tab at 15 fps reported 16.7 ms a frame
+    // and stepped one input where 60 ms had passed. That used to cost only speed —
+    // the server ran whatever arrived — but since R89 the server steps every player
+    // every tick, standing in for inputs that have not come; a client simulating
+    // slower than real time then disagrees with every stand-in and its seqs fall
+    // ever further behind the server's. The fixed step's clock is the wall clock;
+    // `MAX_FRAME_DT` still caps one frame.
+    const wall = performance.now()
+    const elapsed = this.stepClockAt === null ? dt : (wall - this.stepClockAt) / 1000
+    this.stepClockAt = wall
+    this.acc = Math.min(this.acc + elapsed, MAX_FRAME_DT)
     const batch = []
     while (this.acc >= step) {
       const body = this.core.playerState(this.me)

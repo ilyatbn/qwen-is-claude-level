@@ -551,7 +551,8 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
     const t = core.playerState(0)!
     p.reconcile({ tick: 0, lastInputSeq: 13, state: { ...t, x: t.x + off() } })
     expect(p.stats.corrections).toBe(2)
-    expect(p.stats.settled).toBe(1)
+    // Two events: the first ack's anchor (T22.10F) and the gap's correction.
+    expect(p.stats.settled).toBe(2)
     expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
     expect(p.stats.maxAckErrorPx).toBeGreaterThan(off() / 2)
   })
@@ -577,12 +578,16 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
   // the local copy falls on — `void` read 45–63 px of "rubber-band" that was the death.
   it('leave out a correction that flips alive, and only that one', () => {
     const p = new Predictor(core, 0)
-    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    p.pushInput(inp(1, 0), DT)
+    // Anchored first, so the flip below is not the first ack's anchor (T22.10F).
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: core.playerState(0)! })
+    expect(p.stats.settled).toBe(1)
+    for (let i = 2; i <= 3; i++) p.pushInput(inp(i, 0), DT)
     const s = core.playerState(0)!
     p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...s, x: s.x + off(), alive: false } })
     expect(p.stats.corrections).toBe(1)
     expect(p.stats.lastJumpPx).toBeGreaterThan(off() / 2)
-    expect(p.stats.settled).toBe(1)
+    expect(p.stats.settled).toBe(2)
     expect(p.stats.maxEasedJumpPx).toBe(0)
     expect(p.stats.maxAckErrorPx).toBe(0)
     // The control: still dead, off again — no flip, so it counts.
@@ -590,7 +595,34 @@ describe('the rubber-band maxima (T22.10E F-4)', () => {
     const t = core.playerState(0)!
     p.reconcile({ tick: 0, lastInputSeq: 4, state: { ...t, x: t.x + off(), alive: false } })
     expect(p.stats.corrections).toBe(2)
+    expect(p.stats.settled).toBe(2)
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+  })
+
+  // T22.10F: the first ack anchors; a repeated ack is time this client lost.
+  it('leave out the first ack, a repeated ack and its residue, and count the next', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 4; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 2, state: { ...s, x: s.x + off() } })
+    expect(p.stats.corrections).toBe(1)
     expect(p.stats.settled).toBe(1)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 2, state: { ...t, x: t.x + off() } })
+    expect(p.stats.corrections).toBe(2)
+    expect(p.stats.settled).toBe(2)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    // The first new ack after it is the hitch's residue — left out too.
+    const u = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...u, x: u.x + off() } })
+    expect(p.stats.corrections).toBe(3)
+    expect(p.stats.settled).toBe(3)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    // The control: the next new ack, still off — counted.
+    const v = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 4, state: { ...v, x: v.x + off() } })
+    expect(p.stats.corrections).toBe(4)
     expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
   })
 })

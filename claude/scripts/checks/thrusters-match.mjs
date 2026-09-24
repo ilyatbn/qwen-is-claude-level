@@ -49,12 +49,13 @@ const NAME_KEY = clientKey('NAME_KEY')
  * How long before the bell bo starts to burn (T22.10E review, (b)). It was 3 s,
  * long enough for UP to carry him into the first rock overhead and park him
  * there — measured `v 0.0, 0.0` at the bell in a green run — and a parked body
- * cannot show a rubber-band. Half a second is a burn still accelerating in open
- * air when the bell rings; the arm now *requires* that (a speed floor at the last
- * pre-bell frame, below) instead of hoping. The tank cannot run dry in it —
+ * cannot show a rubber-band. A second is a burn still accelerating in open air
+ * when the bell rings (half a second, the review's suggestion, left too little to
+ * turn round in under load — below); the arm now *requires* that (a speed floor
+ * at the last pre-bell frame) instead of hoping. The tank cannot run dry in it —
  * asserted against the fuel and `JETPACK_DRAIN`, not assumed.
  */
-const BELL_LEAD_S = 0.5
+const BELL_LEAD_S = 1
 /** Rendered frames after an edge (release, bell, death) before reading the views. */
 const SETTLE_FRAMES = 6
 /**
@@ -63,15 +64,15 @@ const SETTLE_FRAMES = 6
  */
 const ROUND_S = 25
 /**
- * The bell arm's thrust: UP, which engages grounded or not (T22.10E F-5), plus
- * the horizontal key toward the map's middle, for the better chance that bo is
- * still *moving* at the bell — UP alone parks him under the first rock above
- * (measured: vy 0.0 at the bell), and a parked body cannot show a rubber-band
- * (F-3). It is a chance, not a guarantee (both keys parked him in a corner in one
- * run of two), which is why F-3's assertion leans on `pending` and reports the
- * drift rather than requiring it.
+ * The bell arm's vertical thrust. Grounded, UP — the only push a grounded
+ * player's thrusters engage for (T22.10E F-5, R42). Airborne, **toward the map's
+ * vertical middle**, as the side key is toward its horizontal middle: UP alone
+ * parked him under the first rock above, and DOWN alone parked him once too
+ * (measured `v 0.0, 0.0` at the bell, 2 runs of 5 across both); the open sky is
+ * the middle, and the rim closes the edges. The arm then *requires* him moving at
+ * the bell (below) rather than leaning on the chance.
  */
-const BELL_UP = 'w'
+const bellThrust = (p, mapH) => (p.grounded === true || p.y > mapH / 2 ? 'w' : 's')
 /** How long after the bell the bell arm watches bo's own prediction (F-3). */
 const AFTER_BELL_S = 3
 /** Seconds of thrust before the poison kills fay — see the death arm. */
@@ -105,9 +106,10 @@ const watchBell = (c, afterS, limitS) =>
   c.page.evaluate(
     ([after, limit]) =>
       new Promise((resolve) => {
-        const out = { pre: null, post: [], pendingMax: 0, pendingPre: 0, frames: 0, travelled: 0 }
+        const out = { pre: null, post: [], hitches: 0, pendingMax: 0, pendingPre: 0, frames: 0, travelled: 0 }
         let from = null
         let corr = null
+        let settled = 0
         let rang = null
         const t0 = performance.now()
         const tick = (t) => {
@@ -135,10 +137,16 @@ const watchBell = (c, afterS, limitS) =>
                 from ??= { x: d.player.x, y: d.player.y }
                 out.travelled = Math.hypot(d.player.x - from.x, d.player.y - from.y)
               }
-              if (corr !== null && v.corrections > corr) out.post.push(v.lastJumpPx)
+              // A correction the predictor counted as an event (`settled`: lost
+              // time, a relocation) is the hitch's, not a misprediction (T22.10F).
+              if (corr !== null && v.corrections > corr) {
+                if ((v.settled ?? 0) > settled) out.hitches++
+                else out.post.push(v.lastJumpPx)
+              }
               out.pendingMax = Math.max(out.pendingMax, d.pendingInputs ?? 0)
             }
             corr = v.corrections
+            settled = v.settled ?? 0
           }
           if (rang !== null && t - rang > after * 1000) resolve(out)
           else if (t - t0 > limit * 1000) resolve(null)
@@ -302,7 +310,8 @@ try {
     // after it are the rubber-band measure (F-3). Started before the key goes down
     // so no pre-bell frame can be missed.
     const watch = watchBell(bo, AFTER_BELL_S, BELL_LEAD_S + 25)
-    // **UP, not DOWN** (T22.10E F-5). This arm held DOWN and failed ~1 run in 6:
+    // **UP when grounded** (T22.10E F-5; DOWN in the air since T22.10F, see
+    // `bellThrust`). This arm held DOWN and failed ~1 run in 6:
     // bo can be standing on a rock or the rim floor when the lead starts, and a
     // grounded player's thrusters engage only for a net *upward* push (`space.rs::
     // engaging`, `M22-RULINGS` R42), so DOWN never lit and the "last burning frame
@@ -310,8 +319,9 @@ try {
     // alike, and the claim — the bell puts out a plume whose thrust is still held —
     // does not depend on the direction. The precondition is asserted, not assumed:
     // the last frame before the bell must show bo airborne and burning.
-    const side = pre.player.x < pre.mapW / 2 ? 'd' : 'a'
-    await bo.page.keyboard.down(BELL_UP)
+    let side = pre.player.x < pre.mapW / 2 ? 'd' : 'a'
+    let vert = bellThrust(pre.player, pre.mapH)
+    await bo.page.keyboard.down(vert)
     await bo.page.keyboard.down(side)
     try {
       const burning = await waitOn(
@@ -329,6 +339,27 @@ try {
         fail(`control: no burning frame before the bell, so "none after" proves nothing: ${JSON.stringify(brief(before, bo))}`)
       } else {
         ok(`control: bo's plume is lit before the bell (${before.results.secondsLeft.toFixed(2)} s left)`)
+        // **Pinned? Burn the other way** (T22.10F). Under the ten-check load the
+        // chosen thrust still parked bo against rock in 3 runs of 3 (`v 0.0, 0.0`
+        // at the bell) while it never did alone. Every tenth of a second until the
+        // bell, a body under the speed floor is against something, and the
+        // opposite diagonal is away from it; thrust makes the floor within a few
+        // ticks (~500 px/s in a third of a second, measured at the bell).
+        const minEarly = K.get('RECONCILE_EPSILON_PX') * K.get('SNAPSHOT_HZ')
+        for (let flips = 0; flips < 4; ) {
+          await new Promise((r) => setTimeout(r, 100))
+          const now = await dbg(bo)
+          if (now?.phase !== 'playing') break
+          if (Math.hypot(now.player?.vx ?? 0, now.player?.vy ?? 0) >= minEarly) continue
+          await bo.page.keyboard.up(vert)
+          await bo.page.keyboard.up(side)
+          vert = vert === 'w' ? 's' : 'w'
+          side = side === 'd' ? 'a' : 'd'
+          await bo.page.keyboard.down(vert)
+          await bo.page.keyboard.down(side)
+          flips++
+          ok(`pinned ${now.results.secondsLeft.toFixed(2)} s before the bell (v ${now.player?.vx?.toFixed(1)}, ${now.player?.vy?.toFixed(1)}): burning the other way`)
+        }
         const rang = await waitOn(bo, () => window.__game.debug().phase === 'ended', null, BELL_LEAD_S + 15, 'bell')
         await frames(bo, SETTLE_FRAMES)
         const after = await dbg(bo)
@@ -381,8 +412,16 @@ try {
           const worst = Math.max(0, ...rest)
           const summary =
             `${seen.post.length} corrections in ${AFTER_BELL_S} s after the bell (the first ${first?.toFixed(2) ?? '-'} px), ` +
-            `worst later jump ${worst.toFixed(2)} px, pending up to ${seen.pendingMax}`
-          const eps = K.get('RECONCILE_EPSILON_PX')
+            `worst later jump ${worst.toFixed(2)} px, pending up to ${seen.pendingMax}` +
+            (seen.hitches ? `; ${seen.hitches} lost-time re-anchors not counted` : '')
+          // **Twice the gate's epsilon, not the epsilon** (T22.10F). Once bo really
+          // moves after the bell (T22.10E review (b); ~480 px/s measured) the wire's
+          // velocity, truncated to whole px/s (`codec.rs::encode_snapshot`), drifts a
+          // re-anchored free-flying body by up to √2 px/s from the server's, so the
+          // gate fires when that drift passes the epsilon — a correction a hair past
+          // it (2.11 and 2.58 px measured, `gate-t2210f-after2-thr*.txt`) is the gate
+          // working, not a rubber-band. F-3's failure this guards was 11–41 px.
+          const eps = 2 * K.get('RECONCILE_EPSILON_PX')
           if (seen.frames < 10) fail(`control: only ${seen.frames} frames watched after the bell: ${summary}`)
           else if (!(seen.pendingPre > 0)) {
             // The pending half needs a predictor that was keeping inputs: one
@@ -396,7 +435,7 @@ try {
       }
     } finally {
       await bo.page.keyboard.up(side)
-      await bo.page.keyboard.up(BELL_UP)
+      await bo.page.keyboard.up(vert)
     }
   }
 

@@ -137,6 +137,8 @@ export class Predictor {
    * the replay step with it too — one answer to "which aim", not 0 in two places.
    */
   private lastAim = 0
+  /** A repeated ack was seen (lost time, T22.10F); the next new ack is its residue. */
+  private afterHitch = false
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -195,6 +197,28 @@ export class Predictor {
     const prevAck = this.stats.lastAck
     const pushedSince = this.pending.filter((q) => q.input.seq > prevAck && q.input.seq <= snap.lastInputSeq).length
     if (prevAck > 0 && pushedSince < snap.lastInputSeq - prevAck) this.unsettled = true
+    // T22.10F: **a repeated ack while the phase takes input is time this client
+    // lost.** The server steps every player every tick (R89); a stand-in claims the
+    // next seq only within `MAX_FRAME_TICKS` of the newest this client sent, so once
+    // a frame longer than `MAX_FRAME_DT` (a hitch, a hidden tab) has run past that,
+    // the server goes on moving the body under the same ack — ticks this client
+    // never simulated, because its fixed step is capped. The correction is the
+    // hitch's, like a relocation's: counted, kept out of the maxima.
+    // The first new ack after them is the hitch's too: the server went on stepping
+    // between the last repeated-ack snapshot and this client's first input after it.
+    if (prevAck > 0 && snap.lastInputSeq === prevAck) {
+      this.unsettled = true
+      this.afterHitch = true
+    } else if (this.afterHitch) {
+      this.unsettled = true
+      this.afterHitch = false
+    }
+    // And **the first ack is an anchor, not a prediction** (T22.10F): the server
+    // steps a new player every tick from the moment it is seated, before its first
+    // input arrives (a body in space drifts to its rock meanwhile), while this
+    // predictor starts from the spawn it was handed — so the first correction
+    // measures the loading screen, not the netcode.
+    if (prevAck === 0 && snap.lastInputSeq > 0) this.unsettled = true
     this.stats.lastAck = snap.lastInputSeq
     const ackErr = at ? Math.hypot(at.x - snap.state.x, at.y - snap.state.y) : Number.NaN
     if (at) this.stats.lastAckErrorPx = ackErr
@@ -297,7 +321,11 @@ export class Predictor {
     // Owed ticks are one frame's worth at most (`MAX_FRAME_DT`, the fixed step's
     // own ceiling); further behind than that, the local clock has lost the server's
     // (a hidden tab) and the correction re-anchors instead.
-    if (n.label !== null && snap.tick - n.label > Math.ceil(C().MAX_FRAME_DT / dt)) n.label = null
+    if (n.label !== null && snap.tick - n.label > Math.ceil(C().MAX_FRAME_DT / dt)) {
+      n.label = null
+      // Lost time (T22.10F): the re-anchor is the hitch's correction, not a misprediction.
+      this.unsettled = true
+    }
     while (n.label !== null && n.label < snap.tick) this.stepNeutral(n, snap.lastInputSeq, this.lastAim, dt)
     const at = n.label !== null ? n.at.get(snap.tick) : undefined
     for (const t of n.at.keys()) if (t < snap.tick) n.at.delete(t)
