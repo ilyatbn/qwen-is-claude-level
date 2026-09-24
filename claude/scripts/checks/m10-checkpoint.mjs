@@ -25,8 +25,7 @@
  * one-player room that had no round at all.
  */
 import { join } from 'node:path'
-import { startStack, enterBattle, selectWeapon, sleep, shotsDir, freePort } from './harness.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
+import { startStack, enterBattle, selectWeapon, sleep, shotsDir, freePort, openAtMenu } from './harness.mjs'
 
 const PORT = await freePort()
 const shots = shotsDir
@@ -66,19 +65,6 @@ const stack = await startStack({
     WEATHER: 'off',
   },
 })
-const { browser, viteUrl } = stack
-
-/** A browser that starts at the menu, as a player does. */
-async function openAtMenu(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((kv) => localStorage.setItem(kv[0], kv[1]), [clientKey('NAME_KEY'), name])
-  return { page, errors, name }
-}
 
 const inGame = (c) =>
   c.page.waitForFunction('window.__game && window.__game.debug().ready === true', null, {
@@ -87,7 +73,7 @@ const inGame = (c) =>
 const dbg = (c) => c.page.evaluate('window.__game.debug()')
 
 // --- host creates a private room -----------------------------------------
-const host = await openAtMenu('ana')
+const host = await openAtMenu(stack, 'ana')
 await host.page.evaluate(() => {
   // §E7: hosting is behind Private Game now — Quick Game takes no options, so
   // the map-size stepper lives on the step that can actually use it.
@@ -116,7 +102,7 @@ if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code)) die(`the code on screen is not a code: "$
 log(`host sees code ${code}`)
 
 // --- guest joins by that code --------------------------------------------
-const guest = await openAtMenu('bo')
+const guest = await openAtMenu(stack, 'bo')
 await guest.page.evaluate(() => document.querySelector('#private')?.click())
 await guest.page.evaluate(() => document.querySelector('#join')?.click())
 await guest.page.evaluate((c) => {
@@ -140,7 +126,7 @@ await enterBattle(guest.page, { press: false, waitPlaying: true, expectPlayers: 
 await enterBattle(host.page, { press: false, waitPlaying: true, expectPlayers: 2, label: 'm10/host-playing' })
 
 // --- a third player quick-matches into a different room -------------------
-const solo = await openAtMenu('cy')
+const solo = await openAtMenu(stack, 'cy')
 await solo.page.evaluate(() => document.querySelector('#quick')?.click())
 // A public lobby: §E2 seats bots and starts it after `LOBBY_BOT_TIMEOUT`, so
 // this one reaches the game on its own without being told to.

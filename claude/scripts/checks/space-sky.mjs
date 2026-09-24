@@ -35,6 +35,7 @@
  */
 
 import { toScreen } from './pixels.mjs'
+import { drawnFrames } from './harness.mjs'
 
 /** Frames drawn after a state change before photographing it. */
 const SETTLE_FRAMES = 6
@@ -71,16 +72,8 @@ const STAR_FLOOR = 60
 export default async function ({ page, shot, log }) {
   const g = (fn, arg) => page.evaluate(fn, arg)
   const dbg = () => g(() => window.__game.debug())
-  const frames = (n) =>
-    g(
-      (count) =>
-        new Promise((resolve) => {
-          let left = count
-          const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-          requestAnimationFrame(tick)
-        }),
-      n,
-    )
+  /** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+  const frames = (n) => drawnFrames(page, n)
   const photo = async () => (await page.screenshot()).toString('base64')
 
   await page.waitForFunction(() => !!window.__game?.debug().player, null, { polling: 'raf', timeout: 60_000 })

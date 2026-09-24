@@ -31,7 +31,7 @@
  * Networked, like `ordnance-visible` — the sandbox player has no laser and no
  * battery — and on its map and loadout.
  */
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
+import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, advanceFrames } from './harness.mjs'
 import { samplePatch, colourDelta } from './pixels.mjs'
 
 const PORT = await freePort()
@@ -223,36 +223,6 @@ const STEP_FRAMES = 18
 const STEPS = 5
 /** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
 const FRAME_BUDGET_MS = 8_000
-/**
- * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
- * first, and it reports which by returning both. The `setTimeout` is the half that cannot
- * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
- * short of `n`.
- */
-const advanceFrames = (n, budget) =>
-  page.evaluate(
-    ([want, cap]) =>
-      new Promise((resolve) => {
-        const t0 = performance.now()
-        let drawn = 0
-        let done = false
-        const end = () => {
-          if (done) return
-          done = true
-          resolve({ frames: drawn, ms: performance.now() - t0 })
-        }
-        const timer = setTimeout(end, cap)
-        const tick = () => {
-          drawn++
-          if (drawn >= want) {
-            clearTimeout(timer)
-            end()
-          } else requestAnimationFrame(tick)
-        }
-        requestAnimationFrame(tick)
-      }),
-    [n, budget],
-  )
 
 /** The largest change from the first photograph over `STEPS` steps, and what it cost. */
 async function flicker(hq) {
@@ -269,7 +239,7 @@ async function flicker(hq) {
   let frames = 0
   let ms = 0
   for (let i = 0; i < STEPS; i++) {
-    const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+    const step = await advanceFrames(page, STEP_FRAMES, FRAME_BUDGET_MS)
     frames += step.frames
     ms += step.ms
     most = Math.max(most, await changedFraction(first, await grab(Q.band)))

@@ -15,11 +15,10 @@
  * before the second player joins (§C2). A screen that rendered nothing would
  * leave the roster region unchanged between the two frames and fail.
  */
-import { startStack, sleep, shotsDir, freePort } from './harness.mjs'
+import { startStack, sleep, shotsDir, freePort, openAtMenu } from './harness.mjs'
 import { samplePatch } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { join } from 'node:path'
-import { key as clientKey } from '../lib/client-keys.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = (await import('./harness.mjs')).tally('lobby')
@@ -48,30 +47,8 @@ const stack = await startStack({
     DEV_READY_TIMEOUT: String(READY_TIMEOUT_S),
   },
 })
-const { browser, viteUrl } = stack
-
-// **Read out of `skins.ts`, not spelled here** (T20.13). Three browser fixtures
-// used to spell `deepcut.name` by hand, and a rename that missed one would seed a
-// value nobody reads while every "the roster names the player" check went on
-// passing against the default name — silent and green. `client-keys.mjs` throws
-// if the export is gone, so the rename cannot be silent.
-const NAME_KEY = clientKey('NAME_KEY')
-
-/**
- * @param name the nickname to seed, or `null` to arrive with **nothing stored**
- *   — which is the state T20.02's prompt exists for.
- */
-async function openAtMenu(name, seed = true) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  if (seed) await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  else await page.evaluate((k) => localStorage.removeItem(k), NAME_KEY)
-  return { page, errors, name }
-}
+// The menu route and the stored name (read out of the client, T20.13) are
+// `harness.mjs::openAtMenu`'s, shared with `m10-checkpoint` and `thrusters-match` (T22.00C).
 
 const roster = (c) => c.page.evaluate('window.__menu.roster()')
 const inGame = (c) =>
@@ -80,7 +57,7 @@ const inGame = (c) =>
   })
 
 // --- ana hosts, and stays in the lobby -----------------------------------
-const ana = await openAtMenu('ana')
+const ana = await openAtMenu(stack, 'ana')
 await ana.page.evaluate(() => {
   // §E7: hosting is behind Private Game now — Quick Game takes no options, so
   // the map-size stepper lives on the step that can actually use it.
@@ -118,7 +95,7 @@ if (namesBefore.length === 0) fail('the roster rendered no rows at all, so the d
 else ok(`control frame: ${namesBefore.length} roster rows, ${namesBefore.filter((n) => n !== 'empty').length} seated`)
 
 // --- bo joins by the code ------------------------------------------------
-const bo = await openAtMenu('bo')
+const bo = await openAtMenu(stack, 'bo')
 await bo.page.evaluate(() => document.querySelector('#private')?.click())
 await bo.page.evaluate(() => document.querySelector('#join')?.click())
 await bo.page.evaluate((c) => {
@@ -514,7 +491,7 @@ else ok('no lobby panel or code banner is drawn over the world')
 // one-room assertion above is the check's guard against the socket being
 // reopened rather than handed over. Running this before it turned that
 // assertion red for a reason that had nothing to do with the handover.
-const cass = await openAtMenu('cass')
+const cass = await openAtMenu(stack, 'cass')
 await cass.page.evaluate(() => document.querySelector('#quick')?.click())
 await cass.page.waitForFunction('window.__menu.roster().length > 0', null, { timeout: 30_000 })
 const publicPanel = await settings(cass)
@@ -550,7 +527,7 @@ await cassCtx.close()
 // so**: the promoted player got working arrows with no explanation and the old
 // host got dead ones. So the assertion is on the rendered roster text, through
 // `__menu.roster()`, which reads `textContent`.
-const dan = await openAtMenu('dan')
+const dan = await openAtMenu(stack, 'dan')
 await dan.page.evaluate(() => document.querySelector('#private')?.click())
 await dan.page.evaluate(() => document.querySelector('#host')?.click())
 await dan.page.waitForFunction('window.__menu.visibleCode().length === 6', null, {
@@ -558,7 +535,7 @@ await dan.page.waitForFunction('window.__menu.visibleCode().length === 6', null,
 })
 const danCode = await dan.page.evaluate('window.__menu.visibleCode()')
 
-const eve = await openAtMenu('eve')
+const eve = await openAtMenu(stack, 'eve')
 await eve.page.evaluate(() => document.querySelector('#private')?.click())
 await eve.page.evaluate(() => document.querySelector('#join')?.click())
 await eve.page.evaluate((c) => {
@@ -638,7 +615,7 @@ for (const c of [dan, eve]) {
 // The control for "the prompt appears" is every client above: `ana`, `bo`,
 // `cass`, `dan` and `eve` all had a name in storage and every one of them walked
 // straight into a lobby. This client has nothing stored.
-const zed = await openAtMenu('zed', false)
+const zed = await openAtMenu(stack, 'zed', { seed: false })
 await zed.page.evaluate(() => document.querySelector('#private')?.click())
 await zed.page.evaluate(() => document.querySelector('#host')?.click())
 await zed.page

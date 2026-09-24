@@ -29,6 +29,7 @@
 import { deadlineMs } from '../lib/deadline.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { samplePatch, assertChanged, assertUnchanged, photo, comparePhotos, toScreen } from './pixels.mjs'
+import { drawnFrames } from './harness.mjs'
 
 /** Frames drawn after a state change before photographing it. */
 const SETTLE_FRAMES = 6
@@ -50,16 +51,8 @@ export default async function ({ page, shot, log }) {
       throw e
     }
   }
-  const frames = (n) =>
-    page.evaluate(
-      (count) =>
-        new Promise((resolve) => {
-          let left = count
-          const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-          requestAnimationFrame(tick)
-        }),
-      n,
-    )
+  /** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+  const frames = (n) => drawnFrames(page, n)
   /** The Rust answer, asked with the sandbox's own clock (R26: never a literal `now`). */
   const irradiated = () => page.evaluate(() => window.__game.core.irradiated(0, window.__game.debug().simTime))
   const setBattery = (delta) => page.evaluate((d) => window.__game.core.addBattery(0, d), delta)

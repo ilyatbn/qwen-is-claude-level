@@ -31,14 +31,12 @@
  *    change. High Quality off (flat) and on (the shader), each asserted by `flare.shader`.
  */
 import { readFileSync } from 'node:fs'
-import { startStack, freePort, tally, shotsDir } from './harness.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
+import { startStack, freePort, tally, shotsDir, drawnFrames, soloSpace } from './harness.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { comparePhotos, photo, toScreen } from './pixels.mjs'
 import { join } from 'node:path'
 
 const { fail, ok, finish } = tally('solar-flare-match')
-const NAME_KEY = clientKey('NAME_KEY')
 const WARMUP_S = 3
 const ROUND_S = 120
 /** Frames drawn after moving the camera, before photographing. */
@@ -69,40 +67,8 @@ const CROSSHAIR_HALF = (() => {
 })()
 
 const dbg = (page) => page.evaluate(() => window.__game.debug())
-const frames = (page, n) =>
-  page.evaluate(
-    (count) =>
-      new Promise((resolve) => {
-        let left = count
-        const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-        requestAnimationFrame(tick)
-      }),
-    n,
-  )
-
-/** One human alone in a private room set to Space — `radiation-match`'s route. */
-async function soloSpace(stack, name) {
-  const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${stack.viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  await page.evaluate(() => document.querySelector('#private')?.click())
-  await page.evaluate(() => document.querySelector('#host')?.click())
-  await page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
-  const seen = () => page.evaluate(() => window.__menu.settings().gravity.value)
-  for (let i = 0; i < 3 && (await seen()) !== 'Space'; i++) {
-    const was = await seen()
-    await page.evaluate(() => window.__menu.step('gravity', 1))
-    await page.waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 }).catch(() => {})
-  }
-  if ((await seen()) !== 'Space') throw new Error(`gravity never reached Space: "${await seen()}"`)
-  await page.evaluate(() => window.__menu.ready(true))
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
-  return { page, errors }
-}
+/** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+const frames = (page, n) => drawnFrames(page, n)
 
 /**
  * Frame the ribbon, freeze the scene (rendering goes on), and photograph every damage

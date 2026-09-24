@@ -30,7 +30,7 @@
  * - **Both ends**: the server narrated the hazard, and `smokeShadersDrawn` counts
  *   painted quads only while High Quality is on.
  */
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
+import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, advanceFrames, drawnFrames } from './harness.mjs'
 import { samplePatch, colourDelta, photo, comparePhotos } from './pixels.mjs'
 
 const PORT = await freePort()
@@ -47,7 +47,8 @@ const k = await page.evaluate(() => window.__game.constants())
 
 const setHQ = (on) => page.evaluate((v) => window.__game.setHighQuality(v), on)
 const freeze = (on) => page.evaluate((v) => window.__game.freeze(v), on)
-const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+/** Two drawn frames, or a throw naming a page that stopped rendering (T22.00C) — not the `rAF(rAF)` that hung. */
+const frame = () => drawnFrames(page, 2)
 /** Fraction of pixels differing by more than `PIXEL_MOVED` in any channel (`pixels.mjs::comparePhotos`). */
 const changedFraction = async (a, b, rect = null) => (await comparePhotos(page, a, b, { rect })).fraction
 
@@ -233,37 +234,6 @@ if (narrated > 0) {
   /** Ceiling on one step, ~26x the idle cost of 18 frames. A frozen page fails here. */
   const FRAME_BUDGET_MS = 8_000
 
-  /**
-   * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
-   * first, and it reports which by returning both. The `setTimeout` is the half that cannot
-   * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
-   * short of `n`.
-   */
-  const advanceFrames = (n, budget) =>
-    page.evaluate(
-      ([want, cap]) =>
-        new Promise((resolve) => {
-          const t0 = performance.now()
-          let drawn = 0
-          let done = false
-          const end = () => {
-            if (done) return
-            done = true
-            resolve({ frames: drawn, ms: performance.now() - t0 })
-          }
-          const timer = setTimeout(end, cap)
-          const tick = () => {
-            drawn++
-            if (drawn >= want) {
-              clearTimeout(timer)
-              end()
-            } else requestAnimationFrame(tick)
-          }
-          requestAnimationFrame(tick)
-        }),
-      [n, budget],
-    )
-
   /** The largest change from the first photograph over `STEPS` steps, and what it cost. */
   const animation = async (hq) => {
     await setHQ(hq)
@@ -273,7 +243,7 @@ if (narrated > 0) {
     let frames = 0
     let ms = 0
     for (let i = 0; i < STEPS; i++) {
-      const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+      const step = await advanceFrames(page, STEP_FRAMES, FRAME_BUDGET_MS)
       frames += step.frames
       ms += step.ms
       most = Math.max(most, await changedFraction(first, await photo(page, band)))

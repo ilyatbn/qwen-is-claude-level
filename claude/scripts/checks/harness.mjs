@@ -26,6 +26,7 @@ import { matchVitePort } from '../vite-url.mjs'
 import { killGroup } from '../proc-group.mjs'
 import { BROWSER_ARGS, chromePath, libDir } from '../lib/browser-args.mjs'
 import { ROUTE_COOKIE } from '../lib/stack-router.mjs'
+import { key as clientKey } from '../lib/client-keys.mjs'
 
 /**
  * `freePort` lives in `lib/free-port.mjs` so the runner can take a port without
@@ -706,4 +707,152 @@ export async function serverElapsed(
     `${what}: ${maxPolls} polls and the server clock moved only ` +
       `${(last - start.t).toFixed(1)}s of ${seconds}s`,
   )
+}
+
+// ---------------------------------------------------------------------------
+// Drawn frames (T22.00C): one copy of the instrument T22.00B wrote in
+// `smoke-shader` and T22.00F put in four more checks — six identical copies
+// before this, which is *share the guard, or share the function* six times over.
+// ---------------------------------------------------------------------------
+
+/** Default ceiling on a wait for drawn frames: a cap on a dead page, never the measurement. */
+export const FRAME_BUDGET_MS = 20_000
+
+/**
+ * Resolve once the page has drawn `n` frames, or `budget` ms have passed —
+ * whichever comes first — with both numbers, so the caller can say which it was.
+ * The `setTimeout` is the half that cannot hang: a page whose
+ * `requestAnimationFrame` never fires still resolves, with `frames` short of `n`.
+ * **Frames, not a sleep**: a wall-clock gap is a different number of frames on a
+ * loaded box, and a slowly-drifting shader read across it is a coin flip
+ * (T22.00B: 4 of 15 idle trials at or under the floor).
+ */
+export function advanceFrames(page, n, budget = FRAME_BUDGET_MS) {
+  return page.evaluate(
+    ([want, cap]) =>
+      new Promise((resolve) => {
+        const t0 = performance.now()
+        let drawn = 0
+        let done = false
+        const end = () => {
+          if (done) return
+          done = true
+          resolve({ frames: drawn, ms: performance.now() - t0 })
+        }
+        const timer = setTimeout(end, cap)
+        const tick = () => {
+          drawn++
+          if (drawn >= want) {
+            clearTimeout(timer)
+            end()
+          } else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+    [n, budget],
+  )
+}
+
+/**
+ * `n` drawn frames, or a throw that says the page stopped rendering — never a hang.
+ * Also the replacement for the suite's `rAF(rAF(r))` idiom (`drawnFrames(page, 2)`),
+ * which hung when rAF stopped and died with Playwright's *"Resulting promise was
+ * garbage collected"*, naming nothing (T22.00C).
+ */
+export async function drawnFrames(page, n, budget = FRAME_BUDGET_MS) {
+  const r = await advanceFrames(page, n, budget)
+  if (r.frames < n) throw new Error(`the page drew ${r.frames} of ${n} frames in ${r.ms.toFixed(0)} ms — it stopped rendering`)
+  return r
+}
+
+// ---------------------------------------------------------------------------
+// The menu route (T22.00C): a browser that starts where a player does, and a
+// private room — `lobby`, `m10-checkpoint`, `thrusters-match` and four space
+// checks each carried their own copy.
+// ---------------------------------------------------------------------------
+
+/**
+ * A browser at the menu, as a player arrives. `seed: false` arrives with **no
+ * name stored** — the state `lobby`'s T20.02 prompt exists for.
+ */
+export async function openAtMenu({ browser, viteUrl }, name, { seed = true } = {}) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
+  const page = await ctx.newPage()
+  const errors = []
+  page.on('pageerror', (e) => errors.push(String(e)))
+  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
+  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
+  const NAME_KEY = clientKey('NAME_KEY')
+  if (seed) await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
+  else await page.evaluate((k) => localStorage.removeItem(k), NAME_KEY)
+  return { page, errors, name, id: -1 }
+}
+
+/** Host a private room from the menu; the join code, read off the screen. */
+async function hostPrivate(page) {
+  await page.evaluate(() => document.querySelector('#private')?.click())
+  await page.evaluate(() => document.querySelector('#host')?.click())
+  await page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
+  return page.evaluate('window.__menu.visibleCode()')
+}
+
+/** The host steps the lobby's gravity to `gravity` (its label) through `__menu.step`, the route a player's arrow takes. */
+async function stepGravity(page, gravity) {
+  const seen = () => page.evaluate(() => window.__menu.settings().gravity.value)
+  for (let i = 0; i < 3 && (await seen()) !== gravity; i++) {
+    const was = await seen()
+    await page.evaluate(() => window.__menu.step('gravity', 1))
+    await page.waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 }).catch(() => {})
+  }
+  return seen()
+}
+
+const inTheGame = (page) => page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
+
+/** One human alone in a private room at `gravity` (the lobby's label), in the game. */
+export async function soloMatch(stack, name, gravity) {
+  const { page, errors } = await openAtMenu(stack, name)
+  await hostPrivate(page)
+  const got = await stepGravity(page, gravity)
+  if (got !== gravity) throw new Error(`gravity never reached ${gravity}: "${got}"`)
+  await page.evaluate(() => window.__menu.ready(true))
+  await inTheGame(page)
+  return { page, errors }
+}
+
+/** One human alone in a private room set to Space — four space checks' route. */
+export const soloSpace = (stack, name) => soloMatch(stack, name, 'Space')
+
+/**
+ * Two humans in a private room at `gravity` (the lobby's label), both in the game,
+ * each with `id` set to its seat. The guest's panel is fed by `lobby_state` alone, so
+ * its gravity reading is the wire's word.
+ */
+export async function privateMatch(stack, [hostName, guestName], gravity) {
+  const host = await openAtMenu(stack, hostName)
+  const code = await hostPrivate(host.page)
+  const guest = await openAtMenu(stack, guestName)
+  await guest.page.evaluate(() => document.querySelector('#private')?.click())
+  await guest.page.evaluate(() => document.querySelector('#join')?.click())
+  await guest.page.evaluate((c) => {
+    const input = document.querySelector('#code')
+    input.value = c
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    document.querySelector('#go')?.click()
+  }, code)
+  await guest.page.waitForFunction('window.__menu.roster().length > 0', null, { timeout: 30_000 })
+  const seen = (c) => c.page.evaluate(() => window.__menu.settings().gravity.value)
+  await stepGravity(host.page, gravity)
+  const guestOk = await guest.page
+    .waitForFunction((v) => window.__menu.settings().gravity.value === v, gravity, { timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false)
+  if (!guestOk) throw new Error(`gravity never reached "${gravity}" on the guest: host "${await seen(host)}", guest "${await seen(guest)}"`)
+  await host.page.evaluate(() => window.__menu.ready(true))
+  await guest.page.evaluate(() => window.__menu.ready(true))
+  for (const c of [host, guest]) {
+    await inTheGame(c.page)
+    c.id = await c.page.evaluate(() => window.__game.debug().me)
+  }
+  return [host, guest]
 }

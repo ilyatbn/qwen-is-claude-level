@@ -41,6 +41,7 @@
  */
 import { deadlineMs } from '../lib/deadline.mjs'
 import { samplePatch, assertChanged, assertUnchanged, toScreen } from './pixels.mjs'
+import { drawnFrames } from './harness.mjs'
 
 /** Frames of letting go in which the tank must not fall. Half a second at 60 fps. */
 const IDLE_FRAMES = 30
@@ -55,16 +56,8 @@ export default async function ({ page, shot, log }) {
       throw e
     }
   }
-  const frames = (n) =>
-    page.evaluate(
-      (count) =>
-        new Promise((resolve) => {
-          let left = count
-          const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-          requestAnimationFrame(tick)
-        }),
-      n,
-    )
+  /** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+  const frames = (n) => drawnFrames(page, n)
 
   const k = await page.evaluate(() => window.__game.constants())
   await waitFor(() => !!window.__game.debug().player, null, 'the sandbox never produced a local player')

@@ -37,7 +37,8 @@
  *    visible and this check must go **red**. That operator is at
  *    `client/src/render/chunkBake.ts:173` — the live binding site the bake
  *    actually runs, not `docs/12` §2's description of it.
- * 5. **The budget.** A single rebake under `CHUNK_REBAKE_MS`, read from
+ * 5. **The budget — moved to `perf.mjs` (R37, T22.00C)**, where the serial,
+ *    wall-clock checks live. What follows is its history. A single rebake under `CHUNK_REBAKE_MS`, read from
  *    `TerrainRenderer.stats.lastBakeMs` — the renderer's own instrument, not a
  *    stopwatch this check starts. Gated on the **median** of 40 samples and
  *    reported with the max: §6's ceilings are generous on purpose, "so a 50x
@@ -281,44 +282,11 @@ try {
     }
   }
 
-  // --- 5. the rebake budget ----------------------------------------------
-  await page.evaluate(() => window.__game.freeze(false))
-  const budget = await page.evaluate(() => window.__game.constants().CHUNK_REBAKE_MS)
-  const samples = []
-  const RUNS = 40
-  for (let i = 0; i < RUNS; i++) {
-    await page.evaluate(
-      ([x, y, r]) => window.__game.core.carve(x, y, r),
-      [target.x + (i % 5) * 12, target.y + 8, 24],
-    )
-    await sleep(60)
-    const d = await dbg()
-    if (d.lastBakeMs) samples.push(d.lastBakeMs)
-  }
-  const sorted = [...samples].sort((a, b) => a - b)
-  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
-  const worst = sorted.length ? sorted[sorted.length - 1] : 0
-
-  if (!sorted.length) {
-    // The instrument guard: every assertion below passes for a renderer whose
-    // timer never ran, and a zero that reads as "fast" is the worst kind.
-    fail('lastBakeMs never moved — the instrument is not recording, so no number here is evidence')
-  } else if (median > budget) {
-    // **Gated on the median, reported with the max.** `docs/60` §6 sets its
-    // ceilings generously "so a 50x regression is caught and normal variance is
-    // not"; a max-of-40 wall-clock in a browser is decided by whichever sample
-    // caught a GC pause, and a gate that fails on a coin flip gates nothing. A
-    // 50x regression moves the median and then some.
-    fail(
-      `median single-chunk rebake ${median.toFixed(2)} ms over ${sorted.length} samples ` +
-        `(max ${worst.toFixed(2)}), budget ${budget} ms`,
-    )
-  } else {
-    ok(
-      `median single-chunk rebake ${median.toFixed(2)} ms, max ${worst.toFixed(2)} ms, ` +
-        `over ${sorted.length} samples, budget ${budget} ms`,
-    )
-  }
+  // --- 5. the rebake budget: moved to `perf.mjs` (R37, T22.00C) ------------
+  // A wall-clock median under `--jobs` walked into the max's old range (4.20 ms in a
+  // `--changed` run, 0.80 alone minutes later) and decided a gate on load; `perf` is
+  // the serial check that exists for budgets. Not `flaky: true` here: that would have
+  // switched off the eight pixel assertions above to silence one timing line.
 } finally {
   await stack.close()
 }

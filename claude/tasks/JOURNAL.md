@@ -7048,3 +7048,10 @@ flaky-test.md row: fixed, ready to un-park; `flaky: true` left for the owner.
 `NARROW_MIN` and the narrow worst case (73 vs 66.7 at `--jobs 4`) now reported, not asserted; the `off` bound stays
 (+0.5 s `serverClock` plant red; 22–36 ms under load). `--jobs 4` with three heavy checks: 4/4 twice. flaky row: fixed,
 ready to un-park; flag left.
+
+## T22.00C — one copy of the frame and menu helpers (builder, 2026-09-25)
+`harness.mjs`: `advanceFrames` (six copies), `drawnFrames` (throws on a dead rAF; replaced two bounded + five hanging
+`frames` copies and the `rAF(rAF)` `frame()`), `openAtMenu`/`privateMatch`/`soloMatch`/`soloSpace` (3 + 1 + 5 copies). R37:
+rebake median `objects` → `perf` (+ `SandboxScene.lastBakeMs`), plant red at 6.80. Plants via the helper red with both
+messages. **`beams-shader` is red at HEAD independent of this** (stroked 75.2 %, 3/3; regression in `4dfc5a5..2d47a7f`).
+Split of `thrusters-match` not done (a new gate entry).

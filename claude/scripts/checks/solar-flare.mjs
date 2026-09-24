@@ -25,6 +25,7 @@
  */
 import { deadlineMs } from '../lib/deadline.mjs'
 import { comparePhotos, photo, toScreen } from './pixels.mjs'
+import { advanceFrames, drawnFrames } from './harness.mjs'
 
 /** Drawn frames the wander is measured over. Half a second at 60 fps. */
 const WANDER_FRAMES = 30
@@ -41,35 +42,7 @@ export default async function ({ page, shot, log }) {
       throw e
     }
   }
-  /** `n` frames the page drew, or fewer if it stopped — the caller decides what that means. */
-  const advanceFrames = (n, budget) =>
-    page.evaluate(
-      ([want, cap]) =>
-        new Promise((resolve) => {
-          const t0 = performance.now()
-          let drawn = 0
-          let done = false
-          const end = () => {
-            if (done) return
-            done = true
-            resolve({ frames: drawn, ms: performance.now() - t0 })
-          }
-          const timer = setTimeout(end, cap)
-          const tick = () => {
-            drawn++
-            if (drawn >= want) {
-              clearTimeout(timer)
-              end()
-            } else requestAnimationFrame(tick)
-          }
-          requestAnimationFrame(tick)
-        }),
-      [n, budget],
-    )
-  const frames = async (n) => {
-    const r = await advanceFrames(n, 10_000)
-    if (r.frames < n) throw new Error(`the page drew ${r.frames} of ${n} frames in ${r.ms.toFixed(0)} ms — it stopped rendering`)
-  }
+  const frames = (n) => drawnFrames(page, n, 10_000)
 
   const k = await page.evaluate(() => window.__game.constants())
   await waitFor(() => !!window.__game.debug().player, null, 'the sandbox never produced a local player')
@@ -254,7 +227,7 @@ export default async function ({ page, shot, log }) {
   // --- it wanders, over frames the page drew (R69) ---------------------------------------
   {
     const a = (await dbg()).flare
-    const r = await advanceFrames(WANDER_FRAMES, WANDER_BUDGET_MS)
+    const r = await advanceFrames(page, WANDER_FRAMES, WANDER_BUDGET_MS)
     const b = (await dbg()).flare
     if (r.frames < WANDER_FRAMES) {
       throw new Error(`the page drew ${r.frames} of ${WANDER_FRAMES} frames in ${(r.ms / 1000).toFixed(1)} s — it stopped rendering, so this says nothing about the flare`)

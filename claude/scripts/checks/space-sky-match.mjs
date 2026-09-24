@@ -22,13 +22,11 @@
  * person to look at; it does not compare their brightness, because the two maps are
  * different rock under different skies and that comparison would be a coin flip.
  */
-import { startStack, freePort, tally, shotsDir } from './harness.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
+import { startStack, freePort, tally, shotsDir, drawnFrames, soloMatch } from './harness.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { join } from 'node:path'
 
 const { fail, ok, finish } = tally('space-sky-match')
-const NAME_KEY = clientKey('NAME_KEY')
 const SEED = '4242'
 /** The ground's night: u 0.75 of the 120 s cycle (`sky-math.ts::darknessAt`). */
 const NIGHT_CLOCK_S = 90
@@ -44,40 +42,14 @@ const dbg = (page) =>
       return null
     }
   })
-const frames = (page, n) =>
-  page.evaluate(
-    (count) =>
-      new Promise((resolve) => {
-        let left = count
-        const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-        requestAnimationFrame(tick)
-      }),
-    n,
-  )
+/** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+const frames = (page, n) => drawnFrames(page, n)
 
-/** One human alone in a private room at `gravity`, in the game (`radiation-match`'s route). */
+/** `harness.mjs::soloMatch`, then settled a few drawn frames. */
 async function solo(stack, name, gravity) {
-  const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${stack.viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  await page.evaluate(() => document.querySelector('#private')?.click())
-  await page.evaluate(() => document.querySelector('#host')?.click())
-  await page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
-  const seen = () => page.evaluate(() => window.__menu.settings().gravity.value)
-  for (let i = 0; i < 3 && (await seen()) !== gravity; i++) {
-    const was = await seen()
-    await page.evaluate(() => window.__menu.step('gravity', 1))
-    await page.waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 }).catch(() => {})
-  }
-  if ((await seen()) !== gravity) throw new Error(`gravity never reached ${gravity}: "${await seen()}"`)
-  await page.evaluate(() => window.__menu.ready(true))
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
-  await frames(page, SETTLE_FRAMES)
-  return { page, errors }
+  const r = await soloMatch(stack, name, gravity)
+  await frames(r.page, SETTLE_FRAMES)
+  return r
 }
 
 const env = { BOT_COUNT: '0', FIXED_SEED: SEED, WEATHER: 'off', DEV_ROUND_CLOCK: String(NIGHT_CLOCK_S) }

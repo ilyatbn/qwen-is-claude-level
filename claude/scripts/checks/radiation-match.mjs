@@ -28,14 +28,12 @@
  * edge is asserted on its **green** gain, which the red flash cannot supply; the
  * control region is the patch above centre `radiation` uses.
  */
-import { startStack, freePort, tally, shotsDir } from './harness.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
+import { startStack, freePort, tally, shotsDir, drawnFrames, soloSpace } from './harness.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { samplePatch, assertUnchanged } from './pixels.mjs'
 import { join } from 'node:path'
 
 const { fail, ok, finish } = tally('radiation-match')
-const NAME_KEY = clientKey('NAME_KEY')
 /** Long enough to read the warmup frames after the client loads. */
 const WARMUP_S = 8
 /** Frames drawn after a state change before reading or photographing it. */
@@ -59,50 +57,14 @@ const dbg = (page) =>
       return null
     }
   })
-const frames = (page, n) =>
-  page.evaluate(
-    (count) =>
-      new Promise((resolve) => {
-        let left = count
-        const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-        requestAnimationFrame(tick)
-      }),
-    n,
-  )
+/** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+const frames = (page, n) => drawnFrames(page, n)
 const waitOn = (page, fn, arg, seconds, why) =>
   page
     .waitForFunction(fn, arg, { timeout: deadlineMs(seconds, why), polling: 'raf' })
     .then(() => true)
     .catch(() => false)
 const brief = (d) => ({ phase: d?.phase, irradiated: d?.hudBars?.irradiated, radiation: d?.hudBars?.radiation, battery: d?.hudBars?.battery })
-
-/**
- * One human alone in a private room set to Space, in the game. The same route
- * `thrusters-match` takes (`__menu.step`), with no guest: a private lobby starts
- * when every seated human is ready.
- */
-async function soloSpace(stack, name) {
-  const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${stack.viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  await page.evaluate(() => document.querySelector('#private')?.click())
-  await page.evaluate(() => document.querySelector('#host')?.click())
-  await page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
-  const seen = () => page.evaluate(() => window.__menu.settings().gravity.value)
-  for (let i = 0; i < 3 && (await seen()) !== 'Space'; i++) {
-    const was = await seen()
-    await page.evaluate(() => window.__menu.step('gravity', 1))
-    await page.waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 }).catch(() => {})
-  }
-  if ((await seen()) !== 'Space') throw new Error(`gravity never reached Space: "${await seen()}"`)
-  await page.evaluate(() => window.__menu.ready(true))
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
-  return { page, errors }
-}
 
 const stackEnv = (extra) => ({
   BOT_COUNT: '0',

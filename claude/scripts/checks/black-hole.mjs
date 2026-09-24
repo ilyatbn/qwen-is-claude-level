@@ -48,14 +48,14 @@
  * Arrival *timing* across seeds is Rust's (`black_hole::tests`): a browser round long
  * enough to see a natural arrival costs a minute per run for no new claim.
  */
-import { startStack, freePort, tally, shotsDir } from './harness.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
+import { startStack, freePort, tally, shotsDir, drawnFrames, soloSpace } from './harness.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { comparePhotos, photo, toScreen, samplePatch, colourDelta } from './pixels.mjs'
 import { join } from 'node:path'
 
+/** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+const frames = (page, n) => drawnFrames(page, n)
 const { fail, ok, finish } = tally('black-hole')
-const NAME_KEY = clientKey('NAME_KEY')
 const WARMUP_S = 3
 /** Long enough for every arm before the bell; the natural arrival is replaced by the probe's. */
 const ROUND_S = 70
@@ -90,54 +90,10 @@ const BELL_LEAD_S = 1.6
  * the value used.
  */
 const BELL_HEAR_LATE_MS = 150
-const FRAME_BUDGET_MS = 20_000
 /** The overlay's patch (`void.mjs`'s): it dims the whole centre when up. */
 const OVERLAY = { x: 440, y: 250, w: 400, h: 220 }
 
-async function frames(page, n) {
-  const drawn = await page.evaluate(
-    ([count, cap]) =>
-      new Promise((resolve) => {
-        let left = count
-        const timer = setTimeout(() => resolve(count - left), cap)
-        const tick = () => {
-          if (--left <= 0) {
-            clearTimeout(timer)
-            resolve(count)
-          } else requestAnimationFrame(tick)
-        }
-        requestAnimationFrame(tick)
-      }),
-    [n, FRAME_BUDGET_MS],
-  )
-  if (drawn < n) throw new Error(`the page drew ${drawn} of ${n} frames in ${FRAME_BUDGET_MS} ms — it stopped rendering`)
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-/** One human alone in a private room set to Space — `breach-vortex`'s route. */
-async function soloSpace(stack, name) {
-  const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${stack.viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  await page.evaluate(() => document.querySelector('#private')?.click())
-  await page.evaluate(() => document.querySelector('#host')?.click())
-  await page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
-  const seen = () => page.evaluate(() => window.__menu.settings().gravity.value)
-  for (let i = 0; i < 3 && (await seen()) !== 'Space'; i++) {
-    const was = await seen()
-    await page.evaluate(() => window.__menu.step('gravity', 1))
-    await page.waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 }).catch(() => {})
-  }
-  if ((await seen()) !== 'Space') throw new Error(`gravity never reached Space: "${await seen()}"`)
-  await page.evaluate(() => window.__menu.ready(true))
-  await page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
-  return { page, errors }
-}
 
 /** Ask for the hole (and a placement, or the telegraph); resolves with the server's answer. */
 async function probe(page, dist, warn = false) {

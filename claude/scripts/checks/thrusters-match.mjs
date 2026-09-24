@@ -41,15 +41,13 @@
  *    Poison because it kills wherever you are — a space map has a closed rim, so
  *    there is no void, and a self-rocket needs ground under the feet.
  */
-import { startStack, freePort, tally, shotsDir } from './harness.mjs'
+import { startStack, freePort, tally, shotsDir, privateMatch, drawnFrames } from './harness.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
-import { key as clientKey } from '../lib/client-keys.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { join } from 'node:path'
 
 const { fail, ok, finish } = tally('thrusters-match')
 const K = rustConstants()
-const NAME_KEY = clientKey('NAME_KEY')
 
 /**
  * How long before the bell bo starts to burn (T22.10E review, (b)). It was 3 s,
@@ -92,16 +90,8 @@ const dbg = (c) =>
       return null
     }
   })
-const frames = (c, n) =>
-  c.page.evaluate(
-    (count) =>
-      new Promise((resolve) => {
-        let left = count
-        const tick = () => (--left <= 0 ? resolve() : requestAnimationFrame(tick))
-        requestAnimationFrame(tick)
-      }),
-    n,
-  )
+/** `n` drawn frames, or a throw naming a page that stopped rendering — the harness's one copy (T22.00C). */
+const frames = (c, n) => drawnFrames(c.page, n)
 /**
  * Every rendered frame on `c` until `afterS` past the bell (T22.10E F-3/F-5): the
  * last frame before it (`pre`) and the correction jump of each snapshot that
@@ -169,57 +159,12 @@ const waitOn = (c, fn, arg, seconds, why) =>
     .then(() => true)
     .catch(() => false)
 
-async function openAtMenu(stack, name) {
-  const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
-  const page = await ctx.newPage()
-  const errors = []
-  page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${stack.viteUrl}/?e2e=1&menu=1&name=${name}`)
-  await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
-  await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
-  return { page, errors, name, id: -1 }
-}
-
 /**
- * Two humans in a private room at `gravity` (the lobby's label), in the game.
- * Stepped through `__menu.step`, the route a player's arrow takes (`lobby.mjs`).
+ * Two humans in a private room at `gravity` (the lobby's label), in the game —
+ * `harness.mjs::privateMatch` — and each drawing the other.
  */
-async function privateMatch(stack, [hostName, guestName], gravity) {
-  const host = await openAtMenu(stack, hostName)
-  await host.page.evaluate(() => document.querySelector('#private')?.click())
-  await host.page.evaluate(() => document.querySelector('#host')?.click())
-  await host.page.waitForFunction('window.__menu.visibleCode().length === 6', null, { timeout: 30_000 })
-  const code = await host.page.evaluate('window.__menu.visibleCode()')
-  const guest = await openAtMenu(stack, guestName)
-  await guest.page.evaluate(() => document.querySelector('#private')?.click())
-  await guest.page.evaluate(() => document.querySelector('#join')?.click())
-  await guest.page.evaluate((c) => {
-    const input = document.querySelector('#code')
-    input.value = c
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    document.querySelector('#go')?.click()
-  }, code)
-  await guest.page.waitForFunction('window.__menu.roster().length > 0', null, { timeout: 30_000 })
-  const seen = (c) => c.page.evaluate(() => window.__menu.settings().gravity.value)
-  for (let i = 0; i < 3 && (await seen(host)) !== gravity; i++) {
-    const was = await seen(host)
-    await host.page.evaluate(() => window.__menu.step('gravity', 1))
-    await host.page
-      .waitForFunction((v) => window.__menu.settings().gravity.value !== v, was, { timeout: 10_000 })
-      .catch(() => {})
-  }
-  // The guest's panel is fed by `lobby_state` alone, so this is the wire's word.
-  const guestOk = await guest.page
-    .waitForFunction((v) => window.__menu.settings().gravity.value === v, gravity, { timeout: 20_000 })
-    .then(() => true)
-    .catch(() => false)
-  if (!guestOk) throw new Error(`gravity never reached "${gravity}" on the guest: host "${await seen(host)}", guest "${await seen(guest)}"`)
-  await host.page.evaluate(() => window.__menu.ready(true))
-  await guest.page.evaluate(() => window.__menu.ready(true))
-  for (const c of [host, guest]) {
-    await c.page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
-    c.id = (await dbg(c)).me
-  }
+async function inAMatch(stack, [hostName, guestName], gravity) {
+  const [host, guest] = await privateMatch(stack, [hostName, guestName], gravity)
   // Each sees the other drawn, so `plumes[other]` below is a view, not a gap.
   for (const [a, b] of [[host, guest], [guest, host]]) {
     const saw = await waitOn(a, (id) => (window.__game.debug().plumes ?? {})[id] !== undefined, b.id, 30, 'remote view')
@@ -256,7 +201,7 @@ const stackA = await startStack({
 })
 
 try {
-  const [ana, bo] = await privateMatch(stackA, ['ana', 'bo'], 'Space')
+  const [ana, bo] = await inAMatch(stackA, ['ana', 'bo'], 'Space')
 
   // --- arm 1: a remote's plume, pointing up, on the other client ----------
   const idle = await plumeOf(ana, bo)
@@ -494,7 +439,7 @@ try {
   }
 
   // --- arm 4: standard gravity, no plume anywhere ---------------------------
-  const [cal, dee] = await privateMatch(stackA, ['cal', 'dee'], 'Standard')
+  const [cal, dee] = await inAMatch(stackA, ['cal', 'dee'], 'Standard')
   // Space, not S: under gravity the pack is the jump key held (`hud-bars`).
   await dee.page.keyboard.down('Space')
   try {
@@ -545,7 +490,7 @@ const stackB = await startStack({
 })
 
 try {
-  const [eve, fay] = await privateMatch(stackB, ['eve', 'fay'], 'Space')
+  const [eve, fay] = await inAMatch(stackB, ['eve', 'fay'], 'Space')
   // Burn for the last `DEATH_BURN_S` of her life only: long enough that the mirror
   // has lit the pack before the poison lands, short enough that she is still in
   // open space when it does (a long burn at full thrust risks the next rock). Inside

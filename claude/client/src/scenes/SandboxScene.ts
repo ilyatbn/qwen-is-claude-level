@@ -743,6 +743,8 @@ export class SandboxScene extends Phaser.Scene {
           mapW: self.core.width,
           mapH: self.core.height,
           chunkCount: self.world.terrain.stats.chunkCount,
+          // R37 (T22.00C): the renderer's own worst single-chunk bake, for `perf`'s budget.
+          lastBakeMs: self.world.terrain.stats.lastBakeMs,
           // The buildAll split (T9.07): mask-only backdrop vs the canvas loop.
           backdropMs: self.world.terrain.stats.backdropMs,
           // Whether that number is a measurement or a skipped pass. Without it

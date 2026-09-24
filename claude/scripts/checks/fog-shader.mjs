@@ -56,6 +56,7 @@
  *   and shade both land here, which is right, because a player sees both.
  */
 import { samplePatch, patchLuminance, colourDelta } from './pixels.mjs'
+import { advanceFrames } from './harness.mjs'
 
 /**
  * How far the recovered slope may sit from `1 − fogVeilAlpha`.
@@ -236,36 +237,6 @@ export default async function ({ page, shot, log }) {
   /** Ceiling on one step, ~26x the idle cost of 18 frames. A page that stopped drawing fails here. */
   const FRAME_BUDGET_MS = 8_000
   /**
-   * Resolve once `n` frames have been drawn, or `budget` ms have passed — whichever comes
-   * first, and it reports which by returning both. The `setTimeout` is the half that cannot
-   * hang: a page whose `requestAnimationFrame` never fires still resolves, with `frames`
-   * short of `n`.
-   */
-  const advanceFrames = (n, budget) =>
-    page.evaluate(
-      ([want, cap]) =>
-        new Promise((resolve) => {
-          const t0 = performance.now()
-          let drawn = 0
-          let done = false
-          const end = () => {
-            if (done) return
-            done = true
-            resolve({ frames: drawn, ms: performance.now() - t0 })
-          }
-          const timer = setTimeout(end, cap)
-          const tick = () => {
-            drawn++
-            if (drawn >= want) {
-              clearTimeout(timer)
-              end()
-            } else requestAnimationFrame(tick)
-          }
-          requestAnimationFrame(tick)
-        }),
-      [n, budget],
-    )
-  /**
    * The largest spread of per-spot luminance change from the first sample, over `STEPS`
    * steps of `STEP_FRAMES` drawn frames, and what it cost.
    */
@@ -275,7 +246,7 @@ export default async function ({ page, shot, log }) {
     let frames = 0
     let ms = 0
     for (let i = 0; i < STEPS; i++) {
-      const step = await advanceFrames(STEP_FRAMES, FRAME_BUDGET_MS)
+      const step = await advanceFrames(page, STEP_FRAMES, FRAME_BUDGET_MS)
       frames += step.frames
       ms += step.ms
       const later = await sampleSpots()
