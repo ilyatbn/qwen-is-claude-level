@@ -771,33 +771,36 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             // ----------------------------------------------------------- input
             {
                 let ctx = ctx.clone();
+                // **In arrival order: the work is done in the handler call, not in
+                // the future it returns** (T22.10B). An `async` handler's future is
+                // spawned, so two input packets from one frame could reach the room
+                // in either order — and the room drops any input whose seq is not
+                // above the last it accepted, so the earlier packet's inputs were
+                // lost whenever they lost the race. `breach-vortex` measured 137
+                // seq gaps in one match on a 15–20 fps page, each an input the
+                // client had predicted and the server never ran: a tick of travel
+                // the predictor snapped back by. The call itself runs in the
+                // socket's receive order, and everything here is synchronous.
                 socket.on("input", move |socket: SocketRef, Data::<String>(b64)| {
-                    let ctx = ctx.clone();
-                    async move {
-                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
-                            return;
-                        };
-                        let Some(id) = sessions.player_of(socket.id) else {
-                            return;
-                        };
-                        let Some(buf) = crate::codec::b64_decode(&b64) else {
-                            tracing::warn!(
-                                target: "game::net", socket = %socket.id,
-                                "input was not valid base64"
-                            );
-                            return;
-                        };
-                        match decode_input_batch(&buf) {
-                            Ok(inputs) => room.send(Command::Input(id, inputs)),
-                            // Malformed is far more likely to be version skew than
-                            // an attack: log and drop, never disconnect
-                            // (`docs/40` §6).
-                            Err(e) => tracing::warn!(
-                                target: "game::net", socket = %socket.id, bytes = buf.len(),
-                                "malformed input: {e}"
-                            ),
+                    if let Some((_, room, sessions)) = ctx.resolve(socket.id) {
+                        if let Some(id) = sessions.player_of(socket.id) {
+                            match crate::codec::b64_decode(&b64).map(|buf| (decode_input_batch(&buf), buf.len())) {
+                                Some((Ok(inputs), _)) => room.send(Command::Input(id, inputs)),
+                                // Malformed is far more likely to be version skew than
+                                // an attack: log and drop, never disconnect
+                                // (`docs/40` §6).
+                                Some((Err(e), bytes)) => tracing::warn!(
+                                    target: "game::net", socket = %socket.id, bytes,
+                                    "malformed input: {e}"
+                                ),
+                                None => tracing::warn!(
+                                    target: "game::net", socket = %socket.id,
+                                    "input was not valid base64"
+                                ),
+                            }
                         }
                     }
+                    async {}
                 });
             }
 
@@ -979,6 +982,48 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                         if let Some(p) = probe {
                             emit(&socket, "debug_effects", &p);
                         }
+                    }
+                });
+            }
+            // T22.10B: **a breach in the rim, for a check** (`DEV_PROBE=1`) — on the
+            // ray through the asking player, through `World::dev_breach_toward`'s
+            // meteor blast, so the carve reaches every mirror and the vortex opens
+            // the way a real breach does; the player is then put at rest inward of
+            // it (`World::dev_place_inward_of`), so the pull starts from a known spot. Answers with the rim point and the rim's
+            // geometry, so `breach-vortex.mjs` can ask "inside the rim?" in the
+            // server's own terms. Dev-only for `debug_effects`' reason.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on("debug_breach", move |socket: SocketRef| {
+                    let ctx = ctx.clone();
+                    async move {
+                        let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                            return;
+                        };
+                        let Some(id) = sessions.player_of(socket.id) else {
+                            return;
+                        };
+                        let reply = room
+                            .inspect(move |w| {
+                                let toward = w.player(id)?.body.pos;
+                                let at = w.dev_breach_toward(toward)?;
+                                let placed = w.dev_place_inward_of(id, at);
+                                let geo = w.map.space_geometry()?;
+                                Some(serde_json::json!({
+                                    "x": at.x, "y": at.y,
+                                    "from": {"x": toward.x, "y": toward.y},
+                                    "placed": placed.map(|p| serde_json::json!({"x": p.x, "y": p.y})),
+                                    "cx": geo.cx, "cy": geo.cy, "rx": geo.rx, "ry": geo.ry,
+                                    "thickness": geo.thickness,
+                                }))
+                            })
+                            .await
+                            .flatten();
+                        emit(
+                            &socket,
+                            "debug_breach",
+                            &reply.unwrap_or(serde_json::Value::Null),
+                        );
                     }
                 });
             }

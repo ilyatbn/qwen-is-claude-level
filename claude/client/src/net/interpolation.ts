@@ -67,6 +67,8 @@ export function dequantAim(q: number): number {
 
 export class RemoteInterpolator {
   private readonly frames: Frame[] = []
+  /** T22.10B: player id → the tick the server relocated them on (`cut`). */
+  private readonly cuts = new Map<number, number>()
   private readonly bufferMs: number
   readonly stats: InterpStats = { bufferDepth: 0, extrapolatingMs: 0, frozen: false }
 
@@ -96,6 +98,18 @@ export class RemoteInterpolator {
     const cutoff = serverTime - this.bufferMs * 4
     while (this.frames.length > 2 && this.frames[0]!.time < cutoff) this.frames.shift()
     this.stats.bufferDepth = this.frames.length
+  }
+
+  /**
+   * T22.10B: the server relocated `id` on `tick` — a pad or a vortex trip. Between
+   * the two snapshots that bracket it the body is **stepped**, never lerped: a lerp
+   * glides a remote across the map for a snapshot interval, through rock, which is
+   * a thing that did not happen. Before the midpoint the departure, after it the
+   * arrival — the rule `flags` already follows. Forgotten once the buffer has
+   * moved past it.
+   */
+  cut(id: number, tick: number): void {
+    this.cuts.set(id, tick)
   }
 
   sample(now: number): Map<number, InterpolatedPlayer> {
@@ -151,12 +165,18 @@ export class RemoteInterpolator {
 
     const span = b.time - a.time
     const t = span > 0 ? (renderTime - a.time) / span : 0
+    for (const [id, c] of this.cuts) if (c <= first.tick) this.cuts.delete(id)
     for (const [id, pa] of a.players) {
       const pb = b.players.get(id)
       if (!pb) {
         // Present then gone: hold the last known state rather than vanishing
         // mid-interval — the roster is authoritative on the snapshot, not here.
         out.set(id, still(pa))
+        continue
+      }
+      const cut = this.cuts.get(id)
+      if (cut !== undefined && a.tick < cut && cut <= b.tick) {
+        out.set(id, still(t < 0.5 ? pa : pb))
         continue
       }
       out.set(id, {

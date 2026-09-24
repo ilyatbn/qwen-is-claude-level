@@ -100,6 +100,18 @@ export interface ProjectileView {
   vy: number
 }
 
+/**
+ * T22.10B: a breach vortex as the server announced it. `closedAt` is set when it
+ * stopped pulling (`vortex_close`, R88): it is then drawn fading, and it still
+ * catches — on the server, which is the only side that takes anyone.
+ */
+export interface VortexView {
+  id: number
+  x: number
+  y: number
+  closedAt: number | null
+}
+
 export interface MirrorStats {
   carvesApplied: number
   pendingCarves: number
@@ -127,6 +139,14 @@ export class WorldMirror {
   readonly birds = new Map<number, BirdView>()
   /** T20.10, on the same terms as the birds. */
   readonly animals = new Map<number, AnimalView>()
+  /**
+   * T22.10B: every vortex this round, **in the server's opening order** — the
+   * pulling ones (`closedAt === null`) are what `Core.setVortices` is told, in
+   * that order, unsorted (R11: the sum's order is the contract). Held here and
+   * not on the scene: a `map_init` resync must not drop it (the mirror outlives
+   * the map), and a new round must (`clearVortices`).
+   */
+  readonly vortices: VortexView[] = []
 
   private readonly core: Core
   private nextCarveSeq = 0
@@ -147,6 +167,28 @@ export class WorldMirror {
 
   constructor(core: Core) {
     this.core = core
+    // The core outlives the scene (it is the registry's), so a new mirror tells
+    // it the list is empty rather than inheriting the last match's pull.
+    this.core.setVortices([])
+  }
+
+  /** The vortices that pull, in opening order — what the core sums. */
+  get pullingVortices(): VortexView[] {
+    return this.vortices.filter((v) => v.closedAt === null)
+  }
+
+  /**
+   * Tell the core the pulling list again. Idempotent; `GameScene.onMapInit` calls
+   * it so a list that arrived before the map is applied after it.
+   */
+  pushVortices(): void {
+    this.core.setVortices(this.pullingVortices)
+  }
+
+  /** A new round: no holes, no pull (`resetForNewRound` and an in-scene restart). */
+  clearVortices(): void {
+    this.vortices.length = 0
+    this.core.setVortices([])
   }
 
   get loaded(): boolean {
@@ -303,6 +345,22 @@ export class WorldMirror {
 
   applyEvent(name: string, p: Record<string, unknown>, now: number): void {
     switch (name) {
+      case 'vortex_open': {
+        // By id, so the join catch-up re-announcing a live one is not a second.
+        const id = n(p['id'])
+        if (!this.vortices.some((v) => v.id === id)) {
+          this.vortices.push({ id, x: n(p['x']), y: n(p['y']), closedAt: null })
+        }
+        this.pushVortices()
+        break
+      }
+      case 'vortex_close': {
+        // R88: it stops pulling and fades; it stays in the list to be drawn so.
+        const v = this.vortices.find((w) => w.id === n(p['id']))
+        if (v && v.closedAt === null) v.closedAt = now
+        this.pushVortices()
+        break
+      }
       case 'carve': {
         const seq = n(p['seq'])
         const x = n(p['x'])

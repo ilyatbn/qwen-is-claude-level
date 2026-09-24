@@ -1228,6 +1228,19 @@ impl World {
         self.pending.push((id, input));
     }
 
+    /// The oldest input still queued for `id` — received, not yet consumed by a
+    /// tick — or `None` when nothing is waiting (T22.10B). The room acks one
+    /// below it: a snapshot's state includes every input **before** this one and
+    /// none from it on, and the ack has to say exactly that or the client drops
+    /// inputs from its replay that the state never saw (`Room::last_seqs`).
+    pub fn oldest_queued_seq(&self, id: PlayerId) -> Option<u32> {
+        self.pending
+            .iter()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, input)| input.seq)
+            .min()
+    }
+
     /// Unconsumed inputs still queued. Bounded by `MAX_INPUT_QUEUE` per player
     /// after each tick (`docs/70-amendments-v2.md` §A30).
     pub fn pending_len(&self) -> usize {
@@ -2973,6 +2986,67 @@ impl World {
                 self.flare = Some((id, now, SolarFlare::new(seed, w, h)));
             }
         }
+    }
+
+    /// **Dev seam** (T22.10B): blow a meteor-sized hole through the space rim on
+    /// the ray from the centre through `toward`, through the same blast a meteor
+    /// strike emits — so the `carve` event reaches every client's mirror and the
+    /// breach is found by the carve chokepoint like any other (R19). The vortex opens
+    /// on the next step. Returns the rim point, or `None` off a space map.
+    ///
+    /// Only `session.rs`'s `debug_breach` verb calls it, and only on a
+    /// `DEV_PROBE=1` server: `scripts/checks/breach-vortex.mjs` needs a breach in
+    /// a real match, and aiming a bazooka through asteroids at a rim thicker than
+    /// its crater is a check that tests the aim.
+    #[doc(hidden)]
+    pub fn dev_breach_toward(&mut self, toward: Vec2) -> Option<Vec2> {
+        let geo = self.map.space_geometry()?;
+        let (x, y) = geo.onto_rim(toward.x, toward.y);
+        let r = crate::constants::METEOR_CARVE_R;
+        let carve = self.map.carve_circle(x, y, r as i32);
+        let at = Vec2::new(x as f32, y as f32);
+        let now = self.round_time;
+        self.emit_blast(at, r, CarveKind::Meteor, &carve, now);
+        Some(at)
+    }
+
+    /// **Dev seam** (T22.10B), beside [`World::dev_breach_toward`]: put player `id`
+    /// at rest **inward of the hole at `hole`**, 1.5 capture radii out or more, with
+    /// a **clear straight run to the capture ring** — the shape of the 12-seed idle
+    /// test, so `breach-vortex.mjs` measures the pull from a known start. The first
+    /// cut placed the body behind an asteroid, which the pull then pressed it into
+    /// for the whole run (measured: 27 px in 10 s). Candidates: 1.5, 1.75, … capture
+    /// radii, each straight inward and then turned up to ±0.6 rad. Returns where, or
+    /// `None` when nothing inside the reach has a clear run.
+    #[doc(hidden)]
+    pub fn dev_place_inward_of(&mut self, id: PlayerId, hole: Vec2) -> Option<Vec2> {
+        let geo = self.map.space_geometry()?;
+        let inward = (Vec2::new(geo.cx, geo.cy) - hole).normalized();
+        let r = crate::constants::VORTEX_CAPTURE_R;
+        let fits = |p: Vec2| {
+            !crate::physics::collide::aabb_overlaps_solid(
+                &self.map,
+                crate::physics::body::Body::new(p).aabb(),
+            )
+        };
+        let clear_run = |from: Vec2| {
+            let span = (from - hole).len() - r;
+            let steps = (span / 4.0).ceil().max(1.0) as i32;
+            (0..=steps)
+                .all(|i| fits(from + (hole - from).normalized() * (span * i as f32 / steps as f32)))
+        };
+        let at = (0..8)
+            .flat_map(|i| {
+                [0.0f32, 0.3, -0.3, 0.6, -0.6].map(|turn| {
+                    let (s, c) = turn.sin_cos();
+                    let dir = Vec2::new(inward.x * c - inward.y * s, inward.x * s + inward.y * c);
+                    hole + dir * r * (1.5 + 0.25 * i as f32)
+                })
+            })
+            .find(|&p| clear_run(p))?;
+        let p = self.player_mut(id)?;
+        p.body = crate::physics::body::Body::new(at);
+        Some(at)
     }
 
     /// Test seam: start `kind` now, through the same install the scheduler uses.

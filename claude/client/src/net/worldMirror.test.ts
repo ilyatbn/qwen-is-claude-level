@@ -582,3 +582,77 @@ describe('carve stream resumption', () => {
     expect(resyncs).toBe(1)
   })
 })
+
+/**
+ * T22.10B: the vortex list reaches the core **as the pull `apply_input` reads**.
+ * Asserted through `fieldAccelAt` — the same `env_at` sum prediction runs — on a
+ * space-gravity core, not through the mirror's own array: a list the mirror kept
+ * and never handed over would pass an array assertion and rubber-band in play.
+ */
+describe('breach vortices', () => {
+  const field = (c: Core, x: number, y: number): [number, number] => {
+    const f = c.fieldAccelAt(x, y)
+    return [f[0]!, f[1]!]
+  }
+
+  it('an opened vortex pulls, a closed one stops, and a new round clears the core', () => {
+    core.generate(4242n, MapScale.Small)
+    expect(core.setGravity('space')).toBe(true)
+    const mirror = new WorldMirror(core)
+    const at = { x: 600, y: 300 }
+    const probe = { x: at.x + C().VORTEX_CAPTURE_R * 1.5, y: at.y }
+    const before = field(core, probe.x, probe.y)
+
+    mirror.applyEvent('vortex_open', { id: 7, x: at.x, y: at.y }, 0)
+    const pulled = field(core, probe.x, probe.y)
+    // Toward the vortex: it sits at smaller x than the probe.
+    expect(pulled[0] - before[0]).toBeLessThan(-100)
+
+    // The join catch-up re-announcing the same id is not a second vortex.
+    mirror.applyEvent('vortex_open', { id: 7, x: at.x, y: at.y }, 0)
+    expect(mirror.vortices.length).toBe(1)
+    expect(field(core, probe.x, probe.y)).toEqual(pulled)
+
+    // R88: closed stops the pull and keeps the entry, to be drawn fading.
+    mirror.applyEvent('vortex_close', { id: 7 }, 1234)
+    expect(field(core, probe.x, probe.y)).toEqual(before)
+    expect(mirror.vortices[0]!.closedAt).toBe(1234)
+
+    mirror.applyEvent('vortex_open', { id: 8, x: at.x, y: at.y }, 0)
+    expect(field(core, probe.x, probe.y)).toEqual(pulled)
+    mirror.clearVortices()
+    expect(mirror.vortices.length).toBe(0)
+    expect(field(core, probe.x, probe.y)).toEqual(before)
+    core.setGravity('standard')
+  })
+
+  it('keeps opening order, unsorted — the order the server sums in', () => {
+    core.generate(4242n, MapScale.Small)
+    const mirror = new WorldMirror(core)
+    for (const [id, x] of [
+      [5, 900],
+      [2, 300],
+      [9, 600],
+    ] as const) {
+      mirror.applyEvent('vortex_open', { id, x, y: 200 }, 0)
+    }
+    expect(mirror.pullingVortices.map((v) => v.id)).toEqual([5, 2, 9])
+    mirror.applyEvent('vortex_close', { id: 2 }, 5)
+    expect(mirror.pullingVortices.map((v) => v.id)).toEqual([5, 9])
+  })
+
+  it('a new mirror tells the shared core the list is empty — the last match does not pull', () => {
+    core.generate(4242n, MapScale.Small)
+    expect(core.setGravity('space')).toBe(true)
+    const probe = { x: 600 + C().VORTEX_CAPTURE_R * 1.5, y: 300 }
+    // Measured after a mirror has cleared the core: the test above left two
+    // vortices pulling in it, which is this test's subject, one test early.
+    const old = new WorldMirror(core)
+    const empty = field(core, probe.x, probe.y)
+    old.applyEvent('vortex_open', { id: 1, x: 600, y: 300 }, 0)
+    expect(field(core, probe.x, probe.y)).not.toEqual(empty)
+    new WorldMirror(core)
+    expect(field(core, probe.x, probe.y)).toEqual(empty)
+    core.setGravity('standard')
+  })
+})

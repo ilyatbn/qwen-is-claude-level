@@ -537,6 +537,45 @@ mod world_tests {
         );
     }
 
+    /// The dev seam `breach-vortex.mjs` drives (T22.10B): a hole on the ray through
+    /// the player, announced as a `carve` (so a client's mirror cuts it too), and a
+    /// vortex from it on the next step — through the chokepoint, not beside it.
+    #[test]
+    fn the_dev_breach_carves_through_the_blast_path_and_opens_a_vortex() {
+        let mut w = space_world(4242);
+        let geo = w.map.space_geometry().expect("space");
+        let toward = Vec2::new(geo.cx - 100.0, geo.cy - 50.0);
+        let at = w.dev_breach_toward(toward).expect("a space map");
+        assert!(
+            geo.distance_to_rim(at.x, at.y) <= 1.0,
+            "not on the rim: {at:?}"
+        );
+        assert!(
+            w.drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::Carve { .. })),
+            "no carve event: a client's mirror would never cut the hole"
+        );
+        let placed = w.dev_place_inward_of(0, at).expect("somewhere inward fits");
+        let d = (placed - at).len();
+        assert!(
+            d >= 1.5 * crate::constants::VORTEX_CAPTURE_R - 0.5,
+            "placed inside the capture ring: {d}"
+        );
+        step(&mut w);
+        assert_eq!(w.vortices.len(), 1, "the breach opened no vortex");
+        assert!((w.vortices[0].pos - at).len() <= 1.5);
+        // And the placement has a clear run: idle, the pull delivers the player.
+        let _ = w.drain_events();
+        let taken = (0..120).any(|_| {
+            step(&mut w);
+            w.drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. }))
+        });
+        assert!(taken, "placed at {placed:?}, never taken in two seconds");
+    }
+
     /// **R9, point 1: it catches a player wearing wings.** Wings refuse pads because
     /// a pad is something you choose; a vortex happens to you.
     #[test]

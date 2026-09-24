@@ -19,6 +19,24 @@ export interface PredictorStats {
   maxCorrectionPx: number
   /** Corrections large enough to snap the render too, rather than smooth it. */
   snaps: number
+  /**
+   * T22.10B: **how far the last correction moved the predicted body** — the state
+   * before `setPlayerState` against the state after the replay. This is the
+   * rubber-band a player sees. `lastCorrectionPx` is not: it compares the
+   * *current* prediction with the server's state *at the acknowledged input*, so a
+   * body moving at `v` with `p` inputs pending reads `v·p·dt` there however right
+   * the prediction is (measured: 3–16 px at vortex speeds, while this read ~1 px).
+   */
+  lastJumpPx: number
+  maxJumpPx: number
+  /**
+   * T22.10B: **the prediction's own error** — where this client predicted the body
+   * after the acknowledged input, against where the server says it is after that
+   * input. Free of pending travel (unlike `lastCorrectionPx`) and of what the
+   * replay does next (unlike `lastJumpPx`). NaN until a snapshot acks an input
+   * this predictor applied.
+   */
+  lastAckErrorPx: number
 }
 
 /** What a snapshot tells us about ourselves. */
@@ -55,7 +73,12 @@ export class Predictor {
     lastCorrectionPx: 0,
     maxCorrectionPx: 0,
     snaps: 0,
+    lastJumpPx: 0,
+    maxJumpPx: 0,
+    lastAckErrorPx: Number.NaN,
   }
+  /** Where each unacknowledged input left the body, by seq — `lastAckErrorPx`'s other end. */
+  private readonly predicted = new Map<number, { x: number; y: number }>()
 
   constructor(core: Core, localId: number) {
     this.core = core
@@ -76,6 +99,7 @@ export class Predictor {
     this.core.applyInput(this.localId, input.seq, input.buttons, input.aim, dt)
     this.stats.pending = this.pending.length
     const s = this.state
+    if (s) this.predicted.set(input.seq, { x: s.x, y: s.y })
     if (s && !this.started) {
       this.render = { x: s.x, y: s.y }
       this.started = true
@@ -89,6 +113,9 @@ export class Predictor {
    * the server has *not* processed, which is the whole identity this rests on.
    */
   reconcile(snap: LocalSnapshotView): void {
+    const at = this.predicted.get(snap.lastInputSeq)
+    if (at) this.stats.lastAckErrorPx = Math.hypot(at.x - snap.state.x, at.y - snap.state.y)
+    for (const seq of this.predicted.keys()) if (seq <= snap.lastInputSeq) this.predicted.delete(seq)
     while (this.pending.length && this.pending[0]!.input.seq <= snap.lastInputSeq) {
       this.pending.shift()
     }
@@ -127,9 +154,17 @@ export class Predictor {
 
     // Snap the simulation immediately. Letting it lag the truth compounds the
     // error into every prediction after it.
+    const was = { x: local.x, y: local.y }
     this.core.setPlayerState(this.localId, snap.state)
     for (const { input, dt } of this.pending) {
       this.core.applyInput(this.localId, input.seq, input.buttons, input.aim, dt)
+      const s = this.state
+      if (s) this.predicted.set(input.seq, { x: s.x, y: s.y })
+    }
+    const now = this.state
+    if (now) {
+      this.stats.lastJumpPx = Math.hypot(now.x - was.x, now.y - was.y)
+      this.stats.maxJumpPx = Math.max(this.stats.maxJumpPx, this.stats.lastJumpPx)
     }
 
     if (err > SNAP_PX) {
@@ -137,6 +172,27 @@ export class Predictor {
       const s = this.state
       if (s) this.render = { x: s.x, y: s.y }
     }
+  }
+
+  /**
+   * The server moved us: a pad (`teleport`) or a vortex trip (`vortex_trip`,
+   * T22.10B). **One handler for both** — `GameScene.onRelocated` — because they are
+   * one event with two sources, and the arrival is a teleport's either way: at
+   * `(x, y)`, at rest (`World::fire_pads` / `step_vortices` assign a fresh body).
+   *
+   * Snaps the simulation *and* the render, for `SNAP_PX`'s reason: easing a
+   * relocation across the map reads as the camera sliding. Skipped when the
+   * prediction is already there — a snapshot reconciled it first — so an event
+   * arriving second cannot undo the replay of inputs sent since. Returns whether
+   * it snapped.
+   */
+  relocate(x: number, y: number): boolean {
+    const s = this.state
+    if (!s || Math.hypot(s.x - x, s.y - y) <= SNAP_PX) return false
+    this.core.setPlayerState(this.localId, { ...s, x, y, vx: 0, vy: 0, grounded: false })
+    this.render = { x, y }
+    this.stats.snaps++
+    return true
   }
 
   /** Ease the rendered position toward the simulation. */

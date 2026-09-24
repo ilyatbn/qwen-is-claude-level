@@ -353,6 +353,12 @@ export const CHECKS = [
   // `FlareClock`, the ribbon derived through `flare_points` and painted over every damage
   // point in view, against a hidden-flare frame. Standalone: a WEATHER=flare space server.
   { name: 'solar-flare-match', file: 'scripts/checks/solar-flare-match.mjs', standalone: true },
+  // T22.10B: the breach vortex — a sandbox vortex photographed flat and shader, then a
+  // real match on a DEV_PROBE server that breaches the rim: the vortex where the server
+  // put it, no prediction correction while it pulls (the rubber-band an untold client
+  // shows), the trip inside the rim, the capture ring painted in both paths against a
+  // hidden frame, and the minimap unchanged. Standalone: its own server.
+  { name: 'breach-vortex', file: 'scripts/checks/breach-vortex.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

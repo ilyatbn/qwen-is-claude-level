@@ -106,6 +106,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { FlareClock, FogClock, LavaClock, ServerClock, ventLights } from '../render/weather-math'
 import { FlareFx, type FlareBody } from '../render/flareFx'
+import { VortexFx } from '../render/vortexFx'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 
@@ -211,6 +212,15 @@ function freshObserved() {
     darknessMax: 0,
     /** Largest gap between the server's tick and the last one we applied. */
     maxTickLag: 0,
+    /**
+     * T22.10B: relocations the server announced — `vortex_trip`s and pad
+     * `teleport`s, both through `onRelocated` — and the ones that were ours.
+     */
+    vortexTrips: 0,
+    teleports: 0,
+    myTrips: [] as Array<{ x: number; y: number; snapped: boolean }>,
+    /** e2e only (`DEV_PROBE=1`): the server's answer to the last `debug_breach`. */
+    lastBreach: null as unknown,
   }
 }
 
@@ -425,6 +435,8 @@ export class GameScene extends Phaser.Scene {
   /** e2e only (T22.08D F1): callers waiting on the server's `debug_effects` answer. */
   private readonly probeWaiters: ((p: unknown) => void)[] = []
   private flareFx!: FlareFx
+  /** T22.10B: the breach vortices, drawn from `mirror.vortices`. */
+  private vortexFx!: VortexFx
   /** Bodies drawn this frame, for the flare's contact test — filled by `renderRemotes`. */
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
@@ -680,6 +692,10 @@ export class GameScene extends Phaser.Scene {
     this.lava.clear()
     this.flareClock.clear()
     this.flareFx?.clear()
+    // T22.10B: last round's holes are not this round's, and the core outlives the
+    // scene — so the pull goes too, not only the drawing (`clearVortices`).
+    this.mirror?.clearVortices()
+    this.vortexFx?.clear()
     this.flareBodies.length = 0
     this.serverClock.reset()
     this.crosshairAt = null
@@ -751,6 +767,7 @@ export class GameScene extends Phaser.Scene {
     this.radiation = new RadiationFx()
     this.flareFx = new FlareFx(this, hasWebGL(this))
     this.flareFx.setRtt(this.lastRtt)
+    this.vortexFx = new VortexFx(this, hasWebGL(this))
     this.debugHud = new DebugHud(this, C().PLAYER_W, C().PLAYER_H)
     this.input.keyboard?.on('keydown-F3', () => this.debugHud.toggle())
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
@@ -829,6 +846,9 @@ export class GameScene extends Phaser.Scene {
       // them, but the deadline below is computed *before* it arrives.
       if (stateTick < this.lastServerTick) {
         this.lastServerTick = stateTick
+        // T22.10B: a new world has no holes; the core must stop pulling toward
+        // the old ones before the new round's first predicted tick.
+        this.mirror.clearVortices()
         this.roundTime = 0
         this.serverRoundTime = 0
         this.serverClock.reset()
@@ -970,7 +990,11 @@ export class GameScene extends Phaser.Scene {
       'projectile_despawn', 'mask_checksum',
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
-      'tombstone_spawn', 'tombstone_despawn']) {
+      'tombstone_spawn', 'tombstone_despawn',
+      // T22.10B: the vortex list — the mirror keeps it in opening order and tells
+      // the core, which sums the pull from it. Unsubscribed, a client predicts no
+      // pull near a vortex while the server pulls: a rubber-band.
+      'vortex_open', 'vortex_close']) {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
@@ -1128,6 +1152,14 @@ export class GameScene extends Phaser.Scene {
     this.conn.on('phase_change', (raw) => {
       const p = asRecord(raw)
       this.observed.dayPhases.add(String(p['day_phase'] ?? p['phase'] ?? ''))
+    })
+    // T22.10B: one handler for both ways the server moves a player — a pad and a
+    // vortex. Before this, neither was handled: a pad trip reached the local body
+    // only as a large reconcile error, and a remote glided across the map.
+    this.conn.on('teleport', (raw) => this.onRelocated(raw, 'teleport'))
+    this.conn.on('vortex_trip', (raw) => this.onRelocated(raw, 'vortex_trip'))
+    this.conn.on('debug_breach', (raw) => {
+      this.observed.lastBreach = raw
     })
     this.conn.on('respawn', (raw) => {
       this.observed.respawns++
@@ -1520,6 +1552,10 @@ export class GameScene extends Phaser.Scene {
     this.minimap?.destroy()
     this.minimap = new Minimap(this.core, this.core.width, this.core.height)
 
+    // T22.10B: a vortex list that arrived before this map is applied now — the
+    // mirror kept it (a resync does not drop it); the core is told again.
+    this.mirror.pushVortices()
+
     this.ready = true
     this.conn.sendRaw('ready', {})
     this.setStatus('')
@@ -1660,6 +1696,29 @@ export class GameScene extends Phaser.Scene {
           moveMods: mine.moveMods,
         },
       })
+    }
+  }
+
+  /**
+   * The server moved player `id` to `(x, y)` at `tick` — a pad (`teleport`) or a
+   * breach vortex (`vortex_trip`). **The one handler for both** (T22.10B): the
+   * arrival is the same event with two sources. You: the predictor snaps (sim and
+   * render). Anyone else: their interpolation steps across the trip instead of
+   * gliding through the map for a snapshot interval.
+   */
+  private onRelocated(raw: unknown, ev: 'teleport' | 'vortex_trip'): void {
+    const p = asRecord(raw)
+    const id = Number(p['id'] ?? -1)
+    const x = Number(p['x'])
+    const y = Number(p['y'])
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+    if (ev === 'vortex_trip') this.observed.vortexTrips++
+    else this.observed.teleports++
+    if (id === this.me) {
+      const snapped = this.predictor?.relocate(x, y) ?? false
+      if (ev === 'vortex_trip') this.observed.myTrips.push({ x, y, snapped })
+    } else {
+      this.interp.cut(id, Number(p['tick'] ?? this.lastServerTick))
     }
   }
 
@@ -1930,8 +1989,18 @@ export class GameScene extends Phaser.Scene {
     // on sending queues a burst that is applied the moment the next round starts
     // — you would spawn already walking, holding a direction you pressed while
     // reading a scoreboard.
+    //
+    // **Every input this frame is sent, in packets of at most `INPUT_REDUNDANCY`**
+    // (T22.10B) — the most `decode_input_batch` takes. This sent only the last
+    // three, so a frame that stepped four or more ticks (a 15–20 fps page, which is
+    // what a headless browser drawing the vortex shader runs at) applied an input
+    // locally that the server never received: the server acked past it without
+    // integrating it, and the predictor snapped back by a tick of travel on every
+    // such snapshot — 4–12 px under a vortex's pull, measured by `breach-vortex`
+    // off `lastAckErrorPx` (ack deltas +4/+2 alternating, the big errors on the +4s).
     if (batch.length && !this.results.isUp) {
-      this.conn.sendInput(batch.slice(-C().INPUT_REDUNDANCY))
+      const per = C().INPUT_REDUNDANCY
+      for (let i = 0; i < batch.length; i += per) this.conn.sendInput(batch.slice(i, i + per))
       this.inputsSent++
       this.debugHud?.noteInputs(performance.now(), batch.length)
     }
@@ -2113,6 +2182,8 @@ export class GameScene extends Phaser.Scene {
       this.lastFlareQuery = at === null ? null : this.flareClock.query(at)
       this.flareFx.update(this.lastFlareQuery, this.core, this.flareBodies, at ?? 0, this.roundTime)
       this.flareBodies.length = 0
+      // T22.10B: the vortices, pulling and fading, where `vortex_open` put them.
+      this.vortexFx.update(this.mirror.vortices, performance.now(), this.time.now / 1000)
       // T22.08D F5: the ribbon has gone and only burns are finishing — say so.
       if (this.flareClock.runningId >= 0) this.topHud?.setEffectTail(this.flareClock.runningId, this.flareFx.state.tail)
     }
@@ -2925,6 +2996,20 @@ export class GameScene extends Phaser.Scene {
           self.conn.sendRaw('debug_effects', {})
         })
       },
+      /** e2e only (§C2, T22.10B): hide the vortex layer for a same-instant control frame. */
+      showVortices(on: boolean) {
+        self.vortexFx.setHidden(!on)
+        return self.vortexFx.state
+      },
+      /**
+       * e2e only (`DEV_PROBE=1`, T22.10B): ask the server to breach the rim on the ray
+       * through this player. The answer lands in `debug().vortex.lastBreach`; the
+       * vortex arrives as any other does, through `vortex_open`.
+       */
+      debugBreach() {
+        self.observed.lastBreach = null
+        self.conn.sendRaw('debug_breach', {})
+      },
       /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */
       showFlare(on: boolean) {
         self.flareFx.setHidden(!on)
@@ -3484,6 +3569,21 @@ export class GameScene extends Phaser.Scene {
           // rather than read back what was drawn.
           flare: self.flareFx?.state ?? null,
           flareQuery: self.lastFlareQuery,
+          // T22.10B: the list the core sums (opening order), what the layer drew,
+          // the relocations heard, and the predictor's corrections — the
+          // rubber-band a vortex the client was not told about produces.
+          vortex: {
+            list: self.mirror.vortices.map((v) => ({ ...v })),
+            fx: self.vortexFx?.state ?? null,
+            trips: self.observed.vortexTrips,
+            myTrips: self.observed.myTrips.map((t) => ({ ...t })),
+            lastBreach: self.observed.lastBreach,
+            corrections: self.predictor?.stats.corrections ?? 0,
+            lastCorrectionPx: self.predictor?.stats.lastCorrectionPx ?? 0,
+            maxCorrectionPx: self.predictor?.stats.maxCorrectionPx ?? 0,
+            lastJumpPx: self.predictor?.stats.lastJumpPx ?? 0,
+            lastAckErrorPx: self.predictor?.stats.lastAckErrorPx ?? null,
+          },
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte
           // above can be 0 while the frame is dark — that `||` is why both exist.

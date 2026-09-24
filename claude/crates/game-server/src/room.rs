@@ -2133,12 +2133,25 @@ impl Room {
     ///
     /// It is also just what `docs/40-net-protocol.md` §1 says: a client that has
     /// not sent `ready` is seated but not simulated.
+    ///
+    /// **The last *consumed*, not the last received** (T22.10B). The world takes
+    /// one input per player per tick and queues the rest, so the newest received
+    /// input can be several ticks from reaching the state this snapshot carries.
+    /// Acking it told the client to drop inputs the state never saw: it replayed
+    /// without them, predicted behind the server, snapped back, and snapped
+    /// forward a snapshot later — a rubber-band on anything moving fast, measured
+    /// at 9–14 px under a vortex's pull. Derived from the queue the world already
+    /// holds (`World::oldest_queued_seq`), not a second counter to keep in step.
     pub fn last_seqs(&self) -> Vec<(PlayerId, u32)> {
         self.seats
             .seats
             .iter()
             .filter(|s| s.ready)
-            .map(|s| (s.id, s.last_seq))
+            .map(|s| {
+                let queued = self.world.as_ref().and_then(|w| w.oldest_queued_seq(s.id));
+                let acked = queued.map_or(s.last_seq, |q| q.saturating_sub(1).min(s.last_seq));
+                (s.id, acked)
+            })
             .collect()
     }
 
@@ -3458,6 +3471,54 @@ mod tests {
             assert!(s.alloc(6).is_some());
         }
         assert!(s.alloc(6).is_none(), "the 7th must be refused");
+    }
+
+    /// **T22.10B: the snapshot acks what the world has *consumed*, not what the
+    /// room has *received*.** Three inputs arrive at once; one tick consumes one
+    /// (`World::apply_inputs`: one input per player per tick). The ack must say 1.
+    /// Acking 3 told the client the snapshot's state included two inputs it did
+    /// not: the client dropped them from its replay, predicted behind the server,
+    /// and snapped back — then forward when they were consumed. `breach-vortex`
+    /// measured it at 9–14 px on every other snapshot under a vortex's pull.
+    #[test]
+    fn the_ack_is_the_last_consumed_input_not_the_last_received() {
+        let mut room = Room::new(cfg());
+        let (reply, _rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "a".into(),
+            look: Default::default(),
+            reply,
+        });
+        let id = 0;
+        room.apply(Command::Ready(id, true));
+        room.request_start();
+        room.tick_inline(game_core::constants::SIM_DT);
+        room.world_for_test()
+            .set_phase(game_core::world::RoundPhase::Playing);
+        assert!(
+            room.world_for_test().player(id).is_some(),
+            "control: not seated"
+        );
+        room.apply(Command::Input(
+            id,
+            vec![
+                Input::new(1, 0, 0),
+                Input::new(2, 0, 0),
+                Input::new(3, 0, 0),
+            ],
+        ));
+        let ack = |room: &Room| {
+            room.last_seqs()
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, s)| *s)
+        };
+        assert_eq!(ack(&room), Some(0), "nothing consumed yet");
+        room.tick_inline(game_core::constants::SIM_DT);
+        assert_eq!(ack(&room), Some(1), "one tick consumes one input");
+        room.tick_inline(game_core::constants::SIM_DT);
+        room.tick_inline(game_core::constants::SIM_DT);
+        assert_eq!(ack(&room), Some(3), "control: all three, once consumed");
     }
 
     #[test]

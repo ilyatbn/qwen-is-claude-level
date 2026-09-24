@@ -1955,6 +1955,10 @@ pub fn constants_json() -> String {
         RADIATION_LOG_INTERVAL => c::RADIATION_LOG_INTERVAL,
         // T22.08B: the flare's painted size and its burn, drawing only — the ribbon's
         // position is `flare_points`, never re-derived from these.
+        // T22.10B: the vortex's drawing radii — what takes you, and where thrust
+        // stops winning. Drawing only: the pull is `env_at`, never these in TS.
+        VORTEX_CAPTURE_R => c::VORTEX_CAPTURE_R,
+        VORTEX_REACH => c::VORTEX_REACH,
         SOLAR_FLARE_RIBBON_R => c::SOLAR_FLARE_RIBBON_R,
         SOLAR_FLARE_GLOW => c::SOLAR_FLARE_GLOW,
         SOLAR_FLARE_SPAN => c::SOLAR_FLARE_SPAN,

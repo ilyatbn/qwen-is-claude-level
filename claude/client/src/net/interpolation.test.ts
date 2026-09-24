@@ -201,3 +201,40 @@ describe('quantised aim', () => {
     }
   })
 })
+
+/**
+ * T22.10B: a relocation (a pad, a vortex trip) is a step, not a glide. The control
+ * is the same pair without the cut: it lerps, so the step is `cut`'s doing.
+ */
+describe('a relocation between two snapshots', () => {
+  it('steps at the midpoint instead of gliding across the map, and only for that player', () => {
+    const run = (cut: boolean) => {
+      const r = new RemoteInterpolator(BUF)
+      r.push(10, 1000, [p(1, 100, 100), p(2, 100, 100)])
+      r.push(13, 1050, [p(1, 1900, 700), p(2, 200, 100)])
+      if (cut) r.cut(1, 12)
+      return r.sample(1025 + BUF)
+    }
+    const glide = run(false)
+    expect(glide.get(1)!.x).toBeCloseTo(1000, 5)
+    const stepped = run(true)
+    expect(stepped.get(1)!.x).toBe(1900)
+    expect(stepped.get(1)!.y).toBe(700)
+    // Before the midpoint: still at the departure.
+    const r = new RemoteInterpolator(BUF)
+    r.push(10, 1000, [p(1, 100, 100)])
+    r.push(13, 1050, [p(1, 1900, 700)])
+    r.cut(1, 12)
+    expect(r.sample(1010 + BUF).get(1)!.x).toBe(100)
+    // Somebody else in the same pair still lerps.
+    expect(stepped.get(2)!.x).toBeCloseTo(150, 5)
+  })
+
+  it('a cut outside the bracketing pair changes nothing', () => {
+    const r = new RemoteInterpolator(BUF)
+    r.push(10, 1000, [p(1, 100, 100)])
+    r.push(13, 1050, [p(1, 200, 100)])
+    r.cut(1, 20)
+    expect(r.sample(1025 + BUF).get(1)!.x).toBeCloseTo(150, 5)
+  })
+})

@@ -23,6 +23,7 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { RadiationFx } from '../render/radiationFx'
 import { FlareFx } from '../render/flareFx'
+import { VortexFx, type VortexDraw } from '../render/vortexFx'
 import { hasWebGL } from '../render/shaders'
 import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
@@ -101,6 +102,13 @@ export class SandboxScene extends Phaser.Scene {
   private radiation!: RadiationFx
   /** T22.08B: the solar flare and who it has set alight. */
   private flare!: FlareFx
+  /**
+   * T22.10B: breach vortices opened by hand (`window.__game.openVortex`) — the
+   * sandbox has no `World` to breach, so this list stands in for the mirror's and
+   * reaches the core the same way (`Core.setVortices`), so the local body is pulled.
+   */
+  private vortexFx!: VortexFx
+  private readonly vortices: VortexDraw[] = []
   private feelEnabled = true
   private minimap: Minimap | null = null
   /** Silent until audio.json loads; `docs/50` §8 — no assets is supported. */
@@ -237,6 +245,10 @@ export class SandboxScene extends Phaser.Scene {
     this.radiation = new RadiationFx()
     // Authoritative: this scene's core is the simulation that burns (T22.08D F3).
     this.flare = new FlareFx(this, hasWebGL(this), true)
+    this.vortexFx = new VortexFx(this, hasWebGL(this))
+    // The core is the registry's and outlives a match: start this scene with no pull.
+    this.vortices.length = 0
+    this.core.setVortices([])
     this.input.keyboard?.on('keydown-M', () => this.minimap?.toggle())
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
@@ -759,6 +771,7 @@ export class SandboxScene extends Phaser.Scene {
           // T22.08B, both ends (§A39): what the flare layer drew, beside the
           // weather the core says is running (`weatherProbe().active`).
           flare: self.flare?.state ?? null,
+          vortex: { list: self.vortices.map((v) => ({ ...v })), fx: self.vortexFx?.state ?? null },
           // The sandbox's sim clock, for a check that calls a `now`-taking `Core`
           // predicate itself (R26: never a literal).
           simTime: self.simTime,
@@ -1036,6 +1049,22 @@ export class SandboxScene extends Phaser.Scene {
       showFlare(on: boolean) {
         self.flare.setHidden(!on)
         return self.flare.state
+      },
+      /**
+       * e2e only (T22.10B): open a breach vortex at `(x, y)` — drawn, and pulling the
+       * local body through the core's own sum, as a match's `vortex_open` would.
+       * Returns its id.
+       */
+      openVortex(x: number, y: number) {
+        const id = self.vortices.reduce((m, v) => Math.max(m, v.id + 1), 0)
+        self.vortices.push({ id, x, y, closedAt: null })
+        self.core.setVortices(self.vortices.filter((v) => v.closedAt === null))
+        return id
+      },
+      /** e2e only (§C2, T22.10B): hide the vortex layer for a same-instant control frame. */
+      showVortices(on: boolean) {
+        self.vortexFx.setHidden(!on)
+        return self.vortexFx.state
       },
       /** Raw tracer segments, for diagnosing why one is not on screen. */
       ordnanceState() {
@@ -1537,6 +1566,7 @@ export class SandboxScene extends Phaser.Scene {
         this.weatherTime,
       )
     }
+    this.vortexFx.update(this.vortices, performance.now(), this.time.now / 1000)
     // The rain, the spew and the green cast. The discs above say *where* the
     // hazards are; this is what makes an 8-second downpour look like one.
     // **The real drops, not the effect's phase** (T20.05). This scene pokes the

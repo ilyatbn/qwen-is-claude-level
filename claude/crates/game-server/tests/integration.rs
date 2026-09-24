@@ -690,22 +690,21 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
 
 // ------------------------------------------------------------- dev probe
 
-/// Seat, start, then ask `debug_effects` until it answers or `within` runs out.
+/// Seat, start, then ask `verb` until it answers or `within` runs out.
 /// Returns how long the answer took, or `None`.
-fn probe_once(addr: SocketAddr, within: Duration) -> Option<Duration> {
-    let (c, _inbox, rx) = join_and_ready(addr, "ana", &["debug_effects"]);
+fn probe_once(addr: SocketAddr, within: Duration, verb: &'static str) -> Option<Duration> {
+    let (c, _inbox, rx) = join_and_ready(addr, "ana", &[verb]);
     c.emit("start_with_bots", serde_json::json!({}))
         .expect("start");
     wait_for(&rx, "map_init", 30);
     let asked = std::time::Instant::now();
     let mut answered = None;
     while answered.is_none() && asked.elapsed() < within {
-        c.emit("debug_effects", serde_json::json!({}))
-            .expect("emit debug_effects");
+        c.emit(verb, serde_json::json!({})).expect("emit the probe");
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
         while std::time::Instant::now() < deadline {
             if let Ok(name) = rx.recv_timeout(Duration::from_millis(50)) {
-                if name == "debug_effects" {
+                if name == verb {
                     answered = Some(asked.elapsed());
                     break;
                 }
@@ -727,27 +726,32 @@ fn probe_once(addr: SocketAddr, within: Duration) -> Option<Duration> {
 /// two seconds of asking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_flare_probe_answers_only_on_a_dev_probe_server() {
-    let on = spawn_server(Config {
-        dev_probe: true,
-        ..test_config()
-    })
-    .await;
-    let addr = on.addr;
-    let took = tokio::task::spawn_blocking(move || probe_once(addr, Duration::from_secs(10)))
-        .await
-        .expect("client thread")
-        .expect("control: a DEV_PROBE=1 server never answered debug_effects");
+    // T22.10B: `debug_breach` rides the same guard — it carves the rim, which
+    // is a verb even less fit to ship open than a read.
+    for verb in ["debug_effects", "debug_breach"] {
+        let on = spawn_server(Config {
+            dev_probe: true,
+            ..test_config()
+        })
+        .await;
+        let addr = on.addr;
+        let took =
+            tokio::task::spawn_blocking(move || probe_once(addr, Duration::from_secs(10), verb))
+                .await
+                .expect("client thread")
+                .unwrap_or_else(|| panic!("control: a DEV_PROBE=1 server never answered {verb}"));
 
-    let off = spawn_server(test_config()).await;
-    let addr = off.addr;
-    let within = (took * 10).max(Duration::from_secs(2));
-    let heard = tokio::task::spawn_blocking(move || probe_once(addr, within))
-        .await
-        .expect("client thread");
-    assert_eq!(
-        heard, None,
-        "a server without DEV_PROBE answered debug_effects (the control took {took:?})"
-    );
+        let off = spawn_server(test_config()).await;
+        let addr = off.addr;
+        let within = (took * 10).max(Duration::from_secs(2));
+        let heard = tokio::task::spawn_blocking(move || probe_once(addr, within, verb))
+            .await
+            .expect("client thread");
+        assert_eq!(
+            heard, None,
+            "a server without DEV_PROBE answered {verb} (the control took {took:?})"
+        );
+    }
 }
 
 /// **The seed is stated, not inherited** (T20.18/T20.20).

@@ -446,6 +446,9 @@ export interface Constants {
   THRUSTER_PLUME_MIN_SPEED: number
   /** T22.09B — one radiation damage entry per this many seconds; the glow's pulse. */
   RADIATION_LOG_INTERVAL: number
+  /** T22.10B — the breach vortex's drawing radii; drawing only (the pull is `env_at`). */
+  VORTEX_CAPTURE_R: number
+  VORTEX_REACH: number
   /** T22.08B — the solar flare's painted size and burn; drawing only. */
   SOLAR_FLARE_RIBBON_R: number
   SOLAR_FLARE_GLOW: number
@@ -870,6 +873,20 @@ export class Core {
     // installed rocks and then read the old table back would be told the call
     // had not happened.
     this.invalidate()
+  }
+
+  /**
+   * T22.10B: the live breach vortices, as the server holds them — **the list
+   * `apply_input` sums the pull from** (`env_at`, after the asteroids). Until a
+   * client calls this it predicts no pull near a vortex while the server pulls:
+   * a rubber-band.
+   *
+   * **Opening order, never sorted** — `setAsteroids`' rule, for the same reason:
+   * the sum is taken in list order on both sides. `WorldMirror` keeps the list
+   * in the order `vortex_open` arrived and is the one production caller.
+   */
+  setVortices(list: readonly { x: number; y: number }[]): void {
+    this.inner.set_vortices(new Float32Array(list.map((v) => v.x)), new Float32Array(list.map((v) => v.y)))
   }
 
   /**

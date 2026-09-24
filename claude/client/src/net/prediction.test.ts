@@ -352,3 +352,63 @@ describe('a hurt player is predicted at the hurt speed (T20.19)', () => {
     expect(core.playerState(0)!.health).toBe(hurt)
   })
 })
+
+/**
+ * T22.10B: a relocation the server announces (a pad, a vortex trip) snaps the
+ * simulation and the render at once — and only when the prediction is not already
+ * there, so an event that arrives after the snapshot does not throw away the
+ * inputs replayed since.
+ */
+describe('relocate', () => {
+  it('snaps sim and render to the arrival, at rest', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
+    const s = core.playerState(0)!
+    const to = { x: s.x + 600, y: s.y - 200 }
+    expect(p.relocate(to.x, to.y)).toBe(true)
+    const after = core.playerState(0)!
+    expect([after.x, after.y, after.vx, after.vy]).toEqual([to.x, to.y, 0, 0])
+    expect(p.renderPos).toEqual(to)
+  })
+
+  it('does nothing when the prediction is already there (the snapshot came first)', () => {
+    const p = new Predictor(core, 0)
+    p.pushInput(inp(1, BTN.RIGHT), DT)
+    const s = core.playerState(0)!
+    expect(p.relocate(s.x + 3, s.y)).toBe(false)
+    expect(core.playerState(0)!.x).toBe(s.x)
+  })
+})
+
+/**
+ * T22.10B: `lastJumpPx` is the rubber-band — how far a correction moved the body —
+ * and it is ~0 for a right prediction of a *moving* body, where `lastCorrectionPx`
+ * (current prediction against the acknowledged state) reads the pending inputs'
+ * travel. The control is a wrong server state: then the jump is the error.
+ */
+describe('the correction jump', () => {
+  it('is ~0 when the prediction was right, however far the pending inputs moved it', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 6; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
+    // The server's state at seq 3, computed by the same code on the second core.
+    for (let i = 1; i <= 3; i++) mirror.applyInput(0, i, BTN.RIGHT, 0, DT)
+    const at3 = mirror.playerState(0)!
+    p.reconcile({ lastInputSeq: 3, state: at3 })
+    // The control that the correction path ran at all: the pending inputs' travel
+    // is past the epsilon, which is exactly what `lastCorrectionPx` reports.
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.lastCorrectionPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+    expect(p.stats.lastJumpPx).toBeLessThan(0.01)
+    // And the prediction's own error at the acked input is ~0 too.
+    expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
+  })
+
+  it('is the error when the server disagrees', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    p.reconcile({ lastInputSeq: 3, state: { ...s, x: s.x + 40 } })
+    expect(p.stats.lastJumpPx).toBeCloseTo(40, 3)
+    expect(p.stats.lastAckErrorPx).toBeCloseTo(40, 3)
+  })
+})
