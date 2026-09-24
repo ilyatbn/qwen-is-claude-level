@@ -1111,10 +1111,43 @@ impl GameCore {
         let outcomes = self
             .projectiles
             .step(&self.map, &boxes, &[], wind, self.gravity, now, dt);
+        // R99 (T22.14A), `World::step_projectiles`' rule through the one predicate: in
+        // space, weather ordnance that reaches the rim is gone without going off —
+        // airborne past the inner face here, an impact whose blast would bite the rim
+        // below — so the sandbox's shower does not break the rim either.
+        let rim = self.map.space_geometry();
+        if let Some(geo) = rim {
+            let gone: Vec<_> = self
+                .projectiles
+                .iter()
+                .filter(|p| MeteorShower::owns(p.weapon))
+                .filter(|p| game_core::effects::meteor::reaches_rim(&geo, p.pos, 0.0))
+                .map(|p| p.id)
+                .collect();
+            for id in gone {
+                self.projectiles.remove(id);
+            }
+        }
 
         let mut events = Vec::new();
         for im in outcomes {
             let pid = im.id;
+            if let (
+                Some(geo),
+                ProjectileOutcome::Exploded { at } | ProjectileOutcome::Hit { at, .. },
+            ) = (rim, &im.outcome)
+            {
+                let blast = if MeteorShower::is_fragment(im.weapon) {
+                    game_core::constants::METEOR_FRAG_CARVE_R
+                } else {
+                    game_core::constants::METEOR_CARVE_R
+                };
+                if MeteorShower::owns(im.weapon)
+                    && game_core::effects::meteor::reaches_rim(&geo, *at, blast)
+                {
+                    continue;
+                }
+            }
             let (at, victim) = match im.outcome {
                 // Out of the world (§C15): gone, and it detonates nothing. The
                 // local sim has no event stream to despawn it on — `step`

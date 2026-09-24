@@ -566,7 +566,9 @@ pub enum DespawnReason {
     Exploded,
     Expired,
     /// Left the bottom of the map (§C15). Neither of the other two: it did not go
-    /// off, and it did not time out.
+    /// off, and it did not time out. **Also, in space, weather ordnance that
+    /// reached the rim** (R99, T22.14A: `effects::meteor::reaches_rim`) — the edge
+    /// of the world by the other road, and the client removes on any reason.
     Void,
     /// A bullet that flew its `range` and stopped (§F1).
     ///
@@ -2277,6 +2279,29 @@ impl World {
         let impacts =
             self.projectiles
                 .step(&self.map, &boxes, &birds, self.wind, self.gravity, now, dt);
+        // R99 (T22.14A): in space, weather ordnance that reaches the rim despawns
+        // without carving — airborne pieces past the rim's inner face here, impacts
+        // whose blast would bite the rim below. The rim breaks only from player
+        // weapons.
+        let rim = self.map.space_geometry();
+        if let Some(geo) = rim {
+            let gone: Vec<ProjectileId> = self
+                .projectiles
+                .iter()
+                .filter(|p| MeteorShower::owns(p.weapon))
+                .filter(|p| crate::effects::meteor::reaches_rim(&geo, p.pos, 0.0))
+                .map(|p| p.id)
+                .collect();
+            for id in gone {
+                self.projectiles.remove(id);
+                let tick = self.tick;
+                self.events.push(GameEvent::ProjectileDespawn {
+                    tick,
+                    id,
+                    reason: DespawnReason::Void,
+                });
+            }
+        }
 
         // Where everything still in flight has got to. At `SNAPSHOT_HZ`, for the
         // same reason `emit_item_motion` uses it: a rocket flies for a second or
@@ -2319,6 +2344,27 @@ impl World {
                 // The victim travels with the outcome. §E13 needs it: a drop of
                 // rain poisons **the player it hit**, and reading "who was
                 // nearest" instead would be a blast by another name.
+                ProjectileOutcome::Exploded { at } | ProjectileOutcome::Hit { at, .. }
+                    if rim.is_some_and(|geo| {
+                        MeteorShower::owns(im.weapon)
+                            && crate::effects::meteor::reaches_rim(
+                                &geo,
+                                at,
+                                if MeteorShower::is_fragment(im.weapon) {
+                                    crate::constants::METEOR_FRAG_CARVE_R
+                                } else {
+                                    crate::constants::METEOR_CARVE_R
+                                },
+                            )
+                    }) =>
+                {
+                    self.events.push(GameEvent::ProjectileDespawn {
+                        tick,
+                        id: im.id,
+                        reason: DespawnReason::Void,
+                    });
+                    continue;
+                }
                 ProjectileOutcome::Exploded { at } => (at, None),
                 ProjectileOutcome::Hit { at, victim } => (at, Some(victim)),
                 // §F1: a bullet that ran out of range. Told to the client and
@@ -14074,6 +14120,240 @@ mod meteor_bell_tests {
             hit_in(RoundPhase::Ended),
             0.0,
             "a meteor hurt someone after the bell"
+        );
+    }
+}
+
+/// T22.14A (R99, coordinator): **in space the meteor shower never breaks the rim.**
+/// Meteors spawn just inside the rim at a random angle and fly at a random asteroid;
+/// a meteor or fragment that reaches the rim despawns without carving — the rim
+/// breaks only from player weapons (the owner's *"if you make a hole"* secret).
+///
+/// Measured on forced showers with nobody in the round, so the shower is the only
+/// thing that can carve: before R99 meteors fell in from above the map through the
+/// void, so every one of them struck the rim first.
+#[cfg(test)]
+mod space_meteor_tests {
+    use super::*;
+    use crate::constants::{
+        MapScale, DEFAULT_MAP_GENERATOR, EFFECT_TELEGRAPH, METEOR_CARVE_R, METEOR_DURATION,
+        METEOR_EVERY, PROJECTILE_MAX_LIFETIME, SIM_DT,
+    };
+    use crate::items::registry::WEAPON_METEOR;
+
+    #[derive(Debug, Default)]
+    struct Shower {
+        /// Meteors (not fragments) spawned.
+        meteors: usize,
+        /// …of them spawned inside the rim's inner face.
+        spawned_inside: usize,
+        /// Meteors whose flight ever reached the arena's interior.
+        reached_interior: usize,
+        /// Weather carves (meteor or fragment) whose disc touches the rim's rock.
+        rim_carves: usize,
+        /// Meteor-sized carves that bit an asteroid.
+        asteroid_carves: usize,
+        /// `VortexOpen` events: breaches the shower made.
+        vortices: usize,
+        /// Weather ordnance despawned at the rim, without going off.
+        rim_despawns: usize,
+    }
+
+    /// One forced shower on `seed`'s space map, run until everything it threw is
+    /// down (the telegraph, the spawn window, and two projectile lifetimes: a
+    /// meteor's and its fragments').
+    fn shower(seed: u64) -> Shower {
+        let mut w = World::with_gravity(
+            seed,
+            MapScale::Medium,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.effects.postpone_until(1.0e9);
+        let geo = w.map.space_geometry().expect("a space map");
+        let rocks = w.map.meta.asteroids.clone();
+        let interior =
+            |p: Vec2| geo.inside(p.x, p.y) && geo.distance_to_rim(p.x, p.y) > geo.thickness * 0.5;
+        w.force_effect(EffectKind::MeteorShower, w.round_time);
+        let mut s = Shower::default();
+        let mut inside: std::collections::BTreeSet<ProjectileId> = Default::default();
+        let window = EFFECT_TELEGRAPH + METEOR_DURATION + 2.0 * PROJECTILE_MAX_LIFETIME;
+        for _ in 0..(window / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            for p in w.projectiles.iter() {
+                if p.weapon == WEAPON_METEOR && interior(p.pos) {
+                    inside.insert(p.id);
+                }
+            }
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::ProjectileSpawn { weapon, x, y, .. } if weapon == WEAPON_METEOR => {
+                        s.meteors += 1;
+                        s.spawned_inside += usize::from(interior(Vec2::new(x, y)));
+                    }
+                    GameEvent::Carve {
+                        x,
+                        y,
+                        r,
+                        kind: CarveKind::Meteor,
+                        ..
+                    } => {
+                        let (fx, fy) = (x as f32, y as f32);
+                        if geo.distance_to_rim(fx, fy) < geo.thickness * 0.5 + r as f32 {
+                            s.rim_carves += 1;
+                        }
+                        if r == METEOR_CARVE_R.round() as i32
+                            && rocks.iter().any(|a| {
+                                (Vec2::new(a.x as f32, a.y as f32) - Vec2::new(fx, fy)).len()
+                                    <= (a.r + r) as f32
+                            })
+                        {
+                            s.asteroid_carves += 1;
+                        }
+                    }
+                    GameEvent::VortexOpen { .. } => s.vortices += 1,
+                    GameEvent::ProjectileDespawn {
+                        reason: DespawnReason::Void,
+                        ..
+                    } => s.rim_despawns += 1,
+                    _ => {}
+                }
+            }
+        }
+        s.reached_interior = inside.len();
+        s
+    }
+
+    const SEEDS: std::ops::Range<u64> = 0..8;
+
+    /// **R99, the whole rule, over eight maps**: every meteor spawns inside the rim,
+    /// no weather carve touches the rim's rock and no vortex opens — with the
+    /// presence controls that the shower threw meteors and that they carved rock.
+    #[test]
+    fn a_space_meteor_shower_never_breaks_the_rim_and_hits_the_asteroids() {
+        let all: Vec<(u64, Shower)> = SEEDS.map(|s| (s, shower(s))).collect();
+        for (seed, s) in &all {
+            eprintln!("seed {seed}: {s:?}");
+        }
+        let sum = |f: fn(&Shower) -> usize| all.iter().map(|(_, s)| f(s)).sum::<usize>();
+        let meteors = sum(|s| s.meteors);
+        eprintln!(
+            "total over {} seeds: meteors {meteors}, spawned inside {}, reached the interior {}, \
+             rim carves {}, asteroid carves {}, vortices {}, despawned at the rim {}",
+            all.len(),
+            sum(|s| s.spawned_inside),
+            sum(|s| s.reached_interior),
+            sum(|s| s.rim_carves),
+            sum(|s| s.asteroid_carves),
+            sum(|s| s.vortices),
+            sum(|s| s.rim_despawns)
+        );
+        let per_shower = (METEOR_DURATION / METEOR_EVERY) as usize;
+        assert!(
+            meteors >= per_shower * all.len(),
+            "control: {meteors} meteors over {} showers of {per_shower}",
+            all.len()
+        );
+        assert_eq!(
+            sum(|s| s.spawned_inside),
+            meteors,
+            "a meteor spawned outside the rim"
+        );
+        assert_eq!(sum(|s| s.rim_carves), 0, "the shower carved the rim");
+        assert_eq!(sum(|s| s.vortices), 0, "the shower opened a vortex");
+        assert!(
+            sum(|s| s.asteroid_carves) * 2 >= meteors,
+            "fewer than half the meteors hit an asteroid: {} of {meteors}",
+            sum(|s| s.asteroid_carves)
+        );
+    }
+
+    /// A fragment fired from just inside the rim, `dir` its heading — what became of
+    /// it: (despawned at the rim, round seconds it lived, a weather carve happened).
+    fn fling(w: &mut World, from: Vec2, dir: Vec2) -> (bool, f32, bool) {
+        use crate::constants::METEOR_FRAG_SPEED_MIN;
+        use crate::items::registry::WEAPON_METEOR_FRAG;
+        w.drain_events();
+        let t0 = w.round_time;
+        let id = w.projectiles.spawn_raw(
+            WEAPON_METEOR_FRAG,
+            u8::MAX,
+            from,
+            dir * METEOR_FRAG_SPEED_MIN,
+            t0,
+        );
+        let (mut rim, mut carved, mut gone) = (false, false, false);
+        for _ in 0..((2.0 * PROJECTILE_MAX_LIFETIME) / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            // The whole tick's events: a blast's carve follows its despawn.
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::ProjectileDespawn { id: d, reason, .. } if d == id => {
+                        rim = reason == DespawnReason::Void;
+                        gone = true;
+                    }
+                    GameEvent::Carve {
+                        kind: CarveKind::Meteor,
+                        ..
+                    } => carved = true,
+                    _ => {}
+                }
+            }
+            if gone {
+                break;
+            }
+        }
+        (rim, w.round_time - t0, carved)
+    }
+
+    /// **R99's airborne arm: ordnance flying out through a hole in the rim despawns
+    /// at the rim** — within the time it takes to cross the rim's band, carving
+    /// nothing — rather than flying on into the void for a projectile's lifetime and
+    /// going off there. Control: the same fragment flung at an asteroid goes off and
+    /// carves.
+    #[test]
+    fn ordnance_flying_out_through_a_hole_despawns_at_the_rim() {
+        use crate::constants::{METEOR_FRAG_SPEED_MIN, METEOR_SPACE_INSET};
+        let mut w = World::with_gravity(
+            3,
+            MapScale::Medium,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.effects.postpone_until(1.0e9);
+        let geo = w.map.space_geometry().expect("space");
+        // A hole through the top of the rim, as a player's weapon makes one.
+        let top = Vec2::new(geo.cx, geo.cy - geo.ry);
+        let _ = w
+            .map
+            .carve_circle(top.x as i32, top.y as i32, METEOR_CARVE_R as i32);
+        let from = top + Vec2::new(0.0, geo.thickness * 0.5 + 2.0 * METEOR_SPACE_INSET);
+        let (rim, lived, carved) = fling(&mut w, from, Vec2::new(0.0, -1.0));
+        let band =
+            (geo.thickness + 4.0 * METEOR_SPACE_INSET) / METEOR_FRAG_SPEED_MIN + 2.0 * SIM_DT;
+        assert!(
+            rim,
+            "the fragment out through the hole did not despawn at the rim"
+        );
+        assert!(
+            lived <= band,
+            "it flew {lived:.2} s — past the rim, not at it (band {band:.2} s)"
+        );
+        assert!(!carved, "the fragment out through the hole carved");
+        // Control: at a rock it goes off and carves.
+        let a = w.map.meta.asteroids[0];
+        let above = Vec2::new(a.x as f32, (a.y - a.r) as f32 - 2.0 * METEOR_SPACE_INSET);
+        let (rim, lived, carved) = fling(&mut w, above, Vec2::new(0.0, 1.0));
+        assert!(
+            !rim && carved,
+            "control: flung at an asteroid it did not go off and carve (rim {rim}, {lived:.2} s, \
+             {a:?}, {geo:?})"
         );
     }
 }

@@ -758,7 +758,7 @@ mod tests {
     /// **This is not the guard that the ground's schedule did not move** — both
     /// sides run the same `roll_kind`, so an extra RNG draw planted there moves
     /// both together and this stays green (measured, T22.08C F2). That guard is
-    /// `tests/golden.rs::the_standard_weather_schedule_matches_the_golden_table`,
+    /// `tests/golden.rs::the_weather_schedules_match_the_golden_table`,
     /// recorded before the flare existed.
     #[test]
     fn the_flare_does_not_move_the_grounds_schedule() {

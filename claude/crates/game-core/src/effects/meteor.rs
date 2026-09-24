@@ -6,8 +6,8 @@
 
 use crate::constants::{
     METEOR_CARVE_R, METEOR_DAMAGE, METEOR_EVERY, METEOR_FRAGMENTS, METEOR_FRAG_CARVE_R,
-    METEOR_FRAG_DAMAGE, METEOR_FRAG_SPEED_MAX, METEOR_FRAG_SPEED_MIN, METEOR_SPEED, SKY_MARGIN,
-    WALL_W,
+    METEOR_FRAG_DAMAGE, METEOR_FRAG_SPEED_MAX, METEOR_FRAG_SPEED_MIN, METEOR_SPACE_INSET,
+    METEOR_SPEED, SKY_MARGIN, WALL_W,
 };
 use crate::items::registry::{WEAPON_METEOR, WEAPON_METEOR_FRAG};
 use crate::map::Map;
@@ -54,7 +54,13 @@ impl MeteorShower {
             return out;
         }
         let mut next = self.next_spawn_at.unwrap_or(now);
+        let space = map.space_geometry();
         while now >= next {
+            if let Some(geo) = space {
+                out.push(self.spawn_in_space(projectiles, map, &geo, now));
+                next += METEOR_EVERY;
+                continue;
+            }
             let x = range_f32(
                 &mut self.rng,
                 (WALL_W as f32) + 32.0,
@@ -74,6 +80,44 @@ impl MeteorShower {
         }
         self.next_spawn_at = Some(next);
         out
+    }
+
+    /// **R99 (T22.14A): in space a meteor starts just inside the rim, at a random
+    /// angle, and flies at a random asteroid.** The ground's spawn — above the map,
+    /// falling in — put every meteor in the void first, so each one struck the rim
+    /// from outside: a forced shower carved the rim ~39 times and opened 10–14
+    /// vortices (measured, `world::space_meteor_tests`), turning the owner's *"if you
+    /// make a hole"* secret into weather. Inside the rim it can only fly inward, and
+    /// what reaches the rim again despawns without carving ([`reaches_rim`], read by
+    /// `World::step_projectiles`).
+    ///
+    /// The angle is the rim's parametric angle; the point is the centreline's, moved
+    /// along the inward normal by half a thickness (the inner face) plus
+    /// [`METEOR_SPACE_INSET`]. Its own draws on the shower's stream — the ground's
+    /// branch draws exactly what it always did, so no standard schedule moves.
+    fn spawn_in_space(
+        &mut self,
+        projectiles: &mut Projectiles,
+        map: &Map,
+        geo: &crate::map::gen::space::SpaceGeometry,
+        now: f32,
+    ) -> ProjectileId {
+        let a = range_f32(&mut self.rng, 0.0, std::f32::consts::TAU);
+        let (c, s) = (a.cos(), a.sin());
+        let on_rim = Vec2::new(geo.cx + geo.rx * c, geo.cy + geo.ry * s);
+        let normal = Vec2::new(c / geo.rx, s / geo.ry).normalized();
+        let at = on_rim - normal * (geo.thickness * 0.5 + METEOR_SPACE_INSET);
+        let rocks = &map.meta.asteroids;
+        let pick = rand::RngCore::next_u32(&mut self.rng) as usize;
+        // A space map always has a rock (the black hole never eats the last one);
+        // the centre is the answer if it somehow did not.
+        let target = rocks
+            .get(pick % rocks.len().max(1))
+            .map_or(Vec2::new(geo.cx, geo.cy), |r| {
+                Vec2::new(r.x as f32, r.y as f32)
+            });
+        let dir = (target - at).normalized();
+        projectiles.spawn_raw(WEAPON_METEOR, u8::MAX, at, dir * METEOR_SPEED, now)
     }
 
     /// Resolve an impact: carve, damage, and (for a meteor, never a fragment)
@@ -164,6 +208,16 @@ impl MeteorShower {
     pub fn is_fragment(weapon: crate::items::registry::WeaponId) -> bool {
         weapon == WEAPON_METEOR_FRAG
     }
+}
+
+/// **R99 (T22.14A): has weather ordnance at `pos` reached the rim?** — past the
+/// rim's inner face, or, with `blast` its carve radius, close enough that its blast
+/// would bite the rim's rock. In space a meteor or fragment that has despawns without
+/// carving, damaging or throwing fragments: the rim breaks only from player weapons.
+/// `World::step_projectiles` asks it of every airborne piece (`blast` 0: it flew out
+/// through a hole, or onto the rock) and of every impact (`blast` its carve radius).
+pub fn reaches_rim(geo: &crate::map::gen::space::SpaceGeometry, pos: Vec2, blast: f32) -> bool {
+    !geo.inside(pos.x, pos.y) || geo.distance_to_rim(pos.x, pos.y) < geo.thickness * 0.5 + blast
 }
 
 /// Where a meteor spawns, for the client's telegraph shadows.

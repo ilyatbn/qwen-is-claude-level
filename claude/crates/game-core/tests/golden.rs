@@ -219,27 +219,33 @@ fn compute_weather() -> String {
         "# seed 90210's last shower, rolled 24.2 s before the bell, no longer fits the round\n",
     );
     out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
-    for seed in [1u64, 4242, 90210] {
-        let mut w = World::with_gravity(
-            seed,
-            MapScale::Medium,
-            0,
-            DEFAULT_MAP_GENERATOR,
-            GravityMode::Standard,
-        );
-        w.set_round_seconds(ROUND);
-        w.set_phase(RoundPhase::Playing);
-        for _ in 0..(ROUND / SIM_DT) as u32 {
-            w.step(SIM_DT);
-            for e in w.drain_events() {
-                if let GameEvent::EffectStart {
-                    tick,
-                    kind,
-                    seed: s,
-                    ..
-                } = e
-                {
-                    let _ = writeln!(out, "{seed} {tick} {kind:?} {s}");
+    // T22.14A (R99): the space table beside it, for F2's reason — nothing else can
+    // say space's schedule did not move. Its rows carry a `space` prefix; the
+    // standard block above is byte-for-byte what it was.
+    for gravity in [GravityMode::Standard, GravityMode::Space] {
+        let prefix = if gravity == GravityMode::Space {
+            out.push_str("# --- space mode (T22.14A, R99), same seeds, same round ---\n");
+            "space "
+        } else {
+            ""
+        };
+        for seed in [1u64, 4242, 90210] {
+            let mut w =
+                World::with_gravity(seed, MapScale::Medium, 0, DEFAULT_MAP_GENERATOR, gravity);
+            w.set_round_seconds(ROUND);
+            w.set_phase(RoundPhase::Playing);
+            for _ in 0..(ROUND / SIM_DT) as u32 {
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if let GameEvent::EffectStart {
+                        tick,
+                        kind,
+                        seed: s,
+                        ..
+                    } = e
+                    {
+                        let _ = writeln!(out, "{prefix}{seed} {tick} {kind:?} {s}");
+                    }
                 }
             }
         }
@@ -248,7 +254,7 @@ fn compute_weather() -> String {
 }
 
 #[test]
-fn the_standard_weather_schedule_matches_the_golden_table() {
+fn the_weather_schedules_match_the_golden_table() {
     let current = compute_weather();
     if std::env::var("GOLDEN_UPDATE").is_ok() {
         std::fs::write(weather_table_path(), &current).expect("write weather table");
@@ -258,6 +264,12 @@ fn the_standard_weather_schedule_matches_the_golden_table() {
     // The control: the table holds a real schedule, not a header.
     let rows = expected.lines().filter(|l| !l.starts_with('#')).count();
     assert!(rows >= 60, "the golden weather table has only {rows} rows");
+    // And a space block that is a real schedule too (T22.14A).
+    let space = expected.lines().filter(|l| l.starts_with("space ")).count();
+    assert!(
+        space >= 30,
+        "the golden weather table's space block has only {space} rows"
+    );
     for (i, (a, b)) in expected.lines().zip(current.lines()).enumerate() {
         assert_eq!(a, b, "golden weather mismatch at line {}", i + 1);
     }

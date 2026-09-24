@@ -295,7 +295,10 @@ pub const HEADER_BYTES: usize = 46;
 /// respawn, join or vortex trip during the telegraph keeps clear of where the hole
 /// will open (H2); weather damage is refused after the bell and a meteor shower's
 /// `Active` window covers its fall, so a shower rolled within its fall time of the bell
-/// is refused (H3; one row of the standard weather golden). No new tag, no layout change.
+/// is refused (H3; one row of the standard weather golden); and in space a shower's
+/// meteors start inside the rim, fly at the asteroids, and despawn at the rim without
+/// carving (R99) — a v24 space recording diverges at its first shower. No new tag, no
+/// layout change.
 pub const REPLAY_VERSION: u16 = 25;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.

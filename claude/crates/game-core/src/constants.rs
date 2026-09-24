@@ -1314,6 +1314,10 @@ pub const METEOR_EVERY: f32 = 0.5;
 pub const METEOR_SPEED: f32 = 700.0;
 pub const METEOR_CARVE_R: f32 = 50.0;
 pub const METEOR_DAMAGE: f32 = 55.0;
+/// **R99 (T22.14A): how far inside the rim's inner face a space meteor starts** —
+/// one tick of its flight, so its first step begins clear of the rock it is
+/// flying away from (`effects::meteor::MeteorShower::spawn_in_space`).
+pub const METEOR_SPACE_INSET: f32 = METEOR_SPEED * SIM_DT;
 /// Per impact.
 pub const METEOR_FRAGMENTS: u32 = 6;
 pub const METEOR_FRAG_SPEED_MIN: f32 = 320.0;
