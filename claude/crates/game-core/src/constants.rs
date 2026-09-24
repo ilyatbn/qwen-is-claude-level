@@ -3623,6 +3623,27 @@ pub const BOT_SPACE_DEADBAND: f32 = 40.0;
 /// and spends it only to get out of something that kills (the black hole, a
 /// vortex's pull, a flare).
 pub const BOT_SPACE_FUEL_RESERVE: f32 = 1.5;
+/// T22.03D: a flying bot **starts** a burn only with this much fuel above
+/// `BOT_SPACE_FUEL_RESERVE`, s of burn; once burning it keeps on down to the
+/// reserve. Without the gap a bot at the reserve bought one tick of thrust, fell
+/// under it, waited out `JETPACK_REFILL_DELAY`, and a well drew it back onto its
+/// rock — pinned there **51–59 % of alive time**, runs up to 196 s (T22.03B's
+/// review; `gate-t2203d-before.txt`). One second is two seconds of refill.
+pub const BOT_SPACE_BURN_MARGIN: f32 = 1.0;
+/// T22.03D: a flying bot slower than this, px/s, pressed against rock while it
+/// wants to move is **blocked** (the review's "not moving", 20 px/s).
+pub const BOT_SPACE_STUCK_SPEED: f32 = 20.0;
+/// T22.03D: blocked this long, s, a flying bot turns off the rock
+/// (`space::clear_heading`) — the walking model's `STUCK_WINDOW`.
+pub const BOT_SPACE_STUCK_WINDOW: f32 = 0.5;
+/// T22.03D: and holds that detour this long, s, before steering for its
+/// destination again — long enough at `BOT_SPACE_CRUISE` to slide a body length
+/// or two along the face (`PLAYER_H` 28 px is 0.14 s of it).
+pub const BOT_SPACE_DETOUR: f32 = 1.0;
+/// T22.03D: a flying bot holds at most this fraction of its weapon's range (a
+/// swing's reach, a gun's `range`) from its enemy — inside it, with room for the
+/// enemy's drift.
+pub const BOT_SPACE_IN_RANGE: f32 = 0.75;
 /// How far outside a hazard's edge a bot in space starts leaving it, px — the
 /// black hole's reach (and its telegraph), a vortex's no-escape disc, a flare's
 /// ribbon.

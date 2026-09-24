@@ -221,6 +221,11 @@ function freshObserved() {
     teleports: 0,
     /** T22.12D F3: dev placements (`relocate`), a relocation of the third source. */
     relocations: 0,
+    /**
+     * T22.03D F4: the tick of the last dev placement of **this** player — the
+     * snapshot a check may leave out as the placement's is the first at/after it.
+     */
+    myRelocateTick: null as number | null,
     myTrips: [] as Array<{ x: number; y: number; snapped: boolean }>,
     /** e2e only (`DEV_PROBE=1`): the server's answer to the last `debug_breach`. */
     lastBreach: null as unknown,
@@ -1781,6 +1786,7 @@ export class GameScene extends Phaser.Scene {
     else if (ev === 'teleport') this.observed.teleports++
     else this.observed.relocations++
     if (id === this.me) {
+      if (ev === 'relocate' && Number.isFinite(Number(p['tick']))) this.observed.myRelocateTick = Number(p['tick'])
       const snapped = this.predictor?.relocate(x, y, Number(p['tick'] ?? Number.NaN)) ?? false
       if (ev === 'vortex_trip') this.observed.myTrips.push({ x, y, snapped })
     } else {
@@ -3100,6 +3106,7 @@ export class GameScene extends Phaser.Scene {
        */
       debugBreach() {
         self.observed.lastBreach = null
+        self.observed.myRelocateTick = null
         self.conn.sendRaw('debug_breach', {})
       },
       /** e2e only (§C2, T22.12B): hide the black hole for a same-instant control frame. */
@@ -3708,6 +3715,7 @@ export class GameScene extends Phaser.Scene {
             trips: self.observed.vortexTrips,
             myTrips: self.observed.myTrips.map((t) => ({ ...t })),
             lastBreach: self.observed.lastBreach,
+            myRelocateTick: self.observed.myRelocateTick,
             corrections: self.predictor?.stats.corrections ?? 0,
             lastCorrectionPx: self.predictor?.stats.lastCorrectionPx ?? 0,
             maxCorrectionPx: self.predictor?.stats.maxCorrectionPx ?? 0,

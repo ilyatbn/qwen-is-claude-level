@@ -6969,3 +6969,12 @@ fire) judged at the stopping point. Suit ≤ 50 % → visible pack beats a fight
 per bot per round, before → after: hole 0.18 → 0.01, flare 0.05 → 0.02, vortex trips 4.88 → 1.35, dry 72.7 → 4.1 %,
 kills 1.11 → 1.82 (standard 0.47), radiation unmoved 0.59 → 0.58 (pack supply). Plants red. Stale: "no fights" (they
 fought; they died and drifted). Part B → T22.03C (ruling: molotov/toxic never selected in *any* mode, 0 damage).
+
+## T22.03D — bots pinned against rock (builder, 2026-09-24)
+F1: `steer` starts a burn from rock only above reserve + 1.0 s (clear of rock no margin — else arrivals coast past),
+escapes from rock included; blocked on rock 0.5 s → next clear heading for 1 s (`clear_heading` swept at 2 px, ±135°).
+Traces also found: enemy held inside the weapon's range (shovel 40 vs 28 px), no LOS → close; flee/wander skip keep-outs.
+Pinned at the reserve 58.9 → 3.5 % (8 seeds), 53.2 → 3.7 % (32), runs ≥ 10 s 118/457 → 0; kills 1.52/1.82 → 4.35/4.02.
+F2 floor 2.4 (0.6 × measured); F3 overshoot asserted — the profile plant does not overshoot, it jitters (speed bound →
+dead band); F4 one placement snapshot + wire-proven hitches only (unfalsified: series mostly starts at it). Red at
+d741b3d, 3 plants red. Winged bots pinned in space: filed. `--changed d741b3d --fast` exit 0; breach-vortex ok ×5.

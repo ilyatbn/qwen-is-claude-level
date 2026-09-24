@@ -310,14 +310,44 @@ try {
   let ackStep = null
   // T22.12E: the placement is announced (`relocate`, `World::dev_relocate`), so the page
   // has the placed body **before** the snapshot that carries it — and that snapshot acks
-  // an input from before the move (385 px at the ack, measured). The predictor marks it
-  // the relocation's (`settled`); so does this, and it says how many it left out.
-  let excluded = 0
+  // an input from before the move (385 px at the ack, measured).
+  // T22.03D F4: **exactly that snapshot is left out** — the first at/after the relocate
+  // event's tick (`debug().vortex.myRelocateTick`) — and nothing else on the predictor's
+  // say-so. Any other snapshot the predictor marked `settled` is left out only when its
+  // ack step shows a hitch in this very series: a repeated ack while the tick moved
+  // (time this client lost), the first new ack after one, or more seqs acked than ticks
+  // run (a server trim) — `Predictor.reconcile`'s own three reasons, re-derived here
+  // from the wire rather than believed. An unexplained `settled` is measured like any
+  // other snapshot, so a predictor that marks everything settled hides nothing.
+  const relocTick = d2.vortex.myRelocateTick
+  let placement = 0
+  let placementAt = null
+  let placementAck = null
+  let hitches = 0
+  let unexplained = 0
+  let afterRepeat = false
+  // The series' first sample is never measured (each is read against the one before);
+  // if it already holds the placement's snapshot, there is nothing left to leave out.
+  if (first && relocTick !== null && first.tick >= relocTick) placementAt = first.tick
   for (let i = 1; i < pull.length; i++) {
-    if (pull[i].settled !== pull[i - 1].settled) {
-      excluded++
+    const newSnap = pull[i].tick !== pull[i - 1].tick
+    const seqs = pull[i].seq - pull[i - 1].seq
+    const ticks = pull[i].tick - pull[i - 1].tick
+    if (newSnap && placementAt === null && relocTick !== null && pull[i].tick >= relocTick) {
+      placementAt = pull[i].tick
+      placementAck = pull[i].ack
+      placement++
       continue
     }
+    if (pull[i].settled !== pull[i - 1].settled) {
+      const hitch = newSnap && (seqs === 0 || afterRepeat || seqs > ticks)
+      afterRepeat = newSnap && seqs === 0
+      if (hitch) {
+        hitches++
+        continue
+      }
+      unexplained++
+    } else if (newSnap) afterRepeat = seqs === 0
     if (pull[i].c !== pull[i - 1].c) {
       corrections++
       worst = Math.max(worst, pull[i].jump)
@@ -334,7 +364,7 @@ try {
   }
   const secs = first ? (lastBefore.tick - first.tick) / k.SIM_HZ : 0
   const rubber = Math.max(worst, worstAck)
-  const summary = `worst error at an acked input (lastAckErrorPx) ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, in ${secs.toFixed(2)} s of pull (${excluded} snapshot${excluded === 1 ? '' : 's'} left out as the placement's or a hitch's); largest ack step ${ackStep ? `${ackStep.seqs} seqs in ${ackStep.ticks} ticks` : 'none measured'}; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} corrections in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
+  const summary = `worst error at an acked input (lastAckErrorPx) ${worstAck.toFixed(2)} px over ${acked} snapshots, worst correction jump ${worst.toFixed(2)} px over ${corrections} corrections, in ${secs.toFixed(2)} s of pull (series from tick ${first ? first.tick : '-'}; left out: ${placement} as the placement's${placementAt !== null ? ` at tick ${placementAt}, relocated at ${relocTick}${placementAck !== null ? `, its ack error ${Number(placementAck).toFixed(2)} px` : ''}` : ''}, ${hitches} as a hitch's; ${unexplained} marked settled with no hitch on the wire, measured); largest ack step ${ackStep ? `${ackStep.seqs} seqs in ${ackStep.ticks} ticks` : 'none measured'}; with nothing pulling ${floor.worst.toFixed(2)} px over ${floor.corrections} corrections in ${(floor.snapshots / k.SIM_HZ).toFixed(2)} s`
   // Which half moved, so a red names its cause rather than always the vortex list.
   // **The ack's step first**: a skipped input also makes the prediction at the ack
   // wrong (the server's state lacks it), so an ack error alone cannot tell the two
@@ -351,8 +381,8 @@ try {
   else if (d2.vortex.myTrips.length === 0) fail(`the vortex never took the player in ${TRIP_BUDGET_S} s (moved ${travelled.toFixed(0)} px): ${JSON.stringify({ first, last: lastBefore })}`)
   else if (travelled < k.VORTEX_CAPTURE_R / 4) fail(`control: the player moved only ${travelled.toFixed(0)} px before the trip — nothing was pulled, so no correction proves nothing`)
   else if (acked === 0) fail(`control: no snapshot acknowledged a predicted input during ${secs.toFixed(2)} s of pull, so the error was never measured`)
-  // T22.12E: leaving snapshots out is how a guard goes blind — more than a third is not the placement.
-  else if (excluded > Math.max(1, acked / 3)) fail(`control: ${excluded} snapshots left out as settled against ${acked} measured — the pull was mostly not measured`)
+  // T22.03D F4: the page must have heard its own placement, or nothing identifies the one snapshot to leave out.
+  else if (relocTick === null) fail(`control: the page never heard the placement's relocate event, so no snapshot can be told apart as the placement's: ${JSON.stringify(d2.vortex)}`)
   else if (rubber > k.RECONCILE_EPSILON_PX) fail(`rubber-band: ${summary} — over RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX}: ${blame}`)
   else ok(`no rubber-band while the vortex pulled the player ${travelled.toFixed(0)} px: ${summary} (bound RECONCILE_EPSILON_PX ${k.RECONCILE_EPSILON_PX})`)
 

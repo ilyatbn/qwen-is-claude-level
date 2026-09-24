@@ -23,8 +23,9 @@
 //! vortex's no-escape disc, a flare's ribbon, a fire.
 
 use crate::constants::{
-    GravityMode, BLACK_HOLE_REACH, BOT_SPACE_BRAKE, BOT_SPACE_CRUISE, BOT_SPACE_DEADBAND,
-    BOT_SPACE_FUEL_RESERVE, BOT_SPACE_HAZARD_MARGIN, PLAYER_H, SOLAR_FLARE_RIBBON_R, VORTEX_REACH,
+    GravityMode, BLACK_HOLE_REACH, BOT_SPACE_BRAKE, BOT_SPACE_BURN_MARGIN, BOT_SPACE_CRUISE,
+    BOT_SPACE_DEADBAND, BOT_SPACE_DETOUR, BOT_SPACE_FUEL_RESERVE, BOT_SPACE_HAZARD_MARGIN,
+    BOT_SPACE_STUCK_SPEED, BOT_SPACE_STUCK_WINDOW, PLAYER_H, SOLAR_FLARE_RIBBON_R, VORTEX_REACH,
 };
 use crate::math::Vec2;
 use crate::player::input::button;
@@ -36,6 +37,28 @@ use crate::world::World;
 pub(super) struct Dest {
     pub at: Vec2,
     pub stop: f32,
+}
+
+/// What a flying bot remembers between ticks (T22.03D): how long it has been
+/// **blocked** — airborne, pressed against rock, not moving, while it wants to —
+/// and the detour it is holding off that rock.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Flight {
+    blocked_for: f32,
+    detour: Option<(Vec2, f32)>,
+    /// Detours taken since the bot last left the rock: each one takes the next
+    /// clear heading, so a heading that turned out not to fly (two wells' pull
+    /// beating the thrust down a crevice, measured) is not taken forever.
+    tries: usize,
+}
+
+/// Is the body's box, grown by a pixel, into rock? Touching, not overlapping.
+fn touches_rock(world: &World, me: &PlayerState) -> bool {
+    let a = me.body.aabb();
+    crate::physics::collide::aabb_overlaps_solid(
+        &world.map,
+        crate::math::Aabb::from_center_size(a.center, a.width() + 2.0, a.height() + 2.0),
+    )
 }
 
 /// Does this bot move by the space rules? The mode, and neither of the two regimes
@@ -101,41 +124,57 @@ pub(super) fn escape(world: &World, pos: Vec2, vel: Vec2, fire: Option<Vec2>) ->
         if let Some(p) =
             near.filter(|p| (pos - *p).len() < SOLAR_FLARE_RIBBON_R + BOT_SPACE_HAZARD_MARGIN)
         {
-            return Some(away(p));
+            return Some(clear_heading(world, pos, away(p)));
         }
     }
-    fire.map(away)
+    fire.map(|f| clear_heading(world, pos, away(f)))
 }
 
-/// `dir`, or the nearest turn of it (±45°, ±90°) whose next two body lengths are
-/// clear of rock. Straight away from a hole can run into a rock the hole has
+/// The sweep step `clear_heading` tests a heading at, px: a pixel past touching
+/// on the first step, and fine enough that no rock the mask can hold is skipped.
+const CLEAR_STEP: f32 = 2.0;
+
+/// `dir`, or the nearest turn of it (±45°, ±90°, ±135°, back) whose next two body
+/// lengths are clear of rock. (The last three are T22.03D's: a bot pressed against
+/// a round rock with its destination straight behind it has both tangents curving
+/// into the rock, and the only clear heading is off the face.) Straight away from a hole can run into a rock the hole has
 /// muted (R91), and a body pressed against it thrusts its tank dry inside the reach
 /// (measured: seed 7, one side of eight, 236 px from the hole after 4 s).
 fn clear_heading(world: &World, pos: Vec2, dir: Vec2) -> Vec2 {
-    use std::f32::consts::FRAC_PI_4;
+    clear_headings(world, pos, dir)
+        .first()
+        .copied()
+        .unwrap_or(dir)
+}
+
+/// Every clear turn of `dir`, nearest first — [`clear_heading`]'s candidates that
+/// pass, for a detour that must try the next when one does not fly.
+fn clear_headings(world: &World, pos: Vec2, dir: Vec2) -> Vec<Vec2> {
+    // Swept, not sampled at whole body lengths (T22.03D): a body under a thin
+    // overhang found "up" open because the box one length up had cleared it, and
+    // thrust into the overhang for a second at a time (`gate-t2203d-*.txt`).
+    let steps = (2.0 * PLAYER_H / CLEAR_STEP).ceil() as i32;
     let open = |d: Vec2| {
-        (1..=2).all(|k| {
-            let p = pos + d * (k as f32 * PLAYER_H);
+        (1..=steps).all(|k| {
+            let p = pos + d * (k as f32 * CLEAR_STEP);
             !crate::physics::collide::aabb_overlaps_solid(
                 &world.map,
                 crate::physics::body::Body::new(p).aabb(),
             )
         })
     };
-    [
-        0.0,
-        FRAC_PI_4,
-        -FRAC_PI_4,
-        2.0 * FRAC_PI_4,
-        -2.0 * FRAC_PI_4,
-    ]
-    .into_iter()
-    .map(|a| {
-        let (sn, cs) = a.sin_cos();
-        Vec2::new(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs)
-    })
-    .find(|&d| open(d))
-    .unwrap_or(dir)
+    turns(dir).filter(|&d| open(d)).collect()
+}
+
+/// `dir` and its turns, nearest first: 0, ±45°, ±90°, ±135°, back.
+pub(super) fn turns(dir: Vec2) -> impl Iterator<Item = Vec2> {
+    use std::f32::consts::FRAC_PI_4;
+    [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0]
+        .into_iter()
+        .map(move |k: f32| {
+            let (sn, cs) = (k * FRAC_PI_4).sin_cos();
+            Vec2::new(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs)
+        })
 }
 
 /// The velocity a bot wants: out of a hazard at cruise, or toward `dest` at the
@@ -169,10 +208,73 @@ fn wanted(
 /// buy (R42); a destination below is reached by walking off the edge. **Floating,
 /// it thrusts on each axis the velocity error exceeds the dead band**, and only
 /// above the fuel reserve unless it is escaping.
-pub(super) fn steer(world: &World, me: &PlayerState, dest: Option<Dest>, fire: Option<Vec2>) -> u8 {
+///
+/// **Fuel has hysteresis** (T22.03D F1a): a burn *starts* only with
+/// `BOT_SPACE_BURN_MARGIN` above the reserve and, once going, runs down to it.
+/// **Rock has a detour** (F1b): airborne, touching rock, slower than
+/// `BOT_SPACE_STUCK_SPEED` while wanting to move, for `BOT_SPACE_STUCK_WINDOW`, the
+/// bot flies the nearest clear turn of where it wanted to go (`clear_heading`, the
+/// escape's) for `BOT_SPACE_DETOUR` — the walking model's stuck-jump, for a body
+/// that a well holds against the face it is pushing into.
+pub(super) fn steer(
+    world: &World,
+    me: &PlayerState,
+    dest: Option<Dest>,
+    fire: Option<Vec2>,
+    flight: &mut Flight,
+    dt: f32,
+) -> u8 {
     let pos = me.body.pos;
-    let (want, urgent) = wanted(world, pos, me.body.vel, dest, fire);
-    let funded = urgent || me.jetpack.fuel > BOT_SPACE_FUEL_RESERVE;
+    let (mut want, urgent) = wanted(world, pos, me.body.vel, dest, fire);
+    // An escape is detoured too: straight out of a fire can be straight into the
+    // rock the bot is pressed against, and an urgent thrust into rock spends the
+    // reserve to nothing (a bot held 35 s at an empty tank, `gate-t2203d-*.txt`).
+    if me.body.grounded {
+        *flight = Flight::default();
+    } else if let Some((dir, left)) = flight.detour {
+        want = dir * BOT_SPACE_CRUISE;
+        flight.detour = (left > dt).then_some((dir, left - dt));
+    } else {
+        let touching = touches_rock(world, me);
+        if !touching {
+            flight.tries = 0;
+        }
+        let blocked = touching
+            && want.len() > BOT_SPACE_DEADBAND
+            && me.body.vel.len() < BOT_SPACE_STUCK_SPEED;
+        flight.blocked_for = if blocked {
+            flight.blocked_for + dt
+        } else {
+            0.0
+        };
+        if flight.blocked_for > BOT_SPACE_STUCK_WINDOW {
+            let open = clear_headings(world, pos, want.normalized());
+            let dir = open
+                .get(flight.tries % open.len().max(1))
+                .copied()
+                .unwrap_or(want.normalized());
+            flight.tries += 1;
+            flight.detour = Some((dir, BOT_SPACE_DETOUR));
+            flight.blocked_for = 0.0;
+            want = dir * BOT_SPACE_CRUISE;
+        }
+    }
+    // **The margin is for leaving rock.** The pinning was a bot on a rock face at
+    // the reserve buying one tick of thrust, falling under it and being drawn back;
+    // clear of rock, a burn above the reserve is a brake or a correction that must
+    // not wait for the margin — applied there too, two maps of eight coasted
+    // 50–70 px past their destination at 250 px/s (`a_flying_bot_arrives_and_stops`),
+    // and exempting only brakes let the one-tick burns back (at the reserve
+    // 1.5 → 4.1–4.9 %, measured).
+    // **An escape from rock waits for the margin too**: a bot pressed into a crevice
+    // inside a vortex's margin spent every drop the moment it refilled past
+    // `JETPACK_MIN_FUEL_TO_ENGAGE` and never moved (35 s at an empty tank, measured);
+    // a burst of `BOT_SPACE_BURN_MARGIN` can.
+    let fuel = me.jetpack.fuel;
+    let may_start = me.jetpack.active
+        || !touches_rock(world, me)
+        || fuel > BOT_SPACE_FUEL_RESERVE + BOT_SPACE_BURN_MARGIN;
+    let funded = may_start && (urgent || fuel > BOT_SPACE_FUEL_RESERVE);
     let mut b = 0u8;
     if me.body.grounded {
         let side = if want.x > BOT_SPACE_DEADBAND {
@@ -243,9 +345,9 @@ mod tests {
     }
 
     /// A tick of `steer` toward `dest` (or of nothing, for a control).
-    fn fly(w: &mut World, dest: Option<Dest>, steering: bool) {
+    fn fly(w: &mut World, dest: Option<Dest>, steering: bool, flight: &mut Flight) {
         let b = match w.player(0) {
-            Some(me) if steering && me.alive => steer(w, me, dest, None),
+            Some(me) if steering && me.alive => steer(w, me, dest, None, flight, SIM_DT),
             _ => 0,
         };
         w.queue_input(0, Input::new(0, b, 0));
@@ -275,7 +377,17 @@ mod tests {
     /// bot that thrusts whenever it is not there yet overshoots and oscillates). Eight
     /// maps, from a point at rest to another ~a sight radius off across open space,
     /// wells and all. Over the last second it stays within a body of the stop radius
-    /// and slow. Control, per map: it started far away, and it moved.
+    /// and under `BOT_SPACE_DEADBAND`; **and at no tick of the run is it further past
+    /// the destination along its approach than that** (T22.03D F3 — the overshoot
+    /// itself, which the last-second window cannot see if it swings back in time).
+    ///
+    /// **What removing the √(2·brake·d) profile does, measured** (T22.03D): not an
+    /// overshoot — braking from cruise takes ~18–22 px at 900–1100 px/s², so the
+    /// furthest-past is 11.7 px with the profile and 17.0 without, also 7–10 px flying
+    /// *up* under a rock where the brake is weakest. It is the **arrival jitter**: the
+    /// fastest over the last second is 18.6–20.2 px/s with the profile and 35–64
+    /// without, so the speed bound is `BOT_SPACE_DEADBAND` (it was twice that, which
+    /// the plant passed). Control, per map: it started far away, and it moved.
     #[test]
     fn a_flying_bot_arrives_and_stops() {
         let mut report = Vec::new();
@@ -301,25 +413,36 @@ mod tests {
             };
             let secs = 6;
             let mut last = Vec::new();
+            let mut flight = Flight::default();
+            // T22.03D F3: how far past the destination along the approach it ever
+            // got — the overshoot itself, over the whole run, not only its end.
+            let along = (to - from).normalized();
+            let mut over = f32::MIN;
             for t in 0..secs * SIM_HZ {
-                fly(&mut w, Some(dest), true);
+                fly(&mut w, Some(dest), true, &mut flight);
+                let p = w.player(0).expect("ana");
+                over = over.max((p.body.pos - to).dot(along));
                 if t >= (secs - 1) * SIM_HZ {
-                    let p = w.player(0).expect("ana");
                     last.push(((p.body.pos - to).len(), p.body.vel.len()));
                 }
             }
             let far = last.iter().map(|l| l.0).fold(0.0f32, f32::max);
             let fast = last.iter().map(|l| l.1).fold(0.0f32, f32::max);
-            report.push((seed, (from - to).len(), far, fast));
+            report.push((seed, (from - to).len(), far, fast, over));
         }
         let bad: Vec<_> = report
             .iter()
-            .filter(|r| r.2 > PICKUP_RADIUS * 0.5 + PLAYER_H || r.3 > 2.0 * BOT_SPACE_DEADBAND)
+            .filter(|r| {
+                r.2 > PICKUP_RADIUS * 0.5 + PLAYER_H
+                    || r.3 > BOT_SPACE_DEADBAND
+                    || r.4 > PICKUP_RADIUS * 0.5 + PLAYER_H
+            })
             .collect();
         assert!(
             bad.is_empty(),
-            "(seed, start distance, furthest over the last second, fastest) — did not arrive \
-             and stop: {bad:?} of {report:?}"
+            "(seed, start distance, furthest over the last second, fastest, furthest past the \
+             destination along the approach) — overshot, or did not arrive and stop: {bad:?} \
+             of {report:?}"
         );
     }
 
@@ -340,7 +463,7 @@ mod tests {
             at: at + Vec2::new(PLAYER_H, 0.0),
             stop: 0.0,
         };
-        let b = steer(&w, me, Some(near), None);
+        let b = steer(&w, me, Some(near), None, &mut Flight::default(), SIM_DT);
         assert!(
             b & button::LEFT != 0 && b & button::RIGHT == 0,
             "closing at {BOT_SPACE_CRUISE} px/s, {PLAYER_H} px short: pressed {b:#010b}, not LEFT"
@@ -349,7 +472,7 @@ mod tests {
             at: at + Vec2::new(10.0 * crate::constants::FOV_DAY, 0.0),
             stop: 0.0,
         };
-        let b = steer(&w, me, Some(far), None);
+        let b = steer(&w, me, Some(far), None, &mut Flight::default(), SIM_DT);
         assert_eq!(
             b & (button::LEFT | button::RIGHT),
             0,
@@ -384,8 +507,9 @@ mod tests {
                         at: hole,
                         stop: 0.0,
                     };
+                    let mut flight = Flight::default();
                     for _ in 0..4 * SIM_HZ {
-                        fly(&mut w, Some(dest), steering);
+                        fly(&mut w, Some(dest), steering, &mut flight);
                     }
                     let p = w.player(0).expect("ana");
                     if steering {

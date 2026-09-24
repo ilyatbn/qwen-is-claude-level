@@ -13,9 +13,9 @@ use rand_chacha::ChaCha8Rng;
 mod space;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, BOT_SUIT_SHOP_BELOW,
-    FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS,
-    JETPACK_MAX_FUEL, PICKUP_RADIUS, SPACE_RIM_CLEARANCE, STEP_UP,
+    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, BOT_SPACE_IN_RANGE,
+    BOT_SUIT_SHOP_BELOW, FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY,
+    INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, SPACE_RIM_CLEARANCE, STEP_UP,
 };
 
 /// **The trap fired, and this is what it caught** (T22.03).
@@ -291,6 +291,8 @@ pub struct Bot {
     /// For stuck detection.
     last_x: f32,
     still_for: f32,
+    /// T22.03D: the flying model's blocked-by-rock memory (`space::steer`).
+    flight: space::Flight,
     want_use: Option<u8>,
     want_select: Option<u8>,
     stats: BotStats,
@@ -314,6 +316,7 @@ impl Bot {
             wander_for: 0.0,
             last_x: 0.0,
             still_for: 0.0,
+            flight: space::Flight::default(),
             want_use: None,
             want_select: None,
             stats: BotStats::default(),
@@ -507,7 +510,7 @@ impl Bot {
         // (T22.03B, R5): the goal and the point it resolves to are the same, and
         // only how a body nothing damps gets there differs — `space::steer`.
         if space::flies(world, me) {
-            buttons = self.space_buttons(world, me, pos, aim_at);
+            buttons = self.space_buttons(world, me, pos, aim_at, dt);
         }
 
         // --- aim --------------------------------------------------------
@@ -556,6 +559,7 @@ impl Bot {
         me: &crate::player::state::PlayerState,
         pos: Vec2,
         aim_at: Vec2,
+        dt: f32,
     ) -> u8 {
         let dest = match self.goal {
             Goal::Flee(_) => {
@@ -565,14 +569,47 @@ impl Bot {
                 } else {
                     Vec2::new(1.0, 0.0)
                 };
-                space::Dest {
-                    at: pos + away * FOV_DAY,
-                    stop: 0.0,
-                }
+                // T22.03D: the nearest turn of "away" whose point is not in a
+                // keep-out — straight away into a vortex's disc is a destination
+                // `steer` refuses, and the bot sat 65 s against its rock.
+                let at = space::turns(away)
+                    .map(|d| pos + d * FOV_DAY)
+                    .find(|&p| !space::forbidden(world, p))
+                    .unwrap_or(pos + away * FOV_DAY);
+                space::Dest { at, stop: 0.0 }
             }
+            // T22.03D: the stand-off is where it can shoot *from*. With rock in
+            // the line it closes on the enemy instead — into the rock, which is
+            // what `space::steer`'s detour turns off — rather than holding a
+            // distance it has already reached and cannot fire across (two bots
+            // parked a rock apart for 35 s, `gate-t2203d-*.txt`).
+            //
+            // And **inside the weapon's range**: `stand_off`'s 40 px floor is
+            // outside a shovel's reach (`effective_reach`, 28 px), and a flying bot
+            // measures the whole distance where the walking model measures only
+            // `dx` — two shovel bots held 32 px apart refusing every swing as out
+            // of range (`should_fire`'s `rej_range`).
             Goal::Enemy(_) => space::Dest {
                 at: aim_at,
-                stop: self.stand_off(world),
+                stop: if self.reachable(world, pos, aim_at) {
+                    let range = self
+                        .selected_weapon(world)
+                        .and_then(def)
+                        .and_then(|d| match d.kind {
+                            ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                            _ => None,
+                        })
+                        .and_then(|w| match w.delivery {
+                            Delivery::Melee { reach, .. } => {
+                                Some(crate::weapons::melee::effective_reach(reach))
+                            }
+                            _ => (w.range > 0.0).then_some(w.range),
+                        });
+                    let stand = self.stand_off(world);
+                    range.map_or(stand, |r| stand.min(r * BOT_SPACE_IN_RANGE))
+                } else {
+                    0.0
+                },
             },
             Goal::Item(_) => space::Dest {
                 at: aim_at,
@@ -584,7 +621,7 @@ impl Bot {
             },
         };
         let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
-        space::steer(world, me, Some(dest), fire)
+        space::steer(world, me, Some(dest), fire, &mut self.flight, dt)
     }
 
     fn choose_goal(&mut self, world: &World, pos: Vec2, dt: f32) {
@@ -710,7 +747,12 @@ impl Bot {
             let arrived = self
                 .wander_to
                 .is_some_and(|w| cov.cell_of(w) == (cx, cy) || (w - pos).len() < WANDER_ARRIVED);
-            let gave_up = self.wander_for > WANDER_GIVE_UP;
+            // T22.03D: a cell in a space keep-out (a permanent vortex's disc, the
+            // hole's reach) is one `space::steer` will not approach, so the bot sat
+            // out `WANDER_GIVE_UP` against whatever rock it was on — "seen" at once.
+            let barred = world.gravity == GravityMode::Space
+                && self.wander_to.is_some_and(|w| space::forbidden(world, w));
+            let gave_up = self.wander_for > WANDER_GIVE_UP || barred;
             if arrived || gave_up {
                 if let Some(w) = self.wander_to {
                     let (wx, wy) = cov.cell_of(w);

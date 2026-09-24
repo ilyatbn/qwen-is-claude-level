@@ -26,8 +26,9 @@ use std::collections::BTreeMap;
 
 use game_core::bots::Bot;
 use game_core::constants::{
-    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, DEFAULT_MAP_SCALE, FOV_DAY,
-    INVENTORY_SLOTS, MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
+    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_SPACE_FUEL_RESERVE,
+    DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT,
+    SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
@@ -719,7 +720,32 @@ struct BotRound {
     /// held one selected, and shots taken with one.
     zone_held: u32,
     zone_shots: u32,
+    /// T22.03D, the review's definitions of a bot **pinned against rock**: alive
+    /// ticks airborne (not grounded) and slower than `PINNED_SPEED` (`still_air`);
+    /// of them, touching rock (the body's box grown by a pixel overlaps solid) at
+    /// any fuel (`pinned_any`), and touching rock **at the fuel reserve**
+    /// (`pinned`: under `BOT_SPACE_FUEL_RESERVE + PINNED_AT_RESERVE`). Runs are
+    /// consecutive pinned ticks of one bot: the longest, and how many reach
+    /// `PINNED_RUN_S`. **Winged bots are left out** (their own regime, the walking
+    /// model's buttons in every mode) and counted in `pinned_wings`.
+    still_air: u32,
+    pinned: u32,
+    pinned_any: u32,
+    longest: u32,
+    longest_any: u32,
+    runs: u32,
+    runs_any: u32,
+    /// ...and a winged bot airborne, still and touching rock: not counted above.
+    pinned_wings: u32,
 }
+
+/// T22.03D's instrument: slower than this, px/s, is "not moving" (the review's).
+const PINNED_SPEED: f32 = 20.0;
+/// "At the reserve": within this much fuel above `BOT_SPACE_FUEL_RESERVE`, s of
+/// burn — the review's pinned bots sat at 1.49–1.51 (`gate-review2203b-stuck.txt`).
+const PINNED_AT_RESERVE: f32 = 0.1;
+/// A pinned run this long is a bot out of the round, s (the review's cut).
+const PINNED_RUN_S: f32 = 10.0;
 
 /// A generated map under `gravity`, the shipping seat count, `Playing` for the whole
 /// `ROUND_SECONDS` — so a space round reaches its last minute and the black hole.
@@ -755,6 +781,9 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let _ = w.drain_events();
     let mut r = BotRound::default();
     let mut cells = std::collections::BTreeSet::new();
+    // Per player: the current pinned run (at the reserve, any fuel), in ticks.
+    let mut run: BTreeMap<u8, (u32, u32)> = BTreeMap::new();
+    let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         for b in bots.iter_mut() {
@@ -800,6 +829,38 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
             r.unsealed += u32::from(p.irradiated(w.round_time, suit));
             r.speed += p.body.vel.len();
             cells.insert((p.id, p.body.pos.x as i32 / 256, p.body.pos.y as i32 / 256));
+            // Wings are their own regime in every mode (`space::flies`), and a winged
+            // bot pinned against rock is the walking model's, counted apart.
+            let winged = p.move_mods().flying;
+            let still = !p.body.grounded && p.body.vel.len() < PINNED_SPEED;
+            r.pinned_wings += u32::from(still && winged && touches(&w, p));
+            let still = still && !winged;
+            let touching = still && touches(&w, p);
+            let at_reserve = p.jetpack.fuel < BOT_SPACE_FUEL_RESERVE + PINNED_AT_RESERVE;
+            r.still_air += u32::from(still);
+            r.pinned_any += u32::from(touching);
+            r.pinned += u32::from(touching && at_reserve);
+            let cur = run.entry(p.id).or_default();
+            let step = |n: &mut u32, on: bool, longest: &mut u32, runs: &mut u32| {
+                if on {
+                    *n += 1;
+                    *longest = (*longest).max(*n);
+                    *runs += u32::from(*n == run_ticks);
+                } else {
+                    *n = 0;
+                }
+            };
+            step(
+                &mut cur.0,
+                touching && at_reserve,
+                &mut r.longest,
+                &mut r.runs,
+            );
+            step(&mut cur.1, touching, &mut r.longest_any, &mut r.runs_any);
+        }
+        // A dead bot's run ends.
+        for p in w.players.iter().filter(|p| !p.alive) {
+            run.insert(p.id, (0, 0));
         }
         for e in w.drain_events() {
             match e {
@@ -851,6 +912,22 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     }
     r.cells = cells.len() as u32;
     r
+}
+
+/// The body's box grown by a pixel overlaps rock: touching it.
+fn touches(w: &World, p: &game_core::player::state::PlayerState) -> bool {
+    game_core::physics::collide::aabb_overlaps_solid(
+        &w.map,
+        game_core::math::Aabb::from_center_size(
+            p.body.pos,
+            p.body.size.x + 2.0,
+            p.body.size.y + 2.0,
+        ),
+    )
+}
+
+fn total_runs(rs: &[BotRound], f: fn(&BotRound) -> u32) -> u32 {
+    rs.iter().map(f).sum()
 }
 
 /// **T22.03B — bots in space, measured.** Per bot per round, over `SEEDS`, a whole
@@ -936,6 +1013,20 @@ fn space_bots_report() {
             ticks(|r| r.zone_held),
             per(|r| r.zone_shots as f32)
         );
+        let secs = |t: u32| t as f32 * SIM_DT;
+        println!(
+            "          pinned (T22.03D): airborne & still {:.1}%, against rock at the reserve {:.1}% \
+             (runs >= {PINNED_RUN_S} s: {}, longest {:.0} s), against rock at any fuel {:.1}% \
+             (runs: {}, longest {:.0} s); winged bots against rock {:.1}%",
+            ticks(|r| r.still_air),
+            ticks(|r| r.pinned),
+            total_runs(&rs, |r| r.runs),
+            secs(rs.iter().map(|r| r.longest).max().unwrap_or(0)),
+            ticks(|r| r.pinned_any),
+            total_runs(&rs, |r| r.runs_any),
+            secs(rs.iter().map(|r| r.longest_any).max().unwrap_or(0)),
+            ticks(|r| r.pinned_wings),
+        );
         if std::env::var("BOTS_PER_SEED").is_ok() {
             for (s, r) in seeds.iter().zip(&rs) {
                 println!("    seed {s:>8}: {r:?}");
@@ -958,21 +1049,77 @@ fn space_bots_report() {
     let env = total(space, |r| {
         r.black_hole + r.void + r.radiation + r.flare + r.weather
     });
-    assert!(
-        kills >= total(&arms[0], |r| r.player),
-        "space: {kills} player kills, under the standard control's"
-    );
-    assert!(
-        env < kills,
-        "space: the environment killed {env}, the players {kills}"
-    );
+    // T22.03D F2: **the fight floor is the space number, not standard's.** Standard's
+    // 0.27 a bot a round was a floor space cleared five times over, so it caught only a
+    // space arm with no fight at all. `SPACE_KILLS_FLOOR` is 0.6 of the measured value
+    // (4.35 a bot a round over 8 seeds, 4.02 over 32); the plants it catches are in
+    // T22.03D's As built.
+    // Every claim is checked and all failures reported together, so a red run names
+    // each thing that moved rather than only the first.
+    let mut failed: Vec<String> = Vec::new();
+    let n_bots = (seeds.len() * BOTS) as f32;
+    if (kills as f32) < SPACE_KILLS_FLOOR * n_bots {
+        failed.push(format!(
+            "{kills} player kills, {:.2} a bot a round, under the floor {SPACE_KILLS_FLOOR}",
+            kills as f32 / n_bots
+        ));
+    }
+    if env >= kills {
+        failed.push(format!("the environment killed {env}, the players {kills}"));
+    }
     let hole = total(space, |r| r.black_hole) as usize;
-    assert!(
-        2 * hole < seeds.len(),
-        "space: {hole} black-hole deaths in {} rounds",
-        seeds.len()
-    );
+    if 2 * hole >= seeds.len() {
+        failed.push(format!(
+            "{hole} black-hole deaths in {} rounds",
+            seeds.len()
+        ));
+    }
+    // T22.03D F1: **not pinned against rock.** At the fuel reserve (the review's
+    // definition, the hysteresis's) under `PINNED_RESERVE_MAX` of alive time and no run
+    // of `PINNED_RUN_S`; at any fuel under `PINNED_ANY_MAX` and no run twice that long.
+    // At `d741b3d` (8 seeds): 58.9 % and 118 runs at the reserve, 62.9 % and a 199 s
+    // run at any fuel. The any-fuel share cannot go to zero and should not: a bot
+    // holding its stand-off on a rock face is "still and touching" too, and standard
+    // bots measure 11–13 % on the same instrument.
+    let share = |arm: &[BotRound], f: fn(&BotRound) -> u32| {
+        total(arm, f) as f32 / total(arm, |r| r.alive).max(1) as f32
+    };
+    let longest = |f: fn(&BotRound) -> u32| space.iter().map(f).max().unwrap_or(0) as f32 * SIM_DT;
+    let pinned = share(space, |r| r.pinned);
+    if pinned >= PINNED_RESERVE_MAX || total(space, |r| r.runs) > 0 {
+        failed.push(format!(
+            "pinned against rock at the fuel reserve {:.1} % of alive time (bound {:.0} %), {} \
+             runs of {PINNED_RUN_S} s, longest {:.0} s",
+            100.0 * pinned,
+            100.0 * PINNED_RESERVE_MAX,
+            total(space, |r| r.runs),
+            longest(|r| r.longest)
+        ));
+    }
+    let any = share(space, |r| r.pinned_any);
+    if any >= PINNED_ANY_MAX || longest(|r| r.longest_any) >= 2.0 * PINNED_RUN_S {
+        failed.push(format!(
+            "pinned against rock at any fuel {:.1} % (bound {:.0} %; standard {:.1} % on the \
+             same instrument), longest {:.0} s (bound {:.0} s)",
+            100.0 * any,
+            100.0 * PINNED_ANY_MAX,
+            100.0 * share(&arms[0], |r| r.pinned_any),
+            longest(|r| r.longest_any),
+            2.0 * PINNED_RUN_S
+        ));
+    }
+    assert!(failed.is_empty(), "space: {}", failed.join("; "));
 }
+
+/// T22.03D F2: player kills a bot a round the natural space arm must reach — 0.6 of
+/// the measured 4.35 (8 seeds) / 4.02 (32) after T22.03D; 1.52 / 1.82 before it.
+const SPACE_KILLS_FLOOR: f32 = 2.4;
+/// T22.03D F1: the share of alive time a space bot may spend pinned against rock at
+/// the fuel reserve — measured 3.5–4.0 % after, 51–59 % before.
+const PINNED_RESERVE_MAX: f32 = 0.05;
+/// T22.03D F1: the same at any fuel — measured 13–14 % after, 58–63 % before; the
+/// bound is ~1.5× after and a third of before.
+const PINNED_ANY_MAX: f32 = 0.2;
 
 /// The full report. `cargo test -p game-core --release --test balance -- --ignored --nocapture`
 #[test]
