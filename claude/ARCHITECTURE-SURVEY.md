@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only.** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`).** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -17,7 +17,7 @@ different story (see § 1).
 - `World::step` appears in one wasm export, `AttractCore::step` — "Frozen, and dormant since T18.01", no caller, a
   hand-copy of `room.rs::drive_bots`. Otherwise only `#[cfg(test)]`.
 - **GameScene (networked match)** calls (via GameScene.ts, `net/prediction.ts`, `net/worldMirror.ts`, `render/flareFx.ts`):
-  - prediction: `applyInput`, `setPlayerState` (Predictor), `playerState`, `addPlayer`/`removePlayer` (local), `setPhase`, `setGravity`
+  - prediction: `applyInput`, `setPlayerState` (Predictor), `playerState`, `addPlayer`/`removePlayer` (local), `setPhase`, `setGravity`, `setVortices` (from `WorldMirror.vortices`, T22.10B)
   - terrain mirror: `loadMask` (map_init), `carve`, `carveCapsule` (seq-ordered events), `setTeleportPads`,
     `setGunPlatforms`, `setAsteroids`, `maskHash` (vs `mask_checksum`), `solidAt`, `takeDirtyChunks`/`maskView`
   - derived pure functions: `flarePoints`/`flareLit`/`flareTouches` (server seed + `ServerClock`), `lavaVents`,
@@ -42,12 +42,18 @@ different story (see § 1).
 - Snapshot `codec.rs::encode_snapshot`: **full every time, no delta**. 8-byte header (tick u32, round_time deciseconds
   u16, darkness u8, count u8) + 20 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as i16 **truncated `as i16`**; aim
   u16; health u8 truncated; flags; fuel; selected item; vision; battery; heals/batteries; teleport charge; move_mods)
-  + 4-byte footer (per-recipient `last_input_seq`). 132 B at 6 players before base64. (Its doc comment still says 102.)
+  + 4-byte footer (per-recipient ack: since T22.10B the last *consumed* seq, `min(World::oldest_queued_seq − 1, last_seq)`
+  in `Room::last_seqs` — before, the last *received*). 132 B at 6 players before base64. (Its doc comment still says 102.)
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
-  `select_slot` are separate events. `World::apply_inputs` consumes one input per player per tick, backlog capped at
-  `MAX_INPUT_QUEUE` 8; **no input that tick → not integrated**.
+  `select_slot` are separate events. **Since T22.10B the `input` handler runs synchronously in arrival order**
+  (socketioxide runs the closure inside the ws read loop; only the returned future is spawned — tokio ran the newest
+  spawned first, which reordered inputs: 137 dropped seqs in one match). The other command handlers (`fire`,
+  `use_item`, `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`, `quick_throw`) still spawn and can
+  reorder relative to each other and to `input` (T22.10D). `World::apply_inputs` consumes one input per player per tick, backlog capped at
+  `MAX_INPUT_QUEUE` 8, and the room also accepts at most 8 per tick, dropping the *newest* (the world trims the
+  *oldest* — two policies, T22.10D); **no input that tick → not integrated**.
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
-  (carves, explosions, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
+  (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
   effects, hazards, phase, round).
 - Terrain: never diffs. `carve`/`carve_capsule` carry a shared `seq`; `worldMirror.ts::applyCarve` buffers in order; a
   gap > `CARVE_GAP_TIMEOUT_MS` (2000) → `resync_map` (full `map_init`). `mask_checksum` every
@@ -57,11 +63,15 @@ different story (see § 1).
 
 ## 3. Prediction and reconciliation
 - `prediction.ts::Predictor`, local player only. GameScene runs a fixed-step accumulator at `SIM_DT`; each step
-  `localInput.sample(++seq)` → `pushInput` → `core.applyInput`; sends `batch.slice(-INPUT_REDUNDANCY)` once per frame.
-  **Accumulator cap `MAX_FRAME_DT` 0.25 s (15 ticks) but only the last 3 inputs are sent** — a hitch > 3 ticks applies
-  inputs locally that the server never receives.
+  `localInput.sample(++seq)` → `pushInput` → `core.applyInput`; since T22.10B sends **every** input of the frame, in packets of ≤ `INPUT_REDUNDANCY` (no
+  overlap, so no actual redundancy). A 15-tick frame (`MAX_FRAME_DT` 0.25 s) sends 15; the room keeps 8 and drops 7,
+  leaving a standing 7-tick queue (~117 ms of server-side input delay) — T22.10D. (Before T22.10B only the last 3 were
+  sent.)
 - `reconcile`: drop acked inputs; if error ≤ `RECONCILE_EPSILON_PX` (2.0) and move_mods unchanged do nothing; else
-  `setPlayerState` (pos, vel, grounded, fuel, health, alive, move_mods) and replay pending. Render eases at
+  `setPlayerState` (pos, vel, grounded, fuel, health, alive, move_mods) and replay pending. **The epsilon compares the post-pending prediction with the acked server
+  state, so it almost never fires while moving** (T22.10D). `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B)
+  are the honest rubber-band measures. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
+  handle pad `teleport` and `vortex_trip`. Render eases at
   `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server state is i16-truncated; `JumpState` and `prev_input`
   are not on the wire.
 - Remotes: `interpolation.ts::RemoteInterpolator`, `INTERP_DELAY_MS` 100, `MAX_EXTRAPOLATION_MS` 250, keyed on local
