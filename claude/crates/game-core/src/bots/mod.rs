@@ -415,8 +415,9 @@ impl Bot {
                 // flat 40 px walked bazooka-armed bots inside their own blast guard
                 // (blast_radius * 1.5 = 63 px), where the rule that stops them
                 // suiciding also stopped them shooting — measured as the single
-                // largest rejection reason, 8469 against 91 shots taken.
-                self.stand_off(world)
+                // largest rejection reason, 8469 against 91 shots taken. And inside
+                // the weapon's range (T22.03H: the shovel's reach is under the floor).
+                self.hold_off(world)
             };
             if dx.abs() > stop_within {
                 buttons |= if dx > 0.0 {
@@ -596,21 +597,7 @@ impl Bot {
             Goal::Enemy(_) => space::Dest {
                 at: aim_at,
                 stop: if self.reachable(world, pos, aim_at) {
-                    let range = self
-                        .selected_weapon(world)
-                        .and_then(def)
-                        .and_then(|d| match d.kind {
-                            ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
-                            _ => None,
-                        })
-                        .and_then(|w| match w.delivery {
-                            Delivery::Melee { reach, .. } => {
-                                Some(crate::weapons::melee::effective_reach(reach))
-                            }
-                            _ => (w.range > 0.0).then_some(w.range),
-                        });
-                    let stand = self.stand_off(world);
-                    range.map_or(stand, |r| stand.min(r * BOT_SPACE_IN_RANGE))
+                    self.hold_off(world)
                 } else {
                     0.0
                 },
@@ -868,6 +855,29 @@ impl Bot {
     /// thrown. `zone_reach` already existed for the throw guard; the approach
     /// used the old number, which is why molotov self-harm stayed the highest in
     /// the arsenal after T11.14's first pass.
+    /// Where to hold an enemy from: [`Bot::stand_off`], but **never outside the
+    /// selected weapon's range** — `BOT_SPACE_IN_RANGE` of a swing's
+    /// `effective_reach` or a gun's `range`. One function for both movement models
+    /// (T22.03H): flight had it since T22.03D; the walking model held `dx` at the
+    /// 40 px floor, outside the shovel's 28 px reach, and never swung.
+    fn hold_off(&self, world: &World) -> f32 {
+        let range = self
+            .selected_weapon(world)
+            .and_then(def)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .and_then(|w| match w.delivery {
+                Delivery::Melee { reach, .. } => {
+                    Some(crate::weapons::melee::effective_reach(reach))
+                }
+                _ => (w.range > 0.0).then_some(w.range),
+            });
+        let stand = self.stand_off(world);
+        range.map_or(stand, |r| stand.min(r * BOT_SPACE_IN_RANGE))
+    }
+
     fn stand_off(&self, world: &World) -> f32 {
         let w = self
             .selected_weapon(world)
@@ -2293,6 +2303,91 @@ mod tests {
             armed.goal,
             Goal::Item(heal),
             "an armed bot ignored the nearer medkit, so the preference is not conditional",
+        );
+    }
+
+    /// **T22.03H: a walking bot with the shovel in hand closes inside its reach and
+    /// swings.** The walking model held `dx` at `stand_off`'s 40 px floor, outside
+    /// the shovel's 28 px `effective_reach`, so an enemy 36 px off on flat ground was
+    /// "arrived at" and every swing refused as out of range (measured in standard
+    /// play, 16 seeds: 47 896 shovel range refusals, 21 664 of them at |dx| 24–40 px,
+    /// against 73 swings). Armed with a bazooka so it engages rather than shops, and
+    /// the bazooka is blast-guarded this close, so the shovel is the only swing.
+    /// The control: the same fixture with the enemy already inside the reach swings
+    /// — so a red here is the stand-off, not a bot that never swings.
+    #[test]
+    fn a_walking_bot_with_the_shovel_closes_inside_its_reach_and_swings() {
+        use crate::items::registry::SHOVEL;
+        let reach = crate::weapons::melee::effective_reach(
+            match crate::items::registry::def(SHOVEL)
+                .and_then(|d| match d.kind {
+                    ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                    _ => None,
+                })
+                .expect("the shovel is a weapon")
+                .delivery
+            {
+                Delivery::Melee { reach, .. } => reach,
+                _ => panic!("the shovel is no longer melee"),
+            },
+        );
+        // Swings accepted in 3 s, and the closest the two got.
+        let run = |gap: f32| {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
+            }
+            let y = flat_shelf(&mut w, at, 240);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+            }
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = Vec2::new(at.x + gap, y);
+            }
+            give(&mut w, 1, BAZOOKA, 4);
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            let (mut swings, mut closest) = (0u32, f32::MAX);
+            for t in 0..180 {
+                let now = t as f32 * SIM_DT;
+                let inp = b.think(&w, now, SIM_DT);
+                w.queue_input(1, inp);
+                if let Some(slot) = b.wants_select() {
+                    w.select_slot(1, slot);
+                }
+                let shovel = w.player(1).is_some_and(|p| {
+                    p.inventory
+                        .slot(p.inventory.selected())
+                        .is_some_and(|s| s.item == SHOVEL)
+                });
+                if inp.buttons & button::FIRE != 0 && shovel && w.fire(1, now).is_ok() {
+                    swings += 1;
+                }
+                // The enemy is a post: kept alive and in place.
+                if let Some(p) = w.player_mut(2) {
+                    p.health = 100.0;
+                    p.body.pos.x = at.x + gap;
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+                let (a, c) = (w.player(1).unwrap().body.pos, w.player(2).unwrap().body.pos);
+                closest = closest.min((a - c).len());
+            }
+            (swings, closest)
+        };
+        let (swings, _) = run(reach * 0.5);
+        assert!(
+            swings > 0,
+            "control: an enemy inside the reach was never swung at"
+        );
+        // Just outside the reach, and inside `stand_off`'s floor — where it stuck.
+        let gap = reach * 1.2;
+        let (swings, closest) = run(gap);
+        assert!(
+            closest <= reach && swings > 0,
+            "an enemy {gap:.0} px off (reach {reach:.0} px): closest {closest:.1} px, {swings} \
+             swings — the walking stand-off held it out of reach"
         );
     }
 

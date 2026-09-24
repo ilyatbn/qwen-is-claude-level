@@ -3644,7 +3644,8 @@ pub const BOT_SPACE_STUCK_WINDOW: f32 = 0.5;
 pub const BOT_SPACE_DETOUR: f32 = 1.0;
 /// T22.03D: a flying bot holds at most this fraction of its weapon's range (a
 /// swing's reach, a gun's `range`) from its enemy — inside it, with room for the
-/// enemy's drift.
+/// enemy's drift. **T22.03H: a walking bot too** (`Bot::hold_off`, one function for
+/// both models) — the name predates it.
 pub const BOT_SPACE_IN_RANGE: f32 = 0.75;
 /// T22.03C: the flame crowd's ballistic range `v²/g` scaled by this for a bot's
 /// molotov stand-off under gravity. **Measured, not derived**: at 1× (≈109 px

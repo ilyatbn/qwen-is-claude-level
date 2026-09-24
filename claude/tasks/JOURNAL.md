@@ -7009,3 +7009,9 @@ vortices and hole (uncapped). Pocket (451383, (2194,1235)): DOWN 0 px → ≥28 
 well bit-equal, wasm parity at the pocket; plants no-clamp / half-cap red. Item goal: `items::world::would_take` (bots
 parked by items `is_full_for`). Any-fuel runs 28 → 7 over four draws; `PINNED_ANY_RUNS_MAX` 0.1 → 0.06 (no-cap plant red
 on offset 32). REPLAY_VERSION 23. Left: runs beside breach vortices, and bots idling on rock with fuel (in the task file).
+
+## T22.03H — the walking shovel stand-off (builder, 2026-09-24)
+Measured: 47 896 shovel range refusals vs 73 swings (16 standard rounds), |dx| 24–40 on 21 664. `Bot::hold_off` (stand-off
+capped at `BOT_SPACE_IN_RANGE` × the weapon's range) now serves both movement models — flight's inline copy moved into it.
+Unit red at parent (34 px, 0 swings), control swings; plant `stand_off` back → red. Swings 73 → 143; the rest are an enemy
+a body-height off (dist 40–48, |dx| < 16), filed in the task. Standard kills pooled 1.96 → 2.37; void deaths +14 % (unexplained).
