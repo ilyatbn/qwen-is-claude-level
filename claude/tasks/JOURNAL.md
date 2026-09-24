@@ -7015,3 +7015,9 @@ Measured: 47 896 shovel range refusals vs 73 swings (16 standard rounds), |dx| 2
 capped at `BOT_SPACE_IN_RANGE` × the weapon's range) now serves both movement models — flight's inline copy moved into it.
 Unit red at parent (34 px, 0 swings), control swings; plant `stand_off` back → red. Swings 73 → 143; the rest are an enemy
 a body-height off (dist 40–48, |dx| < 16), filed in the task. Standard kills pooled 1.96 → 2.37; void deaths +14 % (unexplained).
+
+## T22.03F — winged bots pinned (builder, 2026-09-24)
+Measured: winged runs ≥ 10 s standard 6/6/3/10, space 4/0/6/4 — both modes, so not `space::steer`'s (builder's call).
+Traced: wings refuse the stuck-jump; bot held RIGHT into rock. Stuck winged bot now sweeps UP 1 window, DOWN 2, UP 3…
+(UP alone trapped them under overhangs). Unit red both gravities, plant red. `PINNED_WINGS_RUNS_MAX` 0.015 pooled: parent
+red 5/5, after green. G's any-fuel bound went red on 8 seeds (vortex runs, seed 4242) → vortex runs counted apart, rest 0.

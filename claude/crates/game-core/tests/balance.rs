@@ -749,6 +749,16 @@ struct BotRound {
     runs_any: u32,
     /// ...and a winged bot airborne, still and touching rock: not counted above.
     pinned_wings: u32,
+    /// T22.03F: a winged bot's pinned runs, as above — the longest, and how many
+    /// reach `PINNED_RUN_S`.
+    longest_wings: u32,
+    runs_wings: u32,
+    /// T22.03G/F: an any-fuel pinned run **within `VORTEX_REACH` of a live vortex**,
+    /// counted here and **not** in `runs_any` — every such run traced at T22.03G was a
+    /// bot a vortex held against rock (outside R96's cap by design, filed), and mixing
+    /// them in made the wells' bound a coin flip on which seed a vortex opened near a bot.
+    longest_vortex: u32,
+    runs_vortex: u32,
 }
 
 /// T22.03D's instrument: slower than this, px/s, is "not moving" (the review's).
@@ -794,7 +804,7 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let mut r = BotRound::default();
     let mut cells = std::collections::BTreeSet::new();
     // Per player: the current pinned run (at the reserve, any fuel), in ticks.
-    let mut run: BTreeMap<u8, (u32, u32)> = BTreeMap::new();
+    let mut run: BTreeMap<u8, (u32, u32, u32, u32)> = BTreeMap::new();
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
@@ -843,7 +853,8 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
             // bot pinned against rock is the walking model's, counted apart.
             let winged = p.move_mods().flying;
             let still = !p.body.grounded && p.body.vel.len() < PINNED_SPEED;
-            r.pinned_wings += u32::from(still && winged && touches(&w, p));
+            let pinned_wings = still && winged && touches(&w, p);
+            r.pinned_wings += u32::from(pinned_wings);
             let still = still && !winged;
             let touching = still && touches(&w, p);
             let at_reserve = p.jetpack.fuel < BOT_SPACE_FUEL_RESERVE + PINNED_AT_RESERVE;
@@ -866,11 +877,32 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                 &mut r.longest,
                 &mut r.runs,
             );
-            step(&mut cur.1, touching, &mut r.longest_any, &mut r.runs_any);
+            let by_vortex = w
+                .vortices
+                .iter()
+                .any(|v| (v.pos - p.body.pos).len() < game_core::constants::VORTEX_REACH);
+            step(
+                &mut cur.1,
+                touching && !by_vortex,
+                &mut r.longest_any,
+                &mut r.runs_any,
+            );
+            step(
+                &mut cur.3,
+                touching && by_vortex,
+                &mut r.longest_vortex,
+                &mut r.runs_vortex,
+            );
+            step(
+                &mut cur.2,
+                pinned_wings,
+                &mut r.longest_wings,
+                &mut r.runs_wings,
+            );
         }
         // A dead bot's run ends.
         for p in w.players.iter().filter(|p| !p.alive) {
-            run.insert(p.id, (0, 0));
+            run.insert(p.id, (0, 0, 0, 0));
         }
         // Is `v` inside its own fire or cloud right now?
         let in_own = |w: &World, v: u8| {
@@ -1081,7 +1113,8 @@ fn space_bots_report() {
         println!(
             "          pinned (T22.03D): airborne & still {:.1}%, against rock at the reserve {:.1}% \
              (runs >= {PINNED_RUN_S} s: {}, longest {:.0} s), against rock at any fuel {:.1}% \
-             (runs: {}, longest {:.0} s); winged bots against rock {:.1}%",
+             (runs: {}, longest {:.0} s; beside a vortex, not counted: runs {}, longest {:.0} s); \
+             winged bots against rock {:.1}% (runs: {}, longest {:.0} s)",
             ticks(|r| r.still_air),
             ticks(|r| r.pinned),
             total_runs(&rs, |r| r.runs),
@@ -1089,7 +1122,11 @@ fn space_bots_report() {
             ticks(|r| r.pinned_any),
             total_runs(&rs, |r| r.runs_any),
             secs(rs.iter().map(|r| r.longest_any).max().unwrap_or(0)),
+            total_runs(&rs, |r| r.runs_vortex),
+            secs(rs.iter().map(|r| r.longest_vortex).max().unwrap_or(0)),
             ticks(|r| r.pinned_wings),
+            total_runs(&rs, |r| r.runs_wings),
+            secs(rs.iter().map(|r| r.longest_wings).max().unwrap_or(0)),
         );
         if std::env::var("BOTS_PER_SEED").is_ok() {
             for (s, r) in seeds.iter().zip(&rs) {
@@ -1178,6 +1215,16 @@ fn space_bots_report() {
             longest(|r| r.longest_any),
         ));
     }
+    // T22.03F: winged bots, both natural arms pooled (the walking model's, in both).
+    let natural = [&arms[0], space];
+    let wing_runs: u32 = natural.iter().map(|a| total(a, |r| r.runs_wings)).sum();
+    let wing_rate = wing_runs as f32 / (2.0 * n_bots);
+    if wing_rate > PINNED_WINGS_RUNS_MAX {
+        failed.push(format!(
+            "winged bots pinned against rock: {wing_runs} runs of {PINNED_RUN_S} s over both \
+             natural arms, {wing_rate:.3} a bot a round (bound {PINNED_WINGS_RUNS_MAX})"
+        ));
+    }
     // T22.03C (R95): **zone weapons are thrown in both modes** (the natural arms), a
     // thrower is hit by its own fire **no more often a throw in space than in
     // standard** (the molotov arms, where there are throws enough to divide by — the
@@ -1232,13 +1279,23 @@ const PINNED_RESERVE_MAX: f32 = 0.06;
 const PINNED_ANY_MAX: f32 = 0.2;
 /// T22.03D F1 (as rewritten by T22.03C): any-fuel pinned runs of `PINNED_RUN_S` a bot
 /// a round — measured 0.02–0.04 after (8 and 32 seeds), 2.4–2.5 before; the no-detour
-/// plant 1.25. **Re-derived at T22.03G (R96)**: with the summed wells capped and bots
-/// no longer parking on items they cannot pick up, 0 / 0.021 / 0.010 / 0.005 over the
-/// four 32-seed draws (offsets 0/32/64/96; 0.031 / 0.089 / 0.021 / 0.005 before) and
-/// 0.042 over the 8 `SEEDS` — so the worst measured plus ~1.3 points, as F3 did. Every
-/// run left at T22.03G was traced (`zz_probe`, not kept): each is a bot beside a breach
-/// vortex (outside R96's cap by design) or idling on rock with fuel — none is a well.
-const PINNED_ANY_RUNS_MAX: f32 = 0.06;
+/// plant 1.25. **Re-derived at T22.03G/F: none at all, beside a vortex excepted.** Every
+/// run left after R96's well cap and `would_take` was traced to a bot a breach vortex
+/// held against rock (outside the cap by design, filed in T22.03G), so those are now
+/// counted apart (`runs_vortex`, printed, not bounded). The rest, 8 `SEEDS` / offsets
+/// 0/32/64/96 of 32: **0/0/0/0/0 after**; planted without the cap 1/3/6/0/0, without the
+/// item filter 1/1/2/0/4, without both 1/2/9/4/0 (`gate-t2203f-split-*.txt`) — so the
+/// default run is red under each plant. (At 0.06 on the mixed count, the 8 seeds went
+/// 0.042 → 0.083 under T22.03F's unrelated change: four vortex runs on seed 4242.)
+const PINNED_ANY_RUNS_MAX: f32 = 0.0;
+/// T22.03F: a **winged** bot's pinned runs of `PINNED_RUN_S`, a bot a round, **pooled
+/// over both natural arms** — wings drive the walking model in every mode (R5), and the
+/// traced cause (the stuck-jump refused under wings) is the same in both. Measured over
+/// the four 32-seed draws (offsets 0/32/64/96): **0.026 / 0.016 / 0.023 / 0.036 at the
+/// parent** (standard 6/6/3/10 runs, space 4/0/6/4, to 152 s), **0.003 / 0.003 / 0.005 / 0
+/// after** (`gate-t2203f-{before,after}.txt`); the 8 `SEEDS` 0.010 after. The bound sits
+/// between: over every draw after, under every draw before.
+const PINNED_WINGS_RUNS_MAX: f32 = 0.015;
 
 /// The full report. `cargo test -p game-core --release --test balance -- --ignored --nocapture`
 #[test]

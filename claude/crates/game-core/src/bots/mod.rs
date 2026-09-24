@@ -99,6 +99,18 @@ const PREDICT_TICKS: u32 = 120;
 
 const STUCK_PX: f32 = 6.0;
 const STUCK_WINDOW: f32 = 0.5;
+
+/// T22.03F: which leg of a stuck winged bot's outward vertical sweep `t` seconds
+/// in — leg `k` lasts `(k + 1) × STUCK_WINDOW`, so legs alternate up/down and
+/// each reaches one window past the last one's start.
+fn winged_sweep_leg(t: f32) -> u32 {
+    let (mut k, mut end) = (0u32, STUCK_WINDOW);
+    while t >= end {
+        k += 1;
+        end += (k + 1) as f32 * STUCK_WINDOW;
+    }
+    k
+}
 /// Seconds a bot heads for one unvisited cell before marking it seen and
 /// choosing another (§E10).
 ///
@@ -474,11 +486,15 @@ impl Bot {
         self.last_x = pos.x;
 
         let rise = pos.y - aim_at.y; // positive when the target is above
-        let wants_jump =
-            self.still_for > STUCK_WINDOW || (rise > STEP_UP as f32 && me.body.grounded);
+        let stuck = self.still_for > STUCK_WINDOW;
+        let winged = me.move_mods().flying;
+        let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded);
         if wants_jump {
             buttons |= button::JUMP;
-            self.still_for = 0.0;
+            // A winged bot keeps its stuck time: its way over is held, below.
+            if !winged {
+                self.still_for = 0.0;
+            }
         }
 
         // **A bot that picks up T21.03's unicorn wings changes nothing here, and
@@ -493,7 +509,9 @@ impl Bot {
         //    wings hover with no vertical input and `UP` rises, so a bot whose
         //    target is above goes up to it at `WINGS_FLY_SPEED`, without fuel;
         //  - the stuck-jump is refused, and a stuck winged bot with nothing
-        //    above it hovers in place (it can still walk out sideways);
+        //    above it hovers in place (it can still walk out sideways) —
+        //    *superseded by T22.03F below: it did not walk out, it held its
+        //    sideways press into the rock for the rest of the round;*
         //  - and `DOWN` descends. That arm already fires when the target is well
         //    below, so a winged bot chasing something on the ground comes down
         //    to it.
@@ -509,6 +527,27 @@ impl Bot {
             buttons |= button::JUMP | button::UP;
         } else if rise < -JETPACK_RISE * 2.0 && !me.body.grounded {
             buttons |= button::DOWN;
+        }
+        // **T22.03F: the stuck-jump is refused while the wings are held, so a winged
+        // bot's way over a wall is the wings' own — UP, held for as long as it stays
+        // stuck** (still pressing sideways and not moving). The note above expected it
+        // to "walk out sideways"; traced, it pressed RIGHT into rock for the rest of
+        // the round — 3–10 runs ≥ 10 s per 32-seed draw in *both* modes, to 152 s —
+        // so this is the walking model's, not `space::steer`'s (R5 keeps wings "as
+        // anywhere"). The sideways press stays: it rises along the face and moves off
+        // the top, which resets `still_for` and releases UP. **Under an overhang UP is
+        // blocked too** (traced after the first cut: JUMP|UP|RIGHT held under rock,
+        // runs to 73 s), so the vertical press **sweeps outward**: up for one
+        // `STUCK_WINDOW`, down for two, up for three — each leg one window longer,
+        // so the search reaches past the start in both directions and a face of any
+        // height is eventually rounded.
+        if winged && stuck {
+            buttons &= !(button::UP | button::DOWN);
+            buttons |= if winged_sweep_leg(self.still_for - STUCK_WINDOW).is_multiple_of(2) {
+                button::UP
+            } else {
+                button::DOWN
+            };
         }
 
         // **In space the walking model's buttons are replaced, not amended**
@@ -2304,6 +2343,80 @@ mod tests {
             Goal::Item(heal),
             "an armed bot ignored the nearer medkit, so the preference is not conditional",
         );
+    }
+
+    /// **T22.03F: a winged bot pressed against a wall rises over it.** The stuck
+    /// response is a jump, and wings refuse the jump — so a winged bot hovering
+    /// against rock kept pressing sideways for the rest of the round (traced: RIGHT
+    /// held, still, touching rock; runs ≥ 10 s in *both* modes, to 152 s). A wall
+    /// taller than a step sits between the bot and an enemy on a flat shelf; the bot
+    /// hovers against it. It must get past it. The control: the same bot with no
+    /// wall reaches the far side — so a red here is the wall, not a bot that never
+    /// moves. Both gravities, since the walking model drives wings in both (R5).
+    #[test]
+    fn a_winged_bot_against_a_wall_rises_over_it() {
+        use crate::items::registry::UNICORN_WINGS;
+        for gravity in [GravityMode::Standard, GravityMode::Space] {
+            let run = |wall: bool| {
+                let mut w = world_with(&[1, 2]);
+                w.gravity = gravity;
+                let at = clear_line(&w);
+                let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+                for id in ids {
+                    w.items.remove(id);
+                }
+                let y = flat_shelf(&mut w, at, 240);
+                let wall_x = at.x as i32 + 60;
+                if wall {
+                    // Three body heights tall, standing on the shelf.
+                    let floor = y as i32 + PLAYER_H as i32 / 2 + 1;
+                    for row in (floor - 3 * PLAYER_H as i32)..floor {
+                        w.map.mask.set_run(row, wall_x, wall_x + 16);
+                    }
+                    w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+                }
+                // Hovering just off the shelf, clear of the wall's left face.
+                if let Some(p) = w.player_mut(1) {
+                    p.body.pos = Vec2::new(at.x, y - 4.0);
+                    p.body.grounded = false;
+                }
+                if let Some(p) = w.player_mut(2) {
+                    p.body.pos = Vec2::new(at.x + 200.0, y);
+                }
+                give(&mut w, 1, UNICORN_WINGS, 1);
+                give(&mut w, 1, PISTOL, 10);
+                assert!(
+                    w.player(1).unwrap().move_mods().flying,
+                    "the fixture bot has no wings"
+                );
+                let mut b = Bot::new(1, SEED, 0, 0.6);
+                let mut furthest = f32::MIN;
+                for t in 0..(4 * crate::constants::SIM_HZ) {
+                    let now = t as f32 * SIM_DT;
+                    let inp = b.think(&w, now, SIM_DT);
+                    w.queue_input(1, inp);
+                    if let Some(p) = w.player_mut(2) {
+                        p.health = 100.0;
+                    }
+                    w.step(SIM_DT);
+                    let _ = w.drain_events();
+                    furthest = furthest.max(w.player(1).unwrap().body.pos.x);
+                }
+                furthest - (wall_x + 16) as f32
+            };
+            let past = run(false);
+            assert!(
+                past > 0.0,
+                "{gravity:?} control: no wall, and it never got there"
+            );
+            let past = run(true);
+            assert!(
+                past > 0.0,
+                "{gravity:?}: a winged bot against a wall {} px tall never got past it \
+                 ({past:.1} px short)",
+                3 * PLAYER_H as i32
+            );
+        }
     }
 
     /// **T22.03H: a walking bot with the shovel in hand closes inside its reach and
