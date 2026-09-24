@@ -692,7 +692,9 @@ mod tests {
     /// the **weakest** thrust (DOWN), and every thrust is at least that.
     #[test]
     fn from_just_outside_the_horizon_full_thrust_escapes_past_the_reach() {
-        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H, VORTEX_CAPTURE_R};
+        use crate::constants::{
+            BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H, VORTEX_CAPTURE_R,
+        };
         let edge = Attractor::black_hole(Vec2::ZERO)
             .pull_at(Vec2::new(BLACK_HOLE_HORIZON_R, 0.0))
             .len();
@@ -751,7 +753,8 @@ mod tests {
                     if with_vortex {
                         let start = w.player(0).expect("ana").body.pos;
                         let v = start + (hole - start) * (vortex_arm_d / (hole - start).len());
-                        w.vortices.push(crate::world::vortex::Vortex { id: 0, pos: v });
+                        w.vortices
+                            .push(crate::world::vortex::Vortex { id: 0, pos: v });
                         // The premise: at the start its pull alone is past the cap,
                         // and it does not capture there.
                         let alone = Attractor::vortex(v).pull_at(start).len();
@@ -763,7 +766,10 @@ mod tests {
                     let f = escape(&mut w, hole, JETPACK_MAX_FUEL);
                     flights += 1;
                     if f.died || f.furthest <= BLACK_HOLE_REACH {
-                        let line = format!("seed {seed} side {k}: died {}, {:.1} px", f.died, f.furthest);
+                        let line = format!(
+                            "seed {seed} side {k}: died {}, {:.1} px",
+                            f.died, f.furthest
+                        );
                         if with_vortex {
                             vortex_trapped.push(line);
                         } else {

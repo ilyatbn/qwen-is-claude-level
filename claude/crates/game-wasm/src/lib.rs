@@ -4156,16 +4156,26 @@ mod tests {
         };
         for d in [0.3f32, 0.5, 0.7, 0.9] {
             let at = hole + Vec2::new(d * BLACK_HOLE_REACH, 0.0);
-            assert!((at - v).len() < VORTEX_REACH, "premise: the vortex reaches {at:?}");
+            assert!(
+                (at - v).len() < VORTEX_REACH,
+                "premise: the vortex reaches {at:?}"
+            );
             let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, at).accel;
             assert_eq!(told(at), server, "at {d} of the reach");
-            assert_eq!(server, Attractor::black_hole(hole).pull_at(at), "at {d}: not the hole alone");
+            assert_eq!(
+                server,
+                Attractor::black_hole(hole).pull_at(at),
+                "at {d}: not the hole alone"
+            );
         }
         let out = v + Vec2::new(0.25 * VORTEX_REACH, 0.0);
         let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, out).accel;
         let unvortexed = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, out).accel;
         assert_eq!(told(out), server);
-        assert_ne!(server, unvortexed, "control: outside the reach the vortex pulls");
+        assert_ne!(
+            server, unvortexed,
+            "control: outside the reach the vortex pulls"
+        );
     }
 
     /// **T22.12: the prediction pulls as the server does near the black hole** —
