@@ -257,6 +257,31 @@ try {
     )
   await frames(page, 30)
   const floor = await sampleWindow(BASELINE_FRAMES)
+  // --- 2. no rubber-band while it pulls; 3. the trip: the recording ---------------------
+  // T22.03E F8: **the series starts before the breach is asked for**, every drawn frame
+  // until the trip, so the snapshot the placement arrives in is always *inside* it —
+  // never its unmeasured first sample (T22.03D's recording began at the placed body,
+  // and in 4 runs of 6 that was already the placement's snapshot: nothing to leave
+  // out, so a "leave nothing out" plant could not go red).
+  await page.evaluate(
+    ([budgetMs]) => {
+      const rec = { out: [], done: false }
+      window.__bvRec = rec
+      const t0 = performance.now()
+      // A page that stops drawing ends the recording with what it has, and fails below.
+      setTimeout(() => (rec.done = true), budgetMs + 5000)
+      const tick = () => {
+        if (rec.done) return
+        const d = window.__game.debug()
+        const p = d.player && { x: d.player.x, y: d.player.y }
+        rec.out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, trips: d.vortex.myTrips.length, settled: d.vortex.settled, p })
+        if (d.vortex.myTrips.length > 0 || performance.now() - t0 > budgetMs) rec.done = true
+        else requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+    },
+    [TRIP_BUDGET_S * 1000 + deadlineMs(10, 'the breach')],
+  )
   await page.evaluate(() => window.__game.debugBreach())
   const opened = await page
     .waitForFunction(() => window.__game.debug().vortex.list.length > 0 && window.__game.debug().vortex.lastBreach, null, { timeout: deadlineMs(10, 'the breach'), polling: 'raf' })
@@ -271,31 +296,22 @@ try {
   else ok(`vortex_open put the vortex where the server breached the rim (${v.x}, ${v.y})`)
   if (!breach.placed) throw new Error(`the server found nowhere inward of the hole to put the player: ${JSON.stringify(breach)}`)
 
-  // --- 2. no rubber-band while it pulls; 3. the trip ------------------------------------
-  // Sampled every drawn frame from the moment the prediction has the placed body (the
-  // placement's `relocate` event, T22.12E; before it, one snapshot correction) until the trip.
-  const series = await page.evaluate(
-    ([budgetMs, placed, near]) =>
-      new Promise((resolve) => {
-        const out = []
-        const t0 = performance.now()
-        // A page that stops drawing resolves with what it has, and fails below.
-        setTimeout(() => resolve(out), budgetMs + 5000)
-        const tick = () => {
-          const d = window.__game.debug()
-          const p = d.player && { x: d.player.x, y: d.player.y }
-          const atPlace = p && Math.hypot(p.x - placed.x, p.y - placed.y) < near
-          if (out.length || atPlace) out.push({ c: d.vortex.corrections, jump: d.vortex.lastJumpPx, ack: d.vortex.lastAckErrorPx, seq: d.vortex.lastAck, tick: d.lastServerTick, trips: d.vortex.myTrips.length, settled: d.vortex.settled, p })
-          if (d.vortex.myTrips.length > 0 || performance.now() - t0 > budgetMs) resolve(out)
-          else requestAnimationFrame(tick)
-        }
-        requestAnimationFrame(tick)
-      }),
-    [TRIP_BUDGET_S * 1000, breach.placed, k.VORTEX_CAPTURE_R / 4],
-  )
+  // --- 2. no rubber-band while it pulls; 3. the trip: the measurement -----------------
+  // From the last sample before the placement's snapshot (`relocate`'s tick, T22.12E)
+  // until the trip; that snapshot is then always the series' second sample, and is the
+  // one left out below.
+  await page.waitForFunction(() => window.__bvRec.done, null, { timeout: TRIP_BUDGET_S * 1000 + deadlineMs(20, 'the recording'), polling: 500 })
+  const recorded = await page.evaluate(() => window.__bvRec.out)
   const d2 = await dbg()
+  const relocTick = d2.vortex.myRelocateTick
+  let start = -1
+  if (relocTick !== null) for (let i = 0; i < recorded.length && recorded[i].tick < relocTick; i++) start = i
+  const series = start >= 0 ? recorded.slice(start) : []
   const pull = series.filter((s) => s.trips === 0)
-  const first = pull[0]
+  const near = k.VORTEX_CAPTURE_R / 4
+  const reached = pull.some((s) => s.p && Math.hypot(s.p.x - breach.placed.x, s.p.y - breach.placed.y) < near)
+  // `first` is where the pull is measured from: the first sample holding the placement.
+  const first = reached ? pull.find((s) => relocTick !== null && s.tick >= relocTick) : undefined
   const lastBefore = pull[pull.length - 1]
   const travelled = first && lastBefore ? Math.hypot(lastBefore.p.x - first.p.x, lastBefore.p.y - first.p.y) : 0
   // The worst jump among the corrections made while it pulled — each sample whose
@@ -319,16 +335,12 @@ try {
   // run (a server trim) — `Predictor.reconcile`'s own three reasons, re-derived here
   // from the wire rather than believed. An unexplained `settled` is measured like any
   // other snapshot, so a predictor that marks everything settled hides nothing.
-  const relocTick = d2.vortex.myRelocateTick
   let placement = 0
   let placementAt = null
   let placementAck = null
   let hitches = 0
   let unexplained = 0
   let afterRepeat = false
-  // The series' first sample is never measured (each is read against the one before);
-  // if it already holds the placement's snapshot, there is nothing left to leave out.
-  if (first && relocTick !== null && first.tick >= relocTick) placementAt = first.tick
   for (let i = 1; i < pull.length; i++) {
     const newSnap = pull[i].tick !== pull[i - 1].tick
     const seqs = pull[i].seq - pull[i - 1].seq
@@ -377,7 +389,9 @@ try {
       : worstAck > k.RECONCILE_EPSILON_PX
         ? 'the prediction at an acknowledged input disagreed with the server — the client predicts a different pull (is it told the vortex list?)'
         : 'a correction moved the body although the prediction at the ack agreed — the replay of pending inputs diverged'
-  if (!first) fail(`the prediction never reached the placed body: ${JSON.stringify({ placed: breach.placed, last: series[series.length - 1] ?? null, player: d2.player })}`)
+  if (start < 0) fail(`control: the recording holds no sample before the placement's snapshot (relocated at ${relocTick}, first recorded tick ${recorded[0]?.tick ?? '-'}), so that snapshot cannot be left out by tick`)
+  else if (!first) fail(`the prediction never reached the placed body: ${JSON.stringify({ placed: breach.placed, last: series[series.length - 1] ?? null, player: d2.player })}`)
+  else if (placementAt === null) fail(`control: no snapshot at/after the relocate tick ${relocTick} in the series, so the placement's was never the one left out`)
   else if (d2.vortex.myTrips.length === 0) fail(`the vortex never took the player in ${TRIP_BUDGET_S} s (moved ${travelled.toFixed(0)} px): ${JSON.stringify({ first, last: lastBefore })}`)
   else if (travelled < k.VORTEX_CAPTURE_R / 4) fail(`control: the player moved only ${travelled.toFixed(0)} px before the trip — nothing was pulled, so no correction proves nothing`)
   else if (acked === 0) fail(`control: no snapshot acknowledged a predicted input during ${secs.toFixed(2)} s of pull, so the error was never measured`)

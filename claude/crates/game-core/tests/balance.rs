@@ -795,13 +795,11 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let mut cells = std::collections::BTreeSet::new();
     // Per player: the current pinned run (at the reserve, any fuel), in ticks.
     let mut run: BTreeMap<u8, (u32, u32)> = BTreeMap::new();
-    let mut last_btn: BTreeMap<u8, u8> = BTreeMap::new();
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         for b in bots.iter_mut() {
             let inp = b.think(&w, now, SIM_DT);
-            last_btn.insert(b.player, inp.buttons);
             w.queue_input(b.player, inp);
             if let Some(slot) = b.wants_select() {
                 w.select_slot(b.player, slot);
@@ -930,25 +928,6 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                     if cause == DeathCause::SelfInflicted {
                         r.self_dmg += amount;
                         if in_own(&w, victim) {
-                            if std::env::var("ZDBG").is_ok() && r.zone_self_hits % 10 == 0 {
-                                let p = w.player(victim).unwrap();
-                                let fl: Vec<_> = w
-                                    .projectiles
-                                    .iter()
-                                    .filter(|f| {
-                                        f.owner == victim
-                                            && game_core::weapons::flame::is_flame(f.weapon)
-                                    })
-                                    .map(|f| {
-                                        (
-                                            (f.pos.x - p.body.pos.x) as i32,
-                                            (f.pos.y - p.body.pos.y) as i32,
-                                        )
-                                    })
-                                    .take(6)
-                                    .collect();
-                                eprintln!("Z seed {seed} {gravity:?} p{victim} t{:.1} pos {:.0},{:.0} vel {:.0},{:.0} g{} hp {:.0} amt {amount:.1} btn {:08b} flames {fl:?}", w.round_time, p.body.pos.x, p.body.pos.y, p.body.vel.x, p.body.vel.y, p.body.grounded as u8, p.health, last_btn.get(&victim).copied().unwrap_or(0));
-                            }
                             r.zone_self_dmg += amount;
                             r.zone_self_hits += 1;
                         }
@@ -1002,10 +981,18 @@ fn total_runs(rs: &[BotRound], f: fn(&BotRound) -> u32) -> u32 {
 fn space_bots_report() {
     // `BOTS_SEEDS=n` runs n seeds instead of `SEEDS` — the deaths this counts are
     // rare events, and eight rounds decide a one-in-forty difference by a coin.
+    // `BOTS_SEED_OFFSET=k` starts that list k seeds on: a disjoint draw (T22.03E F3's
+    // bounds were set across four of them).
+    let offset: u64 = std::env::var("BOTS_SEED_OFFSET")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
     let seeds: Vec<u64> = std::env::var("BOTS_SEEDS")
         .ok()
         .and_then(|n| n.parse::<u64>().ok())
-        .map_or(SEEDS.to_vec(), |n| (1..=n).map(|i| i * 7919).collect());
+        .map_or(SEEDS.to_vec(), |n| {
+            (offset + 1..=offset + n).map(|i| i * 7919).collect()
+        });
     println!(
         "\n== BOTS BY MODE — {} seeds x {BOTS} bots x {ROUND_SECONDS} s, per bot per round ==",
         seeds.len()
@@ -1234,8 +1221,12 @@ fn space_bots_report() {
 /// the measured 4.35 (8 seeds) / 4.02 (32) after T22.03D; 1.52 / 1.82 before it.
 const SPACE_KILLS_FLOOR: f32 = 2.4;
 /// T22.03D F1: the share of alive time a space bot may spend pinned against rock at
-/// the fuel reserve — measured 3.5–4.0 % after, 51–59 % before.
-const PINNED_RESERVE_MAX: f32 = 0.05;
+/// the fuel reserve. **Re-derived at T22.03E (F3)**: measured **4.0–4.7 %** over four
+/// disjoint 32-seed draws and the 8 `SEEDS` (T22.03D's "3.5–4.0 %" was one draw; 5 %
+/// sat 0.3 points over the worst draw), so the bound is the worst measured plus
+/// **1.3 points (6 %)**. It still catches both plants on its own: no detour 7.3–8.2 %,
+/// no hysteresis 51.0 % (`gate-t2203e-bound-plants.txt`); 51–59 % before T22.03D.
+const PINNED_RESERVE_MAX: f32 = 0.06;
 /// T22.03D F1: the same at any fuel — measured 13–16 % after, 58–63 % before; the
 /// bound is ~1.3× after and a third of before.
 const PINNED_ANY_MAX: f32 = 0.2;

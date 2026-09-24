@@ -44,8 +44,14 @@ pub(super) struct Dest {
 /// and the detour it is holding off that rock.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Flight {
+    /// The life this memory belongs to (`PlayerState::deaths`): a respawned bot
+    /// starts clean, not holding a dead body's detour (T22.03E F6).
+    life: u16,
     blocked_for: f32,
-    detour: Option<(Vec2, f32)>,
+    /// The heading, the time left on it, and whether it is an **escape's** detour —
+    /// an escape is never cut short by a later escape, but a destination's detour
+    /// is dropped the tick an escape starts (T22.03E F6).
+    detour: Option<(Vec2, f32, bool)>,
     /// Detours taken since the bot last left the rock: each one takes the next
     /// clear heading, so a heading that turned out not to fly (two wells' pull
     /// beating the thrust down a crevice, measured) is not taken forever.
@@ -141,29 +147,49 @@ const CLEAR_STEP: f32 = 2.0;
 /// muted (R91), and a body pressed against it thrusts its tank dry inside the reach
 /// (measured: seed 7, one side of eight, 236 px from the hole after 4 s).
 fn clear_heading(world: &World, pos: Vec2, dir: Vec2) -> Vec2 {
-    clear_headings(world, pos, dir)
-        .first()
-        .copied()
-        .unwrap_or(dir)
+    clear_headings(world, pos, dir).next().unwrap_or(dir)
 }
 
-/// Every clear turn of `dir`, nearest first — [`clear_heading`]'s candidates that
-/// pass, for a detour that must try the next when one does not fly.
-fn clear_headings(world: &World, pos: Vec2, dir: Vec2) -> Vec<Vec2> {
+/// The sweep's steps: two body lengths at `CLEAR_STEP`.
+fn sweep_steps() -> i32 {
+    (2.0 * PLAYER_H / CLEAR_STEP).ceil() as i32
+}
+
+/// Is a body's box at `p` clear of rock?
+fn box_clear(world: &World, p: Vec2) -> bool {
+    !crate::physics::collide::aabb_overlaps_solid(
+        &world.map,
+        crate::physics::body::Body::new(p).aabb(),
+    )
+}
+
+/// Every clear turn of `dir`, nearest first and **lazily** — [`clear_heading`]
+/// takes the first and sweeps no further (T22.03E F1); a detour that must try the
+/// next when one does not fly walks on.
+fn clear_headings(world: &World, pos: Vec2, dir: Vec2) -> impl Iterator<Item = Vec2> + '_ {
     // Swept, not sampled at whole body lengths (T22.03D): a body under a thin
     // overhang found "up" open because the box one length up had cleared it, and
     // thrust into the overhang for a second at a time (`gate-t2203d-*.txt`).
-    let steps = (2.0 * PLAYER_H / CLEAR_STEP).ceil() as i32;
-    let open = |d: Vec2| {
-        (1..=steps).all(|k| {
-            let p = pos + d * (k as f32 * CLEAR_STEP);
-            !crate::physics::collide::aabb_overlaps_solid(
-                &world.map,
-                crate::physics::body::Body::new(p).aabb(),
-            )
+    let steps = sweep_steps();
+    turns(dir)
+        .filter(move |&d| (1..=steps).all(|k| box_clear(world, pos + d * (k as f32 * CLEAR_STEP))))
+}
+
+/// For a body **already overlapping rock**, whose every sweep fails on its first
+/// step: the turn of `dir` that is out of the rock soonest — the first step at
+/// which the box is clear — or `None` if no turn clears it within the sweep
+/// (T22.03E F6: such a body counted a detour try every window forever, each one
+/// "the next clear heading" of an empty list, i.e. `want` again).
+fn way_out(world: &World, pos: Vec2, dir: Vec2) -> Option<Vec2> {
+    let steps = sweep_steps();
+    turns(dir)
+        .filter_map(|d| {
+            (1..=steps)
+                .find(|&k| box_clear(world, pos + d * (k as f32 * CLEAR_STEP)))
+                .map(|k| (k, d))
         })
-    };
-    turns(dir).filter(|&d| open(d)).collect()
+        .min_by_key(|&(k, _)| k)
+        .map(|(_, d)| d)
 }
 
 /// `dir` and its turns, nearest first: 0, ±45°, ±90°, ±135°, back.
@@ -226,14 +252,30 @@ pub(super) fn steer(
 ) -> u8 {
     let pos = me.body.pos;
     let (mut want, urgent) = wanted(world, pos, me.body.vel, dest, fire);
+    // A new life starts with no memory of the last one's rock (T22.03E F6).
+    if flight.life != me.deaths {
+        *flight = Flight {
+            life: me.deaths,
+            ..Flight::default()
+        };
+    }
+    // **An escape outranks a destination's detour** (T22.03E F6): a bot a second
+    // into flying round a rock toward its enemy must not fly on into the black
+    // hole's reach, a fire or a flare that appeared meanwhile.
+    if urgent && flight.detour.is_some_and(|(_, _, escaping)| !escaping) {
+        flight.detour = None;
+    }
     // An escape is detoured too: straight out of a fire can be straight into the
     // rock the bot is pressed against, and an urgent thrust into rock spends the
     // reserve to nothing (a bot held 35 s at an empty tank, `gate-t2203d-*.txt`).
     if me.body.grounded {
-        *flight = Flight::default();
-    } else if let Some((dir, left)) = flight.detour {
+        *flight = Flight {
+            life: me.deaths,
+            ..Flight::default()
+        };
+    } else if let Some((dir, left, escaping)) = flight.detour {
         want = dir * BOT_SPACE_CRUISE;
-        flight.detour = (left > dt).then_some((dir, left - dt));
+        flight.detour = (left > dt).then_some((dir, left - dt, escaping));
     } else {
         let touching = touches_rock(world, me);
         if !touching {
@@ -248,15 +290,21 @@ pub(super) fn steer(
             0.0
         };
         if flight.blocked_for > BOT_SPACE_STUCK_WINDOW {
-            let open = clear_headings(world, pos, want.normalized());
-            let dir = open
-                .get(flight.tries % open.len().max(1))
-                .copied()
-                .unwrap_or(want.normalized());
-            flight.tries += 1;
-            flight.detour = Some((dir, BOT_SPACE_DETOUR));
             flight.blocked_for = 0.0;
-            want = dir * BOT_SPACE_CRUISE;
+            let open: Vec<Vec2> = clear_headings(world, pos, want.normalized()).collect();
+            // Each try takes the next clear heading; a body inside rock has none,
+            // and takes the way out instead, without counting a try — or, with no
+            // way out in reach, no detour at all (T22.03E F6).
+            let dir = if open.is_empty() {
+                way_out(world, pos, want.normalized())
+            } else {
+                flight.tries += 1;
+                Some(open[(flight.tries - 1) % open.len()])
+            };
+            if let Some(dir) = dir {
+                flight.detour = Some((dir, BOT_SPACE_DETOUR, urgent));
+                want = dir * BOT_SPACE_CRUISE;
+            }
         }
     }
     // **The margin is for leaving rock.** The pinning was a bot on a rock face at
@@ -613,6 +661,122 @@ mod tests {
         assert!(
             quiet.flare_ribbon().is_none() && escape(&quiet, near, Vec2::ZERO, None).is_none(),
             "control: no flare, yet an escape"
+        );
+    }
+
+    /// An open point with `PLAYER_H * 2` of clear air to its left and its right.
+    fn open_both_ways(w: &World) -> Vec2 {
+        let side = Vec2::new(2.0 * PLAYER_H, 0.0);
+        open_points(w)
+            .into_iter()
+            .find(|&p| clear_run(w, p - side, p + side))
+            .expect("an open point with clear air either side")
+    }
+
+    /// One tick of `steer` at rest where the bot is, with a held detour.
+    fn with_detour(w: &World, flight: &mut Flight, fire: Option<Vec2>) -> u8 {
+        let me = w.player(0).expect("ana");
+        steer(w, me, None, fire, flight, SIM_DT)
+    }
+
+    /// T22.03E F6: **a respawned bot does not fly its last life's detour.** A detour
+    /// left over from a death, held with nowhere to go: under a new life (`deaths`
+    /// moved) nothing is pressed and the memory is gone. Control: the same memory in
+    /// the same life flies it (`LEFT`).
+    #[test]
+    fn a_new_life_forgets_the_last_ones_detour() {
+        let mut w = space_world(4242);
+        let at = open_both_ways(&w);
+        put(&mut w, at);
+        let held = Flight {
+            detour: Some((Vec2::new(-1.0, 0.0), BOT_SPACE_DETOUR, false)),
+            ..Flight::default()
+        };
+        let mut same = held;
+        assert!(
+            with_detour(&w, &mut same, None) & button::LEFT != 0,
+            "control: a held detour left was not flown"
+        );
+        w.player_mut(0).expect("ana").deaths += 1;
+        let mut next = held;
+        let b = with_detour(&w, &mut next, None);
+        assert!(
+            b == 0 && next.detour.is_none(),
+            "a new life flew the old one's detour: buttons {b:08b}, {next:?}"
+        );
+    }
+
+    /// T22.03E F6: **an escape outranks a destination's detour.** A bot holding a
+    /// detour left, with a fire appearing on its left: it flies right, out of the
+    /// fire, and drops the detour. Control: an **escape's** own detour is not cut
+    /// short by the escape it serves (it keeps `LEFT`).
+    #[test]
+    fn an_escape_overrides_a_detour_toward_its_destination() {
+        let mut w = space_world(4242);
+        let at = open_both_ways(&w);
+        put(&mut w, at);
+        let fire = Some(at - Vec2::new(PLAYER_H, 0.0));
+        let mut flight = Flight {
+            detour: Some((Vec2::new(-1.0, 0.0), BOT_SPACE_DETOUR, false)),
+            ..Flight::default()
+        };
+        let b = with_detour(&w, &mut flight, fire);
+        assert!(
+            b & button::RIGHT != 0 && b & button::LEFT == 0 && flight.detour.is_none(),
+            "flew its detour into the fire: buttons {b:08b}, {flight:?}"
+        );
+        let mut escaping = Flight {
+            detour: Some((Vec2::new(-1.0, 0.0), BOT_SPACE_DETOUR, true)),
+            ..Flight::default()
+        };
+        assert!(
+            with_detour(&w, &mut escaping, fire) & button::LEFT != 0,
+            "control: an escape's own detour was cut short"
+        );
+    }
+
+    /// T22.03E F6: **a body inside rock takes the way out, and counts no try.** Every
+    /// swept heading of a box 6 px into a face fails on its first step, so the old
+    /// detour took "the next clear heading" of an empty list — `want`, straight back
+    /// in — and counted a try every window forever. Now it flies the turn that is
+    /// out soonest (a heading off the face) and `tries` stays 0.
+    #[test]
+    fn a_body_inside_rock_takes_the_way_out() {
+        let mut w = space_world(4242);
+        let dirs = [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(0.0, -1.0),
+        ];
+        // From an open point, fly a ray into the first rock, 6 px past touching.
+        let (at, into) = open_points(&w)
+            .into_iter()
+            .flat_map(|p| dirs.iter().map(move |&d| (p, d)))
+            .find_map(|(p, d)| {
+                let k = (1..200).find(|&k| !box_clear(&w, p + d * k as f32))?;
+                let at = p + d * (k as f32 + 5.0);
+                (clear_headings(&w, at, d).next().is_none() && way_out(&w, at, d).is_some())
+                    .then_some((at, d))
+            })
+            .expect("a point just inside a rock face with a way out");
+        put(&mut w, at);
+        let dest = Some(Dest {
+            at: at + into * crate::constants::FOV_DAY,
+            stop: 0.0,
+        });
+        let mut flight = Flight::default();
+        let me = w.player(0).expect("ana");
+        for _ in 0..((BOT_SPACE_STUCK_WINDOW / SIM_DT) as u32 + 2) {
+            steer(&w, me, dest, None, &mut flight, SIM_DT);
+        }
+        let (dir, _, _) = flight.detour.expect("no detour after the stuck window");
+        let out = (1..=sweep_steps()).find(|&k| box_clear(&w, at + dir * (k as f32 * CLEAR_STEP)));
+        assert!(
+            flight.tries == 0 && dir.dot(into) < 0.5 && out.is_some(),
+            "inside rock: detour {dir:?} (into the rock {into:?}), out after {out:?} steps, \
+             tries {}",
+            flight.tries
         );
     }
 }

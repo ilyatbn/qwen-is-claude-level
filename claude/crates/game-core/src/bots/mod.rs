@@ -36,8 +36,11 @@ use crate::constants::{
 /// `FLAME_GRAVITY_SCALE` are two constants nobody is going to zero, so this
 /// line would not notice the `FLAME_LIFE` bound being deleted and `inf`
 /// returning. Measured: it does not.
-/// `tests::zone_reach_is_finite_under_every_gravity_mode_and_space_is_the_lifetime_bound`
-/// is the guard, at runtime, on the value, under every mode the enum has. `GravityMode::Space` is a *scale* of zero and never a `GRAVITY` of
+/// Since R95 (T22.03C) no mode can return `inf`: the one whose scale is zero,
+/// `GravityMode::Space`, answers `BOT_SPACE_ZONE_REACH` without dividing (T22.03E
+/// F2 removed the runtime "finite under every mode" loop, which could no longer
+/// fail; `tests::zone_reach_in_space_is_the_measured_stand_off_and_the_lifetime_bound_binds_no_mode`
+/// asserts what still can move). `GravityMode::Space` is a *scale* of zero and never a `GRAVITY` of
 /// zero — `constants::GravityMode::scale` says why that distinction is load
 /// bearing — so if anyone ever reaches for the shortcut, this is where it
 /// stops.
@@ -1445,8 +1448,9 @@ mod tests {
         );
     }
 
-    /// **`zone_reach` is finite under every mode, and space's is the measured
-    /// stand-off** (T22.03 review, R44's neighbour; T22.03C, R95).
+    /// **Space's `zone_reach` is the measured stand-off, and the lifetime bound
+    /// binds no shipping mode** (T22.03 review, R44's neighbour; T22.03C, R95;
+    /// T22.03E F2).
     ///
     /// Before T22.03C space answered the `speed · FLAME_LIFE` lifetime bound,
     /// 1110 px, which refused every throw inside `FOV_DAY`; R95 replaced it with
@@ -1456,9 +1460,9 @@ mod tests {
     /// with the scale: **Standard 207.6 px, Low 405.1 px, Space 100 px**. The
     /// lifetime `min` binds in no shipping mode now (Low's scaled term is 415 px);
     /// it stays as the finite bound for a future mode whose scale nears zero, and
-    /// `GravityMode::ALL` is walked so such a mode reports an `inf` here.
+    /// Low's term staying under it is asserted (the doc's claim).
     #[test]
-    fn zone_reach_is_finite_under_every_mode_and_space_is_the_measured_stand_off() {
+    fn zone_reach_in_space_is_the_measured_stand_off_and_the_lifetime_bound_binds_no_mode() {
         use crate::constants::{GravityMode, FLAME_LIFE};
 
         let flames = crate::items::registry::def(MOLOTOV)
@@ -1474,14 +1478,17 @@ mod tests {
                  measuring a different arm of `zone_reach`"
             ),
         };
-        for mode in GravityMode::ALL {
-            let reach = zone_reach(flames, mode).expect("a flame reach");
-            assert!(
-                reach.is_finite() && reach > 0.0 && reach <= speed * FLAME_LIFE + FLAME_RADIUS,
-                "{mode:?}: the flame stand-off is {reach} px, outside the band the \
-                 two bounds allow"
-            );
-        }
+        // (T22.03E F2: a loop over `GravityMode::ALL` asserting every reach finite and
+        // under the lifetime bound stood here. It could not fail: the one mode whose
+        // scale reaches zero answers a constant, and the others are under the `min` by
+        // construction. What can move is asserted below — the lifetime bound itself.)
+        let low_ballistic = BOT_FLAME_REACH_SCALE * speed * speed
+            / (GRAVITY * FLAME_GRAVITY_SCALE * GravityMode::Low.scale());
+        assert!(
+            low_ballistic < speed * FLAME_LIFE,
+            "low's scaled ballistic term {low_ballistic:.1} px now passes the lifetime bound \
+             — the `min` binds a shipping mode, and this doc comment is wrong"
+        );
         let std = zone_reach(flames, GravityMode::Standard).expect("a flame reach");
         let low = zone_reach(flames, GravityMode::Low).expect("a flame reach");
         let space = zone_reach(flames, GravityMode::Space).expect("a flame reach");
@@ -1631,6 +1638,162 @@ mod tests {
             !fired && stats.rej_impact_guard > 0,
             "threw at an enemy in open space, nothing behind it: {stats:?}"
         );
+    }
+
+    /// T22.03E F4: **in zero-g a throw must reach its target**, and this is the test
+    /// that can see that half of `zone_refusal` (the review planted `reaches` → `true`
+    /// and all 41 `bots::` tests stayed green). A toxic grenade has no contact burst:
+    /// in zero-g it flies straight on through a floating enemy, bounces off whatever
+    /// rock is down the line and goes off where its fuse ends. One throw line, the
+    /// enemy moved along it: **far from where the fuse goes off, the bot refuses**
+    /// (`rej_impact_guard`); **control: the enemy where it goes off, the bot throws.**
+    /// Same aim, same flight, same landing — only whether it reaches the enemy moves.
+    #[test]
+    fn a_space_bot_throws_a_toxic_grenade_only_where_it_goes_off_near_the_enemy() {
+        use crate::constants::{MapScale, DEFAULT_MAP_GENERATOR, PLAYER_W};
+        use crate::items::registry::TOXIC_GRENADE;
+        let mut w = World::with_gravity(
+            SEED,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "thrower".into());
+        w.add_player(2, 0, "target".into());
+        give(&mut w, 1, TOXIC_GRENADE, 2);
+        wield(&mut w, 1, TOXIC_GRENADE);
+        let (wdef, wid) = crate::items::registry::def(TOXIC_GRENADE)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid).map(|w| (w, wid)),
+                _ => None,
+            })
+            .expect("the toxic grenade's weapon def");
+        let reach = zone_reach(wdef, GravityMode::Space).expect("a zone reach");
+        let clear = |w: &World, p: Vec2| {
+            !crate::physics::collide::aabb_overlaps_solid(
+                &w.map,
+                crate::physics::body::Body::new(p).aabb(),
+            )
+        };
+        let geo = w.map.space_geometry().expect("space");
+        let near_band = reach + HAZARD_CLEARANCE + PLAYER_W;
+        // (from, enemy far from the landing, enemy at the landing): searched for, and
+        // a map with none is a fixture error, not a pass.
+        let (from, far, at) = (0..w.map.mask.h as i32)
+            .step_by(16)
+            .flat_map(|y| (0..w.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
+            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .filter(|&p| clear(&w, p))
+            .flat_map(|from| (0..16).map(move |k| (from, k as f32 * std::f32::consts::TAU / 16.0)))
+            .find_map(|(from, angle)| {
+                let landing = crate::weapons::projectile::predict_impact(
+                    &w.map,
+                    wid,
+                    from,
+                    angle,
+                    w.wind,
+                    w.gravity,
+                    PREDICT_TICKS,
+                    SIM_DT,
+                )?;
+                let dir = Vec2::new(angle.cos(), angle.sin());
+                // Enemy spots down the clear part of the line, past the stand-off.
+                let spots: Vec<Vec2> = (0..)
+                    .map(|k| from + dir * (k as f32 * 4.0))
+                    .take_while(|&p| clear(&w, p) && (p - from).len() < FOV_DAY * 0.9)
+                    .filter(|&p| (p - from).len() >= near_band)
+                    .collect();
+                let at = spots
+                    .iter()
+                    .copied()
+                    .find(|&p| (p - landing).len() <= reach * 0.5)?;
+                let far = spots
+                    .iter()
+                    .copied()
+                    .find(|&p| (p - landing).len() >= reach * 2.0)?;
+                ((landing - from).len() >= near_band).then_some((from, far, at))
+            })
+            .expect("a clear throw line whose grenade goes off on it, with room either side");
+        let throws = |w: &mut World, target: Vec2| {
+            w.player_mut(1).expect("thrower").body.pos = from;
+            w.player_mut(2).expect("target").body.pos = target;
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            let fired =
+                (0..120).any(|t| b.think(w, t as f32 * SIM_DT, SIM_DT).buttons & button::FIRE != 0);
+            (fired, b.stats())
+        };
+        let (fired, stats) = throws(&mut w, far);
+        assert!(
+            !fired && stats.rej_impact_guard > 0,
+            "threw a toxic grenade that goes off {:.0} px past its enemy: {stats:?}",
+            (far - from).len()
+        );
+        let (fired, stats) = throws(&mut w, at);
+        assert!(
+            fired,
+            "control: never threw at an enemy where the grenade goes off: {stats:?}"
+        );
+    }
+
+    /// T22.03E F5: **`choose_weapon` does not pick what `should_fire` would refuse to
+    /// throw** — the other caller of `zone_refusal`, which nothing asserted directly
+    /// (the review's plant of it passed every unit test). A bot with a molotov in
+    /// hand and a pistol in the bag, its enemy inside the flame stand-off but out of
+    /// a shovel's reach: it selects the pistol, in both modes. Unrefused, the molotov
+    /// outscores the pistol (`zone_rate` 66.7 against 50) — the control, asserted.
+    #[test]
+    fn a_bot_too_close_for_its_molotov_selects_its_pistol() {
+        use crate::constants::MapScale;
+        for mode in [GravityMode::Standard, GravityMode::Space] {
+            let mut w = World::with_gravity(
+                SEED,
+                MapScale::Small,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                mode,
+            );
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "bot".into());
+            give(&mut w, 1, PISTOL, 30);
+            give(&mut w, 1, MOLOTOV, 2);
+            wield(&mut w, 1, MOLOTOV);
+            let wdef = |item| {
+                crate::items::registry::def(item)
+                    .and_then(|d| match d.kind {
+                        ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                        _ => None,
+                    })
+                    .expect("a weapon def")
+            };
+            let (molotov, pistol) = (wdef(MOLOTOV), wdef(PISTOL));
+            assert!(
+                zone_rate(molotov).unwrap_or(0.0) > pistol.damage / pistol.cooldown,
+                "control: the molotov no longer outscores the pistol unrefused"
+            );
+            let me = w.player(1).expect("bot").clone();
+            let reach = zone_reach(molotov, mode).expect("a flame reach");
+            let shovel = crate::weapons::melee::effective_reach(
+                match wdef(crate::items::registry::SHOVEL).delivery {
+                    crate::weapons::defs::Delivery::Melee { reach, .. } => reach,
+                    _ => panic!("the shovel is no longer melee"),
+                },
+            );
+            let dist = (shovel + reach) * 0.5;
+            let target = me.body.pos + Vec2::new(dist, 0.0);
+            let b = Bot::new(1, SEED, 0, 1.0);
+            let pick = b
+                .choose_weapon(&w, &me, target, me.body.pos)
+                .and_then(|slot| me.inventory.slot(slot))
+                .map(|s| s.item);
+            assert_eq!(
+                pick,
+                Some(PISTOL),
+                "{mode:?}: enemy {dist:.0} px off, inside the {reach:.0} px flame stand-off"
+            );
+        }
     }
 
     /// T21.43: **a bot riding a gun platform fires it** — a stream at the

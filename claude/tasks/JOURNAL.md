@@ -6987,3 +6987,11 @@ kills +0.02 ± 0.03, self-kills +0.002 ± 0.011, self-damage +1.0 ± 0.6 (own fi
 coordinator; space kills −14 %. Throws > 0 both modes. T22.03D's any-fuel tail → a rate (48 s run at 96 seeds pre-dates
 this). Red at cb63610; 2 report plants + 2 unit plants red. `--changed cb63610 --fast` exit 0, Rust 1677/0/26.
 
+
+## T22.03E — what the bot review found (builder, 2026-09-24)
+F4/F5 units: a toxic grenade in zero-g refused where it goes off far from the enemy, thrown where it goes off at it; too
+close for a molotov → pistol. F6 `steer`: `Flight` keyed to `deaths`, escape drops a destination's detour, a body with no
+clear heading takes `way_out`, no try counted. 5 plants, 5 reds. F3 bound 6 % (worst draw 4.7 %; no detour 7.3–8.2 %).
+F8 breach-vortex records from before the breach; no-skip plant red ×2 (385 px). F9 ZDBG gone; F1 lazy; F2 loop removed.
+F7 traced: the any-fuel tail is mostly **summed wells over the weakest thrust** ((18,−919) vs 900, humans too) → T22.03G
+(ruling); T22.03F winged, T22.03H walking shovel filed. `--changed 95acb77 --fast` exit 0 (Rust 2992/0/46, vitest 1091).
