@@ -6945,3 +6945,11 @@ escape. R91 wells muted inside the reach in `env_at` (by presence; plant: 9/208 
 + `set_bell`, round ends on nearest tick (was a float tie): bell correction 2.22 → 0.000 px. F8 scaled window, F9 cause
 gated + after-bell stillness arm (0.00 px). F7 untold: 4.60 px, 16/25 corrected vs told 0.27–0.43, 0. REPLAY 21. Bots skip
 items in the reach. `--changed dcbd008`: Rust 1662/0/25, vitest 1087, e2e 73/73, net smoke 25/25 (`gate-t2212c-*.txt`).
+
+## T22.12D — rounds counted in ticks (builder, 2026-09-24)
+R94: phases end on `phase_started_tick + round(s·SIM_HZ)` (one fn, Warmup/Playing/Ended window); `round_time` derived
+from the step count; `round_state.ends_tick`; integer `bell_seq`. 240/300/600 s = 14400/18000/36000 ticks (red at HEAD:
+14401/18002/36006, bell −1/−2/−6). Day/night + weather moved by the old drift (−6…+1 in 600 s); golden regenerated; REPLAY 22.
+F1: arm 5b (0.97×reach, 1.6 s, 150 ms latency, `bellErrorPx`): 0.48 px; setBell deleted red 4.76 px (0.5 s/no latency could
+not fail). F3: `relocate` event + short relocations settle (44.49 → 0.00 px). F4 past-reach assert (wells×4 red). F6, F7.
+`--changed 4ab7a8f --fast`: Rust 1666/0/25, vitest 1088; e2e (all mapped) 73/73; net smoke 25/25 (`gate-t2212d-*.txt`).
