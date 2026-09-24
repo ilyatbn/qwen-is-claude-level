@@ -73,11 +73,20 @@ async function frames(page) {
   }
 }
 
+/**
+ * T22.00G: `s` is the strength **the last drawn frame** used (`fogDrawnStrength`,
+ * written beside `fogAlpha` in `weather.ts::drawFog`), not `fogStrength`, which the
+ * scene computes live at the `debug()` call. On the ramp those are two clocks: at the
+ * 13–20 fps a loaded gate draws, one frame of `FOG_RAMP` is worth more than the 0.01
+ * tolerance below, and the pair read 0.783 against 0.794 in a gate. `live` is kept for
+ * the report only.
+ */
 function fogState(page) {
   return page.evaluate(() => {
     const d = window.__game.debug()
     return {
-      s: d.fogStrength ?? 0,
+      s: d.fogDrawnStrength,
+      live: d.fogStrength ?? 0,
       a: d.fogAlpha ?? 0,
       phase: d.phase ?? '',
       t: d.roundTime ?? 0,
@@ -120,14 +129,24 @@ try {
   // Poll for full strength rather than sleeping a fixed time: the round has a
   // warmup, the effect has a telegraph and the veil has a `FOG_RAMP`, and a flat
   // wait against any of them is a test that expires the day one of them moves.
-  s = { s: 0, a: 0, phase: '', t: 0 }
+  //
+  // Breaking at 0.99 stops the poll **on the ramp**, not at rest — harmless now that
+  // both ends of the comparison come off one drawn frame: if the ramp is still climbing
+  // when it samples, the alpha is still that frame's `FOG_SCREEN_ALPHA × strength`.
+  s = { s: 0, live: 0, a: 0, phase: '', t: 0 }
   for (let i = 0; i < 90; i++) {
     s = await fogState(page)
+    if (typeof s.s !== 'number') break
     if (s.s >= 0.99) break
     await sleep(500)
   }
-  console.log(`  in-match fog strength ${s.s.toFixed(3)}, veil alpha ${s.a.toFixed(3)} at round time ${s.t.toFixed(1)}`)
-  if (s.s < 0.99) {
+  console.log(
+    `  in-match fog strength ${Number(s.s).toFixed(3)} as drawn (live ${s.live.toFixed(3)}), ` +
+      `veil alpha ${s.a.toFixed(3)} at round time ${s.t.toFixed(1)}`,
+  )
+  // An absent field cannot fail a comparison (`undefined` compares false forever).
+  if (typeof s.s !== 'number') fail(`debug().fogDrawnStrength is ${s.s} — the drawn frame's strength never reached the page`)
+  else if (s.s < 0.99) {
     fail(
       `WEATHER=fog never reached full strength in the game client (peaked ${s.s.toFixed(3)}, ` +
         `phase "${s.phase}") — either no effect_start arrived or the client never walked the ramp`,

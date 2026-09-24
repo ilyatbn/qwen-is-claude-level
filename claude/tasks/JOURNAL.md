@@ -7036,3 +7036,9 @@ arms ending on it. `swirlFade` (smoothstep to 0 at outer) drives stacked halo di
 the inner end left a 51 stub) and the shader's `fadeFrom`. `breach-vortex`: no change > 12 at/inside REACH/2, both paths,
 presence control half-way out. Plants red: old flat (25), shader ring (232), no swirl (control). Green 3/3. Rubber-band arm
 red once in six (2.12 px ack error) — drawing-only change; reported, not parked.
+
+## T22.00G — fog-visible reads one frame (builder, 2026-09-25)
+`drawFog` writes the strength beside the alpha; `debug().fogDrawnStrength`; `fog-visible` compares on it, 0.01 kept.
+A 4 fps stall plant reproduced the gate's red on the old live read (0.781 vs 0.794) and is green on the drawn one; the
+`fogVeilAlpha` × 1.03 plant is red naming FOG_SCREEN_ALPHA. Green 3/3 alone, 2/2 at `--jobs 4` beside three heavy checks.
+flaky-test.md row: fixed, ready to un-park; `flaky: true` left for the owner.

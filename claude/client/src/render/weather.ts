@@ -156,6 +156,15 @@ export class WeatherLayer {
   }
 
   /**
+   * The strength `fogAlpha` was computed from — written in the same draw (T22.00G).
+   * The scene's live `fog.strength(roundTime)` is from the moment it is read, and on
+   * the ramp a frame or two of skew is worth more than `fog-visible`'s 0.01 tolerance.
+   */
+  get fogDrawnStrength(): number {
+    return this.lastFogStrength
+  }
+
+  /**
    * Is the fog currently painted by the shader?
    *
    * Read off the object rather than off the setting: the setting can be on where
@@ -167,6 +176,7 @@ export class WeatherLayer {
     return this.useShader() && (this.fogShader?.visible ?? false)
   }
   private lastFogAlpha = 0
+  private lastFogStrength = 0
   /** The High Quality fog, or `null` on a machine with no WebGL. */
   private fogShader: Phaser.GameObjects.Shader | null = null
   private readonly unsubscribeQuality: () => void
@@ -344,6 +354,7 @@ export class WeatherLayer {
     g.clear()
     const a = fogVeilAlpha(strength, hasFlashlight)
     this.lastFogAlpha = a
+    this.lastFogStrength = strength
     if (a < FOG_VISIBLE) {
       this.lastFogAlpha = 0
       // **The shader is an object, not a draw call.** Clearing the Graphics is

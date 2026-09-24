@@ -3188,6 +3188,9 @@ export class GameScene extends Phaser.Scene {
           // frame is a dead effect or a dead renderer.
           fogStrength: self.fog.strength(self.roundTime),
           fogAlpha: self.world?.weather.fogAlpha ?? 0,
+          // T22.00G: the strength `fogAlpha` was drawn from, off the same frame —
+          // `fogStrength` above is live, and on the ramp the two clocks disagree.
+          fogDrawnStrength: self.world?.weather.fogDrawnStrength ?? 0,
           // §B4. The overlay's own numbers, so the check reads what the player
           // sees rather than inferring it from health.
           death: {
