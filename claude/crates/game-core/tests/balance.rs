@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use game_core::bots::Bot;
 use game_core::constants::{
     GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_SPACE_FUEL_RESERVE,
-    DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, ROUND_SECONDS, SIM_DT,
+    DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H, ROUND_SECONDS, SIM_DT,
     SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
@@ -702,6 +702,16 @@ struct BotRound {
     weather: u32,
     player: u32,
     selfd: u32,
+    /// T22.03C: damage a bot did to itself — `Damage` events attributed to the
+    /// victim (`DeathCause::SelfInflicted`: its own blasts and fires, **and falls**,
+    /// which the event does not tell apart; the before/after compare like with like).
+    self_dmg: f32,
+    /// ...of it, taken **inside the bot's own fire or cloud** (a flame it owns, or a
+    /// burn patch it lit, within `PLAYER_H` of its body) — the thrower's own-hit
+    /// count R95 compares across modes; and the self-kills that ended there.
+    zone_self_dmg: f32,
+    zone_self_hits: u32,
+    zone_self_kills: u32,
     wanted: u32,
     shots: u32,
     player_dmg: f32,
@@ -720,6 +730,8 @@ struct BotRound {
     /// held one selected, and shots taken with one.
     zone_held: u32,
     zone_shots: u32,
+    /// ...of them, molotovs (`Burst::Flames`) — a bot picks toxic grenades up too.
+    flame_shots: u32,
     /// T22.03D, the review's definitions of a bot **pinned against rock**: alive
     /// ticks airborne (not grounded) and slower than `PINNED_SPEED` (`still_air`);
     /// of them, touching rock (the body's box grown by a pixel overlaps solid) at
@@ -783,16 +795,18 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let mut cells = std::collections::BTreeSet::new();
     // Per player: the current pinned run (at the reserve, any fuel), in ticks.
     let mut run: BTreeMap<u8, (u32, u32)> = BTreeMap::new();
+    let mut last_btn: BTreeMap<u8, u8> = BTreeMap::new();
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         for b in bots.iter_mut() {
             let inp = b.think(&w, now, SIM_DT);
+            last_btn.insert(b.player, inp.buttons);
             w.queue_input(b.player, inp);
             if let Some(slot) = b.wants_select() {
                 w.select_slot(b.player, slot);
             }
-            let zone = w
+            let burst = w
                 .player(b.player)
                 .filter(|p| p.alive)
                 .and_then(|p| p.inventory.slot(p.inventory.selected()))
@@ -801,19 +815,17 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                     ItemKind::Weapon(wid) => def(wid),
                     _ => None,
                 })
-                .is_some_and(|wd| {
-                    matches!(
-                        wd.burst,
-                        game_core::weapons::defs::Burst::Zone { .. }
-                            | game_core::weapons::defs::Burst::Flames { .. }
-                    )
-                });
+                .map(|wd| wd.burst);
+            let flames = matches!(burst, Some(game_core::weapons::defs::Burst::Flames { .. }));
+            let zone =
+                flames || matches!(burst, Some(game_core::weapons::defs::Burst::Zone { .. }));
             r.zone_held += u32::from(zone);
             if inp.buttons & button::FIRE != 0 {
                 r.wanted += 1;
                 if w.fire(b.player, now).is_ok() {
                     r.shots += 1;
                     r.zone_shots += u32::from(zone);
+                    r.flame_shots += u32::from(flames);
                 }
             }
             if let Some(slot) = b.wants_use() {
@@ -862,8 +874,31 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
         for p in w.players.iter().filter(|p| !p.alive) {
             run.insert(p.id, (0, 0));
         }
+        // Is `v` inside its own fire or cloud right now?
+        let in_own = |w: &World, v: u8| {
+            let Some(at) = w.player(v).map(|p| p.body.pos) else {
+                return false;
+            };
+            let near = |c: Vec2, r: f32| (c - at).len() < r + PLAYER_H;
+            w.projectiles.iter().any(|f| {
+                f.owner == v
+                    && game_core::weapons::flame::is_flame(f.weapon)
+                    && near(f.pos, game_core::constants::FLAME_RADIUS)
+            }) || w.burn.patches().iter().any(|b| {
+                matches!(b.source, game_core::weapons::explode::DamageSource::Player { id, .. } if id == v)
+                    && near(b.pos, b.radius)
+            })
+        };
         for e in w.drain_events() {
             match e {
+                GameEvent::Death {
+                    cause: DeathCause::SelfInflicted,
+                    victim,
+                    ..
+                } if in_own(&w, victim) => {
+                    r.selfd += 1;
+                    r.zone_self_kills += 1;
+                }
                 GameEvent::Death { cause, victim, .. } => match cause {
                     DeathCause::BlackHole => r.black_hole += 1,
                     DeathCause::Void => r.void += 1,
@@ -891,6 +926,32 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                     }
                     if matches!(cause, DeathCause::Player(_)) && attacker != Some(victim) {
                         r.player_dmg += amount;
+                    }
+                    if cause == DeathCause::SelfInflicted {
+                        r.self_dmg += amount;
+                        if in_own(&w, victim) {
+                            if std::env::var("ZDBG").is_ok() && r.zone_self_hits % 10 == 0 {
+                                let p = w.player(victim).unwrap();
+                                let fl: Vec<_> = w
+                                    .projectiles
+                                    .iter()
+                                    .filter(|f| {
+                                        f.owner == victim
+                                            && game_core::weapons::flame::is_flame(f.weapon)
+                                    })
+                                    .map(|f| {
+                                        (
+                                            (f.pos.x - p.body.pos.x) as i32,
+                                            (f.pos.y - p.body.pos.y) as i32,
+                                        )
+                                    })
+                                    .take(6)
+                                    .collect();
+                                eprintln!("Z seed {seed} {gravity:?} p{victim} t{:.1} pos {:.0},{:.0} vel {:.0},{:.0} g{} hp {:.0} amt {amount:.1} btn {:08b} flames {fl:?}", w.round_time, p.body.pos.x, p.body.pos.y, p.body.vel.x, p.body.vel.y, p.body.grounded as u8, p.health, last_btn.get(&victim).copied().unwrap_or(0));
+                            }
+                            r.zone_self_dmg += amount;
+                            r.zone_self_hits += 1;
+                        }
                     }
                 }
                 GameEvent::VortexTrip { .. } => r.vortex_trips += 1,
@@ -965,17 +1026,26 @@ fn space_bots_report() {
         "trips",
         "packs"
     );
-    use game_core::items::registry::MOLOTOV;
+    use game_core::items::registry::{MOLOTOV, TOXIC_GRENADE};
     let mut arms = Vec::new();
     for (hold, gravity) in [
         (None, GravityMode::Standard),
         (None, GravityMode::Space),
         (Some(MOLOTOV), GravityMode::Standard),
         (Some(MOLOTOV), GravityMode::Space),
+        (Some(TOXIC_GRENADE), GravityMode::Standard),
+        (Some(TOXIC_GRENADE), GravityMode::Space),
     ] {
+        // `BOTS_NATURAL=1`: only the two natural arms (a long seed count's cost).
+        if hold.is_some() && std::env::var("BOTS_NATURAL").is_ok() {
+            continue;
+        }
         let rs: Vec<BotRound> = seeds.iter().map(|&s| run_bots(s, gravity, hold)).collect();
-        if hold.is_some() {
-            println!("  -- every bot starts holding a molotov --");
+        if let Some(item) = hold {
+            println!(
+                "  -- every bot starts holding {} --",
+                game_core::items::registry::def(item).map_or("?", |d| d.key)
+            );
         }
         let n = (seeds.len() * BOTS) as f32;
         let per = |f: fn(&BotRound) -> f32| rs.iter().map(f).sum::<f32>() / n;
@@ -1009,9 +1079,16 @@ fn space_bots_report() {
             per(|r| r.cells as f32)
         );
         println!(
-            "          zone weapons: held {:.1}% of alive time, {:.2} throws a bot",
+            "          zone weapons: held {:.1}% of alive time, {:.2} throws a bot; self-damage \
+             {:.1} a bot a round, {:.1} of it in its own fire/cloud ({:.2} hits a throw), \
+             {:.3} self-kills there",
             ticks(|r| r.zone_held),
-            per(|r| r.zone_shots as f32)
+            per(|r| r.zone_shots as f32),
+            per(|r| r.self_dmg),
+            per(|r| r.zone_self_dmg),
+            rs.iter().map(|r| r.zone_self_hits).sum::<u32>() as f32
+                / rs.iter().map(|r| r.zone_shots).sum::<u32>().max(1) as f32,
+            per(|r| r.zone_self_kills as f32)
         );
         let secs = |t: u32| t as f32 * SIM_DT;
         println!(
@@ -1096,16 +1173,58 @@ fn space_bots_report() {
             longest(|r| r.longest)
         ));
     }
+    // At any fuel the **tail is a rate, not a maximum** (T22.03C): the longest run is
+    // one draw from the tail and moved 13 → 49 s with the seed count (and 48 s at
+    // `cb63610` over 96 seeds, before T22.03C touched anything) — a bot a vortex holds
+    // against rock burns its tank to nothing and stays. Runs of `PINNED_RUN_S` a bot a
+    // round: 2.4–2.5 at `d741b3d`, 0.02–0.04 after, bound `PINNED_ANY_RUNS_MAX`.
     let any = share(space, |r| r.pinned_any);
-    if any >= PINNED_ANY_MAX || longest(|r| r.longest_any) >= 2.0 * PINNED_RUN_S {
+    let any_runs = total(space, |r| r.runs_any) as f32 / n_bots;
+    if any >= PINNED_ANY_MAX || any_runs > PINNED_ANY_RUNS_MAX {
         failed.push(format!(
             "pinned against rock at any fuel {:.1} % (bound {:.0} %; standard {:.1} % on the \
-             same instrument), longest {:.0} s (bound {:.0} s)",
+             same instrument), {any_runs:.3} runs of {PINNED_RUN_S} s a bot a round (bound \
+             {PINNED_ANY_RUNS_MAX}), longest {:.0} s",
             100.0 * any,
             100.0 * PINNED_ANY_MAX,
             100.0 * share(&arms[0], |r| r.pinned_any),
             longest(|r| r.longest_any),
-            2.0 * PINNED_RUN_S
+        ));
+    }
+    // T22.03C (R95): **zone weapons are thrown in both modes** (the natural arms), a
+    // thrower is hit by its own fire **no more often a throw in space than in
+    // standard** (the molotov arms, where there are throws enough to divide by — the
+    // criterion `BOT_SPACE_ZONE_REACH` was picked by), and space bots kill themselves
+    // no more often than standard ones (the natural arms, the same run's control).
+    for (arm, name) in [(&arms[0], "standard"), (space, "space")] {
+        if total(arm, |r| r.zone_shots) == 0 {
+            failed.push(format!("{name}: no zone weapon thrown in a natural round"));
+        }
+    }
+    let own_hit = |arm: &[BotRound]| {
+        arm.iter().map(|r| r.zone_self_dmg).sum::<f32>()
+            / total(arm, |r| r.zone_shots).max(1) as f32
+    };
+    // (`BOTS_NATURAL` runs no molotov arms, and so checks nothing here.)
+    let held = |i: usize| arms.get(i).map(Vec::as_slice).unwrap_or(&[]);
+    let (std_hit, space_hit) = (own_hit(held(2)), own_hit(held(3)));
+    // And the molotov itself is thrown in space — toxic grenades alone keep the natural
+    // arm's count above zero (planted: the 1110 px reach back, and only this fired).
+    if arms.len() > 3 && total(held(3), |r| r.flame_shots) == 0 {
+        failed.push("molotov arm: no molotov thrown in space".to_string());
+    }
+    if arms.len() > 3 && (total(held(2), |r| r.zone_shots) == 0 || space_hit > std_hit) {
+        failed.push(format!(
+            "molotov arms: the thrower takes {space_hit:.2} hp of its own fire a throw in space \
+             against {std_hit:.2} in standard ({} standard throws)",
+            total(held(2), |r| r.zone_shots)
+        ));
+    }
+    if total(space, |r| r.selfd) > total(&arms[0], |r| r.selfd) {
+        failed.push(format!(
+            "self-kills: {} in space, {} in standard",
+            total(space, |r| r.selfd),
+            total(&arms[0], |r| r.selfd)
         ));
     }
     assert!(failed.is_empty(), "space: {}", failed.join("; "));
@@ -1117,9 +1236,13 @@ const SPACE_KILLS_FLOOR: f32 = 2.4;
 /// T22.03D F1: the share of alive time a space bot may spend pinned against rock at
 /// the fuel reserve — measured 3.5–4.0 % after, 51–59 % before.
 const PINNED_RESERVE_MAX: f32 = 0.05;
-/// T22.03D F1: the same at any fuel — measured 13–14 % after, 58–63 % before; the
-/// bound is ~1.5× after and a third of before.
+/// T22.03D F1: the same at any fuel — measured 13–16 % after, 58–63 % before; the
+/// bound is ~1.3× after and a third of before.
 const PINNED_ANY_MAX: f32 = 0.2;
+/// T22.03D F1 (as rewritten by T22.03C): any-fuel pinned runs of `PINNED_RUN_S` a bot
+/// a round — measured 0.02–0.04 after (8 and 32 seeds), 2.4–2.5 before; the no-detour
+/// plant 1.25.
+const PINNED_ANY_RUNS_MAX: f32 = 0.1;
 
 /// The full report. `cargo test -p game-core --release --test balance -- --ignored --nocapture`
 #[test]

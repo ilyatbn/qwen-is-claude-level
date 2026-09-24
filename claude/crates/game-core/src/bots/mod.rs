@@ -13,9 +13,10 @@ use rand_chacha::ChaCha8Rng;
 mod space;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLEE_HEALTH, BOT_SPACE_IN_RANGE,
-    BOT_SUIT_SHOP_BELOW, FLAME_GRAVITY_SCALE, FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY,
-    INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS, SPACE_RIM_CLEARANCE, STEP_UP,
+    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLAME_REACH_SCALE, BOT_FLEE_HEALTH,
+    BOT_SPACE_IN_RANGE, BOT_SPACE_ZONE_REACH, BOT_SUIT_SHOP_BELOW, FLAME_DPS, FLAME_GRAVITY_SCALE,
+    FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS,
+    SPACE_RIM_CLEARANCE, STEP_UP,
 };
 
 /// **The trap fired, and this is what it caught** (T22.03).
@@ -540,7 +541,7 @@ impl Bot {
 
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(me);
-        self.want_select = self.choose_weapon(me, aim_at, pos);
+        self.want_select = self.choose_weapon(world, me, aim_at, pos);
 
         Input {
             seq: 0, // the room owns sequencing; a bot has no packets to order
@@ -994,40 +995,16 @@ impl Bot {
         // A weapon that leaves a zone is dangerous well past its blast radius:
         // the fire outlives the explosion and the thrower walks into it. Guard
         // on the zone's own reach, not on `blast_radius`, which is 0 for these.
-        if let Some(reach) = zone_reach(w, world.gravity) {
-            if dist < reach + HAZARD_CLEARANCE {
+        match zone_refusal(world, w, wid, pos, target) {
+            Some(ZoneRefusal::TooClose) => {
                 self.stats.rej_blast_guard += 1;
                 return false;
             }
-            // T11.15, §B26. The check above asks how far away the *target* is,
-            // and a molotov is ballistic: thrown uphill or into a rise it falls
-            // short, onto the thrower, and no target-distance guard can see
-            // that. Walk the arc and ask where the hazard actually lands.
-            //
-            // `None` is "still flying after the cap", which is also a refusal:
-            // not knowing where it lands is not a reason to throw it.
-            let aim_at = (target - pos).angle();
-            let landing = crate::weapons::projectile::predict_impact(
-                &world.map,
-                wid,
-                pos,
-                aim_at,
-                world.wind,
-                world.gravity,
-                PREDICT_TICKS,
-                crate::constants::SIM_DT,
-            );
-            match landing {
-                Some(at) if (at - pos).len() < reach + HAZARD_CLEARANCE => {
-                    self.stats.rej_impact_guard += 1;
-                    return false;
-                }
-                None => {
-                    self.stats.rej_impact_guard += 1;
-                    return false;
-                }
-                Some(_) => {}
+            Some(ZoneRefusal::Landing) => {
+                self.stats.rej_impact_guard += 1;
+                return false;
             }
+            None => {}
         }
         // **Melee is not a blast and its range is not `range`.** For a swing,
         // `blast_radius` is the carve at the *tip* of the arc — `melee::swing`
@@ -1110,6 +1087,7 @@ impl Bot {
     /// closer with a bazooka beats standing still with nothing.
     fn choose_weapon(
         &self,
+        world: &World,
         me: &crate::player::state::PlayerState,
         target: Vec2,
         pos: Vec2,
@@ -1135,7 +1113,7 @@ impl Bot {
             // Damage per second is the axis that matters; a weapon that cannot
             // reach the target, or whose blast would catch us, is heavily
             // penalised but not disqualified — it is still better than nothing.
-            let dps = w.damage / w.cooldown.max(0.01);
+            let dps = zone_rate(w).unwrap_or(w.damage / w.cooldown.max(0.01));
             let mut score = dps;
             // How far this weapon can actually hit from. **Melee carries its
             // range in `Delivery`, not in `range`** (§F5): `w.range` is 0.0 for a
@@ -1158,6 +1136,14 @@ impl Bot {
             // a bot selects a weapon it will then refuse to use.
             let self_blast = !matches!(w.delivery, Delivery::Melee { .. });
             if self_blast && w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+                score *= 0.1;
+            }
+            // T22.03C: and a zone weapon `should_fire` would refuse to throw from
+            // here — **the same guard, called, not copied** (`zone_refusal`): too
+            // close, or the arc lands on us or nowhere. Scored only on the distance
+            // at first, bots held a molotov they could not throw for 4.7 % of their
+            // lives and standard kills fell 14 % (96 seeds, measured).
+            if zone_refusal(world, w, wid, pos, target).is_some() {
                 score *= 0.1;
             }
             if best.is_none_or(|(bs, _)| score > bs) {
@@ -1281,12 +1267,111 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMode) -> Opti
         // throws. That is a *behavioural* call and it belongs to
         // `T22.03B — bots in space`, which records it; what belongs here is
         // only that the division is safe and the value is derived.
+        //
+        // **T22.03C (R95): in space the lifetime bound is not the stand-off.**
+        // 1110 px refused every throw inside `FOV_DAY`, so a bot held a molotov it
+        // could never use. The ruling: not the 137.5 px ring-gap distance, but the
+        // stand-off at which a thrower is hit by its own fire **no more often than in
+        // standard mode**, measured — `BOT_SPACE_ZONE_REACH`, whose basis is there.
+        // A branch on the mode rather than a third `min`: the measured number is a
+        // behavioural one for zero-g, and as a `min` it would bind Low gravity too.
         crate::weapons::defs::Burst::Flames { speed, .. } => {
             let ballistic = speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE * gravity.scale());
-            Some(ballistic.min(speed * FLAME_LIFE) + FLAME_RADIUS)
+            let reach = (BOT_FLAME_REACH_SCALE * ballistic).min(speed * FLAME_LIFE) + FLAME_RADIUS;
+            Some(if gravity == GravityMode::Space {
+                BOT_SPACE_ZONE_REACH
+            } else {
+                reach
+            })
         }
         _ => None,
     }
+}
+
+/// Why a zone weapon may not be thrown from `pos` at `target`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoneRefusal {
+    /// The target is inside the hazard's reach (+ `HAZARD_CLEARANCE`).
+    TooClose,
+    /// The arc lands inside that reach of us, nowhere within `PREDICT_TICKS`, or
+    /// (zero-g) somewhere that never reaches the target.
+    Landing,
+}
+
+/// **The zone-weapon throw guard, in one place** (T22.03C): `should_fire` refuses on
+/// it and `choose_weapon` scores by it, so a bot never selects what it will not
+/// throw. `None` for a weapon that leaves no zone, or a throw that is fine.
+///
+/// A weapon that leaves a zone is dangerous well past its blast radius: the fire
+/// outlives the explosion and the thrower walks into it, so the target-distance
+/// check uses the zone's own reach, not `blast_radius` (0 for these). And T11.15,
+/// §B26: a molotov is ballistic — thrown uphill or into a rise it falls short, onto
+/// the thrower — so the arc is walked and the landing asked too. **`None` from
+/// `predict_impact` ("still flying after the cap") is a refusal** — not knowing where
+/// it lands is not a reason to throw it; R95 rejects reading it as "reaches the
+/// target", which in zero-g is a straight flight past a floating enemy.
+fn zone_refusal(
+    world: &World,
+    w: &crate::weapons::defs::WeaponDef,
+    wid: crate::items::registry::WeaponId,
+    pos: Vec2,
+    target: Vec2,
+) -> Option<ZoneRefusal> {
+    let reach = zone_reach(w, world.gravity)?;
+    if (target - pos).len() < reach + HAZARD_CLEARANCE {
+        return Some(ZoneRefusal::TooClose);
+    }
+    let landing = crate::weapons::projectile::predict_impact(
+        &world.map,
+        wid,
+        pos,
+        (target - pos).angle(),
+        world.wind,
+        world.gravity,
+        PREDICT_TICKS,
+        crate::constants::SIM_DT,
+    );
+    // **In zero-g it must also reach the target.** The flight is a straight line, so
+    // a toxic grenade (no contact burst) flies on through the target for its whole
+    // fuse (~960 px) and a molotov only bursts on the target if the line passes
+    // through its body — "not on me" alone let space bots spend their throws on empty
+    // space (space kills −12 %, paired over 96 seeds, measured). Under gravity the
+    // arc is not the chord and T11.15's guard is kept as it was.
+    let reaches = |at: Vec2| {
+        if world.gravity.scale() > 0.0 || (at - target).len() <= reach {
+            return true;
+        }
+        let contact = matches!(
+            w.delivery,
+            crate::weapons::defs::Delivery::Projectile {
+                explode_on_contact: true,
+                ..
+            }
+        );
+        let seg = at - pos;
+        let t = ((target - pos).dot(seg) / seg.dot(seg).max(f32::EPSILON)).clamp(0.0, 1.0);
+        contact && (pos + seg * t - target).len() <= crate::constants::PLAYER_W
+    };
+    match landing {
+        Some(at) if (at - pos).len() >= reach + HAZARD_CLEARANCE && reaches(at) => None,
+        _ => Some(ZoneRefusal::Landing),
+    }
+}
+
+/// T22.03C (`M22-RULINGS` R95): what a zone weapon is worth to `choose_weapon`, on
+/// the same per-trigger-pull axis as `damage / cooldown` — **the damage its hazard
+/// can deal one target over the hazard's life**, per cooldown: a molotov's flame
+/// `FLAME_DPS × FLAME_LIFE`, a toxic cloud's `dps × duration`. `damage / cooldown`
+/// is 0 for both (their harm is the hazard), which is why no bot ever threw one.
+/// `None` for everything else, **smoke included**: it deals no damage at all, so
+/// area damage over time gives it nothing and it stays unselected (checked, R95).
+fn zone_rate(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
+    let per_throw = match w.burst {
+        crate::weapons::defs::Burst::Flames { .. } => FLAME_DPS * FLAME_LIFE,
+        crate::weapons::defs::Burst::Zone { dps, duration, .. } => dps * duration,
+        _ => return None,
+    };
+    Some(per_throw / w.cooldown.max(0.01))
 }
 
 #[cfg(test)]
@@ -1360,31 +1445,20 @@ mod tests {
         );
     }
 
-    /// **`zone_reach` is finite in space, and the `FLAME_LIFE` bound is what
-    /// makes it so** (T22.03 review, R44's neighbour).
+    /// **`zone_reach` is finite under every mode, and space's is the measured
+    /// stand-off** (T22.03 review, R44's neighbour; T22.03C, R95).
     ///
-    /// This is the test the retired `const _` was standing in for, and it is
-    /// here because the replacement assertion cannot do the job. The original
-    /// trap read `Space.scale() > 0.0` and fired the day T22.03 zeroed it; what
-    /// replaced it asserts `GRAVITY > 0.0 && FLAME_GRAVITY_SCALE > 0.0` — two
-    /// constants nobody is ever going to set to zero. **Measured: deleting the
-    /// `.min(speed * FLAME_LIFE)` from `zone_reach` restores `inf` in space and
-    /// the whole suite stays green.** So the guard is a runtime one, on the
-    /// value, under every mode the enum has.
-    ///
-    /// The three numbers, measured rather than derived here:
-    /// **Standard 108.78 px, Low 207.55 px, Space 1110.00 px.** The first two
-    /// are the ballistic term `v²/(GRAVITY · FLAME_GRAVITY_SCALE · scale)`,
-    /// which doubles as the scale halves; the third is the lifetime term
-    /// `speed · FLAME_LIFE`, which is what binds once the ballistic term runs
-    /// away. That the lifetime bound does **not** bind under Standard or Low is
-    /// asserted too — a `min` that clamped everything would make the first two
-    /// equal to the third and this file's gravity test would still pass.
-    ///
-    /// `GravityMode::ALL`, not three literals, so a fourth mode cannot be added
-    /// without an `inf` here to report it.
+    /// Before T22.03C space answered the `speed · FLAME_LIFE` lifetime bound,
+    /// 1110 px, which refused every throw inside `FOV_DAY`; R95 replaced it with
+    /// `BOT_SPACE_ZONE_REACH`, measured. Under gravity the ballistic term
+    /// `v²/(GRAVITY · FLAME_GRAVITY_SCALE · scale)` is scaled by
+    /// `BOT_FLAME_REACH_SCALE` (the thrower's own-hit measurement) and still halves
+    /// with the scale: **Standard 207.6 px, Low 405.1 px, Space 100 px**. The
+    /// lifetime `min` binds in no shipping mode now (Low's scaled term is 415 px);
+    /// it stays as the finite bound for a future mode whose scale nears zero, and
+    /// `GravityMode::ALL` is walked so such a mode reports an `inf` here.
     #[test]
-    fn zone_reach_is_finite_under_every_gravity_mode_and_space_is_the_lifetime_bound() {
+    fn zone_reach_is_finite_under_every_mode_and_space_is_the_measured_stand_off() {
         use crate::constants::{GravityMode, FLAME_LIFE};
 
         let flames = crate::items::registry::def(MOLOTOV)
@@ -1400,45 +1474,162 @@ mod tests {
                  measuring a different arm of `zone_reach`"
             ),
         };
-
         for mode in GravityMode::ALL {
             let reach = zone_reach(flames, mode).expect("a flame reach");
             assert!(
-                reach.is_finite(),
-                "{mode:?}: the flame stand-off is {reach} — a bot walks to the \
-                 edge of the world rather than throwing"
-            );
-            assert!(
-                reach > 0.0 && reach <= speed * FLAME_LIFE + FLAME_RADIUS,
-                "{mode:?}: the flame stand-off is {reach} px, outside the band \
-                 the two bounds allow"
+                reach.is_finite() && reach > 0.0 && reach <= speed * FLAME_LIFE + FLAME_RADIUS,
+                "{mode:?}: the flame stand-off is {reach} px, outside the band the \
+                 two bounds allow"
             );
         }
-
-        let lifetime = speed * FLAME_LIFE + FLAME_RADIUS;
         let std = zone_reach(flames, GravityMode::Standard).expect("a flame reach");
         let low = zone_reach(flames, GravityMode::Low).expect("a flame reach");
         let space = zone_reach(flames, GravityMode::Space).expect("a flame reach");
-
         assert_eq!(
-            space, lifetime,
-            "space: the reach is {space} px, not the `speed * FLAME_LIFE` bound \
-             — the ballistic term wins at a gravity scale of zero, which is the \
-             division by zero this test exists for"
+            space, BOT_SPACE_ZONE_REACH,
+            "space: the molotov stand-off is {space} px, not R95's measured one"
         );
+        let ballistic = speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE);
         assert!(
-            std < low && low < space,
-            "the three reaches are not ordered Standard < Low < Space \
-             ({std:.2}, {low:.2}, {space:.2})"
+            (std - (BOT_FLAME_REACH_SCALE * ballistic + FLAME_RADIUS)).abs() < 0.01 && std < low,
+            "standard {std:.2} px is not the scaled ballistic term, or not under low's \
+             {low:.2}"
         );
-        // And the lifetime bound must **not** bind under the two live-gravity
-        // modes, or the `min` would be clamping everything to one number and
-        // `the_flame_stand_off_follows_the_match_gravity_and_the_zone_one_does_not`
-        // would be measuring nothing.
+    }
+
+    /// T22.03C (R95): **a zone weapon scores its area damage over time**, so a bot
+    /// selects a molotov or a toxic grenade over the out-of-reach shovel (the
+    /// arsenal's floor, 54.5 × 0.25), and **smoke scores nothing** — it deals no
+    /// damage. Control: `damage / cooldown`, the old score, is 0 for all three.
+    #[test]
+    fn zone_weapons_score_their_hazard_and_smoke_scores_nothing() {
+        use crate::constants::{SHOVEL_COOLDOWN, SHOVEL_DAMAGE};
+        use crate::items::registry::{SMOKE, TOXIC_GRENADE};
+        let wdef = |item| {
+            crate::items::registry::def(item)
+                .and_then(|d| match d.kind {
+                    ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                    _ => None,
+                })
+                .expect("a weapon def")
+        };
+        let floor = SHOVEL_DAMAGE / SHOVEL_COOLDOWN * 0.25;
+        for item in [MOLOTOV, TOXIC_GRENADE] {
+            let w = wdef(item);
+            assert_eq!(w.damage, 0.0, "control: {} does damage itself", w.key);
+            let rate = zone_rate(w).unwrap_or(0.0);
+            assert!(
+                rate > floor,
+                "{}: scores {rate:.1}, under the out-of-reach shovel's {floor:.1}",
+                w.key
+            );
+        }
+        let smoke = wdef(SMOKE);
         assert!(
-            low < lifetime * 0.5,
-            "the {lifetime:.2} px lifetime bound binds under low gravity too \
-             ({low:.2} px), so the `min` has flattened the ballistic term"
+            zone_rate(smoke).is_none() && smoke.damage == 0.0,
+            "smoke scores {:?}",
+            zone_rate(smoke)
+        );
+    }
+
+    /// T22.03C (R95, and the task's Done-when): **a bot holding a molotov in space
+    /// throws it** at an enemy between its stand-off and `FOV_DAY` — floating in
+    /// front of a rock, so the straight zero-g flight bursts on it. With the old
+    /// 1110 px lifetime reach every such throw was refused (planted: red). Control:
+    /// the same bot with the enemy in open space, nothing behind it — the flight
+    /// never lands (`predict_impact` → `None`), which R95 refuses to read as
+    /// "reaches".
+    #[test]
+    fn a_space_bot_throws_a_molotov_at_an_enemy_in_front_of_a_rock() {
+        use crate::constants::{MapScale, DEFAULT_MAP_GENERATOR, PLAYER_W};
+        let mut w = World::with_gravity(
+            SEED,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "thrower".into());
+        w.add_player(2, 0, "target".into());
+        give(&mut w, 1, MOLOTOV, 2);
+        wield(&mut w, 1, MOLOTOV);
+        let clear = |w: &World, p: Vec2| {
+            !crate::physics::collide::aabb_overlaps_solid(
+                &w.map,
+                crate::physics::body::Body::new(p).aabb(),
+            )
+        };
+        let d = (BOT_SPACE_ZONE_REACH + HAZARD_CLEARANCE + FOV_DAY) * 0.5;
+        // A target a body's width in front of a rock face to its right, and a
+        // thrower `d` to its left along clear air.
+        let geo = w.map.space_geometry().expect("space");
+        let (target, thrower) = (0..w.map.mask.h as i32)
+            .step_by(8)
+            .flat_map(|y| (0..w.map.mask.w as i32).step_by(8).map(move |x| (x, y)))
+            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .find_map(|t| {
+                let rock = !clear(&w, t + Vec2::new(PLAYER_W * 2.0, 0.0));
+                let from = t - Vec2::new(d, 0.0);
+                let open = (0..=(d / 4.0) as i32)
+                    .all(|k| clear(&w, from + Vec2::new(k as f32 * 4.0, 0.0)));
+                (rock && open).then_some((t, from))
+            })
+            .expect("a rock face with clear air in front of it");
+        let throws = |w: &mut World, from: Vec2, target: Vec2| {
+            w.player_mut(1).expect("thrower").body.pos = from;
+            w.player_mut(2).expect("target").body.pos = target;
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            let fired =
+                (0..120).any(|t| b.think(w, t as f32 * SIM_DT, SIM_DT).buttons & button::FIRE != 0);
+            (fired, b.stats())
+        };
+        let (fired, stats) = throws(&mut w, thrower, target);
+        assert!(
+            fired,
+            "never threw at an enemy {d:.0} px off in front of a rock: {stats:?}"
+        );
+        // Control: an enemy the same distance off with **nothing behind it** — a pair
+        // whose throw `predict_impact` says never lands. Searched for, not assumed,
+        // and a map with none is a fixture error, not a pass.
+        let wid = crate::items::registry::def(MOLOTOV)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => Some(wid),
+                _ => None,
+            })
+            .expect("the molotov's weapon id");
+        let dirs = [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(0.0, -1.0),
+        ];
+        let (from, to) = (0..w.map.mask.h as i32)
+            .step_by(16)
+            .flat_map(|y| (0..w.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
+            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .flat_map(|from| dirs.iter().map(move |&dir| (from, from + dir * d)))
+            .find(|&(from, to)| {
+                (0..=(d / 4.0) as i32).all(|k| clear(&w, from + (to - from) * (k as f32 * 4.0 / d)))
+                    && crate::weapons::projectile::predict_impact(
+                        &w.map,
+                        wid,
+                        from,
+                        (to - from).angle(),
+                        w.wind,
+                        w.gravity,
+                        PREDICT_TICKS,
+                        SIM_DT,
+                    )
+                    .is_none()
+            })
+            .expect("no pair on this map whose throw flies into open space");
+        let (fired, stats) = throws(&mut w, from, to);
+        assert!(
+            !fired && stats.rej_impact_guard > 0,
+            "threw at an enemy in open space, nothing behind it: {stats:?}"
         );
     }
 

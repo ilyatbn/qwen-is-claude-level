@@ -6978,3 +6978,12 @@ Pinned at the reserve 58.9 → 3.5 % (8 seeds), 53.2 → 3.7 % (32), runs ≥ 10
 F2 floor 2.4 (0.6 × measured); F3 overshoot asserted — the profile plant does not overshoot, it jitters (speed bound →
 dead band); F4 one placement snapshot + wire-proven hitches only (unfalsified: series mostly starts at it). Red at
 d741b3d, 3 plants red. Winged bots pinned in space: filed. `--changed d741b3d --fast` exit 0; breach-vortex ok ×5.
+
+## T22.03C — bots throw what burns (builder, 2026-09-24, R95)
+`zone_rate`: hazard dps × life / cooldown (molotov 66.7, toxic 53.3; smoke none). `zone_refusal` shared by `should_fire`
+and `choose_weapon`; zero-g throws must reach the target; `None` refused. Space molotov reach 100 px (own fire a throw
+2.5 vs standard 4.7, sweep 100–300); standard flame stand-off ×2 (4.2 → 1.8 hp a throw). Paired 96 seeds: standard
+kills +0.02 ± 0.03, self-kills +0.002 ± 0.011, self-damage +1.0 ± 0.6 (own fire +0.2) — not strictly ≤, put to the
+coordinator; space kills −14 %. Throws > 0 both modes. T22.03D's any-fuel tail → a rate (48 s run at 96 seeds pre-dates
+this). Red at cb63610; 2 report plants + 2 unit plants red. `--changed cb63610 --fast` exit 0, Rust 1677/0/26.
+

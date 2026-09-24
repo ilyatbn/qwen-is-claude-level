@@ -3644,6 +3644,18 @@ pub const BOT_SPACE_DETOUR: f32 = 1.0;
 /// swing's reach, a gun's `range`) from its enemy — inside it, with room for the
 /// enemy's drift.
 pub const BOT_SPACE_IN_RANGE: f32 = 0.75;
+/// T22.03C: the flame crowd's ballistic range `v²/g` scaled by this for a bot's
+/// molotov stand-off under gravity. **Measured, not derived**: at 1× (≈109 px
+/// standard) a thrower took 9–11 hp of its own fire per throw once bots threw at
+/// all (flames bounce and roll into the pits bots stand in, traced), and standard
+/// self-damage rose past its pre-change value (96 seeds, paired); at 2× it is back
+/// under it (T22.03C's As built).
+pub const BOT_FLAME_REACH_SCALE: f32 = 2.0;
+/// T22.03C (`M22-RULINGS` R95): a bot's molotov stand-off in space, px — the
+/// distance at which a thrower is hit by its own flames no more often than in
+/// standard mode, measured (T22.03C's As built). Not the flame's lifetime range
+/// (1110 px, every throw inside sight refused) and not the ring-gap distance.
+pub const BOT_SPACE_ZONE_REACH: f32 = 100.0;
 /// How far outside a hazard's edge a bot in space starts leaving it, px — the
 /// black hole's reach (and its telegraph), a vortex's no-escape disc, a flare's
 /// ribbon.
