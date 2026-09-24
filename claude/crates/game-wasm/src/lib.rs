@@ -151,6 +151,17 @@ impl GameCore {
         }
     }
 
+    /// Does the phase the server last announced take input? (T22.10E F-3)
+    ///
+    /// **`RoundPhase::accepts_input`, the server's own rule**, read by the
+    /// client's `Predictor`: while it is false the server drops every input and
+    /// steps each body a neutral tick, so the predictor stops keeping inputs for
+    /// replay and keys its reconciliation on the server tick instead. A second
+    /// spelling of the rule in TypeScript would be a second answer.
+    pub fn accepts_input(&self) -> bool {
+        self.phase.accepts_input()
+    }
+
     /// The gravity spelling off `lobby_state` (T22.02). Returns whether it was
     /// a mode this build knows; an unknown one leaves the old mode in place.
     ///

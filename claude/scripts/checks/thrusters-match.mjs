@@ -59,6 +59,18 @@ const SETTLE_FRAMES = 6
  * waits for it, so a longer round only costs time.
  */
 const ROUND_S = 25
+/**
+ * The bell arm's thrust: UP, which engages grounded or not (T22.10E F-5), plus
+ * the horizontal key toward the map's middle, for the better chance that bo is
+ * still *moving* at the bell — UP alone parks him under the first rock above
+ * (measured: vy 0.0 at the bell), and a parked body cannot show a rubber-band
+ * (F-3). It is a chance, not a guarantee (both keys parked him in a corner in one
+ * run of two), which is why F-3's assertion leans on `pending` and reports the
+ * drift rather than requiring it.
+ */
+const BELL_UP = 'w'
+/** How long after the bell the bell arm watches bo's own prediction (F-3). */
+const AFTER_BELL_S = 3
 /** Seconds of thrust before the poison kills fay — see the death arm. */
 const DEATH_BURN_S = 1.5
 
@@ -79,6 +91,59 @@ const frames = (c, n) =>
         requestAnimationFrame(tick)
       }),
     n,
+  )
+/**
+ * Every rendered frame on `c` until `afterS` past the bell (T22.10E F-3/F-5): the
+ * last frame before it (`pre`) and the correction jump of each snapshot that
+ * corrected after it (`post`, in order), with the most inputs pending. `null` if
+ * the bell never rings within `limitS`.
+ */
+const watchBell = (c, afterS, limitS) =>
+  c.page.evaluate(
+    ([after, limit]) =>
+      new Promise((resolve) => {
+        const out = { pre: null, post: [], pendingMax: 0, pendingPre: 0, frames: 0, travelled: 0 }
+        let from = null
+        let corr = null
+        let rang = null
+        const t0 = performance.now()
+        const tick = (t) => {
+          let d = null
+          try {
+            d = window.__game?.debug() ?? null
+          } catch {
+            d = null
+          }
+          const v = d?.vortex
+          if (d && v) {
+            if (d.phase === 'playing') {
+              out.pendingPre = Math.max(out.pendingPre, d.pendingInputs ?? 0)
+              out.pre = {
+                moveState: d.player?.moveState,
+                grounded: d.player?.grounded,
+                vx: d.player?.vx,
+                vy: d.player?.vy,
+                drawn: !!d.plumes?.[d.me]?.drawn,
+              }
+            } else if (d.phase === 'ended') {
+              rang ??= t
+              out.frames++
+              if (d.player) {
+                from ??= { x: d.player.x, y: d.player.y }
+                out.travelled = Math.hypot(d.player.x - from.x, d.player.y - from.y)
+              }
+              if (corr !== null && v.corrections > corr) out.post.push(v.lastJumpPx)
+              out.pendingMax = Math.max(out.pendingMax, d.pendingInputs ?? 0)
+            }
+            corr = v.corrections
+          }
+          if (rang !== null && t - rang > after * 1000) resolve(out)
+          else if (t - t0 > limit * 1000) resolve(null)
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+    [afterS, limitS],
   )
 /** Wait on a page predicate; `false` on timeout, never a throw. */
 const waitOn = (c, fn, arg, seconds, why) =>
@@ -229,7 +294,22 @@ try {
     fail(`control: bo starts the bell burn with ${pre.player?.fuel} fuel, which cannot last ${BELL_LEAD_S} s at ${K.get('JETPACK_DRAIN')}/s`)
   } else {
     ok(`control: bo starts the bell burn with ${pre.player.fuel.toFixed(2)} fuel, enough for ${BELL_LEAD_S} s and the engage floor`)
-    await bo.page.keyboard.down('s')
+    // Watched every frame from here to `AFTER_BELL_S` past the bell, in the page:
+    // the last pre-bell frame is the precondition (T22.10E F-5) and the frames
+    // after it are the rubber-band measure (F-3). Started before the key goes down
+    // so no pre-bell frame can be missed.
+    const watch = watchBell(bo, AFTER_BELL_S, BELL_LEAD_S + 25)
+    // **UP, not DOWN** (T22.10E F-5). This arm held DOWN and failed ~1 run in 6:
+    // bo can be standing on a rock or the rim floor when the lead starts, and a
+    // grounded player's thrusters engage only for a net *upward* push (`space.rs::
+    // engaging`, `M22-RULINGS` R42), so DOWN never lit and the "last burning frame
+    // before the bell" control went red. UP engages from the ground and in the air
+    // alike, and the claim — the bell puts out a plume whose thrust is still held —
+    // does not depend on the direction. The precondition is asserted, not assumed:
+    // the last frame before the bell must show bo airborne and burning.
+    const side = pre.player.x < pre.mapW / 2 ? 'd' : 'a'
+    await bo.page.keyboard.down(BELL_UP)
+    await bo.page.keyboard.down(side)
     try {
       const burning = await waitOn(
         bo,
@@ -245,7 +325,7 @@ try {
       if (!burning || before.phase !== 'playing' || !before.plumes?.[bo.id]?.drawn) {
         fail(`control: no burning frame before the bell, so "none after" proves nothing: ${JSON.stringify(brief(before, bo))}`)
       } else {
-        ok(`control: the last frames before the bell draw bo's plume (${before.results.secondsLeft.toFixed(2)} s left)`)
+        ok(`control: bo's plume is lit before the bell (${before.results.secondsLeft.toFixed(2)} s left)`)
         const rang = await waitOn(bo, () => window.__game.debug().phase === 'ended', null, BELL_LEAD_S + 15, 'bell')
         await frames(bo, SETTLE_FRAMES)
         const after = await dbg(bo)
@@ -257,17 +337,47 @@ try {
         const anaOut = await waitOn(ana, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'remote off after bell')
         const anaAfter = await plumeOf(ana, bo)
         await bo.page.screenshot({ path: join(shotsDir, 'thrusters-match-bell.png') })
+        const seen = await watch
+        const last = seen?.pre
         if (!rang) fail(`the round never ended: ${JSON.stringify(brief(after, bo))}`)
-        else {
+        else if (!last || last.moveState !== 2 || last.grounded !== false || !last.drawn) {
+          // F-5: the frame the bell interrupted must be a burn in the air, or the
+          // plume going out after it is the landing, not the bell.
+          fail(`control: the last frame before the bell was not an airborne burn, so the bell arm proves nothing: ${JSON.stringify(last)}`)
+        } else {
+          ok(`control: the last frame before the bell is an airborne burn (moveState 2, v ${last.vx.toFixed(1)}, ${last.vy.toFixed(1)})`)
           if (after.plumes?.[bo.id]?.drawn !== false) {
-            fail(`the round is over and bo's plume still fires, DOWN held: ${JSON.stringify(brief(after, bo))}`)
-          } else ok(`the bell rang with DOWN held: bo's own plume is out`)
+            fail(`the round is over and bo's plume still fires, thrust held: ${JSON.stringify(brief(after, bo))}`)
+          } else ok(`the bell rang with thrust held: bo's own plume is out`)
           if (!anaOut) fail(`the round is over and ana still draws bo's plume: ${JSON.stringify(anaAfter)}`)
           else ok("and ana's view of it is out too")
+          // **F-3: after the bell the prediction must stop rubber-banding.** The
+          // server stops taking input in `Ended` and steps every body a neutral
+          // tick; a client that went on predicting from its own inputs grew
+          // `pending` without bound and corrected every snapshot. The first
+          // correction after the bell is the inputs in flight at the bell, which the
+          // server drops (T21.30) — reported, not bounded; every later one must be
+          // a right prediction's.
+          const [first, ...rest] = seen.post
+          const worst = Math.max(0, ...rest)
+          const summary =
+            `${seen.post.length} corrections in ${AFTER_BELL_S} s after the bell (the first ${first?.toFixed(2) ?? '-'} px), ` +
+            `worst later jump ${worst.toFixed(2)} px, pending up to ${seen.pendingMax}`
+          const eps = K.get('RECONCILE_EPSILON_PX')
+          if (seen.frames < 10) fail(`control: only ${seen.frames} frames watched after the bell: ${summary}`)
+          else if (!(seen.pendingPre > 0)) {
+            // The pending half needs a predictor that was keeping inputs: one
+            // that never did reads 0 after the bell with the fix deleted.
+            fail(`control: bo's predictor kept no inputs before the bell, so none after proves nothing: ${summary}`)
+          }
+          else if (worst > eps || seen.pendingMax > Math.ceil(K.get('MAX_FRAME_DT') * K.get('SIM_HZ'))) {
+            fail(`the results screen rubber-bands bo's own body: ${summary} (bound RECONCILE_EPSILON_PX ${eps})`)
+          } else ok(`no rubber-band after the bell (bo drifted ${seen.travelled.toFixed(1)} px; ${seen.pendingPre} pending before it): ${summary}`)
         }
       }
     } finally {
-      await bo.page.keyboard.up('s')
+      await bo.page.keyboard.up(side)
+      await bo.page.keyboard.up(BELL_UP)
     }
   }
 

@@ -598,8 +598,9 @@ fn sending_more_inputs_in_one_tick_does_not_move_you_further() {
 /// against credit earned by ticks that had none. A client sending two per tick is
 /// never starved: over `ticks` ticks it must have consumed exactly `ticks` inputs.
 /// The control is the same client after `ticks` ticks of silence (one long frame's
-/// worth): it consumes more than one per tick while the backlog stands above the
-/// target — the mechanism is live — and still never more than the ticks elapsed.
+/// worth, whose inputs all arrive on the first tick after it): it consumes more
+/// than one per tick while the backlog stands above the target — the mechanism is
+/// live — and still never more than the ticks elapsed.
 #[test]
 fn the_backlog_catch_up_never_consumes_more_inputs_than_ticks() {
     use game_core::constants::MAX_FRAME_TICKS;
@@ -612,8 +613,12 @@ fn the_backlog_catch_up_never_consumes_more_inputs_than_ticks() {
             w.step(SIM_DT);
         }
         let mut seq = 0u32;
-        for _ in 0..ticks {
-            for _ in 0..2 {
+        for t in 0..ticks {
+            // After silence, the first tick carries the long frame's burst (T22.10E
+            // F-1: credit pays only for the gap just before a *burst* — a stream
+            // that never stands above the target clears it on its first tick).
+            let n = if t == 0 { silent.max(2) } else { 2 };
+            for _ in 0..n {
                 seq += 1;
                 w.queue_input(
                     1,
@@ -645,6 +650,163 @@ fn the_backlog_catch_up_never_consumes_more_inputs_than_ticks() {
         owed <= ticks + silent,
         "consumed {owed} inputs in {} ticks",
         ticks + silent
+    );
+}
+
+/// T22.10E F-1: **catch-up credit is not a bank.** The review of `d2d4c07`
+/// measured the exploit: credit accrued on every tick with no input — dead, in
+/// warmup, or merely silent — survived respawn and the start of `Playing`, and an
+/// honest one-per-tick client never spent it; so a client could bank a frame's
+/// worth while dead and later send a burst of future seqs for a 2× dash (5.00
+/// px/tick for 10 ticks against a walk's 2.50).
+///
+/// The ruling: credit accrues only while alive and while the phase accepts
+/// input, and is cleared at the end of any tick in which the player consumed an
+/// input and was left with no more than `INPUT_BACKLOG_TARGET` — so it pays only
+/// for the gap just before a burst. Each bank is followed by `honest` ticks at
+/// one input per tick, then one frame's burst of future seqs in one tick; the
+/// assertion is that no tick consumes two. The control is the honest long frame
+/// — silence straight into the burst — which must still consume two a tick, or
+/// the assertion is satisfied by a world that never catches up at all.
+#[test]
+fn catch_up_credit_cannot_be_banked_for_a_later_burst() {
+    use game_core::constants::{MAX_FRAME_TICKS, RESPAWN_DELAY, SIM_HZ};
+    let walk = |seq: u32| Input {
+        seq,
+        buttons: button::RIGHT,
+        aim: 0,
+    };
+    // Last consumed seq: everything below the oldest still queued, or all sent.
+    let consumed = |w: &World, sent: u32| w.oldest_queued_seq(1).map_or(sent, |s| s - 1);
+    // After the bank: `honest` ticks at one input per tick, then one burst of a
+    // frame's inputs; returns the most any single tick consumed.
+    let then_burst = |w: &mut World, honest: u32| {
+        let mut sent = 0u32;
+        let mut worst = 0u32;
+        let mut step = |w: &mut World, sent: u32, worst: &mut u32| {
+            let before = consumed(w, sent);
+            w.step(SIM_DT);
+            *worst = (*worst).max(consumed(w, sent) - before);
+        };
+        for _ in 0..honest {
+            sent += 1;
+            w.queue_input(1, walk(sent));
+            step(w, sent, &mut worst);
+        }
+        assert!(
+            honest == 0 || worst == 1,
+            "control: honest ticks consumed at most {worst} a tick, not one"
+        );
+        for _ in 0..MAX_FRAME_TICKS {
+            sent += 1;
+            w.queue_input(1, walk(sent));
+        }
+        for _ in 0..MAX_FRAME_TICKS {
+            step(w, sent, &mut worst);
+        }
+        assert_eq!(consumed(w, sent), sent, "the burst was never drained");
+        worst
+    };
+    let silent = MAX_FRAME_TICKS as u32;
+
+    // Silent while alive in `Playing` — the honest long frame's gap — then honest.
+    let silent_bank = || {
+        let mut w = playing();
+        spawn_at(&mut w, 1);
+        for _ in 0..silent {
+            w.step(SIM_DT);
+        }
+        w
+    };
+    // Dead for a respawn delay (no input can be consumed), then respawned.
+    let dead_bank = || {
+        let mut w = playing();
+        spawn_at(&mut w, 1);
+        if let Some(p) = w.player_mut(1) {
+            p.health = 0.0;
+        }
+        w.step(SIM_DT);
+        assert!(!w.player(1).expect("seated").alive, "control: not killed");
+        let limit = ((RESPAWN_DELAY + 1.0) * SIM_HZ as f32) as u32;
+        let mut ticks = 0;
+        while !w.player(1).expect("seated").alive {
+            assert!(ticks < limit, "control: never respawned");
+            w.step(SIM_DT);
+            ticks += 1;
+        }
+        w
+    };
+    // Silent through warmup, then `Playing` starts.
+    let warmup_bank = || {
+        let mut w = world();
+        w.set_phase(RoundPhase::Warmup);
+        spawn_at(&mut w, 1);
+        for _ in 0..silent {
+            w.step(SIM_DT);
+        }
+        assert_eq!(w.phase, RoundPhase::Warmup, "control: warmup ended early");
+        w.set_phase(RoundPhase::Playing);
+        w
+    };
+
+    let control = then_burst(&mut silent_bank(), 0);
+    assert_eq!(
+        control, 2,
+        "control: the honest long frame (silence, then its burst) consumed at most \
+         {control} a tick, so it no longer catches up and nothing below is proven"
+    );
+    for (bank, mut w, honest) in [
+        ("silent", silent_bank(), 60),
+        ("dead", dead_bank(), 60),
+        ("warmup", warmup_bank(), 60),
+        ("dead", dead_bank(), 0),
+        ("warmup", warmup_bank(), 0),
+    ] {
+        let worst = then_burst(&mut w, honest);
+        assert_eq!(
+            worst, 1,
+            "credit banked {bank}, then {honest} honest ticks: a later burst consumed \
+             {worst} inputs in one tick — a dash paid for by a bank (T22.10E F-1)"
+        );
+    }
+}
+
+/// **T22.10F, filed not fixed: a player whose inputs stop hangs in the air.**
+/// `World::apply_inputs` integrates only the players it has an input for (outside
+/// `Ended`), so a body with no input queued is not stepped at all — no gravity, no
+/// field, no drift — until inputs arrive again. This pins today's behaviour so the
+/// task that decides it (neutral-integrate the missing ticks, or let T22.10E's
+/// catch-up credit pay for them — the two interact) turns it red on purpose. The
+/// control is the same body sent neutral inputs: it falls.
+#[test]
+fn t2210f_a_silent_player_hangs_in_the_air_today() {
+    use game_core::constants::{PLAYER_H, SIM_HZ};
+    let run = |send: bool| {
+        let mut w = playing();
+        spawn_at(&mut w, 1);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos.y -= PLAYER_H * 8.0;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let from = w.player(1).expect("seated").body.pos;
+        for seq in 1..=SIM_HZ {
+            if send {
+                w.queue_input(1, Input::new(seq, 0, 0));
+            }
+            w.step(SIM_DT);
+        }
+        w.player(1).expect("seated").body.pos.y - from.y
+    };
+    let neutral = run(true);
+    assert!(
+        neutral > PLAYER_H,
+        "control: a body sent neutral inputs fell only {neutral:.2} px in a second"
+    );
+    let silent = run(false);
+    assert_eq!(
+        silent, 0.0,
+        "a silent player fell {silent:.2} px — T22.10F has changed this; flip the test"
     );
 }
 

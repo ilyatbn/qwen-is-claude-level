@@ -1020,6 +1020,15 @@ export class Core {
   }
 
   /**
+   * Whether the phase last given to `setPhase` takes input — the server's
+   * `RoundPhase::accepts_input`, not a TypeScript copy (T22.10E F-3). The
+   * `Predictor` reads it: in `ended` it keeps no inputs for replay.
+   */
+  acceptsInput(): boolean {
+    return this.inner.accepts_input()
+  }
+
+  /**
    * Which gravity this match is played under (T22.02).
    *
    * **`applyInput` reads it, so the mirror has to be told it.** The rule is

@@ -1659,6 +1659,8 @@ export class GameScene extends Phaser.Scene {
     }
     if (mine && this.predictor) {
       this.predictor.reconcile({
+        // T22.10E F-3: the results screen's reconciliation keys on the tick.
+        tick: s.tick,
         lastInputSeq: s.lastInputSeq,
         state: {
           x: mine.x,
@@ -3590,6 +3592,7 @@ export class GameScene extends Phaser.Scene {
             maxEasedJumpPx: self.predictor?.stats.maxEasedJumpPx ?? 0,
             maxAckErrorPx: self.predictor?.stats.maxAckErrorPx ?? 0,
             snaps: self.predictor?.stats.snaps ?? 0,
+            settled: self.predictor?.stats.settled ?? 0,
           },
           darkness: self.serverDarkness,
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte

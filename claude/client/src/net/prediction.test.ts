@@ -32,6 +32,10 @@ function inp(seq: number, buttons: number, aim = 0): InputFrame {
 function reset(): { spawnX: number; spawnY: number } {
   core.generate(4242n, MapScale.Small)
   mirror.generate(4242n, MapScale.Small)
+  // T22.10E: the phase is the core's, and a test that rings the bell must not
+  // leave the next one on a results screen.
+  core.setPhase('playing')
+  mirror.setPhase('playing')
   const sp = core.meta.spawn_points[0]!
   core.removePlayer(0)
   mirror.removePlayer(0)
@@ -51,14 +55,14 @@ describe('the pending buffer', () => {
     expect(p.stats.pending).toBe(5)
 
     const s = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 3, state: s })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: s })
     expect(p.pendingInputs.map((q) => q.input.seq)).toEqual([4, 5])
   })
 
   it('an acknowledgement for everything empties the buffer', () => {
     const p = new Predictor(core, 0)
     for (let i = 1; i <= 5; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
-    p.reconcile({ lastInputSeq: 99, state: core.playerState(0)! })
+    p.reconcile({ tick: 0, lastInputSeq: 99, state: core.playerState(0)! })
     expect(p.stats.pending).toBe(0)
   })
 })
@@ -87,7 +91,7 @@ describe('the reconciliation identity', () => {
     core.setPlayerState(0, { ...core.playerState(0)!, x: core.playerState(0)!.x + 40 })
     // Client predicts all 12.
     for (const f of all) p.pushInput(f, DT)
-    p.reconcile({ lastInputSeq: 4, state: serverState })
+    p.reconcile({ tick: 0, lastInputSeq: 4, state: serverState })
     expect(p.stats.corrections).toBe(1)
 
     // The server then processes 5..12 itself.
@@ -114,7 +118,7 @@ describe('the reconciliation identity', () => {
 
     // Acknowledge *everything*, so nothing is replayed — the client should then
     // sit at the server state rather than 8 inputs ahead of it.
-    p.reconcile({ lastInputSeq: 12, state: serverState })
+    p.reconcile({ tick: 0, lastInputSeq: 12, state: serverState })
     for (const f of all.slice(4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
 
     expect(Math.abs(core.playerState(0)!.x - mirror.playerState(0)!.x)).toBeGreaterThan(1)
@@ -127,7 +131,7 @@ describe('corrections', () => {
     p.pushInput(inp(1, 0), DT)
     const s = core.playerState(0)!
     const nudged: PlayerState = { ...s, x: s.x + C().RECONCILE_EPSILON_PX * 0.5 }
-    p.reconcile({ lastInputSeq: 1, state: nudged })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: nudged })
     expect(p.stats.corrections).toBe(0)
     // and it did not move us
     expect(core.playerState(0)!.x).toBeCloseTo(s.x, 5)
@@ -138,7 +142,7 @@ describe('corrections', () => {
     p.pushInput(inp(1, 0), DT)
     const s = core.playerState(0)!
     const nudged: PlayerState = { ...s, x: s.x + 10 }
-    p.reconcile({ lastInputSeq: 1, state: nudged })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: nudged })
     expect(p.stats.corrections).toBe(1)
     expect(p.stats.lastCorrectionPx).toBeCloseTo(10, 3)
     expect(core.playerState(0)!.x).toBeCloseTo(nudged.x, 3)
@@ -149,7 +153,7 @@ describe('corrections', () => {
     for (const dx of [10, 40, 25]) {
       p.pushInput(inp(1, 0), DT)
       const s = core.playerState(0)!
-      p.reconcile({ lastInputSeq: 1, state: { ...s, x: s.x + dx } })
+      p.reconcile({ tick: 0, lastInputSeq: 1, state: { ...s, x: s.x + dx } })
     }
     expect(p.stats.maxCorrectionPx).toBeGreaterThanOrEqual(39)
   })
@@ -160,7 +164,7 @@ describe('render smoothing', () => {
     const p = new Predictor(core, 0)
     p.pushInput(inp(1, 0), DT)
     const s = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 1, state: { ...s, x: s.x + 20 } })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: { ...s, x: s.x + 20 } })
 
     const before = p.renderPos.x
     p.updateRender(DT)
@@ -175,7 +179,7 @@ describe('render smoothing', () => {
     const p = new Predictor(core, 0)
     p.pushInput(inp(1, 0), DT)
     const s = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 1, state: { ...s, x: s.x + 400 } })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: { ...s, x: s.x + 400 } })
     expect(p.stats.snaps).toBe(1)
     expect(p.renderPos.x).toBeCloseTo(core.playerState(0)!.x, 3)
   })
@@ -185,7 +189,7 @@ describe('render smoothing', () => {
     const a = new Predictor(core, 0)
     a.pushInput(inp(1, 0), DT)
     const s = core.playerState(0)!
-    a.reconcile({ lastInputSeq: 1, state: { ...s, x: s.x + 20 } })
+    a.reconcile({ tick: 0, lastInputSeq: 1, state: { ...s, x: s.x + 20 } })
     for (let i = 0; i < 6; i++) a.updateRender(1 / 60)
     const after60 = a.renderPos.x
     const target = core.playerState(0)!.x
@@ -194,7 +198,7 @@ describe('render smoothing', () => {
     const b = new Predictor(core, 0)
     b.pushInput(inp(1, 0), DT)
     const s2 = core.playerState(0)!
-    b.reconcile({ lastInputSeq: 1, state: { ...s2, x: s2.x + 20 } })
+    b.reconcile({ tick: 0, lastInputSeq: 1, state: { ...s2, x: s2.x + 20 } })
     for (let i = 0; i < 3; i++) b.updateRender(1 / 30)
     const after30 = b.renderPos.x
     const target2 = core.playerState(0)!.x
@@ -257,7 +261,7 @@ describe('a hurt player is predicted at the hurt speed (T20.19)', () => {
       p.pushInput(inp(seq, h.button), DT)
       mirror.applyInput(0, seq, h.button, 0, DT)
       const s = mirror.playerState(0)!
-      p.reconcile({ lastInputSeq: seq, state: { ...s, health: h.snapshot } })
+      p.reconcile({ tick: 0, lastInputSeq: seq, state: { ...s, health: h.snapshot } })
       if (seq === FRAMES / 2) correctionsAtHalf = p.stats.corrections
     }
     return {
@@ -346,6 +350,7 @@ describe('a hurt player is predicted at the hurt speed (T20.19)', () => {
     const hurt = C().BASE_HEALTH / 4
     // Far enough off to be above the epsilon, or reconcile returns early.
     p.reconcile({
+      tick: 0,
       lastInputSeq: 1,
       state: { ...s, x: s.x + C().RECONCILE_EPSILON_PX * 10, health: hurt },
     })
@@ -395,7 +400,7 @@ describe('the correction jump', () => {
     for (let i = 1; i <= 3; i++) mirror.applyInput(0, i, BTN.RIGHT, 0, DT)
     const at3 = mirror.playerState(0)!
     const before = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 3, state: at3 })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: at3 })
     // The prediction's own error at the acked input is ~0 …
     expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
     // … while the pending inputs' travel is past the epsilon (the control that this
@@ -416,7 +421,7 @@ describe('the correction jump', () => {
     for (let i = 1; i <= 6; i++) p.pushInput(inp(i, BTN.RIGHT), DT)
     const now = core.playerState(0)!
     // The server says: after seq 3 the body is where this client has it after 6.
-    p.reconcile({ lastInputSeq: 3, state: now })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: now })
     expect(p.stats.lastAckErrorPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
     expect(p.stats.corrections).toBe(1)
     expect(p.stats.lastJumpPx).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
@@ -433,10 +438,10 @@ describe('the correction jump', () => {
     for (let i = 1; i <= 4; i++) p.pushInput(inp(i, BTN.LEFT), DT)
     mirror.applyInput(0, 1, BTN.LEFT, 0, DT)
     const at1 = mirror.playerState(0)!
-    p.reconcile({ lastInputSeq: 1, state: at1 })
-    p.reconcile({ lastInputSeq: 1, state: at1 })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: at1 })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: at1 })
     expect(p.stats.corrections).toBe(0)
-    p.reconcile({ lastInputSeq: 1, state: { ...at1, y: at1.y + 10 } })
+    p.reconcile({ tick: 0, lastInputSeq: 1, state: { ...at1, y: at1.y + 10 } })
     expect(p.stats.corrections).toBe(1)
   })
 
@@ -457,7 +462,7 @@ describe('the correction jump', () => {
     // The control: the pending travel is past the render's snap distance (64 px,
     // `prediction.ts::SNAP_PX`), so the old gate snapped on it.
     expect(Math.hypot(now.x - at3.x, now.y - at3.y)).toBeGreaterThan(64)
-    p.reconcile({ lastInputSeq: 3, state: { ...at3, x: at3.x + 5 } })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...at3, x: at3.x + 5 } })
     expect(p.stats.corrections).toBe(1)
     expect(p.stats.snaps).toBe(0)
   })
@@ -471,7 +476,7 @@ describe('the correction jump', () => {
     const p = new Predictor(core, 0)
     for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
     const s = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 3, state: { ...s, vx: s.vx + 400 } })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...s, vx: s.vx + 400 } })
     expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
     expect(p.stats.corrections).toBe(1)
   })
@@ -480,8 +485,171 @@ describe('the correction jump', () => {
     const p = new Predictor(core, 0)
     for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
     const s = core.playerState(0)!
-    p.reconcile({ lastInputSeq: 3, state: { ...s, x: s.x + 40 } })
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...s, x: s.x + 40 } })
     expect(p.stats.lastJumpPx).toBeCloseTo(40, 3)
     expect(p.stats.lastAckErrorPx).toBeCloseTo(40, 3)
   })
+})
+
+/**
+ * T22.10E F-6: `alive` and `health` are in the gate beside `moveMods` because
+ * prediction never changes them and the gate now holds while moving (T22.10D F8).
+ * Each alone, with the position right at the ack, must still be installed — the
+ * control is `is ~0 when the prediction was right` above, the same fixture with
+ * nothing changed, which corrects nothing.
+ */
+describe('the reconcile gate carries what the position cannot (T22.10E F-6)', () => {
+  function movingAt3(): { p: Predictor; at3: PlayerState } {
+    const p = new Predictor(core, 0)
+    // Left: this seed's spawn has open ground that way.
+    for (let i = 1; i <= 6; i++) p.pushInput(inp(i, BTN.LEFT), DT)
+    for (let i = 1; i <= 3; i++) mirror.applyInput(0, i, BTN.LEFT, 0, DT)
+    return { p, at3: mirror.playerState(0)! }
+  }
+
+  it('a change of health alone, while moving, is installed', () => {
+    const { p, at3 } = movingAt3()
+    expect(Math.abs(at3.vx)).toBeGreaterThan(0)
+    const hurt = C().BASE_HEALTH / 2
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...at3, health: hurt } })
+    expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
+    expect(p.stats.corrections).toBe(1)
+    expect(core.playerState(0)!.health).toBe(hurt)
+  })
+
+  it('a death alone, while moving, is installed', () => {
+    const { p, at3 } = movingAt3()
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...at3, alive: false } })
+    expect(p.stats.lastAckErrorPx).toBeLessThan(0.01)
+    expect(p.stats.corrections).toBe(1)
+    expect(core.playerState(0)!.alive).toBe(false)
+  })
+})
+
+/**
+ * T22.10E F-4: the maxima the harness prints leave out the first reconcile after
+ * a relocation or an ack gap — that snapshot measures the event (a trip, the
+ * round change of a rematch), not the prediction. Only the first: the control is
+ * the next correction, which counts.
+ */
+describe('the rubber-band maxima (T22.10E F-4)', () => {
+  const off = () => C().RECONCILE_EPSILON_PX * 10
+
+  it('leave out the first correction after an ack gap, and only the first', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: core.playerState(0)! })
+    // The seq ran on through a results screen: 4..9 were never pushed.
+    for (let i = 10; i <= 12; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 11, state: { ...s, x: s.x + off() } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.lastJumpPx).toBeGreaterThan(off() / 2)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    expect(p.stats.maxAckErrorPx).toBe(0)
+    p.pushInput(inp(13, 0), DT)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 13, state: { ...t, x: t.x + off() } })
+    expect(p.stats.corrections).toBe(2)
+    expect(p.stats.settled).toBe(1)
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+    expect(p.stats.maxAckErrorPx).toBeGreaterThan(off() / 2)
+  })
+
+  it('leave out the first correction after a relocation, and only the first', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    const s = core.playerState(0)!
+    // Past the render's snap distance (`prediction.ts::SNAP_PX`, 64), or it is no relocation.
+    expect(p.relocate(s.x, s.y - 100)).toBe(true)
+    const r = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 3, state: { ...r, x: r.x + off() } })
+    expect(p.stats.corrections).toBe(1)
+    expect(p.stats.lastJumpPx).toBeGreaterThan(off() / 2)
+    expect(p.stats.maxEasedJumpPx).toBe(0)
+    p.pushInput(inp(4, 0), DT)
+    const t = core.playerState(0)!
+    p.reconcile({ tick: 0, lastInputSeq: 4, state: { ...t, x: t.x + off() } })
+    expect(p.stats.maxEasedJumpPx).toBeGreaterThan(off() / 2)
+  })
+})
+
+/**
+ * T22.10E F-3: **after the bell the prediction runs the server's neutral ticks
+ * and keeps nothing.** The server drops every input in `ended` and steps each
+ * body a neutral tick (T21.30); the ack stands still. The client kept predicting
+ * from its own inputs, grew `pending` without bound (14 → 301 in a match), and
+ * corrected every snapshot against a stale prediction — measured, 104 corrections
+ * and jumps to 41 px over one results screen.
+ *
+ * Staged with the mirror as the server: a body in the air (so a neutral tick
+ * still moves it), two inputs in flight at the bell (the server drops them), the
+ * client told of the bell two ticks late, and snapshots every
+ * `SIM_HZ / SNAPSHOT_HZ` ticks delivered after a jittered number of local steps.
+ */
+describe('the results screen (T22.10E F-3)', () => {
+  function bell(jitter: number[]) {
+    reset()
+    const lift = (c: Core) => {
+      const b = c.playerState(0)!
+      c.setPlayerState(0, { ...b, y: b.y - C().PLAYER_H * 12, vy: 0, grounded: false })
+    }
+    lift(core)
+    lift(mirror)
+    const p = new Predictor(core, 0)
+    const per = C().SIM_HZ / C().SNAPSHOT_HZ
+    let seq = 0
+    let tick = 0
+    // Playing: the server consumes 1..4; 5..6 are in flight when the bell rings.
+    for (let i = 0; i < 6; i++) p.pushInput(inp(++seq, BTN.LEFT), DT)
+    for (let s = 1; s <= 4; s++) {
+      mirror.applyInput(0, s, BTN.LEFT, 0, DT)
+      tick++
+    }
+    const acked = 4
+    mirror.setPhase('ended')
+    const neutral = () => {
+      mirror.applyInput(0, acked, 0, 0, DT)
+      tick++
+    }
+    // The client hears of it two ticks late, still sending.
+    for (let i = 0; i < 2; i++) {
+      neutral()
+      p.pushInput(inp(++seq, BTN.LEFT), DT)
+    }
+    core.setPhase('ended')
+    const from = mirror.playerState(0)!
+    const jumps: number[] = []
+    let pendingMax = 0
+    for (let i = 0; i < 10; i++) {
+      for (let k = 0; k < per; k++) neutral()
+      for (let k = 0; k < per + jitter[i % jitter.length]!; k++) {
+        p.pushInput(inp(++seq, BTN.LEFT), DT)
+        pendingMax = Math.max(pendingMax, p.stats.pending)
+      }
+      const before = p.stats.corrections
+      p.reconcile({ tick, lastInputSeq: acked, state: mirror.playerState(0)! })
+      if (p.stats.corrections > before) jumps.push(p.stats.lastJumpPx)
+    }
+    const to = mirror.playerState(0)!
+    return { jumps, pendingMax, fell: Math.hypot(to.x - from.x, to.y - from.y), stats: p.stats }
+  }
+
+  for (const [name, jitter] of [
+    ['on time', [0]],
+    // The first snapshot anchors; after it the local body is behind the server
+    // (it has run fewer ticks than the snapshot's and must run the ones it owes),
+    // then ahead, then behind again.
+    ['jittered', [0, -1, 2, -2, 1, -1, 1, 0]],
+  ] as const) {
+    it(`keeps nothing pending and corrects only the bell itself (${name})`, () => {
+      const r = bell([...jitter])
+      // The control: the body moved after the bell, so a stale prediction would show.
+      expect(r.fell).toBeGreaterThan(C().RECONCILE_EPSILON_PX * 10)
+      expect(r.pendingMax).toBe(0)
+      // The first correction is the two inputs the server dropped at the bell.
+      const [, ...later] = r.jumps
+      expect(Math.max(0, ...later)).toBeLessThanOrEqual(C().RECONCILE_EPSILON_PX)
+    })
+  }
 })

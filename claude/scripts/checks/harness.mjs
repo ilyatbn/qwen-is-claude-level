@@ -234,7 +234,8 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
           if (v && typeof v.maxEasedJumpPx === 'number' && (v.corrections > 0 || v.maxAckErrorPx > 0)) {
             console.log(
               `  predictor: worst jump ${v.maxEasedJumpPx.toFixed(2)} px, worst ack error ${v.maxAckErrorPx.toFixed(2)} px ` +
-                `(${v.corrections} corrections; ${v.snaps} relocations excluded)`,
+                `(${v.corrections} corrections; ${v.snaps} relocations and ${v.settled ?? 0} ` +
+                `post-relocation/ack-gap snapshots excluded)`,
             )
           }
         }

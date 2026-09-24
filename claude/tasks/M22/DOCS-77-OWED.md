@@ -12,11 +12,22 @@ that surface mid-milestone are collected here so they are not lost. Each names i
 2. **New constants:** `MAX_FRAME_DT` 0.25 (shared server/client), `MAX_FRAME_TICKS` 15, `INPUT_BACKLOG_TARGET` 2.
 3. **docs/70 §A30:** `MAX_INPUT_QUEUE` 15, not 8. "Exactly one input per tick" becomes: one per tick, plus one extra
    while the backlog is above `INPUT_BACKLOG_TARGET` and the player has credit; invariant: inputs consumed never
-   exceed ticks elapsed. Backlog cap 15 still drops the oldest. The credit rule as fixed by T22.10E (alive only,
-   cleared once caught up, reset on respawn and at Playing).
+   exceed ticks elapsed. Backlog cap 15 still drops the oldest. **The credit rule (T22.10E F-1):** one credit per
+   tick with no input, capped at `MAX_FRAME_TICKS`, earned **only while the player is alive and the phase accepts
+   input** (zero while dead, so a respawn starts at zero); **cleared at the end of any tick in which the player
+   consumed an input and has ≤ `INPUT_BACKLOG_TARGET` left** (credit pays only for the gap just before a burst); zeroed
+   on every phase transition (so Warmup's silence never pays for Playing). Without it: bank while dead, dash at 2×
+   later (5.00 px/tick vs 2.50, measured in the review of `d2d4c07`).
 4. **docs/42 §2:** the reconcile gate compares the prediction *at the acked seq* (position ≤ eps and
    |Δv|/`SNAPSHOT_HZ` ≤ eps) plus moveMods, alive, health; the acked prediction is kept for repeated acks; the render
-   snap keys on the correction jump > 64 px. State what the client does in `Ended` (T22.10E).
+   snap keys on the correction jump > 64 px. **In a phase that takes no input (`Ended`, T22.10E F-3)** the client keeps
+   no inputs for replay (pending and the per-seq predictions are cleared at the bell), steps its own body one neutral
+   tick per local step exactly as the server does (`RoundPhase::accepts_input`, read through the wasm core), and
+   reconciles on the snapshot's **tick** instead of the frozen ack: the local state labelled with that tick is
+   compared by the same gate; a correction re-anchors and replays the neutral ticks the local body was ahead. The
+   snapshot tick is therefore part of what the client's reconciliation reads. Also: the gate re-installs only
+   position/velocity-visible state plus moveMods, alive, health — fuel, mount, jump buffer and cooldowns are not
+   re-installed while the position agrees.
 5. **The snapshot ack** is the last *consumed* seq (`Room::last_seqs`), not the last received (T22.10B).
 
 ## Other M22 points already recorded elsewhere

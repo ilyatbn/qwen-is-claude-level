@@ -1361,6 +1361,11 @@ impl World {
         }
         self.phase = phase;
         self.phase_started_at = self.round_time;
+        // T22.10E F-1: catch-up credit is owed within a phase, never carried
+        // across one — warmup's silence must not pay for `Playing`'s first burst.
+        for (_, credit) in self.input_credit.iter_mut() {
+            *credit = 0;
+        }
         let tick = self.tick;
         self.events.push(GameEvent::RoundState {
             tick,
@@ -1814,15 +1819,35 @@ impl World {
         // Consume-twice rather than drop-oldest, the other shape the ruling
         // offered, for that last sentence: a dropped input is travel the client
         // predicted and the server never ran, which is a snap on every burst.
+        //
+        // **T22.10E F-1: credit is owed for the gap just before a burst, never
+        // banked.** As first built it accrued on every input-less tick in any
+        // state and was only spent by a backlog, so an honest one-per-tick client
+        // never spent it: a client could bank a frame's worth while dead, in
+        // warmup or silent, and cash it minutes later as a 2× dash (the review
+        // of `d2d4c07` measured 5.00 px/tick for 10 ticks against a walk's 2.50).
+        // The coordinator's ruling, all three halves here:
+        // - it accrues only while the player is **alive** and the phase accepts
+        //   input — dead or in `Ended` it is zero, which is also what resets it
+        //   at respawn (a respawn always follows at least one dead tick);
+        // - it is **cleared at the end of any tick in which the player consumed
+        //   an input and was left with at most `INPUT_BACKLOG_TARGET`** — caught
+        //   up means nothing is owed any more;
+        // - `set_phase` zeroes it on every transition, so warmup's silence does
+        //   not pay for `Playing`'s first burst.
         let accepts = self.phase.accepts_input();
         for (id, credit) in self.input_credit.iter_mut() {
-            if !accepts {
+            let alive = self.players.iter().any(|p| p.id == *id && p.alive);
+            if !accepts || !alive {
                 *credit = 0;
-            } else if !taken.contains(id) {
+                continue;
+            }
+            if !taken.contains(id) {
                 *credit = (*credit + 1).min(MAX_FRAME_TICKS as u32);
-            } else if *credit > 0
-                && backlog.iter().filter(|(i, _)| i == id).count() > INPUT_BACKLOG_TARGET
-            {
+                continue;
+            }
+            let queued = |b: &[(PlayerId, Input)]| b.iter().filter(|(i, _)| i == id).count();
+            if *credit > 0 && queued(&backlog) > INPUT_BACKLOG_TARGET {
                 if let Some(at) = backlog.iter().position(|(i, _)| i == id) {
                     let extra = backlog.remove(at);
                     let after = this_tick
@@ -1832,6 +1857,9 @@ impl World {
                     this_tick.insert(after, extra);
                     *credit -= 1;
                 }
+            }
+            if queued(&backlog) <= INPUT_BACKLOG_TARGET {
+                *credit = 0;
             }
         }
         // A backlog longer than the queue cap means the client is sending faster

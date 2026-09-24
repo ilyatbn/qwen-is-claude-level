@@ -6869,3 +6869,10 @@ F2: 8 in-match verbs via `Ctx::send_as_player` (sync); red 5/5 before. F3 `input
 F7 `teleport` was a check bug (u8 health 0 ≠ dead) → `death.meAlive`; green ×3, flag left. F9 blame by ack step then ack error. F11 `vortex::retire`.
 Ten networked checks 10/10 ×3; worst non-relocation jump/ack error per check in the task file. `harness.mjs` now prints them per client.
 Owed by the coordinator: `docs/40` §2 and `docs/70` §A30 amendments (MAX_INPUT_QUEUE 8, "exactly one per tick", redundancy).
+
+## T22.10E — catch-up credit, and the results screen (2026-09-24)
+F-1: credit earned only alive + phase takes input, cleared once caught up (consumed, ≤ target left), zeroed on every `set_phase`. `catch_up_credit_cannot_be_banked_for_a_later_burst` red first; each half planted alone red at its own case. T22.10D's world-test control now bursts (a 2/tick stream no longer earns catch-up, by the ruling).
+F-3: `Predictor` keeps nothing while `core.acceptsInput()` (new export) is false; neutral local ticks labelled by server tick; snapshots carry `tick`. vitest red on HEAD (pending 76; jump 44.78 px). `thrusters-match` before: pending 181, jumps 13.75 px; after ×5: pending 0, ≤ 0.14 px — but bo drifted ≤ 0.1 px each run, so the vitest carries the moving case.
+F-4 `stats.settled`; F-5 bell arm holds UP (+side), asserts an airborne burn on the last pre-bell frame; F-6 health/alive-alone vitests.
+Filed T22.10F (silent player not integrated) + characterization test. Networked 10/10; void worst jump 45.16 px not attributed.
+
