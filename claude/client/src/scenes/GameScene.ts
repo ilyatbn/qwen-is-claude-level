@@ -3088,13 +3088,18 @@ export class GameScene extends Phaser.Scene {
        * by the client's at the moment of asking and of hearing back — so a check compares
        * the client's clock against the server's, not against itself.
        */
-      probeFlare(): Promise<{ before: number | null; server: unknown; after: number | null }> {
+      probeFlare(): Promise<{ before: number | null; server: unknown; after: number | null; atTick: number | null }> {
         return new Promise((resolve) => {
           const before = self.flareQueryNow()?.elapsed ?? null
-          const timer = setTimeout(() => resolve({ before, server: null, after: null }), 5000)
+          const timer = setTimeout(() => resolve({ before, server: null, after: null, atTick: null }), 5000)
           self.probeWaiters.push((server) => {
             clearTimeout(timer)
-            resolve({ before, server, after: self.flareQueryNow()?.elapsed ?? null })
+            // T22.08F: the client's flare clock **at the tick the server answered for** —
+            // `FlareClock` on the tick clock (`tick × SIM_DT`, what `flareClock.start` was
+            // given), so both sides are one instant and no round trip is in the number.
+            const tick = (server as { tick?: unknown } | null)?.tick
+            const atTick = typeof tick === 'number' ? (self.flareClock.query(tick * C().SIM_DT)?.elapsed ?? null) : null
+            resolve({ before, server, after: self.flareQueryNow()?.elapsed ?? null, atTick })
           })
           self.conn.sendRaw('debug_effects', {})
         })

@@ -15,10 +15,14 @@
  * `DEV_PROBE=1`):
  *
  * 1. the scene's clock picks the flare up and the layer draws it lit (`debug().flare`);
- * 2. **the clock is the server's** (T22.08D F1) — `debug_effects` answers with the elapsed
- *    stage 5's contact test uses, and the client's, read as it asks and as it hears back,
- *    must bracket it within one snapshot interval. The first cut probed the damage points
- *    with the scene's own query, so a +0.5 s origin (~80 px) stayed green;
+ * 2. **the clock is the server's** (T22.08D F1, T22.08F) — `debug_effects` answers with the
+ *    elapsed stage 5's contact test uses **and the tick it was read at**; the client's
+ *    `FlareClock` at that same tick must equal it to `TICK_TOL` — one instant on both
+ *    sides, so no round trip and no box load is in the number. The first cut probed the
+ *    damage points with the scene's own query, so a +0.5 s origin (~80 px) stayed green.
+ *    The client's clock read as it asks and as it hears back must still bracket the
+ *    server's within a snapshot and a tick (the `serverClock` estimate's half — fail-safe
+ *    under load: a wider bracket only loosens it);
  * 3. **the clock only moves forward** (T22.08D F2) — over `MONO_FRAMES` drawn frames the
  *    ribbon's elapsed never decreases, and it advances (the control);
  * 4. **coverage, in both of GameScene's render paths** — the damage points at the drawn
@@ -45,8 +49,13 @@ const MIN_ON_SCREEN = 0.5
 const MONO_FRAMES = 120
 /** Server probes, each bracketed by the client's clock. */
 const PROBES = 12
-/** Probes whose bracket must be under the tolerance for the clock to count as measured (T22.08E F4). */
-const NARROW_MIN = 4
+/**
+ * T22.08F: how far the client's `FlareClock` at the server's tick may be from the server's
+ * elapsed, s. Both are that tick's; what is left is the server's `f32` round time
+ * accumulated tick by tick against the client's `tick × SIM_DT`. Not a snapshot interval:
+ * the +0.5 s origin plant is 0.5 off, and anything near a frame is a real disagreement.
+ */
+const TICK_TOL = 0.002
 /**
  * Half the crosshair mark's arm plus a pixel of antialias. The arm is read from
  * `localInput.ts`'s `CROSSHAIR_ARM_PX` line, not copied (T22.10C F8): a hand copy
@@ -223,12 +232,18 @@ try {
       let answered = 0
       let worstSeen = 0
       let narrow = 0
+      let tickWorst = 0
+      const tickBad = []
       const widths = []
       for (let i = 0; i < PROBES; i++) {
         const r = await page.evaluate(() => window.__game.probeFlare())
         const srv = r.server?.flare
         if (!srv || r.before === null || r.after === null) continue
         answered++
+        // T22.08F: the same tick on both sides — the assertion that cannot depend on load.
+        const tickErr = r.atTick === null ? Infinity : Math.abs(r.atTick - srv.elapsed)
+        tickWorst = Math.max(tickWorst, tickErr)
+        if (tickErr > TICK_TOL) tickBad.push({ tick: r.server.tick, client: r.atTick, server: srv.elapsed })
         const off = Math.max(r.before - srv.elapsed, srv.elapsed - r.after, 0)
         worst = Math.max(worst, off)
         widths.push(Math.round((r.after - r.before) * 1000))
@@ -240,30 +255,41 @@ try {
         //  - a **narrow** probe (width < `tol`, the review's bound) is held to the worst
         //    case over its bracket — the client's elapsed at the server's instant is
         //    somewhere in [before, after], so its error is at most the larger distance to
-        //    either end — and at least `NARROW_MIN` probes must be narrow, or the check
-        //    could not measure and says so.
+        //    either end. (T22.08E also required `NARROW_MIN` narrow probes — removed by
+        //    T22.08F, below.)
         // **Why not "every bracket < tol"**: measured, not assumed — widths are the page's
         // frame latency plus up to a server tick (the reply waits for the room task):
         // 31–35 ms on most runs, 48–82 ms on one or two probes in about one run in three,
         // **with the T22.08D clock as well as this one**. Requiring all five narrow was a
         // coin flip on the box's load, not on the clock. The server's elapsed is also
         // quantised to its last completed tick, so each bound carries one `SIM_DT`.
+        // **T22.08F: nor "at least N narrow"** (T22.08E's `NARROW_MIN` 4): under the gate's
+        // `--jobs 4` it read 3 of 12 narrow and failed, green alone — the count measured the
+        // box. The origin is now held by `tickErr` above at any load; narrow brackets, when
+        // the box gives them, still hold the `serverClock` estimate tight, and their count
+        // is reported, not asserted.
         const width = r.after - r.before
         if (off > tol + k.SIM_DT) bad.push({ before: r.before, server: srv.elapsed, after: r.after })
+        // **T22.08F: a narrow bracket's worst case is reported, no longer asserted.** At
+        // `--jobs 4` one read 73 ms against the 66.7 ms bound (`gate-t2208f-jobs4-2.txt`:
+        // before 4.825, server 4.800, after 4.873) — the server's tick clock itself runs late
+        // of the wall clock on a loaded box, and `serverClock` is an estimate *on* the wall
+        // clock, so that number measures the box. The origin is `tickErr`'s, exact at any
+        // load; the estimate's gross errors are `off`'s (a +0.5 s `serverClock` plant: red,
+        // `gate-t2208f-plant-serverclock.txt`); its behaviour under jitter is
+        // `weather-math.test.ts`'s `ServerClock` block.
         if (width < tol) {
           narrow++
-          const worstCase = Math.max(srv.elapsed - r.before, r.after - srv.elapsed)
-          worstSeen = Math.max(worstSeen, worstCase)
-          if (worstCase > tol + k.SIM_DT) bad.push({ before: r.before, server: srv.elapsed, after: r.after, narrow: true })
+          worstSeen = Math.max(worstSeen, Math.max(srv.elapsed - r.before, r.after - srv.elapsed))
         }
         await frames(page, 7)
       }
       // T22.08E F4: every probe answers. Half was the bar, so three silent probes of
       // five passed as a measurement.
       if (answered < PROBES) fail(`the server answered ${answered} of ${PROBES} flare probes — is DEV_PROBE set?`)
-      else if (narrow < NARROW_MIN) fail(`only ${narrow} of ${PROBES} probe brackets were narrower than ${tol * 1000} ms [${widths.join(', ')}] — too wide to measure the clock to a snapshot`)
+      else if (tickBad.length) fail(`the client's flare clock at the server's own tick is off by up to ${(tickWorst * 1000).toFixed(1)} ms (bound ${TICK_TOL * 1000} ms): ${JSON.stringify(tickBad.slice(0, 3))}`)
       else if (bad.length) fail(`the client's flare clock can be off the server's by more than a snapshot and a tick (${tol + k.SIM_DT} s): ${JSON.stringify(bad.slice(0, 3))}`)
-      else ok(`client flare elapsed brackets the server's over ${answered} probes: outside by ≤ ${(worst * 1000).toFixed(1)} ms, ≤ ${(centre * 1000).toFixed(1)} ms from the bracket's middle; ${narrow} brackets under ${tol * 1000} ms [${widths.join(', ')}], worst case over them ${(worstSeen * 1000).toFixed(1)} ms (bound ${((tol + k.SIM_DT) * 1000).toFixed(1)} ms)`)
+      else ok(`client flare elapsed at the server's tick within ${(tickWorst * 1000).toFixed(2)} ms of the server's over ${answered} probes (bound ${TICK_TOL * 1000} ms); brackets it: outside by ≤ ${(worst * 1000).toFixed(1)} ms, ≤ ${(centre * 1000).toFixed(1)} ms from the bracket's middle; ${narrow} brackets under ${tol * 1000} ms [${widths.join(', ')}], worst case over them ${(worstSeen * 1000).toFixed(1)} ms (reported; the \`off\` bound is ${((tol + k.SIM_DT) * 1000).toFixed(1)} ms)`)
     }
 
     // --- 3. the ribbon's clock never runs backwards (F2) -------------------------------

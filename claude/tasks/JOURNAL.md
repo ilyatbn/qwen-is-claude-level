@@ -7042,3 +7042,9 @@ red once in six (2.12 px ack error) — drawing-only change; reported, not parke
 A 4 fps stall plant reproduced the gate's red on the old live read (0.781 vs 0.794) and is green on the drawn one; the
 `fogVeilAlpha` × 1.03 plant is red naming FOG_SCREEN_ALPHA. Green 3/3 alone, 2/2 at `--jobs 4` beside three heavy checks.
 flaky-test.md row: fixed, ready to un-park; `flaky: true` left for the owner.
+
+## T22.08F — the flare clock at the server's tick (builder, 2026-09-25)
+`probeFlare` returns `FlareClock` at the reply's tick; asserted ≤ 2 ms (reads 0.00), +0.5 s origin plant red at 500 ms.
+`NARROW_MIN` and the narrow worst case (73 vs 66.7 at `--jobs 4`) now reported, not asserted; the `off` bound stays
+(+0.5 s `serverClock` plant red; 22–36 ms under load). `--jobs 4` with three heavy checks: 4/4 twice. flaky row: fixed,
+ready to un-park; flag left.
