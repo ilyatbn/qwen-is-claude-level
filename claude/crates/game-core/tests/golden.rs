@@ -212,6 +212,12 @@ fn compute_weather() -> String {
     out.push_str(
         "# regenerated at 4dfc5a5 (T22.12D, R94: rounds counted in ticks); regenerate only on an\n",
     );
+    out.push_str(
+        "# T22.14A H3 removed one row: a shower's Active covers its fall (METEOR_FALL_TIME), so\n",
+    );
+    out.push_str(
+        "# seed 90210's last shower, rolled 24.2 s before the bell, no longer fits the round\n",
+    );
     out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
     for seed in [1u64, 4242, 90210] {
         let mut w = World::with_gravity(

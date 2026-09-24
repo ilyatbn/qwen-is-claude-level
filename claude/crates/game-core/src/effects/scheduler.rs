@@ -24,6 +24,14 @@ const LAVA_ACTIVE: f32 = crate::constants::LAVA_JET_DURATION + crate::constants:
 /// `flare::SolarFlare::lit`.
 const FLARE_ACTIVE: f32 = SOLAR_FLARE_DURATION + crate::constants::SOLAR_FLARE_BURN_SECONDS;
 
+/// The shower's `Active` window: the meteors' spawn window, then the time the last
+/// of them (and their fragments) can still be falling (T22.14A H3). The same shape
+/// as `FLARE_ACTIVE` for the same reason — `tick` refuses any effect whose `Active`
+/// window outlives the round, and a shower that ended at the bell with meteors in the
+/// air hurt people on the results screen. Meteors drop only in the first
+/// `METEOR_DURATION` of it: [`EffectScheduler::meteors_falling`].
+const METEOR_ACTIVE: f32 = METEOR_DURATION + crate::constants::METEOR_FALL_TIME;
+
 /// Weights from `docs/13-weather-effects.md` §1, in `KINDS` order, and the solar
 /// flare's (T22.08A) appended.
 const WEIGHTS: [u16; 5] = [3, 3, 2, 2, SOLAR_FLARE_WEIGHT];
@@ -126,7 +134,7 @@ pub enum EffectEvent {
 pub fn active_duration(kind: EffectKind) -> f32 {
     match kind {
         EffectKind::ToxicRain => TOXIC_DURATION,
-        EffectKind::MeteorShower => METEOR_DURATION,
+        EffectKind::MeteorShower => METEOR_ACTIVE,
         EffectKind::LavaBurst => LAVA_ACTIVE,
         EffectKind::HeavyFog => FOG_DURATION,
         EffectKind::SolarFlare => FLARE_ACTIVE,
@@ -385,6 +393,18 @@ impl EffectScheduler {
     }
 
     /// True only during `Active` — a telegraphing effect is a warning, not a hazard.
+    /// **Does the shower drop meteors now?** Its `Active` phase is `METEOR_ACTIVE`
+    /// (the fall time on the end, T22.14A H3); it drops only in the first
+    /// `METEOR_DURATION` of it. The one test both the world and the sandbox's
+    /// weather step read, so the two cannot drop for different lengths.
+    pub fn meteors_falling(&self, now: f32) -> bool {
+        self.active.iter().any(|e| {
+            e.kind == EffectKind::MeteorShower
+                && e.phase == EffectPhase::Active
+                && now - e.phase_started_at < METEOR_DURATION
+        })
+    }
+
     pub fn is_active(&self, kind: EffectKind) -> bool {
         self.active
             .iter()

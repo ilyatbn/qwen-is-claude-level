@@ -1446,7 +1446,8 @@ impl GameCore {
         sched.tick(now, f32::MAX, WeatherTable::of(&self.map));
 
         let toxic_on = sched.is_active(EffectKind::ToxicRain);
-        let meteor_on = sched.is_active(EffectKind::MeteorShower);
+        // T22.14A H3: the spawn window — the world's own test.
+        let meteor_on = sched.meteors_falling(now);
         let lava_on = sched.is_active(EffectKind::LavaBurst);
         let fog_on = sched.is_active(EffectKind::HeavyFog);
         let flare_on = sched.is_active(EffectKind::SolarFlare);

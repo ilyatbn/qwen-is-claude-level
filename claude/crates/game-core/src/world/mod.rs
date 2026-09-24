@@ -3041,6 +3041,22 @@ impl World {
         if self.phase == RoundPhase::Warmup {
             return;
         }
+        // **And after the bell the weather hurts nobody** (T22.14A H3, coordinator
+        // ruling) — the same one rule, here for the same reason: meteors and
+        // fragments in flight at the bell are not phase-gated (`step_projectiles`
+        // runs on, T21.30), and they dealt damage, deaths and kill credit on the
+        // results screen. Weather-sourced only: a player's rocket in the air at the
+        // bell is theirs, as it always was. `active_duration(MeteorShower)` covers the
+        // fall too, so a scheduled shower is never airborne at the bell; this is the
+        // rule for whatever still is (a forced effect, a lifetime's fragments).
+        let entries: Vec<_> = if self.phase == RoundPhase::Ended {
+            entries
+                .into_iter()
+                .filter(|(_, _, src)| !matches!(src, DamageSource::Weather(_)))
+                .collect()
+        } else {
+            entries
+        };
 
         // Birds first, and through the same warmup gate above: a supply line that
         // opened before the round did would let someone stockpile heals during
@@ -3539,7 +3555,9 @@ impl World {
         }
 
         let toxic_on = self.effects.is_active(EffectKind::ToxicRain);
-        let meteor_on = self.effects.is_active(EffectKind::MeteorShower);
+        // T22.14A H3: the spawn window, not the whole `Active` phase (which covers
+        // the fall).
+        let meteor_on = self.effects.meteors_falling(now);
         let lava_on = self.effects.is_active(EffectKind::LavaBurst);
 
         if let Some((eid, mut t)) = self.toxic.take() {
@@ -13951,6 +13969,111 @@ mod round_ticks_tests {
             wrong.is_empty(),
             "(round s, lobby ticks, predicted − actual bell seq) — the bell derived at round \
              start missed the server's: {wrong:?}"
+        );
+    }
+}
+
+/// T22.14A H3 (coordinator ruling): **nothing the weather threw hurts anyone after
+/// the bell**, and a shower is never scheduled to end at the bell with meteors in
+/// the air — its `active_duration` covers the fall.
+#[cfg(test)]
+mod meteor_bell_tests {
+    use super::*;
+    use crate::constants::{
+        MapScale, BASE_HEALTH, DEFAULT_MAP_GENERATOR, EFFECT_TELEGRAPH, METEOR_DURATION, SIM_DT,
+    };
+    use crate::effects::scheduler::active_duration;
+    use crate::items::registry::WEAPON_METEOR;
+
+    /// The longest any shower's ordnance stayed up after its spawn window closed,
+    /// over forced showers on `seeds` of each mode, and the latest round time the
+    /// last of it came down relative to the effect's end.
+    fn tail(gravity: GravityMode, seeds: std::ops::Range<u64>) -> (f32, f32) {
+        let (mut worst_tail, mut worst_past_end) = (0.0f32, f32::MIN);
+        for seed in seeds {
+            let mut w =
+                World::with_gravity(seed, MapScale::Medium, 0, DEFAULT_MAP_GENERATOR, gravity);
+            w.set_round_seconds(600.0);
+            w.set_phase(RoundPhase::Playing);
+            w.effects.postpone_until(1.0e9);
+            let start = w.round_time;
+            w.force_effect(EffectKind::MeteorShower, start);
+            let window_end = start + EFFECT_TELEGRAPH + METEOR_DURATION;
+            let effect_end = start + EFFECT_TELEGRAPH + active_duration(EffectKind::MeteorShower);
+            let mut last_down = start;
+            let horizon = EFFECT_TELEGRAPH
+                + METEOR_DURATION
+                + 4.0 * crate::constants::PROJECTILE_MAX_LIFETIME;
+            for _ in 0..(horizon / SIM_DT) as u32 {
+                w.step(SIM_DT);
+                w.drain_events();
+                if w.projectiles.iter().any(|p| MeteorShower::owns(p.weapon)) {
+                    last_down = w.round_time;
+                }
+            }
+            worst_tail = worst_tail.max(last_down - window_end);
+            worst_past_end = worst_past_end.max(last_down - effect_end);
+        }
+        (worst_tail, worst_past_end)
+    }
+
+    /// **The fall time is measured, not assumed**: over eight forced showers in each
+    /// mode everything a shower threw is down before its effect ends — and the
+    /// control that a tail exists at all (ordnance does outlive the spawn window).
+    #[test]
+    fn a_showers_ordnance_is_down_before_the_effect_ends() {
+        for g in [GravityMode::Standard, GravityMode::Space] {
+            let (tail, past_end) = tail(g, 0..8);
+            eprintln!("{g:?}: longest tail after the spawn window {tail:.2} s; last down {past_end:.2} s after the effect's end");
+            assert!(
+                tail > 0.0,
+                "{g:?} control: nothing outlived the spawn window"
+            );
+            assert!(
+                past_end <= 0.0,
+                "{g:?}: ordnance still up {past_end:.2} s after the shower ended"
+            );
+        }
+    }
+
+    /// A player standing where a meteor goes off, in `phase` — the health lost.
+    fn hit_in(phase: RoundPhase) -> f32 {
+        let mut w = World::with_gravity(
+            3,
+            MapScale::Small,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            GravityMode::Standard,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(0, 0, "ana".into());
+        w.step(SIM_DT);
+        if phase != RoundPhase::Playing {
+            w.set_phase(phase);
+        }
+        let at = w.player(0).expect("ana").body.pos;
+        let before = w.player(0).expect("ana").health;
+        // Past any spawn protection.
+        w.round_time += 60.0;
+        let now = w.round_time;
+        w.land_on_terrain_for_test(at, WEAPON_METEOR, now);
+        before - w.player(0).expect("ana").health
+    }
+
+    /// **Refused in `Ended`, as in `Warmup`** — with the `Playing` presence control:
+    /// the same meteor on the same spot hurts there.
+    #[test]
+    fn a_meteor_after_the_bell_hurts_nobody() {
+        let playing = hit_in(RoundPhase::Playing);
+        assert!(
+            playing > 0.0 && playing <= BASE_HEALTH,
+            "control: a meteor in Playing took {playing}"
+        );
+        assert_eq!(
+            hit_in(RoundPhase::Ended),
+            0.0,
+            "a meteor hurt someone after the bell"
         );
     }
 }

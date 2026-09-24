@@ -1295,7 +1295,20 @@ pub const TOXIC_CAST_RAMP: f32 = 1.5;
 pub const TOXIC_DECK_SPACING: f32 = 70.0;
 pub const TOXIC_CLOUD_TINT: u32 = 0x8f_ae_5e;
 
+/// How long a shower **drops meteors** — its spawn window, the first part of its
+/// `Active` phase (`effects::scheduler::active_duration` adds [`METEOR_FALL_TIME`]).
 pub const METEOR_DURATION: f32 = 10.0;
+/// **How long a shower's ordnance can still be in the air after its last meteor
+/// spawned** (T22.14A H3, coordinator ruling): the shower's `Active` phase covers it,
+/// so `EffectScheduler::tick`'s "never outlives the round" refusal also refuses a
+/// shower whose meteors would still be falling at the bell. The basis is the one
+/// bound that holds in every mode and on every map: a meteor lives at most
+/// [`PROJECTILE_MAX_LIFETIME`] (then goes off wherever it is), and the fragments its
+/// impact throws live at most that again — so two lifetimes. Measured, well inside
+/// it: the last of eight forced showers' ordnance was down 1.58 s after the window
+/// in standard (`world::meteor_bell_tests`, which asserts every forced shower's
+/// ordnance is down before the effect ends).
+pub const METEOR_FALL_TIME: f32 = 2.0 * PROJECTILE_MAX_LIFETIME;
 pub const METEOR_EVERY: f32 = 0.5;
 /// Initial downward speed.
 pub const METEOR_SPEED: f32 = 700.0;
