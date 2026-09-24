@@ -304,7 +304,13 @@ pub fn capped_at(map: &Map, wells: bool, vortices: &[Vec2], pos: Vec2) -> Vec2 {
 /// *there*, the pull on it *pulling*.
 ///
 /// **R91: within the hole's `BLACK_HOLE_REACH` the asteroid wells do not pull —
-/// only the hole does.** Rocks beside the eaten one summed to 745 px/s² at the
+/// only the hole does** — **and nor do the vortices** (H1, T22.14A: R91 muted the
+/// wells and left every live vortex in `capped_at`, up to 675 px/s² on top of the
+/// hole's 810 at the horizon — ~1485 against DOWN 900 — so a body *outside* the
+/// horizon, the line R90 promises is safe, was dragged in: 117 of 208 flights in
+/// the escape test's vortex arm). A vortex still **captures** there — capture is by
+/// radius (`World::step_vortices`), not by pull, so muting the pull opens no exit
+/// through the rim. Rocks beside the eaten one summed to 745 px/s² at the
 /// horizon and trapped 20 of 208 flights the hole alone lets go, which turned the
 /// horizon — the rule a player can see — back into a guess. Filtered here, inside
 /// this one summation, not by a second loop; and keyed on the hole being present
@@ -327,15 +333,18 @@ pub fn env_at(
         // exactly nothing and the scalar path's arithmetic is untouched.
         GravityMode::Standard | GravityMode::Low => Env::field_free(gravity),
         GravityMode::Space => {
-            let wells = hole.is_none_or(|h| (pos - h).len() >= BLACK_HOLE_REACH);
+            let outside = hole.is_none_or(|h| (pos - h).len() >= BLACK_HOLE_REACH);
             // R97 (was R96's wells-only cap): the wells and the vortices are summed
             // and capped together, then the hole is added onto that uncapped — one
             // summation, continued from the capped partial sum (`field_from`), not a
-            // second loop.
+            // second loop. **Inside the hole's reach neither pulls** (R91 for the
+            // wells; H1, T22.14A, for the vortices — their capped 675 on top of the
+            // hole's 810 dragged bodies in from outside the horizon).
+            let vortices = if outside { vortices } else { &[] };
             Env {
                 gravity,
                 accel: field_from(
-                    capped_at(map, wells, vortices, pos),
+                    capped_at(map, outside, vortices, pos),
                     hole.filter(|_| hole_pulls).map(Attractor::black_hole),
                     pos,
                 ),

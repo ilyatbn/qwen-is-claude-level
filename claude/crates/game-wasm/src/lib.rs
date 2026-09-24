@@ -4134,6 +4134,40 @@ mod tests {
         assert!(binding > 0, "control: the cap bound nowhere on the ring");
     }
 
+    /// **H1 (T22.14A): inside the black hole's reach a vortex does not pull, on the
+    /// mirror as on the server** — the mirror told a hole and a vortex whose pull
+    /// reaches into the hole's reach reports the hole's pull alone there, exactly the
+    /// server's `env_at`; and one probe outside the reach still feels the vortex (the
+    /// presence control: the list was told).
+    #[test]
+    fn the_mirror_mutes_a_vortex_inside_the_black_holes_reach_as_the_server_does() {
+        use game_core::constants::{BLACK_HOLE_REACH, VORTEX_REACH};
+        use game_core::world::attractors::{env_at, Attractor};
+        let (w, mut core) = space_world_and_mirror(true);
+        let geo = w.map.space_geometry().expect("space");
+        let hole = Vec2::new(geo.cx, geo.cy);
+        let v = hole + Vec2::new(BLACK_HOLE_REACH, 0.0);
+        core.set_vortices(&[v.x], &[v.y]);
+        core.set_black_hole(true, hole.x, hole.y);
+        assert!(core.set_phase("playing"));
+        let told = |p: Vec2| {
+            let a = core.field_accel_at(p.x, p.y);
+            Vec2::new(a[0], a[1])
+        };
+        for d in [0.3f32, 0.5, 0.7, 0.9] {
+            let at = hole + Vec2::new(d * BLACK_HOLE_REACH, 0.0);
+            assert!((at - v).len() < VORTEX_REACH, "premise: the vortex reaches {at:?}");
+            let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, at).accel;
+            assert_eq!(told(at), server, "at {d} of the reach");
+            assert_eq!(server, Attractor::black_hole(hole).pull_at(at), "at {d}: not the hole alone");
+        }
+        let out = v + Vec2::new(0.25 * VORTEX_REACH, 0.0);
+        let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, out).accel;
+        let unvortexed = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, out).accel;
+        assert_eq!(told(out), server);
+        assert_ne!(server, unvortexed, "control: outside the reach the vortex pulls");
+    }
+
     /// **T22.12: the prediction pulls as the server does near the black hole** —
     /// once the mirror is told what a client is told: the `carve` of the eaten rock,
     /// the asteroid list without it, and `set_black_hole`. `GameCore::apply_input`

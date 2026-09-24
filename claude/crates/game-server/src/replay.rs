@@ -288,7 +288,12 @@ pub const HEADER_BYTES: usize = 46;
 /// shape. Every live vortex's pull joins the wells inside the one clamp, so a v23
 /// space recording diverges the first tick a body sits where a vortex and the wells
 /// together passed 675 px/s² outside the capture radius. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 24;
+///
+/// **25 (T22.14A, the final audit's hazards)**: the silent-divergence shape. Inside
+/// the black hole's reach no vortex pulls (H1), so a v24 space recording diverges the
+/// first tick a body sits inside the reach while a vortex's pull reached it. No new
+/// tag, no layout change.
+pub const REPLAY_VERSION: u16 = 25;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

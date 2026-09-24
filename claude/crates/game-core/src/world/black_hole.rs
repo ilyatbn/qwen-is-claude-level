@@ -677,6 +677,11 @@ mod tests {
     /// wells once the pull was right-sized — the plant that un-mutes R91 is red
     /// here). The kill inside it is `inside_the_horizon_is_death_on_the_tick…`.
     ///
+    /// **And a live vortex does not change that** (H1, T22.14A): the same 208 flights
+    /// again with a vortex beyond the hole, placed where its pull alone passes the cap
+    /// and it does not capture. Before the fix every vortex pulled inside the hole's
+    /// reach too, capped to 675 on top of the hole's 810.
+    ///
     /// **The terrain is cleared out of the way** to past the reach first: the claim is
     /// about the *field* — the hole plus every rock's well, whose list is untouched —
     /// and a flight that bumps a rock's side is stopped by the rock, not the hole
@@ -687,7 +692,7 @@ mod tests {
     /// the **weakest** thrust (DOWN), and every thrust is at least that.
     #[test]
     fn from_just_outside_the_horizon_full_thrust_escapes_past_the_reach() {
-        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H};
+        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H, VORTEX_CAPTURE_R};
         let edge = Attractor::black_hole(Vec2::ZERO)
             .pull_at(Vec2::new(BLACK_HOLE_HORIZON_R, 0.0))
             .len();
@@ -708,44 +713,73 @@ mod tests {
         let mut trapped = Vec::new();
         let mut wells_inside = 0;
         let (mut fell_back, mut worst_after) = (Vec::new(), f32::INFINITY);
+        // H1 (T22.14A): the vortex arm. A live vortex on the far side of the hole,
+        // `VORTEX_ARM_D` from the start — outside its capture radius, where its
+        // pull alone is past the cap — so before the fix the capped 675 px/s² and
+        // the hole's 810 summed to ~1485 against DOWN 900 and dragged the body in.
+        // Inside the hole's reach no vortex pulls now (`env_at`); its capture is by
+        // radius, so muting its pull there opens no exit.
+        let vortex_arm_d = 1.5 * VORTEX_CAPTURE_R;
+        let mut vortex_trapped = Vec::new();
+        let mut vortex_premise = 0;
         for seed in 0..13u64 {
             for k in 0..SIDES {
                 let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
-                let (mut w, hole) = hole_world(seed);
-                // Through `Map::carve_circle` (the coarse grid collision reads is
-                // kept with the mask), with its pending breaches drained: a disc
-                // this size can reach the rim, and the vortex a breach opens pulled
-                // a flight into the hole (measured, seed 11 side 4).
-                let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
-                let _ = w
-                    .map
-                    .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
-                let _ = w.map.take_breaches();
-                if k == 0 {
-                    // The control that there are wells to mute: some rock's well
-                    // reaches the horizon on this map.
-                    let at = hole + Vec2::new(BLACK_HOLE_HORIZON_R + 1.0, 0.0);
-                    let wells = crate::world::attractors::field_at(
-                        w.map.meta.asteroids.iter().map(Attractor::asteroid),
-                        at,
-                    );
-                    wells_inside += usize::from(wells != Vec2::ZERO);
-                }
-                place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
-                let f = escape(&mut w, hole, JETPACK_MAX_FUEL);
-                flights += 1;
-                if f.died || f.furthest <= BLACK_HOLE_REACH {
-                    trapped.push(format!(
-                        "seed {seed} side {k}: died {}, {:.1} px",
-                        f.died, f.furthest
-                    ));
-                }
-                // F4 (T22.12D): past the reach the wells are back — still out.
-                match f.nearest_after {
-                    Some(n) if n > BLACK_HOLE_REACH => {
-                        worst_after = worst_after.min(n);
+                for with_vortex in [false, true] {
+                    let (mut w, hole) = hole_world(seed);
+                    // Through `Map::carve_circle` (the coarse grid collision reads is
+                    // kept with the mask), with its pending breaches drained: this
+                    // arm is about the hole and the wells, and the vortex a breach
+                    // opens is the other arm's subject (placed where it is worst,
+                    // rather than wherever this disc happens to reach the rim).
+                    let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
+                    let _ = w
+                        .map
+                        .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
+                    let _ = w.map.take_breaches();
+                    if k == 0 && !with_vortex {
+                        // The control that there are wells to mute: some rock's well
+                        // reaches the horizon on this map.
+                        let at = hole + Vec2::new(BLACK_HOLE_HORIZON_R + 1.0, 0.0);
+                        let wells = crate::world::attractors::field_at(
+                            w.map.meta.asteroids.iter().map(Attractor::asteroid),
+                            at,
+                        );
+                        wells_inside += usize::from(wells != Vec2::ZERO);
                     }
-                    _ => fell_back.push(format!("seed {seed} side {k}: {:?} px", f.nearest_after)),
+                    place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
+                    if with_vortex {
+                        let start = w.player(0).expect("ana").body.pos;
+                        let v = start + (hole - start) * (vortex_arm_d / (hole - start).len());
+                        w.vortices.push(crate::world::vortex::Vortex { id: 0, pos: v });
+                        // The premise: at the start its pull alone is past the cap,
+                        // and it does not capture there.
+                        let alone = Attractor::vortex(v).pull_at(start).len();
+                        vortex_premise += usize::from(
+                            alone >= crate::constants::SPACE_WELL_ACCEL_MAX
+                                && (start - v).len() > VORTEX_CAPTURE_R,
+                        );
+                    }
+                    let f = escape(&mut w, hole, JETPACK_MAX_FUEL);
+                    flights += 1;
+                    if f.died || f.furthest <= BLACK_HOLE_REACH {
+                        let line = format!("seed {seed} side {k}: died {}, {:.1} px", f.died, f.furthest);
+                        if with_vortex {
+                            vortex_trapped.push(line);
+                        } else {
+                            trapped.push(line);
+                        }
+                    }
+                    // F4 (T22.12D): past the reach the wells are back — still out.
+                    match f.nearest_after {
+                        Some(n) if n > BLACK_HOLE_REACH => {
+                            worst_after = worst_after.min(n);
+                        }
+                        _ => fell_back.push(format!(
+                            "seed {seed} side {k} vortex {with_vortex}: {:?} px",
+                            f.nearest_after
+                        )),
+                    }
                 }
             }
         }
@@ -753,11 +787,23 @@ mod tests {
             wells_inside >= 10,
             "control: a well reaches the horizon on only {wells_inside} of 13 maps"
         );
+        assert_eq!(
+            vortex_premise,
+            13 * SIDES,
+            "premise: the vortex arm's vortex out-pulls the cap at the start and does not capture there"
+        );
         assert!(
             trapped.is_empty(),
             "{} of {flights} flights from just outside the horizon did not get past the \
              reach: {trapped:?}",
             trapped.len()
+        );
+        assert!(
+            vortex_trapped.is_empty(),
+            "{} of {} flights with a vortex beyond the hole did not get past the reach: \
+             {vortex_trapped:?}",
+            vortex_trapped.len(),
+            13 * SIDES
         );
         assert!(
             fell_back.is_empty(),
