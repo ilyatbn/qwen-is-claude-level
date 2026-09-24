@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`) and T22.10D.** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D and T22.10F (R89).** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -42,8 +42,8 @@ different story (see § 1).
 - Snapshot `codec.rs::encode_snapshot`: **full every time, no delta**. 8-byte header (tick u32, round_time deciseconds
   u16, darkness u8, count u8) + 20 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as i16 **truncated `as i16`**; aim
   u16; health u8 truncated; flags; fuel; selected item; vision; battery; heals/batteries; teleport charge; move_mods)
-  + 4-byte footer (per-recipient ack: since T22.10B the last *consumed* seq, `min(World::oldest_queued_seq − 1, last_seq)`
-  in `Room::last_seqs` — before, the last *received*). 132 B at 6 players before base64. (Its doc comment still says 102.)
+  + 4-byte footer (per-recipient ack: since T22.10F the last *simulated* seq, real input or stand-in,
+  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 132 B at 6 players before base64. (Its doc comment still says 102.)
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
   `select_slot` are separate events. **Every in-match verb runs synchronously in arrival order** — `input` since
   T22.10B, and `fire`, `use_item`, `select_slot`, `move_item`, `drop_item`, `use_heal`, `use_battery`, `quick_throw`
@@ -51,11 +51,14 @@ different story (see § 1).
   returned future; tokio ran the newest spawned first (137 dropped seqs in one match; `select_slot` then `fire` fired
   the old weapon 5 of 5 runs). Still `async`: `vote_restart`, `resync_map`, `debug_*`, `start_with_bots`.
   **Intake (T22.10D):** the room accepts up to `MAX_INPUT_QUEUE` per player per tick, now `MAX_FRAME_TICKS` =
-  `ceil(MAX_FRAME_DT / SIM_DT)` = 15 (one long client frame; was 8, which dropped the newest 7 of such a frame). The
-  world consumes one input per player per tick, **plus one more while the backlog is above `INPUT_BACKLOG_TARGET` (2)
-  and the player has credit** — one credit per tick that passed with no input, capped at `MAX_FRAME_TICKS` — so a
-  burst drains without dropping and inputs consumed never exceed ticks elapsed (§A30). Above `MAX_INPUT_QUEUE` queued
-  it trims the *oldest* (a flood guard only). **No input that tick → not integrated**.
+  `ceil(MAX_FRAME_DT / SIM_DT)` = 15 (one long client frame; was 8, which dropped the newest 7 of such a frame) — a
+  flood guard only. **Since T22.10F (R89) the world steps every player exactly once a tick** (`World::apply_inputs`):
+  the next expected input if it has arrived, else a **stand-in** — the newest received input's held buttons and aim
+  under the next seq (edges are current-vs-previous, so nothing re-fires). The expected seq is `prev_input`'s and
+  advances one per simulated tick; inputs at or below it are discarded (after updating the held state, `newest_input`);
+  future ones wait in a jitter buffer of `INPUT_BACKLOG_TARGET` (2), oldest excess dropped. A stand-in claims a seq only
+  within `MAX_FRAME_TICKS` of the newest sent, and none before the first. Seq 0 = "numbered by the world" (bots). No
+  hover, no two-step ticks; the T22.10D/E catch-up credit is gone. `Ended`: neutral ticks, seq frozen (T21.30).
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
   (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
   effects, hazards, phase, round).
@@ -69,15 +72,24 @@ different story (see § 1).
 - `prediction.ts::Predictor`, local player only. GameScene runs a fixed-step accumulator at `SIM_DT`; each step
   `localInput.sample(++seq)` → `pushInput` → `core.applyInput`; since T22.10B sends **every** input of the frame, in packets of ≤ `INPUT_REDUNDANCY` (no
   overlap, so no actual redundancy; `codec.ts::inputPackets` since T22.10D). A 15-tick frame (`MAX_FRAME_DT` 0.25 s,
-  now also in `constants.rs` and pinned by `constants-parity.test.ts`) sends 15, all accepted, drained to ≤ 2 queued
-  within 15 ticks (T22.10D; before, 7 dropped and a standing 7-tick queue). (Before T22.10B only the last 3 were sent.)
+  now also in `constants.rs` and pinned by `constants-parity.test.ts`) sends 15; since T22.10F the server has already
+  stood in for them with the held input, so they arrive already simulated and are discarded. (Before T22.10B only the
+  last 3 were sent.) **The fixed step runs on `performance.now()` since T22.10F**, not Phaser's `delta` (which clamps an
+  unfocused page to 16.7 ms a frame — a quarter of real time at 15 fps, harmless only while the server waited for
+  inputs). A frame's inputs are produced at its end, so on a slow page the server has stood in for the first of them
+  and acked it before they arrive: `Predictor.standIn` runs the same stand-ins locally (last pushed buttons/aim, within
+  `MAX_FRAME_TICKS`) and skips those seqs when they are pushed. The client's body therefore **trails** the server's
+  by up to one frame (it used to lead it).
 - `reconcile`: drop acked inputs; **since T22.10D the gate compares the prediction *at the acked input* with the
   server's state there** (position ≤ `RECONCILE_EPSILON_PX` 2.0, and velocity error × one snapshot interval ≤ the
   same), with move_mods, alive and health unchanged → do nothing; else `setPlayerState` (pos, vel, grounded, fuel,
   health, alive, move_mods) and replay pending. (Before, it compared the *post-pending* prediction, so it almost never
   held while moving.) The render hard-snaps on how far the correction moved the body (`lastJumpPx` > `SNAP_PX`), not
   on that error. `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B) are the honest rubber-band measures;
-  `maxEasedJumpPx`/`maxAckErrorPx` (T22.10D) exclude relocations and are printed per client by `harness.mjs` at close. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
+  `maxEasedJumpPx`/`maxAckErrorPx` (T22.10D) exclude relocations and are printed per client by `harness.mjs` at close;
+  since T22.10E/F they also leave out (as `settled`) the first ack (an anchor), an ack gap, an `alive` flip, a repeated
+  ack while the phase takes input and the first new ack after it (lost time: frames over `MAX_FRAME_DT`), and a
+  results-screen re-anchor past the catch-up cap. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
   handle pad `teleport` and `vortex_trip`. Render eases at
   `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server state is i16-truncated; `JumpState` and `prev_input`
   are not on the wire.

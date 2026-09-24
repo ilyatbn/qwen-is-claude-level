@@ -6882,3 +6882,11 @@ Filed T22.10F (silent player not integrated) + characterization test. Networked 
 known two-clock defect) and `solar-flare-match` (3 of 12 probe brackets narrow under load). **Both green alone** on the idle box
 minutes later. Parked per the rule, evidence in `flaky-test.md`; `T22.08F` filed for the flare-clock check's cause (a round-trip
 width measures load). Everything else, including all ten networked prediction checks, green.
+
+## T22.10F — one simulated step per player per tick (R89) (2026-09-24)
+`1ed96a3` `45d8244` `283f109`: credit gone; every live player stepped once a tick, stand-in = newest held input under the next seq (claims ≤ `MAX_FRAME_TICKS` past newest, none before first); late inputs discarded but steer; buffer trims oldest past 2; ack = last simulated; seq 0 = world-numbered. `REPLAY_VERSION` 18.
+Client (found by the browser checks): fixed step on `performance.now()` (Phaser's delta runs unfocused pages at ¼ speed); `Predictor.standIn` mirrors the server's stand-ins for acked-not-yet-pushed seqs; first ack / repeated ack / alive flip out of the maxima.
+Plants red for every rule (task file). `--changed 0e160a9 --fast` EXIT=0; its 72 browser checks 72/72, net smoke 25/25.
+**Space checks' harness maxima rose** (breach-vortex 1.41→53 px ack, thrusters ≤3→19): stand-ins bridging key changes on 15 fps pages. Not all attributed; per-check assertions green.
+For the coordinator: wire velocity is whole px/s — a free-flying body drifts past the 2 px gate in ~1.5 s (results screen bound now 2×eps).
+
