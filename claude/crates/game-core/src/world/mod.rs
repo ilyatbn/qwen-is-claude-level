@@ -3863,12 +3863,21 @@ impl World {
     /// exit to this. One predicate, so `step_void` and `resolve_deaths` still
     /// cannot disagree about who fell.
     fn is_in_the_void(&self, p: &PlayerState) -> bool {
-        if p.body.head_y() > self.map.mask.h as f32 {
+        self.body_in_the_void(&p.body)
+    }
+
+    /// **The void, as a point predicate on a body** — [`World::is_in_the_void`]'s whole
+    /// test, public so the bots ask the world's question instead of a copy of it
+    /// (T22.14B: `bots::leg_barred` probed the *feet* past the map's bottom where the
+    /// world kills on the *head*). A bot probing somewhere it might go asks with
+    /// `Body::new(at)`.
+    pub fn body_in_the_void(&self, body: &crate::physics::body::Body) -> bool {
+        if body.head_y() > self.map.mask.h as f32 {
             return true;
         }
         self.map
             .space_geometry()
-            .is_some_and(|geo| geo.in_the_void(p.body.pos.x, p.body.pos.y))
+            .is_some_and(|geo| geo.in_the_void(body.pos.x, body.pos.y))
     }
 
     /// T22.10: open a vortex at every breach the carves made this tick, then take

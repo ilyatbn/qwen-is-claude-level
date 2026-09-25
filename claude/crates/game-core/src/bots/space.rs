@@ -19,18 +19,21 @@
 //! **Fuel is the economy.** Cruising and braking spend only above
 //! `BOT_SPACE_FUEL_RESERVE`; below it a bot coasts, a well draws it onto a rock, and
 //! it walks (free, R4) while the tank refills. The reserve is spent only getting out
-//! of something that kills: the black hole's reach (and where it is telegraphed), a
-//! vortex's no-escape disc, a flare's ribbon, a fire.
+//! of something that kills or takes: the black hole's reach (and where it is
+//! telegraphed), a live vortex's pull, a spent vortex's mouth, a flare's ribbon, a fire
+//! — each asked through the world's own predicate (`KeepOut`, T22.14B).
 
 use crate::constants::{
-    GravityMode, BLACK_HOLE_REACH, BOT_SPACE_BRAKE, BOT_SPACE_BURN_MARGIN, BOT_SPACE_CRUISE,
-    BOT_SPACE_DEADBAND, BOT_SPACE_DETOUR, BOT_SPACE_FUEL_RESERVE, BOT_SPACE_HAZARD_MARGIN,
-    BOT_SPACE_STUCK_SPEED, BOT_SPACE_STUCK_WINDOW, PLAYER_H, SOLAR_FLARE_RIBBON_R, VORTEX_REACH,
+    GravityMode, BOT_SPACE_BRAKE, BOT_SPACE_BURN_MARGIN, BOT_SPACE_CRUISE, BOT_SPACE_DEADBAND,
+    BOT_SPACE_DETOUR, BOT_SPACE_FUEL_RESERVE, BOT_SPACE_HAZARD_MARGIN, BOT_SPACE_STUCK_SPEED,
+    BOT_SPACE_STUCK_WINDOW, PLAYER_H, PLAYER_W,
 };
+use crate::effects::flare;
 use crate::math::Vec2;
 use crate::player::input::button;
 use crate::player::state::PlayerState;
-use crate::world::World;
+use crate::world::vortex::{self, Vortex};
+use crate::world::{black_hole, World};
 
 /// Where a flying bot is going, and how close counts as there.
 #[derive(Debug, Clone, Copy)]
@@ -75,21 +78,82 @@ pub(super) fn flies(world: &World, me: &PlayerState) -> bool {
     world.gravity == GravityMode::Space && !me.move_mods().flying && me.mount.mounted.is_none()
 }
 
-/// The hazards a bot keeps out of, each as a centre and the radius it keeps clear
-/// of: the black hole's reach (arrived, or telegraphed — the ring on screen says
-/// where), and a live vortex's disc (`VORTEX_REACH / 2` — *once where thrust stopped
-/// beating its pull; since R97 (T22.03I) thrust wins outside the capture radius, and
-/// the disc stays as the bots' margin: a bot flies through a capped pull slowly*).
-/// Spent vortices do not pull; a trip is survivable, so they are not worth fuel.
-fn keep_out(world: &World) -> impl Iterator<Item = (Vec2, f32)> + '_ {
-    let hole = world.black_hole_site().map(|h| (h, BLACK_HOLE_REACH));
-    let vortices = world.vortices.iter().map(|v| (v.pos, VORTEX_REACH * 0.5));
-    hole.into_iter().chain(vortices)
+/// One thing a bot keeps out of, and **the world's own predicate for how far a point is
+/// outside it** (T22.14B: the bots carried copies of each hazard's geometry, and a copy is
+/// a guard one side drops — the spent vortices were the one they dropped).
+#[derive(Debug, Clone, Copy)]
+enum KeepOut {
+    /// The black hole's reach, arrived or telegraphed (`World::black_hole_site`, the ring
+    /// on screen says where): `black_hole::clearance`.
+    Hole(Vec2),
+    /// A live vortex: the reach of its pull (`vortex::pull_clearance`). **T22.14B M5**:
+    /// the margin used to be `VORTEX_REACH / 2` (the half-reach the trip destination is
+    /// held to), where the pull is already the cap — a bot that stopped at that edge held
+    /// station on thrust, spent its reserve, and was taken dry: 69 of 125 trips over 32
+    /// seeds were a bot with a dry tank a second before (`gate-t2214b-*.txt`).
+    Live(Vortex),
+    /// A spent vortex: it pulls nothing but still catches (R88) — its capture radius
+    /// (`vortex::capture_clearance`). The bots skipped these outright.
+    Spent(Vortex),
 }
 
-/// Is `at` somewhere a bot must not go? Inside a keep-out disc plus the margin.
+impl KeepOut {
+    fn centre(self) -> Vec2 {
+        match self {
+            KeepOut::Hole(h) => h,
+            KeepOut::Live(v) | KeepOut::Spent(v) => v.pos,
+        }
+    }
+
+    /// How far `at` is outside it, px (negative inside) — the world's number.
+    fn clearance(self, at: Vec2) -> f32 {
+        match self {
+            KeepOut::Hole(h) => black_hole::clearance(Some(h), at),
+            KeepOut::Live(v) => vortex::pull_clearance(&v, at),
+            KeepOut::Spent(v) => vortex::capture_clearance(&v, at),
+        }
+    }
+
+    /// Is `at` inside it, or within `BOT_SPACE_HAZARD_MARGIN` of its edge?
+    fn near(self, at: Vec2) -> bool {
+        self.clearance(at) < BOT_SPACE_HAZARD_MARGIN
+    }
+}
+
+/// Every keep-out on the map now.
+fn keep_outs(world: &World) -> impl Iterator<Item = KeepOut> + '_ {
+    let hole = world.black_hole_site().map(KeepOut::Hole);
+    let live = world.vortices.iter().copied().map(KeepOut::Live);
+    let spent = world.spent_vortices.iter().copied().map(KeepOut::Spent);
+    hole.into_iter().chain(live).chain(spent)
+}
+
+/// Is `at` somewhere a bot must not go? Inside a keep-out plus the margin.
 pub(super) fn forbidden(world: &World, at: Vec2) -> bool {
-    keep_out(world).any(|(c, r)| (at - c).len() < r + BOT_SPACE_HAZARD_MARGIN)
+    keep_outs(world).any(|k| k.near(at))
+}
+
+/// The step `approach` walks a line at, px — two sweep steps; a keep-out's edge is
+/// found to within it.
+const APPROACH_STEP: f32 = 2.0 * CLEAR_STEP;
+
+/// **Where to fly for `at`** (T22.14B M1): `at` itself, or — when it lies in a keep-out
+/// — the last point before the first keep-out on the straight line from `pos`. A
+/// destination in a keep-out used to be refused outright, and a bot whose enemy stood
+/// near a vortex or the black hole floated pressing nothing (65 % of the ticks its
+/// destination was forbidden, 8 seeds). It now closes to the edge and holds there, facing
+/// the enemy. `pos` inside a keep-out is [`escape`]'s, and never reaches here.
+pub(super) fn approach(world: &World, pos: Vec2, at: Vec2) -> Vec2 {
+    if !forbidden(world, at) {
+        return at;
+    }
+    let off = at - pos;
+    let n = (off.len() / APPROACH_STEP).ceil().max(1.0) as i32;
+    (1..=n)
+        .map(|k| pos + off * (k as f32 / n as f32))
+        .take_while(|&p| !forbidden(world, p))
+        .last()
+        .unwrap_or(pos)
 }
 
 /// The unit direction out of the most pressing hazard at `pos`, if it is inside
@@ -112,22 +176,21 @@ pub(super) fn escape(world: &World, pos: Vec2, vel: Vec2, fire: Option<Vec2>) ->
             Vec2::new(1.0, 0.0)
         }
     };
-    if let Some((c, _)) = keep_out(world)
-        .filter(|&(c, r)| {
-            let edge = r + BOT_SPACE_HAZARD_MARGIN;
-            (pos - c).len() < edge || (stops_at - c).len() < edge
+    if let Some(k) = keep_outs(world)
+        .filter(|k| k.near(pos) || k.near(stops_at))
+        .min_by(|a, b| {
+            (pos - a.centre())
+                .len()
+                .total_cmp(&(pos - b.centre()).len())
         })
-        .min_by(|a, b| (pos - a.0).len().total_cmp(&(pos - b.0).len()))
     {
-        return Some(clear_heading(world, pos, away(c)));
+        return Some(clear_heading(world, pos, away(k.centre())));
     }
+    // The flare: the world's contact test, asked of the body's box grown by the margin
+    // on every side, the telegraph included (`World::flare_ribbon`).
     if let Some(ribbon) = world.flare_ribbon() {
-        let near = ribbon
-            .into_iter()
-            .min_by(|a, b| (pos - *a).len().total_cmp(&(pos - *b).len()));
-        if let Some(p) =
-            near.filter(|p| (pos - *p).len() < SOLAR_FLARE_RIBBON_R + BOT_SPACE_HAZARD_MARGIN)
-        {
+        let grow = 2.0 * BOT_SPACE_HAZARD_MARGIN;
+        if let Some(p) = flare::ribbon_touches(&ribbon, pos, PLAYER_W + grow, PLAYER_H + grow) {
             return Some(clear_heading(world, pos, away(p)));
         }
     }
@@ -213,10 +276,10 @@ fn wanted(
     if let Some(out) = escape(world, pos, vel, fire) {
         return (out * BOT_SPACE_CRUISE, true);
     }
-    let Some(d) = dest.filter(|d| !forbidden(world, d.at)) else {
+    let Some(d) = dest else {
         return (Vec2::ZERO, false);
     };
-    let off = d.at - pos;
+    let off = approach(world, pos, d.at) - pos;
     let dist = off.len();
     if dist <= d.stop {
         return (Vec2::ZERO, false);
@@ -363,7 +426,10 @@ pub(super) fn steer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MapScale, DEFAULT_MAP_GENERATOR, PICKUP_RADIUS, SIM_DT, SIM_HZ};
+    use crate::constants::{
+        MapScale, BLACK_HOLE_REACH, DEFAULT_MAP_GENERATOR, PICKUP_RADIUS, SIM_DT, SIM_HZ,
+        SOLAR_FLARE_RIBBON_R,
+    };
     use crate::physics::body::Body;
     use crate::player::input::Input;
     use crate::world::RoundPhase;
@@ -659,6 +725,118 @@ mod tests {
         assert!(
             quiet.flare_ribbon().is_none() && escape(&quiet, near, Vec2::ZERO, None).is_none(),
             "control: no flare, yet an escape"
+        );
+    }
+
+    /// **T22.14B M1: a destination in a keep-out is closed on to its edge, not refused.**
+    /// `wanted` returned no velocity at all for a destination inside one, so a bot whose
+    /// enemy stood near a vortex floated pressing nothing. Eight maps: a clear run from
+    /// `from` to `to`, a live vortex placed a pull's reach past `to` (so `to` is in its
+    /// keep-out and `from` is not); 6 s of steering. It arrives at `approach`'s point and
+    /// holds there, and it never enters the pull. Premise per map: `to` forbidden, `from`
+    /// and the approach point not.
+    #[test]
+    fn a_flying_bot_closes_on_a_destination_in_a_keep_out_to_its_edge() {
+        use crate::constants::VORTEX_REACH;
+        let mut bad = Vec::new();
+        for seed in SEEDS {
+            let mut w = space_world(seed);
+            let pts = open_points(&w);
+            let Some((from, to)) = pts.iter().find_map(|&a| {
+                pts.iter()
+                    .find(|&&b| {
+                        let d = (b - a).len();
+                        (0.75 * crate::constants::FOV_DAY..crate::constants::FOV_DAY).contains(&d)
+                            && clear_run(&w, a, b)
+                    })
+                    .map(|&b| (a, b))
+            }) else {
+                panic!("seed {seed}: no clear pair of open points a sight radius apart");
+            };
+            let along = (to - from).normalized();
+            let v = to + along * VORTEX_REACH;
+            let mut seq = 0;
+            let _ = vortex::open(&mut w.vortices, &mut seq, v);
+            let edge = approach(&w, from, to);
+            assert!(
+                forbidden(&w, to) && !forbidden(&w, from) && !forbidden(&w, edge),
+                "seed {seed}: premise — the destination in the keep-out, the start and the edge not"
+            );
+            put(&mut w, from);
+            let dest = Dest {
+                at: to,
+                stop: PICKUP_RADIUS * 0.5,
+            };
+            let mut flight = Flight::default();
+            let mut nearest = f32::INFINITY;
+            for _ in 0..6 * SIM_HZ {
+                fly(&mut w, Some(dest), true, &mut flight);
+                let p = w.player(0).expect("ana");
+                nearest = nearest.min((p.body.pos - v).len());
+            }
+            let p = w.player(0).expect("ana");
+            // Where it holds is `approach`'s point **from where it is** — a well may slide
+            // it along the edge inside the dead band (the arrival jitter
+            // `a_flying_bot_arrives_and_stops` bounds), and the point slides with it.
+            let short = (p.body.pos - approach(&w, p.body.pos, to)).len();
+            let off_edge = (p.body.pos - v).len() - (edge - v).len();
+            if short > dest.stop + PLAYER_H
+                || off_edge > dest.stop + PLAYER_H
+                || nearest < VORTEX_REACH
+                || p.deaths > 0
+            {
+                bad.push((seed, (p.body.pos - from).len(), off_edge, short, nearest));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "(seed, moved, ended outside the keep-out's edge by, off its approach point by, nearest \
+             to the vortex) — it did not close to the keep-out's edge, or went into the pull: \
+             {bad:?}"
+        );
+    }
+
+    /// **T22.14B M5: every vortex is a keep-out — a spent one by its capture radius, a live
+    /// one by the reach of its pull.** The bots kept `VORTEX_REACH / 2` of the live ones
+    /// only: a spent hole (it still catches, R88) was no keep-out at all, and at the
+    /// half-reach a live one pulls the cap, so a bot held there on thrust until it ran dry.
+    /// Escape and `forbidden` at points inside each margin; controls a margin past each.
+    #[test]
+    fn a_spent_vortex_is_kept_out_of_and_a_live_ones_whole_pull_is() {
+        use crate::constants::{VORTEX_CAPTURE_R, VORTEX_REACH};
+        let mut w = space_world(4242);
+        let at = open_both_ways(&w);
+        let right = Vec2::new(1.0, 0.0);
+        let v = Vortex {
+            id: 7,
+            pos: at - right * (0.5 * (VORTEX_CAPTURE_R + BOT_SPACE_HAZARD_MARGIN)),
+        };
+        // Spent: inside its capture radius's margin, it leaves (away: right).
+        w.spent_vortices.push(v);
+        let near = at;
+        let out = escape(&w, near, Vec2::ZERO, None);
+        assert!(
+            out.is_some_and(|o| o.x > 0.5) && forbidden(&w, v.pos),
+            "a spent vortex {:.0} px off is not kept out of: escape {out:?}",
+            (near - v.pos).len()
+        );
+        let far = v.pos + right * (VORTEX_CAPTURE_R + 2.0 * BOT_SPACE_HAZARD_MARGIN);
+        assert!(
+            escape(&w, far, Vec2::ZERO, None).is_none() && !forbidden(&w, far),
+            "control: a spent vortex pulls nothing, so past its capture margin is free"
+        );
+        // Live: at three quarters of the reach (outside the old half-reach margin).
+        w.spent_vortices.clear();
+        w.vortices.push(v);
+        let mid = v.pos + right * (0.75 * VORTEX_REACH);
+        assert!(
+            escape(&w, mid, Vec2::ZERO, None).is_some_and(|o| o.x > 0.5) && forbidden(&w, mid),
+            "a live vortex's pull at 0.75 of its reach is not kept out of"
+        );
+        let past = v.pos + right * (VORTEX_REACH + 2.0 * BOT_SPACE_HAZARD_MARGIN);
+        assert!(
+            escape(&w, past, Vec2::ZERO, None).is_none() && !forbidden(&w, past),
+            "control: past the pull's reach and the margin is free"
         );
     }
 

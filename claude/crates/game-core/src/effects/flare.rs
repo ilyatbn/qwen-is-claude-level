@@ -144,12 +144,20 @@ impl SolarFlare {
     /// server and the sandbox both touch through this and a second copy of the
     /// window is a guard one of them would drop (T22.08C F1).
     pub fn touches(&self, elapsed: f32, centre: Vec2, w: f32, h: f32) -> bool {
-        Self::lit(elapsed)
-            && self
-                .points_at(elapsed)
-                .into_iter()
-                .any(|p| circle_touches_box(p, SOLAR_FLARE_RIBBON_R, centre, w, h))
+        Self::lit(elapsed) && ribbon_touches(&self.points_at(elapsed), centre, w, h).is_some()
     }
+}
+
+/// The nearest point of a ribbon (`SolarFlare::points_at`) whose `SOLAR_FLARE_RIBBON_R`
+/// circle touches a `w × h` box centred on `centre`, if any — the one contact test,
+/// shared by [`SolarFlare::touches`] (the burn) and the bots, who ask it of a box grown
+/// by their margin, telegraph included (T22.14B: they had a point-distance copy).
+pub fn ribbon_touches(points: &[Vec2], centre: Vec2, w: f32, h: f32) -> Option<Vec2> {
+    points
+        .iter()
+        .copied()
+        .filter(|&p| circle_touches_box(p, SOLAR_FLARE_RIBBON_R, centre, w, h))
+        .min_by(|a, b| (centre - *a).len().total_cmp(&(centre - *b).len()))
 }
 
 #[cfg(test)]

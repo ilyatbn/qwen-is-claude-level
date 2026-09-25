@@ -92,8 +92,24 @@ pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2) -> Option<u32> {
     vortices
         .iter()
         .chain(spent)
-        .find(|v| (v.pos - pos).len() <= VORTEX_CAPTURE_R)
+        .find(|v| capture_clearance(v, pos) <= 0.0)
         .map(|v| v.id)
+}
+
+/// How far a body centre at `pos` is outside `v`'s capture radius, px — zero or less
+/// is caught. [`captor`]'s test, and the bots' keep-out from a **spent** hole, which
+/// catches (R88) but no longer pulls (T22.14B: one predicate, not a copy).
+pub fn capture_clearance(v: &Vortex, pos: Vec2) -> f32 {
+    (v.pos - pos).len() - VORTEX_CAPTURE_R
+}
+
+/// How far `pos` is outside the reach of a **live** vortex's pull, px (negative
+/// inside) — `attractors::Attractor::vortex`'s reach, past which it pulls nothing.
+/// The bots' keep-out from a live hole (T22.14B M5): anywhere inside it a body at rest
+/// is drawn in, so a bot that stops there holds station on thrust until its tank runs
+/// dry — and then it is taken.
+pub fn pull_clearance(v: &Vortex, pos: Vec2) -> f32 {
+    (v.pos - pos).len() - VORTEX_REACH
 }
 
 /// How far `centre` is outside the `VORTEX_REACH / 2` disc of every hole, px —

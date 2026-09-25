@@ -115,12 +115,26 @@ const WINGED_SWEEP_LEGS: u32 = 4;
 fn leg_barred(world: &World, pos: Vec2, b: u8) -> bool {
     let reach = WINGS_FLY_SPEED * STUCK_WINDOW;
     let at = pos + Vec2::new(0.0, if b == button::UP { -reach } else { reach });
-    at.y + crate::constants::PLAYER_H * 0.5 > world.map.mask.h as f32
-        || world
-            .map
-            .space_geometry()
-            .is_some_and(|geo| geo.in_the_void(at.x, at.y))
-        || space::forbidden(world, at)
+    world.body_in_the_void(&crate::physics::body::Body::new(at)) || space::forbidden(world, at)
+}
+
+/// The wings' buttons for a unit heading (T22.14B M4): each axis pressed when the
+/// heading leans on it by more than `sin 22.5°`, so the eight turns `space::escape`
+/// sweeps map onto the eight button pairs.
+fn wing_buttons(dir: Vec2) -> u8 {
+    let lean = (std::f32::consts::PI / 8.0).sin();
+    let mut b = 0u8;
+    if dir.x > lean {
+        b |= button::RIGHT;
+    } else if dir.x < -lean {
+        b |= button::LEFT;
+    }
+    if dir.y < -lean {
+        b |= button::UP;
+    } else if dir.y > lean {
+        b |= button::DOWN;
+    }
+    b
 }
 
 fn winged_sweep_leg(t: f32) -> u32 {
@@ -308,6 +322,14 @@ pub struct BotStats {
     /// air (74 % of winged stuck ticks at `c3f7861`).
     pub ticks_winged_stuck: u32,
     pub ticks_winged_stuck_moving: u32,
+    /// T22.14B M1: ticks a flying bot's destination lay inside a keep-out disc
+    /// (`space::forbidden`), and of them the ticks it was **frozen short of it**: still
+    /// (under `BOT_SPACE_STUCK_SPEED`), pressing no movement button, and further than a
+    /// body past its stop from the nearest point it may fly to (`space::approach`) — the
+    /// audit's freeze (an enemy beside a vortex was a destination `steer` refused), and
+    /// not a bot holding at a keep-out's edge, which is where it is meant to be.
+    pub ticks_dest_forbidden: u32,
+    pub ticks_dest_forbidden_idle: u32,
 }
 
 pub struct Bot {
@@ -439,7 +461,19 @@ impl Bot {
         let mut buttons = 0u8;
 
         // --- move -------------------------------------------------------
-        let dx = aim_at.x - pos.x;
+        // T22.14B M4: **a winged bot in space closes only to the nearest point outside a
+        // keep-out** (`space::approach`, the flying model's), not onto an enemy beside a
+        // vortex. Everywhere else — and always under gravity, where there are no
+        // keep-outs — it walks for the goal itself. Fleeing is away from it, never onto it.
+        let winged = me.move_mods().flying;
+        let wing_space =
+            winged && world.gravity == GravityMode::Space && me.mount.mounted.is_none();
+        let move_to = if wing_space && !matches!(self.goal, Goal::Flee(_)) {
+            space::approach(world, pos, aim_at)
+        } else {
+            aim_at
+        };
+        let dx = move_to.x - pos.x;
         if matches!(self.goal, Goal::Flee(_)) {
             // §E10: away, and **not gated on `stand_off`**. Stopping at the
             // stand-off distance is what a bot does when it wants to shoot from
@@ -502,7 +536,6 @@ impl Bot {
         }
 
         // T22.03I F4: a winged bot that gave its way up hovers instead of pressing.
-        let winged = me.move_mods().flying;
         if winged && now < self.sweep_refused_until {
             buttons &= !(button::LEFT | button::RIGHT);
         }
@@ -546,7 +579,7 @@ impl Bot {
             self.stuck_from = pos.x;
         }
 
-        let rise = pos.y - aim_at.y; // positive when the target is above
+        let rise = pos.y - move_to.y; // positive when the target is above
         let stuck = self.still_for > STUCK_WINDOW;
         let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded);
         if wants_jump {
@@ -632,6 +665,21 @@ impl Bot {
                     .into_iter()
                     .find(|&b| !leg_barred(world, pos, b))
                     .unwrap_or(0);
+            }
+        }
+
+        // T22.14B M4: **and a winged bot in space leaves what kills the way a flying one
+        // does** — the same `space::escape` (the black hole's reach, a vortex's pull or
+        // capture, a flare's ribbon, a fire), its heading pressed on the wings' four
+        // buttons (UP rises and DOWN descends under wings, with no fuel). Before, its only
+        // guard was `leg_barred` on the sweep's legs: it walked onto an enemy standing in a
+        // vortex's mouth and was taken (`a_winged_bot_in_space_keeps_out_of_a_vortex`).
+        if wing_space {
+            let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
+            if let Some(out) = space::escape(world, pos, me.body.vel, fire) {
+                buttons &=
+                    !(button::LEFT | button::RIGHT | button::UP | button::DOWN | button::JUMP);
+                buttons |= wing_buttons(out);
             }
         }
 
@@ -736,7 +784,16 @@ impl Bot {
             },
         };
         let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
-        space::steer(world, me, Some(dest), fire, &mut self.flight, dt)
+        let b = space::steer(world, me, Some(dest), fire, &mut self.flight, dt);
+        if space::forbidden(world, dest.at) {
+            self.stats.ticks_dest_forbidden += 1;
+            let moves = button::LEFT | button::RIGHT | button::UP | button::DOWN | button::JUMP;
+            let short = (space::approach(world, pos, dest.at) - pos).len()
+                > dest.stop + crate::constants::PLAYER_H;
+            let still = me.body.vel.len() < crate::constants::BOT_SPACE_STUCK_SPEED;
+            self.stats.ticks_dest_forbidden_idle += u32::from(b & moves == 0 && still && short);
+        }
+        b
     }
 
     fn choose_goal(&mut self, world: &World, pos: Vec2, dt: f32) {
@@ -2531,16 +2588,18 @@ mod tests {
         );
         w.set_phase(RoundPhase::Playing);
         let geo = w.map.space_geometry().expect("space");
-        let v = Vec2::new(geo.cx, geo.cy);
+        // T22.14B M5: a live vortex's keep-out is the reach of its pull — the vortex a
+        // reach above the centre, so the leg away from it stays inside the arena.
+        let v = Vec2::new(geo.cx, geo.cy - crate::constants::VORTEX_REACH);
         let mut seq = 0;
         let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, v);
         let below = v + Vec2::new(
             0.0,
-            crate::constants::VORTEX_REACH * 0.5 + WINGS_FLY_SPEED * STUCK_WINDOW,
+            crate::constants::VORTEX_REACH + WINGS_FLY_SPEED * STUCK_WINDOW,
         );
         assert!(
             leg_barred(&w, below, button::UP),
-            "a leg into a vortex's disc was allowed"
+            "a leg into a vortex's pull was allowed"
         );
         assert!(
             !leg_barred(&w, below, button::DOWN),
@@ -2553,6 +2612,93 @@ mod tests {
     /// body heights tall in a block of rock, the enemy outside it: the bot presses
     /// toward the enemy, is stuck, sweeps its `WINGED_SWEEP_LEGS` legs, and then stops
     /// pressing. The control: it did press and sweep first. Both gravities.
+    /// **T22.14B M4: a winged bot in space keeps out of a vortex.** Wings walk the
+    /// walking model in every mode (R5), and in space nothing kept that model out of what
+    /// kills: sent at an enemy standing by a vortex's mouth it closed to its stand-off, in
+    /// the pull, and was drawn in. Now it leaves the pull (`space::escape`, on the wings'
+    /// buttons) and holds outside it (`space::approach`). Both sides of the vortex, 8 s
+    /// each; the enemy is put back beside the mouth every tick. Control: the same bot with
+    /// the vortex gone reaches the enemy — the goal is live.
+    #[test]
+    fn a_winged_bot_in_space_keeps_out_of_a_vortex() {
+        use crate::constants::{VORTEX_CAPTURE_R, VORTEX_REACH};
+        use crate::items::registry::UNICORN_WINGS;
+        // (trips, nearest to the vortex, where it ended, where it started)
+        let run = |side: f32, with_vortex: bool| -> (u32, f32, f32, f32) {
+            let mut w = World::with_gravity(
+                SEED,
+                MapScale::Small,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "bot".into());
+            w.add_player(2, 0, "enemy".into());
+            let _ = w.drain_events();
+            let geo = w.map.space_geometry().expect("space");
+            let v = Vec2::new(geo.cx, geo.cy);
+            if with_vortex {
+                let mut seq = 0;
+                let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, v);
+            }
+            // Where the pull (capped, `SPACE_WELL_ACCEL_MAX`) is under what wings fly
+            // against: nearer, a winged body pressing away is still drawn in (measured
+            // at the half-reach: 13 px/s² net inward — filed, a world question, not a
+            // bot's). The enemy is just outside the capture radius, on the bot's side.
+            let start = v + Vec2::new(side * 0.75 * VORTEX_REACH, 0.0);
+            let enemy = v + Vec2::new(side * (VORTEX_CAPTURE_R + PLAYER_H), 0.0);
+            if let Some(p) = w.player_mut(1) {
+                p.body = crate::physics::body::Body::new(start);
+            }
+            give(&mut w, 1, UNICORN_WINGS, 1);
+            give(&mut w, 1, PISTOL, 10);
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            let (mut trips, mut nearest) = (0u32, f32::INFINITY);
+            for t in 0..(8 * crate::constants::SIM_HZ) {
+                if let Some(p) = w.player_mut(2) {
+                    p.body = crate::physics::body::Body::new(enemy);
+                    p.health = 100.0;
+                }
+                let inp = b.think(&w, t as f32 * SIM_DT, SIM_DT);
+                w.queue_input(1, inp);
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if matches!(e, crate::world::GameEvent::VortexTrip { id: 1, .. }) {
+                        trips += 1;
+                    }
+                }
+                if let Some(p) = w.player(1) {
+                    nearest = nearest.min((p.body.pos - v).len());
+                }
+            }
+            let p = w.player(1).expect("bot");
+            assert!(
+                p.move_mods().flying,
+                "premise: the bot kept its wings (side {side})"
+            );
+            (trips, nearest, (p.body.pos - v).len(), (start - v).len())
+        };
+        let mut bad = Vec::new();
+        for side in [-1.0, 1.0] {
+            let (trips, nearest, end, from) = run(side, true);
+            if trips > 0 || nearest < from - PLAYER_H || end < VORTEX_REACH {
+                bad.push((side, trips, nearest, end, from));
+            }
+            let (_, reached, ..) = run(side, false);
+            assert!(
+                reached < VORTEX_CAPTURE_R + PLAYER_H,
+                "control (side {side}): with no vortex it never closed on the enemy \
+                 (nearest {reached:.0} px to where the vortex was)"
+            );
+        }
+        assert!(
+            bad.is_empty(),
+            "(side, trips, nearest to the vortex, where it ended, where it started) — a winged \
+             bot went into a vortex's pull, or did not leave it: {bad:?}"
+        );
+    }
+
     #[test]
     fn a_winged_bot_in_a_closed_pocket_gives_up_within_a_bound() {
         use crate::items::registry::UNICORN_WINGS;
@@ -3725,6 +3871,8 @@ pub(crate) mod harness {
             rej_impact_guard: a.rej_impact_guard + b.rej_impact_guard,
             ticks_winged_stuck: a.ticks_winged_stuck + b.ticks_winged_stuck,
             ticks_winged_stuck_moving: a.ticks_winged_stuck_moving + b.ticks_winged_stuck_moving,
+            ticks_dest_forbidden: a.ticks_dest_forbidden + b.ticks_dest_forbidden,
+            ticks_dest_forbidden_idle: a.ticks_dest_forbidden_idle + b.ticks_dest_forbidden_idle,
         }
     }
 

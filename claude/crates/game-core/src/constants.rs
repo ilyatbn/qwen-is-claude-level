@@ -3682,8 +3682,8 @@ pub const BOT_FLAME_REACH_SCALE: f32 = 2.0;
 /// (1110 px, every throw inside sight refused) and not the ring-gap distance.
 pub const BOT_SPACE_ZONE_REACH: f32 = 100.0;
 /// How far outside a hazard's edge a bot in space starts leaving it, px — the
-/// black hole's reach (and its telegraph), a vortex's no-escape disc, a flare's
-/// ribbon.
+/// black hole's reach (and its telegraph), a live vortex's pull (its whole reach since
+/// T22.14B), a spent vortex's capture radius, a flare's ribbon.
 pub const BOT_SPACE_HAZARD_MARGIN: f32 = 64.0;
 /// A bot in a suit goes for a battery pack in sight when its battery is at or
 /// below this fraction of `BATTERY_MAX` and it carries none — past a visible
