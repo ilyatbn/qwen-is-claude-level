@@ -7102,3 +7102,12 @@ previous input — a press the server stood in for replays a stand-in late, as s
 reset (jump, jetpack but fuel, body) reaches the prediction and its history from the trip's seq; `dev_relocate` resets
 too. F4 `MAP_GENERATOR_MAX` via constants_json; F5 seqClock lead = MAX_FRAME_DT, golden header order. canvas-renderer
 settles across drawn frames. Browser numbers in the task file.
+
+## T22.14E — thrusters-match's bell-arm red, measured (investigator, 2026-09-25)
+Diagnostic: `Predictor.stats.lastCorrection` (tick, ack, pending, stood-in, stepped byte, neutral/ahead, prediction at the
+ack vs the server's state, the body before, how booked) → `debug().vortex.lastCorrection`; the bell arm logs every
+post-bell correction's context each run. Interleaved alone, HEAD vs `8b842e8^` (scratch worktree, same diagnostic): the
+rubber-band assertion 0/9 vs 0/10, plus 0/5 at HEAD `--jobs 4` — pooled 2/24 after vs 0/27 before (p ≈ 0.2); unattributed.
+No path: after the bell `reconcileNeutral` uses `setPlayerState`, never the stepped byte. The arm's precondition also went
+red 2/24 at random (bo landed / pinned before the bell) → **parked** (`flaky: true`, row in `flaky-test.md`). vitest 1113,
+tsc clean, `--changed --fast` green, e2e `--jobs 4` 72/72 (`gate-t2214e-*.txt`).

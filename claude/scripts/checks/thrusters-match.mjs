@@ -102,7 +102,7 @@ const watchBell = (c, afterS, limitS) =>
   c.page.evaluate(
     ([after, limit]) =>
       new Promise((resolve) => {
-        const out = { pre: null, post: [], hitches: 0, pendingMax: 0, pendingPre: 0, frames: 0, travelled: 0 }
+        const out = { pre: null, post: [], contexts: [], hitches: 0, pendingMax: 0, pendingPre: 0, frames: 0, travelled: 0 }
         let from = null
         let corr = null
         let settled = 0
@@ -145,6 +145,8 @@ const watchBell = (c, afterS, limitS) =>
               if (corr !== null && v.corrections > corr) {
                 if ((v.settled ?? 0) > settled) out.hitches++
                 else out.post.push(v.lastJumpPx)
+                // T22.14E: every correction's context (the hitch's too), printed on a failure.
+                out.contexts.push({ phase: d.phase, frame: out.frames, ...(v.lastCorrection ?? { missing: true }) })
               }
               out.pendingMax = Math.max(out.pendingMax, d.pendingInputs ?? 0)
             }
@@ -438,6 +440,9 @@ try {
           else if (worst > eps || seen.pendingMax > Math.ceil(K.get('MAX_FRAME_DT') * K.get('SIM_HZ'))) {
             fail(`the results screen rubber-bands bo's own body: ${summary} (bound ${eps.toFixed(2)} px = RECONCILE_EPSILON_PX + the wire's rounding over ${AFTER_BELL_S} s)`)
           } else ok(`no rubber-band after the bell (bo drifted ${seen.travelled.toFixed(1)} px; ${seen.pendingPre} pending before it): ${summary}`)
+          // T22.14E: what each correction after the bell had against what the server said —
+          // printed pass or fail, so a red one has green ones to be read against.
+          console.log(`  bell arm: the corrections after the bell (each one's context): ${JSON.stringify(seen.contexts)}`)
         }
       }
     } finally {

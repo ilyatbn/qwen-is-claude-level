@@ -3799,6 +3799,8 @@ export class GameScene extends Phaser.Scene {
             snaps: self.predictor?.stats.snaps ?? 0,
             settled: self.predictor?.stats.settled ?? 0,
             worstJump: self.predictor?.stats.worstJump ?? null,
+            // T22.14E: the last correction's context, for a check that fails on one.
+            lastCorrection: self.predictor?.stats.lastCorrection ?? null,
             // T22.12D F1: the bell's own error (NaN → null until measured).
             bellErrorPx: Number.isFinite(self.predictor?.stats.bellErrorPx) ? self.predictor?.stats.bellErrorPx : null,
           },

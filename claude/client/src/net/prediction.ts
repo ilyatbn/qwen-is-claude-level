@@ -83,6 +83,30 @@ export interface PredictorStats {
    * NaN until a bell is measured.
    */
   bellErrorPx: number
+  /**
+   * T22.14E: **the last correction's full context**, counted or not — so a check that
+   * fails on one jump can print what the prediction had against what the server said
+   * (`thrusters-match`'s bell arm). Null until a correction.
+   */
+  lastCorrection: CorrectionContext | null
+}
+
+/**
+ * The context of one correction (T22.14E): `WorstJump`'s fields, plus the prediction
+ * compared at the ack (`at`, null when there was none), the server's state there, the
+ * body before the correction (`was`), the ack, the stepped-buttons byte, whether the
+ * phase took no input (`neutral`, keyed on the tick) and how many ticks the local body
+ * ran ahead of the snapshot, and how the correction was booked.
+ */
+export interface CorrectionContext extends WorstJump {
+  neutral: boolean
+  ack: number
+  steppedButtons: number | null
+  ahead: number
+  at: Kinematics | null
+  server: Kinematics & { grounded: boolean; moveState: number; fuel: number }
+  was: Kinematics & { moveState: number; fuel: number }
+  booked: 'counted' | 'settled' | 'snap'
 }
 
 /** The context of the correction behind `maxEasedJumpPx` (T22.10G). */
@@ -176,9 +200,12 @@ export class Predictor {
     settled: 0,
     worstJump: null,
     bellErrorPx: Number.NaN,
+    lastCorrection: null,
   }
   /** This reconcile's context, for `stats.worstJump` (T22.10G). */
   private step: Omit<WorstJump, 'px' | 'ackErrorPx'> | null = null
+  /** This correction's extra context, for `stats.lastCorrection` (T22.14E). */
+  private detail: Omit<CorrectionContext, keyof WorstJump | 'booked'> | null = null
   /**
    * Where each unacknowledged input left the body, by seq — `lastAckErrorPx`'s
    * other end, and the prediction `reconcile`'s gate compares (T22.10D F8).
@@ -394,6 +421,7 @@ export class Predictor {
     // error into every prediction after it.
     const was = { x: local.x, y: local.y }
     const lifeChanged = local.alive !== snap.state.alive
+    this.detail = this.describe(false, snap, at ?? null, local, this.pending.length)
     // T22.14C HIGH-1: from the movement state the mirror had **at the ack** (its
     // previous input, jump buffer, jetpack), not the newest one — or the first
     // replayed input's edges read against the last input pushed. T22.14D F1: with the
@@ -468,6 +496,7 @@ export class Predictor {
     const was = { x: now.x, y: now.y }
     const err = Math.hypot(now.x - snap.state.x, now.y - snap.state.y)
     const ahead = n.label !== null ? n.label - snap.tick : 0
+    this.detail = this.describe(true, snap, at ?? null, now, ahead)
     // Not `correctPlayerState`: every neutral tick runs under the one frozen seq, so
     // the mirror's copy "at the ack" is its newest — and a neutral tick has no edges.
     this.core.setPlayerState(this.localId, snap.state)
@@ -571,6 +600,26 @@ export class Predictor {
     )
   }
 
+  /** `CorrectionContext`'s fields a reconcile path knows (T22.14E). */
+  private describe(
+    neutral: boolean,
+    snap: LocalSnapshotView,
+    at: Kinematics | null,
+    local: PlayerState,
+    ahead: number,
+  ): Omit<CorrectionContext, keyof WorstJump | 'booked'> {
+    const k = (s: Kinematics): Kinematics => ({ x: s.x, y: s.y, vx: s.vx, vy: s.vy })
+    return {
+      neutral,
+      ack: snap.lastInputSeq,
+      steppedButtons: snap.steppedButtons ?? null,
+      ahead,
+      at: at ? k(at) : null,
+      server: { ...k(snap.state), grounded: snap.state.grounded, moveState: snap.state.moveState, fuel: snap.state.fuel },
+      was: { ...k(local), moveState: local.moveState, fuel: local.fuel },
+    }
+  }
+
   /** A snapshot the prediction agreed with. */
   private settle(ackErr: number): void {
     if (this.unsettled) {
@@ -599,7 +648,12 @@ export class Predictor {
     // On how far the correction **moved** the body (T22.10D F8), not on `err`:
     // `err` includes the pending travel, so a fast body on a slow page read past
     // `SNAP_PX` on a correction of a few pixels and teleported the render.
-    if (now && this.stats.lastJumpPx > SNAP_PX) {
+    const booked: CorrectionContext['booked'] =
+      now && this.stats.lastJumpPx > SNAP_PX ? 'snap' : this.unsettled || lifeChanged ? 'settled' : 'counted'
+    if (this.step && this.detail) {
+      this.stats.lastCorrection = { ...this.step, ...this.detail, px: this.stats.lastJumpPx, ackErrorPx: ackErr, booked }
+    }
+    if (now && booked === 'snap') {
       this.stats.snaps++
       this.render = { x: now.x, y: now.y }
       this.unsettled = false
