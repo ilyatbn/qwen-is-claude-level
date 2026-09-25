@@ -299,7 +299,16 @@ pub const HEADER_BYTES: usize = 46;
 /// meteors start inside the rim, fly at the asteroids, and despawn at the rim without
 /// carving (R99) — a v24 space recording diverges at its first shower. No new tag, no
 /// layout change.
-pub const REPLAY_VERSION: u16 = 25;
+///
+/// **26 (T22.14C, R100 and the placement clearance)**: the silent-divergence shape. A
+/// winged player in space feels no field — no well, no vortex pull, no black-hole pull
+/// (capture and the horizon still apply) — so a v25 space recording diverges the first
+/// tick a winged body sits in any field; and a respawn or mid-round join keeps clear of
+/// every vortex's `VORTEX_REACH / 2` as a trip's destination does, so one diverges at
+/// the first placement a vortex would have refused. No new tag, no layout change (the
+/// snapshot header's exact round time is the wire's, not a replay's: replays store
+/// inputs).
+pub const REPLAY_VERSION: u16 = 26;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

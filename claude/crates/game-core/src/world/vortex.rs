@@ -790,6 +790,147 @@ mod world_tests {
             .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. })));
     }
 
+    /// **T22.14B's filed row (T22.14C): nobody is put inside a vortex's mouth.** A
+    /// respawn and a mid-round join are held to the trip destination's clearance —
+    /// `World::placement_clearance`, one function for all three placements — so a
+    /// vortex sitting on the picker's first choice is refused, where the black hole
+    /// alone was checked before (8 of the 13 trips T22.14B had left were a respawn
+    /// inside a vortex, taken on its first tick). Red first with the old filter.
+    #[test]
+    fn nobody_respawns_or_joins_inside_a_vortex() {
+        let mut w = space_world(13);
+        w.set_phase(RoundPhase::Playing);
+        let first = w.map.meta.spawn_points[0];
+        let spot =
+            crate::player::state::surface_to_centre(Vec2::new(first.x as f32, first.y as f32));
+        let unfiltered = crate::player::state::choose_respawn(&w.map, &[], &mut w.rng.clone());
+        assert_eq!(
+            unfiltered, spot,
+            "control: the picker's first choice is not the first point"
+        );
+        w.vortices
+            .push(crate::world::vortex::Vortex { id: 90, pos: spot });
+        w.players[0].health = 0.0;
+        let mut at = None;
+        for _ in 0..((crate::constants::RESPAWN_DELAY + 1.0) / SIM_DT) as usize {
+            step(&mut w);
+            for e in w.drain_events() {
+                if let GameEvent::Respawn { x, y, .. } = e {
+                    at = Some(Vec2::new(x, y));
+                }
+            }
+            if at.is_some() {
+                break;
+            }
+        }
+        let at = at.expect("never respawned");
+        assert!(
+            crate::world::vortex::clearance(&w.vortices, &w.spent_vortices, at) >= 0.0,
+            "respawned {:.1} px from a vortex (capture radius {})",
+            (at - spot).len(),
+            crate::constants::VORTEX_CAPTURE_R
+        );
+        // The join.
+        let living: Vec<Vec2> = w
+            .players
+            .iter()
+            .filter(|p| p.alive)
+            .map(|p| p.body.pos)
+            .collect();
+        let joiner = crate::player::state::choose_respawn(&w.map, &living, &mut w.rng.clone());
+        w.spent_vortices.push(crate::world::vortex::Vortex {
+            id: 91,
+            pos: joiner,
+        });
+        w.add_player(1, 0, "bo".into());
+        let at = w.player(1).expect("bo").body.pos;
+        assert!(
+            crate::world::vortex::clearance(&w.vortices, &w.spent_vortices, at) >= 0.0,
+            "joined {:.1} px from a spent vortex, which still catches (R88)",
+            (at - joiner).len()
+        );
+    }
+
+    /// **R100 (T22.14C): wings are the flying regime, and the fields pass them by.**
+    /// A winged player left idle 1.5 capture radii from a live vortex for two seconds
+    /// is neither drawn in nor taken, and does not drift on the wells either (the same
+    /// point with the vortex gone); the control is the same body unwinged, taken by the
+    /// vortex and drifting on the wells. The capture is a radius, not a field: a
+    /// winged player inside it is still taken on the next tick
+    /// (`the_vortex_takes_a_player_wearing_wings`, and again here from 0.9 R).
+    #[test]
+    fn a_winged_player_is_not_pulled_by_a_vortex_or_the_wells_and_is_still_taken_inside() {
+        use crate::constants::VORTEX_CAPTURE_R;
+        use crate::items::registry::UNICORN_WINGS;
+        let d = 1.5 * VORTEX_CAPTURE_R;
+        let (dir, hole) = {
+            let mut w = space_world(4242);
+            let hole = breach_top(&mut w);
+            let dir = probe(&w, hole, d, |wells, _| wells.len() > 1.0)
+                .expect("a point beside the vortex that a well reaches too");
+            (dir, hole)
+        };
+        let run = |winged: bool, vortex: bool| -> (bool, f32) {
+            let mut w = space_world(4242);
+            assert_eq!(breach_top(&mut w), hole);
+            if !vortex {
+                w.vortices.clear();
+            }
+            if winged {
+                crate::world::give(&mut w, 0, UNICORN_WINGS, 1);
+                assert!(w.players[0].move_mods().flying, "premise: winged");
+            }
+            let at = hole + dir * d;
+            w.players[0].body = Body::new(at);
+            let _ = w.drain_events();
+            let mut taken = false;
+            for _ in 0..(2.0 / SIM_DT) as u32 {
+                step(&mut w);
+                taken |= w
+                    .drain_events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. }));
+                if taken {
+                    break;
+                }
+            }
+            (taken, (w.players[0].body.pos - at).len())
+        };
+        let (taken, moved) = run(true, true);
+        assert!(
+            !taken && moved < 0.5,
+            "a winged player beside the vortex was pulled: taken {taken}, moved {moved:.2} px"
+        );
+        let (_, moved) = run(true, false);
+        assert!(
+            moved < 0.5,
+            "a winged player drifted {moved:.2} px on the wells"
+        );
+        let (taken, _) = run(false, true);
+        assert!(
+            taken,
+            "control: the same body unwinged was not taken in 2 s"
+        );
+        let (_, drift) = run(false, false);
+        assert!(
+            drift > 1.0,
+            "control: the same body unwinged drifted only {drift:.2} px on the wells"
+        );
+        // The mouth is a radius: winged, inside it, taken on the next tick.
+        let mut w = space_world(4242);
+        breach_top(&mut w);
+        crate::world::give(&mut w, 0, UNICORN_WINGS, 1);
+        w.players[0].body = Body::new(hole + dir * (0.9 * VORTEX_CAPTURE_R));
+        let _ = w.drain_events();
+        step(&mut w);
+        assert!(
+            w.drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. })),
+            "a winged player inside the capture radius was not taken"
+        );
+    }
+
     /// **It pulls, through the one summation** (R11): a player near a vortex is
     /// accelerated toward it by `env_at`, and the same world with the vortex gone is
     /// not. Speed toward the hole after a quarter second, both ways.
@@ -895,7 +1036,7 @@ mod world_tests {
                 .chain(std::iter::once(Attractor::vortex(hole))),
             at,
         );
-        let got = env_at(&w.map, GravityMode::Space, &[hole], None, false, at).accel;
+        let got = env_at(&w.map, GravityMode::Space, false, &[hole], None, false, at).accel;
         assert!(
             got.len() <= SPACE_WELL_ACCEL_MAX * (1.0 + 4.0 * f32::EPSILON) && got.dot(dir) < 0.0,
             "beside the vortex: {got:?} (raw {raw:?}), cap {SPACE_WELL_ACCEL_MAX}"

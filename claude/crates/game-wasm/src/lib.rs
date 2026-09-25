@@ -647,9 +647,11 @@ impl GameCore {
     /// assert the *effect* rather than the ask.
     pub fn field_accel_at(&self, x: f32, y: f32) -> Box<[f32]> {
         let (vortices, n, hole) = self.attractors_at(None);
+        // The field an unwinged body feels (R100: a winged one feels only the hole's).
         let env = game_core::world::attractors::env_at(
             &self.map,
             self.gravity,
+            false,
             &vortices[..n],
             hole,
             game_core::world::black_hole::pulls(self.phase),
@@ -836,8 +838,16 @@ impl GameCore {
         // `worldMirror.ts::applyMapInit` through [`GameCore::set_asteroids`],
         // beside `setTeleportPads`; wiring this call at T22.11B is what made that
         // a one-line change rather than a second design.
+        // R100 (T22.14C): a winged body's field is the flying regime's — the same
+        // `mods.flying` the server passes.
         let env = game_core::world::attractors::env_at(
-            map, gravity, vortices, hole, hole_pulls, p.body.pos,
+            map,
+            gravity,
+            mods.flying,
+            vortices,
+            hole,
+            hole_pulls,
+            p.body.pos,
         );
         apply_input(
             map,
@@ -4270,7 +4280,7 @@ mod tests {
 
     /// **T22.10C F4: prediction's real call site pulls as the server does.** The
     /// test above reads `field_accel_at`, which is a readback — planting
-    /// `env_at(map, gravity, &[], …)` in `apply_input`, the call prediction
+    /// `env_at(map, gravity, false, &[], …)` in `apply_input`, the call prediction
     /// actually makes, left it green. This steps `GameCore::apply_input` and
     /// `World::step` side by side, idle, from 1.5 capture radii inside a live
     /// vortex until the server takes the player, and compares positions
@@ -4336,6 +4346,68 @@ mod tests {
             "control: the vortex never took the player ({:?} -> {:?}), so agreement \
              proves nothing",
             start, last
+        );
+    }
+
+    /// **R100 (T22.14C): a winged player beside a vortex is stepped exactly as the
+    /// server steps it** — no pull on either side, from the one `env_at`, which both
+    /// hand `MoveMods::flying` (the mirror's from the snapshot's move-mod byte). Server
+    /// and mirror side by side for a second, the player winged and holding DOWN|LEFT
+    /// (away) from 1.5 capture radii; compared exactly every tick. The control: a mirror whose
+    /// byte says unwinged predicts the pull and leaves the server.
+    #[test]
+    fn a_winged_player_beside_a_vortex_is_predicted_where_the_server_puts_them() {
+        use game_core::constants::{METEOR_CARVE_R, VORTEX_CAPTURE_R};
+        use game_core::player::input::button;
+        let run = |tell_wings: bool| -> (f32, f32) {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            let geo = w.map.space_geometry().expect("space");
+            let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+            let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+            core.carve(tx, ty, METEOR_CARVE_R as i32);
+            w.step(SIM_DT);
+            let v = w.vortices[0].pos;
+            core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
+            let start = v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R);
+            w.add_player(1, 0, String::new());
+            game_core::world::give(&mut w, 1, game_core::items::registry::UNICORN_WINGS, 1);
+            let p = w.player_mut(1).expect("seated");
+            p.body = Body::new(start);
+            let bits = if tell_wings { p.move_mod_bits() } else { 0 };
+            assert!(
+                p.move_mods().flying,
+                "premise: the server's player is winged"
+            );
+            core.add_player(1, start.x, start.y);
+            core.set_player_state(1, start.x, start.y, 0.0, 0.0, false, 5.0, 100.0, true, bits);
+            let (mut worst, buttons) = (0.0f32, button::DOWN | button::LEFT);
+            for _ in 0..game_core::constants::SIM_HZ {
+                // Seq 0: numbered by the world, so it runs on this tick.
+                w.queue_input(1, Input::new(0, buttons, 0));
+                w.step(SIM_DT);
+                let seq = w.last_simulated_seq(1).expect("stepped");
+                core.apply_input(1, seq, buttons, 0, SIM_DT);
+                let server = w.player(1).expect("seated").body.pos;
+                let c = core.player_state(1);
+                worst = worst.max((Vec2::new(c[0], c[1]) - server).len());
+            }
+            let moved = (w.player(1).expect("seated").body.pos - start).len();
+            (worst, moved)
+        };
+        let (winged, moved) = run(true);
+        assert!(
+            moved > VORTEX_CAPTURE_R * 0.5,
+            "control: the winged player only moved {moved:.1} px"
+        );
+        assert_eq!(
+            winged, 0.0,
+            "the mirror left the server beside a vortex, winged"
+        );
+        let (untold, _) = run(false);
+        assert!(
+            untold > game_core::constants::SNAPSHOT_QUANTUM,
+            "control: a mirror not told the wings is only {untold:.3} px off — this test cannot \
+             see the regime"
         );
     }
 
@@ -4470,6 +4542,7 @@ mod tests {
         let server = game_core::world::attractors::env_at(
             &w.map,
             GravityMode::Space,
+            false,
             &pulls[..n],
             None,
             false,
@@ -4519,7 +4592,7 @@ mod tests {
                     continue;
                 }
                 binding += 1;
-                let server = env_at(&w.map, GravityMode::Space, &[v], None, false, at).accel;
+                let server = env_at(&w.map, GravityMode::Space, false, &[v], None, false, at).accel;
                 let told = core.field_accel_at(at.x, at.y);
                 assert_eq!((told[0], told[1]), (server.x, server.y), "at {at:?}");
             }
@@ -4553,7 +4626,16 @@ mod tests {
                 (at - v).len() < VORTEX_REACH,
                 "premise: the vortex reaches {at:?}"
             );
-            let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, at).accel;
+            let server = env_at(
+                &w.map,
+                GravityMode::Space,
+                false,
+                &[v],
+                Some(hole),
+                true,
+                at,
+            )
+            .accel;
             assert_eq!(told(at), server, "at {d} of the reach");
             assert_eq!(
                 server,
@@ -4562,8 +4644,26 @@ mod tests {
             );
         }
         let out = v + Vec2::new(0.25 * VORTEX_REACH, 0.0);
-        let server = env_at(&w.map, GravityMode::Space, &[v], Some(hole), true, out).accel;
-        let unvortexed = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, out).accel;
+        let server = env_at(
+            &w.map,
+            GravityMode::Space,
+            false,
+            &[v],
+            Some(hole),
+            true,
+            out,
+        )
+        .accel;
+        let unvortexed = env_at(
+            &w.map,
+            GravityMode::Space,
+            false,
+            &[],
+            Some(hole),
+            true,
+            out,
+        )
+        .accel;
         assert_eq!(told(out), server);
         assert_ne!(
             server, unvortexed,

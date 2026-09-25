@@ -519,7 +519,16 @@ mod tests {
             "control: the eaten rock's well does not reach the probe"
         );
         let expect = crate::world::attractors::wells_at(&w.map, probe);
-        let got = env_at(&w.map, GravityMode::Space, &[], Some(centre), true, probe).accel;
+        let got = env_at(
+            &w.map,
+            GravityMode::Space,
+            false,
+            &[],
+            Some(centre),
+            true,
+            probe,
+        )
+        .accel;
         assert_eq!(got, expect);
         let events = w.drain_events();
         assert_eq!(
@@ -820,6 +829,56 @@ mod tests {
         );
     }
 
+    /// **R100 (T22.14C): R90's escape guarantee holds for wings too.** The same flights
+    /// as the thrusters' test above — 13 maps, 16 sides, from one pixel outside the
+    /// horizon, holding the buttons that point away — with the player wearing
+    /// `UNICORN_WINGS` (the flying regime: no jetpack, `WINGS_FLY_SPEED` on the
+    /// vertical, the walking model across). Every flight gets past the reach alive.
+    #[test]
+    fn from_just_outside_the_horizon_wings_fly_out_past_the_reach() {
+        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH, PLAYER_H};
+        use crate::items::registry::UNICORN_WINGS;
+        const SIDES: usize = 16;
+        const SECS: f32 = 6.0;
+        let (mut flights, mut trapped, mut winged) = (0, Vec::new(), 0);
+        for seed in 0..13u64 {
+            for k in 0..SIDES {
+                let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
+                let (mut w, hole) = hole_world(seed);
+                let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
+                let _ = w
+                    .map
+                    .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
+                let _ = w.map.take_breaches();
+                place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
+                w.player_mut(0)
+                    .expect("ana")
+                    .inventory
+                    .add(UNICORN_WINGS, 1);
+                winged += usize::from(w.player(0).expect("ana").move_mods().flying);
+                let f = escape(&mut w, hole, SECS);
+                flights += 1;
+                if f.died || f.furthest <= BLACK_HOLE_REACH {
+                    trapped.push(format!(
+                        "seed {seed} side {k}: died {}, {:.1} px",
+                        f.died, f.furthest
+                    ));
+                }
+            }
+        }
+        assert_eq!(winged, flights, "premise: every flight was winged");
+        eprintln!(
+            "wings from just outside the horizon: {} of {flights} did not get past the reach",
+            trapped.len()
+        );
+        assert!(
+            trapped.is_empty(),
+            "{} of {flights} winged flights from just outside the horizon did not get past \
+             the reach: {trapped:?}",
+            trapped.len()
+        );
+    }
+
     /// **R91: inside the hole's reach only the hole pulls; outside it the wells do.**
     /// Inside: the field is exactly the hole's own pull, though rocks' wells reach
     /// there (the control that muting changed something). Outside, one pixel past
@@ -837,7 +896,16 @@ mod tests {
             let a = k as f32 * std::f32::consts::TAU / 16.0;
             let dir = Vec2::new(a.cos(), a.sin());
             let inside = hole + dir * (BLACK_HOLE_REACH * 0.5);
-            let got = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, inside).accel;
+            let got = env_at(
+                &w.map,
+                GravityMode::Space,
+                false,
+                &[],
+                Some(hole),
+                true,
+                inside,
+            )
+            .accel;
             assert_eq!(
                 got,
                 Attractor::black_hole(hole).pull_at(inside),
@@ -847,7 +915,16 @@ mod tests {
                 muted += 1;
             }
             let outside = hole + dir * (BLACK_HOLE_REACH + 1.0);
-            let got = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, outside).accel;
+            let got = env_at(
+                &w.map,
+                GravityMode::Space,
+                false,
+                &[],
+                Some(hole),
+                true,
+                outside,
+            )
+            .accel;
             assert_eq!(got, wells_at(outside), "side {k}: outside");
             assert_ne!(
                 got,
@@ -883,12 +960,30 @@ mod tests {
     fn outside_the_reach_the_hole_adds_nothing() {
         let (w, hole) = hole_world(5);
         let out = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH + 1.0, 0.0);
-        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, out).accel;
-        let without = env_at(&w.map, GravityMode::Space, &[], None, false, out).accel;
+        let with = env_at(
+            &w.map,
+            GravityMode::Space,
+            false,
+            &[],
+            Some(hole),
+            true,
+            out,
+        )
+        .accel;
+        let without = env_at(&w.map, GravityMode::Space, false, &[], None, false, out).accel;
         assert_eq!(with, without);
         let inside = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH * 0.5, 0.0);
-        let with = env_at(&w.map, GravityMode::Space, &[], Some(hole), true, inside).accel;
-        let without = env_at(&w.map, GravityMode::Space, &[], None, false, inside).accel;
+        let with = env_at(
+            &w.map,
+            GravityMode::Space,
+            false,
+            &[],
+            Some(hole),
+            true,
+            inside,
+        )
+        .accel;
+        let without = env_at(&w.map, GravityMode::Space, false, &[], None, false, inside).accel;
         assert_ne!(
             with, without,
             "control: inside the reach the hole pulled nothing"

@@ -318,9 +318,16 @@ pub fn capped_at(map: &Map, wells: bool, vortices: &[Vec2], pos: Vec2) -> Vec2 {
 /// results screen is still, R8.4) instead of the wells taking over from the hole.
 /// The same `d >= reach` boundary as `Attractor::pull_at`, so the hole's pull and the
 /// wells' hand over at one radius.
+///
+/// `flying` (R100, T22.14C) is `MoveMods::flying` — wings, not mounted — the same
+/// derivation on both sides: a winged body in space feels **no field at all**, not
+/// the wells, not a vortex's pull, not the hole's (see the arm below for why the
+/// hole's too). Capture and the horizon are radii, not fields, and still apply.
+#[allow(clippy::too_many_arguments)]
 pub fn env_at(
     map: &Map,
     gravity: GravityMode,
+    flying: bool,
     vortices: &[Vec2],
     hole: Option<Vec2>,
     hole_pulls: bool,
@@ -340,11 +347,31 @@ pub fn env_at(
             // second loop. **Inside the hole's reach neither pulls** (R91 for the
             // wells; H1, T22.14A, for the vortices — their capped 675 on top of the
             // hole's 810 dragged bodies in from outside the horizon).
-            let vortices = if outside { vortices } else { &[] };
+            //
+            // **R100 (T22.14C): nor on a winged body, anywhere.** Wings are the
+            // flying regime — `jetpack::gravity_scale` is 0 for them under every
+            // gravity — and the ruling extends that to the fields: the asteroid
+            // wells and a vortex's outer pull pass a winged player by. A vortex still
+            // *captures* one inside `VORTEX_CAPTURE_R` (by radius, `World::step_vortices`,
+            // not by pull), and the black hole still kills inside its horizon.
+            //
+            // **The hole's outer pull passes wings by too — builder's call, measured.**
+            // R90's promise is that outside the horizon every escape works; wings'
+            // horizontal control is the walking model's, below the hole's 810 px/s²
+            // at the horizon, so with the pull on 26 of the 208 flights of
+            // `black_hole::tests::from_just_outside_the_horizon_wings_fly_out_past_the_reach`
+            // died (every pure LEFT/RIGHT side), and 0 with it off. The horizon stays
+            // the line for a winged player: fly into it and you die.
+            let (wells, vortices) = if flying || !outside {
+                (false, &[][..])
+            } else {
+                (true, vortices)
+            };
+            let hole_pulls = hole_pulls && !flying;
             Env {
                 gravity,
                 accel: field_from(
-                    capped_at(map, outside, vortices, pos),
+                    capped_at(map, wells, vortices, pos),
                     hole.filter(|_| hole_pulls).map(Attractor::black_hole),
                     pos,
                 ),
@@ -409,7 +436,7 @@ mod tests {
     /// itself forever while `World::apply_inputs` handed out something else.
     fn step(map: &Map, st: &mut MovementState, buttons: u8, gravity: GravityMode) {
         let input = Input::new(0, buttons, 0);
-        let env = env_at(map, gravity, &[], None, false, st.body.pos);
+        let env = env_at(map, gravity, false, &[], None, false, st.body.pos);
         st.step(
             map,
             &input,
@@ -1019,13 +1046,13 @@ mod tests {
 
         for mode in [GravityMode::Standard, GravityMode::Low] {
             assert_eq!(
-                env_at(&map, mode, &[], None, false, at),
+                env_at(&map, mode, false, &[], None, false, at),
                 Env::field_free(mode),
                 "{mode:?} picked up a field or a speed cap from a map with rocks on it"
             );
         }
         // The presence half, in the same test: the same map, the same point.
-        let space = env_at(&map, GravityMode::Space, &[], None, false, at);
+        let space = env_at(&map, GravityMode::Space, false, &[], None, false, at);
         assert_ne!(space.accel, Vec2::ZERO, "space read no field at all");
         assert_eq!(space.max_speed, Some(SPACE_MAX_SPEED));
     }
@@ -1094,7 +1121,7 @@ mod tests {
                     if raw > SPACE_WELL_ACCEL_MAX {
                         over_raw += 1;
                     }
-                    let got = env_at(&w.map, GravityMode::Space, &[], None, false, at)
+                    let got = env_at(&w.map, GravityMode::Space, false, &[], None, false, at)
                         .accel
                         .len();
                     assert!(
@@ -1172,7 +1199,7 @@ mod tests {
                 let alone = Attractor::asteroid(&a).pull_at(at);
                 assert!(alone.len() > 0.0, "level {level} r {r}: no pull at all");
                 assert_eq!(
-                    env_at(&map, GravityMode::Space, &[], None, false, at).accel,
+                    env_at(&map, GravityMode::Space, false, &[], None, false, at).accel,
                     alone,
                     "level {level} r {r}: a lone well was changed by the cap"
                 );
@@ -1250,7 +1277,7 @@ mod tests {
                                 .any(|&v| (v - at).len() < crate::constants::VORTEX_REACH),
                         );
                     }
-                    let got = env_at(&w.map, GravityMode::Space, &vs, None, false, at)
+                    let got = env_at(&w.map, GravityMode::Space, false, &vs, None, false, at)
                         .accel
                         .len();
                     assert!(

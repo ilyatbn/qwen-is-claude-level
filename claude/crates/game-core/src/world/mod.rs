@@ -860,6 +860,23 @@ pub fn ticks_to_seconds(ticks: u32) -> f32 {
     (f64::from(ticks) / f64::from(crate::constants::SIM_HZ)) as f32
 }
 
+/// **Where nobody is put** (T22.14C): how far a body centre is clear of the black
+/// hole's reach (from the telegraph on, `World::black_hole_site`) and of every
+/// vortex's `VORTEX_REACH / 2` margin, live or spent (`vortex::clearance`) — zero or
+/// more is clear. **One function for the three placements**: a vortex trip's
+/// destination (which had both), and the respawn and the mid-round join (which had the
+/// hole only, so 8 of the 13 trips T22.14B had left were a respawn inside a vortex's
+/// mouth, taken on its first tick). The ruling asked for the capture radius at least;
+/// the trip's margin is stricter and was already the rule for one of the three.
+fn placement_clearance(
+    hole: Option<Vec2>,
+    live: &[vortex::Vortex],
+    spent: &[vortex::Vortex],
+    centre: Vec2,
+) -> f32 {
+    vortex::clearance(live, spent, centre).min(black_hole::clearance(hole, centre))
+}
+
 /// The round clock after `ticks` steps from `origin` (R94: derived, not summed).
 fn clock_seconds(origin: f32, ticks: u32) -> f32 {
     (f64::from(origin) + f64::from(ticks) / f64::from(crate::constants::SIM_HZ)) as f32
@@ -1290,8 +1307,10 @@ impl World {
                 .map(|p| p.body.pos)
                 .collect();
             // H2 (T22.14A): telegraphed counts — it opens there in two seconds.
-            let hole = self.black_hole_site();
-            let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
+            // T22.14C: and no vortex's mouth — the one placement clearance.
+            let (hole, live, spent) =
+                (self.black_hole_site(), &self.vortices, &self.spent_vortices);
+            let clear = |c: Vec2| placement_clearance(hole, live, spent, c) >= 0.0;
             return choose_respawn_clear(&self.map, &living, &mut self.rng, &clear);
         }
         let pts = &self.map.meta.spawn_points;
@@ -2154,9 +2173,13 @@ impl World {
             // bell's seq). The hole's *presence* goes in separately: R91 mutes
             // the wells inside its reach whether or not it pulls.
             let (pulls, n) = vortex::centres(&self.vortices);
+            // R100 (T22.14C): a winged body is in the flying regime — the wells and
+            // the vortices' outer pull pass it by (`env_at`); `mods` is the same
+            // derivation the mirror passes.
             let env = crate::world::attractors::env_at(
                 &self.map,
                 gravity,
+                mods.flying,
                 &pulls[..n],
                 self.black_hole.pos(),
                 black_hole::pulls(self.phase),
@@ -3939,8 +3962,9 @@ impl World {
             let hole = self.black_hole_site();
             let clear = |site: crate::math::Point| {
                 let centre = surface_to_centre(Vec2::new(site.x as f32, site.y as f32));
-                // T22.12: nor into the black hole's reach.
-                vortex::clearance(pulling, spent, centre).min(black_hole::clearance(hole, centre))
+                // T22.12: nor into the black hole's reach — the one placement
+                // clearance (T22.14C), which the respawn and the join share.
+                placement_clearance(hole, pulling, spent, centre)
             };
             let Some(site) = self.map.random_body_site_where(&mut self.vortex_rng, clear) else {
                 continue;
@@ -4132,8 +4156,10 @@ impl World {
             // T22.12: never inside the hole's reach — a respawn into it is a
             // death with no explanation.
             // H2 (T22.14A): telegraphed counts — it opens there in two seconds.
-            let hole = self.black_hole_site();
-            let clear = |c: Vec2| black_hole::clearance(hole, c) >= 0.0;
+            // T22.14C: and no vortex's mouth — the one placement clearance.
+            let (hole, live, spent) =
+                (self.black_hole_site(), &self.vortices, &self.spent_vortices);
+            let clear = |c: Vec2| placement_clearance(hole, live, spent, c) >= 0.0;
             let choice = choose_respawn_pad_clear(&self.map, &living, &mut self.rng, &clear);
             if choice.pad.is_none() {
                 self.respawn_fallbacks += 1;
