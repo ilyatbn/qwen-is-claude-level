@@ -6,9 +6,10 @@ Written by the coordinator, appended as the milestone lands. **Read this, `CLAUD
 ## The three files that bind you
 
 1. **`CLAUDE.md`** — the rules. The loop, the commit form, what this project has learned.
-2. **`tasks/M22/M22-RULINGS.md`** — R1–R13. Where your task file says *"owner question N"*
-   or *"decide before writing"*, the ruling there is binding and the task file's "assumed"
-   is superseded.
+2. **`tasks/M22/M22-RULINGS.md`** — R1–R72 in full, and an index of R73–R100 (plus the final
+   audit's addenda, H3 and R99) pointing at the task files that hold their text. Where a task
+   file says *"owner question N"* or *"decide before writing"*, the ruling is binding. The
+   resulting rules are **`docs/77-amendments-v9.md`**.
 3. **Your task file**, `tasks/M22/T22.NN-*.md`.
 
 ## The box, and who owns it
@@ -22,85 +23,78 @@ free"* in a message from anyone, including the coordinator, is not a measurement
 then `./scripts/check.sh --changed`. The full gate is one run per batch and the coordinator
 does it.
 
-## STATE — 2026-09-22, after a fully green batch gate
+## STATE — 2026-09-25, M22 closed, batch gate pending
 
-**The gate is green, on an idle box, with nothing else running:** `58/58` browser checks,
-**1532** Rust tests passed / **0** failed / 24 ignored, net smoke 25/25, assets ok,
-`all checks passed`. That is the batch gate R53 says is the coordinator's, and it is owed again
-only when the next batch lands.
+**Every figure below was measured at the close-out, not carried.**
 
-**Nine of twenty-one M22 rows are ticked.** Done: T22.00, T22.00B, T22.01, T22.02, T22.03,
-T22.05A, T22.05B, **T22.05C**, **T22.11A**. `HEAD` is `ca9d681`; the tree is clean.
+- **Rows: 67 of 77 ticked** in `TASKS.md`'s M22 section (`awk` over the section, `grep -c '^\s*- \[x\]'`). The 10
+  open: T22.00D and T22.00E (not M22 work, after M22), three bot follow-ups from T22.03H/I (wander cells over pits,
+  the walking model's vertical blocks, walking bots' per-tick stuck test), two from T22.14B (the winged
+  stuck-while-moving share, the flown-in vortex trips), two from T22.00C filed at the close-out (split
+  `thrusters-match`; the five `rAF(rAF)` waits), and T22.07, superseded by M23's `R9`.
+- **HEAD before this handoff's commit: `0c43885`.** The last M22 work commit is `ae749b2` (T22.14E); the close-out
+  commits after it are `docs/77`, the rulings index, `TASKS.md`, `flaky-test.md`, `ARCHITECTURE-SURVEY.md`, this file,
+  and one check: `chunk-rebake` (R37's rebake budget — T22.00C had moved it into `perf`, which is parked, so nothing
+  gated it; now its own serial, gated check; green alone at 1.40 ms median, a 6 ms planted bake reds it at 7.10).
+- **Last green batch gate: `39d2069`** (T22.10G). **57 commits since** (`git log --oneline 39d2069..0c43885 | wc -l`),
+  every one gated per task by its Done-when and `--changed` only. **A full `./scripts/check.sh` on an idle box is
+  owed now and is the coordinator's** — `TASKS.md` carries `BATCH GATE: pending` for it.
+- **Rulings: R1–R100**, plus the T22.14A addenda (H3, R99) and two T22.14B confirmations. `R1`–`R72` in
+  `M22-RULINGS.md`; `R73`–`R100` indexed at its end.
+- **The spec: `docs/77-amendments-v9.md`**, §H1–§H21, with superseded values struck in `docs/02`, `docs/13` §7,
+  `docs/20`, `docs/40`, `docs/42`, `docs/70` §A30. `CLAUDE.md` names `docs/70`–`77` as the amendments.
 
-### Read this before you trust an earlier gate log
+### Parked, as of the close-out
 
-An earlier full gate the same night read **54/58**, and **all four failures were the
-coordinator's fault, not the code's**: two read-only subagents were grepping the tree during the
-browser phase. Read-only cannot corrupt the tree, which is what I had reasoned about, and is
-entirely beside the point — CPU is the resource. All four re-ran **4/4 green** on a quiet box,
-and the four prior gate logs on disk all read 58/58. **Two of the four looked exactly like real
-regressions** (both movement-related, and the only code commit in the window was the task under
-review), so this was one bisect away from costing an hour. **While a gate runs, no subagents at
-all.**
+**Browser (`flaky: true` in `scripts/lib/e2e-checks.mjs`) — 14:** `terrain-render`, `boots-visible`,
+`bullets-visible`, `night-combat`, `platforms`, `perf`, `fog-visible`, `hud-timer`, `inventory-ui`, `teleport`,
+`thrusters-match` (new, T22.14E), `solar-flare-match`, `two-clients`, `m10-checkpoint`.
+**Rust (`#[ignore = "flaky: …"]`) — 4:** `integration.rs::a_seventh_client_is_told_the_room_is_full`, and in
+`lobby.rs` `a_second_client_joins_a_private_room_by_its_code`, `a_lobby_room_has_no_bots`,
+`lobby_state_names_everyone_in_the_room_including_yourself`.
+**Recorded, not parked** (R40/R68 — the socket-harness family `T22.00E` owns): `in_progress.rs`'s join-by-code,
+`checksum.rs`'s hundred carves, `rooms.rs`'s never-reaped, `lobby.rs`'s refused `set_scale`; and `bots.rs::bots_actually_move`
+(seed since pinned). Evidence for every one is its row in `tasks/flaky-test.md`.
 
-### The two commits in this batch, and one thing that is odd about them
+## Owner decisions pending
 
-- `876cb9d` **T22.11A** — the force seam. `integrate` 5 → **4** parameters, `apply_input` 9 →
-  **8**, both measured by command. Changed no pixel: the golden table did not move and
-  `a_resting_body_is_bit_identical_after_600_ticks` passed untouched.
-- `c401def` **T22.05C** — the follow-ups from T22.05B's review, F1–F8.
+Nothing here blocks a builder; each is a call only the owner makes.
 
-**`876cb9d` does not compile on its own.** `game-core` needed three arity fixes in
-`items/spawning.rs`, a file I had assigned to the *other* builder; it made them rather than leave
-the tree broken for both, which was right. They land in `c401def`, so `876cb9d` is green only
-with that one. **My split caused this** (`R52`): next time the task changing a signature owns
-every file that calls it.
+1. **Un-park three checks whose cause is fixed.** `fog-visible` (T22.00G: both values now come off one drawn frame;
+   3/3 alone, 2/2 at `--jobs 4`), `solar-flare-match` (T22.08F: the client clock is compared at the server's tick,
+   no round trip; 3/3 at `--jobs 4`), `teleport` (T22.10D F7: a check bug — it read truncated health as death; 3/3).
+   Each is fixed and still carries `flaky: true` because un-parking is the owner's decision.
+2. **`thrusters-match`, parked by T22.14E.** Its bell arm went red 2 of 24 after T22.14D and 0 of 27 before — not
+   distinguishable from chance, no causal path found — and its precondition also reds at random. **The flag parks the
+   whole check**, so its other arms (a remote's plume in a real match, none after the bell, none under standard
+   gravity, none on a player killed mid-burn) gate nothing. The split is filed; until it lands, those arms are
+   uncovered. Keep parked, or un-park and accept a ~1-in-12 coin flip in the gate.
+3. **`terrain-render`**: its deterministic red (a stale layer pin) was fixed in T22.08D; the original camera-motion
+   flake is still live. **`perf`**: it reads the box's leftover load, not the game's frame time. Fix, delete or keep
+   parked.
+4. **The thin-evidence parked checks**, each parked on one to three sightings in 2026-09-14's gates and never
+   re-examined: `boots-visible`, `two-clients`, `bullets-visible`, `hud-timer`, `night-combat`, `m10-checkpoint`,
+   `inventory-ui`, `platforms` (one sighting). And the four parked Rust socket tests, whose shared harness is
+   `T22.00E`'s — scheduled after M22.
+5. **Radiation balance.** The suit design (`R24`) ships as ruled, and the measurement says battery packs are the
+   tight end: **0.60–0.73 packs spawn per player per round** (and bots picked up 0.27) against the coordinator's
+   estimate of **~1.4** a player needs to stay sealed through a round, and **0.69–0.71 radiation deaths per player
+   per round** over 8 seeds (`space_radiation_report`: T22.09A, re-run by T22.08A after the flare). Bots only; a
+   human who hunts packs does better. Survivable, not comfortable. The knobs are `BATTERY_PACK_SPACE_WEIGHT_MULT`,
+   `RADIATION_DPS` and `RADIATION_SHIELD_COST` — the owner's to move.
+6. **Changes the owner never saw in these words** (ruled by the coordinator under *"make your own decisions"*, and
+   shipped): low gravity is the **most violent** mode (8.5× the shots, 4.3× the kills of standard, bots only — `R31`);
+   in space **grenades, rockets and molotovs fly dead straight** (`R38`); in space **low health does not slow you and
+   boots cost range** (`R41`); **standard bots now keep twice the stand-off from their own fire** (`BOT_FLAME_REACH_SCALE`
+   2.0, `R95` — it cut their self-burn from 4.2 hp a throw to 1.8). Each has a one-place reversal in its ruling.
+7. **One open reading, flagged by T22.14A:** the vortex's decorative swirl is sized off the capture ring (two capture
+   radii); drawn out to the full `VORTEX_REACH` it left the screen at 1280×720 and showed through the minimap. If `R98`
+   meant the whole reach, that is a new ruling and a new instrument.
+8. **`client/src/render/backdrop-real-*.test.ts`**: one slow vitest family near the runner's timeout (`flaky-test.md`,
+   T21.18) — whether it leaves the default run.
 
-### What the batch actually established
+## History
 
-- **R48 was a live bug in a shipped mode.** In low gravity a dropped item fell **318.17 px**
-  while the player who dropped it fell **159.45** — almost exactly 2×. Four steppers passed a
-  literal `1.0`. Red first at each of the four live binding sites, green now.
-- **The guard four documents named does not exist** (`R50`). R10, R45, T22.11A's own task file
-  and the scout all said `no_tunnelling_at_ten_times_terminal_velocity_through_integrate` would
-  catch a `max_speed` leak. It does not: `Forces::gravity` carrying `Some(MAX_FALL_SPEED)` leaves
-  **1062/1062** passing, because `apply_gravity` has already clamped `vel.y` to 900. The test is
-  named for a speed and asserts a **distance**, and an upper bound at that. Four of us read the
-  name; none read the assertion. **T22.11B must write its own.**
-- **F1 refuted the review** (`R55`). All five furniture guards are live: with each flipped
-  separately a space map ships 6 pads / 3 platforms / 3–10 decorations / 1–10 buried slots.
-  Bonus measurement: `surface_points` 69 → **75** with only the pads guard off — that is
-  `fill_standing_ground` adding rock outside an asteroid's bounding radius.
-- **F5 is a follow-up, not a blocker.** Space respawns do run the branch whose own doc calls it
-  unreachable dead code, **and land exactly on a listed spawn point**. T22.05B's headline fix
-  covers the death path.
-- **`accel` is `Vec2::ZERO` everywhere and nothing can tell.** Deleting its application left
-  1062/1062 passing. Every `player/space.rs` test runs on an asteroid-free fixture. **That hole
-  is T22.11B's first test or it is nobody's.**
-
-### Two process rules that came out of this batch, both binding
-
-- **`R53` — `--changed` IS the full gate for any `game-core` task.** `affected.mjs` maps every
-  `crates/game-core/src/**` path to all 58 e2e checks, because the wasm is on every page. So the
-  per-task economy buys nothing for most of this milestone. Builders run the **non-browser** half
-  with exit codes, plus any single check mapped to a file they touched; **the sweep is the
-  coordinator's alone.** Both builders reached this independently and declined the sweep for the
-  right reason.
-- **`R54` — concurrent builders do not write `JOURNAL.md` or `TASKS.md`.** The pathspec rule
-  guards *files*, not lines inside one shared file. Both builders' entries were swept into
-  whichever commit landed first — twice, in opposite directions. They hand me the entry; I append
-  it.
-
-### The next action
-
-**`T22.11B` — the field**, and **`T22.06` — the backdrop**, which are disjoint (core physics vs
-client rendering). T22.11B's task file carries the three rulings that overturned earlier ones:
-**R46** (ceiling against `JETPACK_THRUST_DOWN`, not UP — the underside of a rock is the binding
-case and R18 got it wrong), **R47** (linear falloff to a cutoff, not inverse-square), **R50** (no
-borrowing the tripwire). Then T22.11C, T22.04, T22.07, T22.08, T22.09, T22.10, T22.12.
-
-Filed, not M22: T22.00C, T22.00D, T22.00E, T22.03B.
-
-## Per-task log
-
-(appended as tasks land)
+The STATE this file carried from 2026-09-22 (after the fully green batch gate at `ca9d681`, nine of twenty-one rows
+ticked, T22.11A and T22.05C just landed) is in git: `git show 0c43885:claude/tasks/HANDOFF-M22.md`. The per-task log
+this file reserved was never used — the per-task record is `tasks/JOURNAL.md` and each task file's *As built*.
