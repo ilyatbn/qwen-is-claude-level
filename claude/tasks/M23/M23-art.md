@@ -105,6 +105,12 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
 - **R16 — M22 finishes first.** M22's remaining visual work (solar flare, vortex, black hole) is built in today's
   renderer and ported by `T23.18`. `T23.00`–`T23.02` and `T23.05` touch nothing M22 does and may run alongside it if
   the coordinator hands out the box.
+- **R17 — the cave wall is air that was rock in the generator's landform OR rock at round start** (coordinator,
+  2026-09-25, answering T23.05's report). So both generated caves and craters carved in play show the wall, as the
+  mockup does (`world.js::buildMask`: `back` = landform ∧ carved). `render_fields.rs` takes that "was rock" mask as an
+  input (`RenderFields::full_with_wall`); today only the round-start half is fed, and **`T23.05B`** supplies the
+  generator half to the client. `chunkBake-math.ts::BackdropMask`'s enclosure heuristic is not used.
+  *Reverse it by:* feeding only the round-start snapshot (`RenderFields::full`).
 
 ## Verification — what "exactly the same" means here
 

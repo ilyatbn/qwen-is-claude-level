@@ -17,21 +17,17 @@
 //! ×4 in 8 bits saturates at 63.75 px; that saturation is what makes the dirty
 //! rectangle exact (see [`RenderFields::dirty`]).
 //!
-//! ## `back` — where this disagrees with the mockup, reported (T23.05 step 2)
+//! ## `back` — the cave wall (R17)
 //!
-//! The mockup's `back` is *exactly* the pixels its `buildMask` spec carved out of a
-//! landform (tunnels and craters alike). `chunkBake-math.ts::BackdropMask` is not
-//! that: it is `pristine solid ∪ enclosure-classified pristine air`, the second half
-//! a ray-count heuristic with a 2.5–16 % open-sky false-positive rate — the reason
-//! `constants.rs::CAVE_BACKDROP` is `false`, so today's game draws **no** backdrop.
-//! The two therefore differ, and by the task's rule the mockup's definition wins:
-//! `back = solid at the last full pass (round start) ∧ air now`. That is the
-//! mockup's definition exactly for every carve made in play (craters, lava, drills).
-//! It is **not** the mockup's for the generator's own caves: the client never sees
-//! the generator's pre-carve landform (a joining client gets only the RLE mask), so
-//! it cannot tell a generated cave from open sky without the heuristic the owner
-//! switched off. Put to the coordinator; the look-lab (R11) feeds the mockup's own
-//! `back` and is unaffected.
+//! `back = was rock ∧ air now`. The mockup's `back` is exactly the pixels its `buildMask`
+//! spec carved out of a landform — generated tunnels and craters alike — and R17 rules
+//! the game does the same: "was rock" is the generator's landform **or** the mask at
+//! round start. It is an input ([`RenderFields::full_with_wall`]) so either source plugs
+//! in: [`RenderFields::full`] feeds the round-start mask alone (every carve made in
+//! play), and T23.05B supplies the generator's landform, which the client does not have
+//! yet. `chunkBake-math.ts::BackdropMask` (`pristine solid ∪ enclosure-classified air`,
+//! a heuristic with 2.5–16 % open-sky false positives, off via `CAVE_BACKDROP`) differs
+//! from the mockup and is not used.
 
 use game_core::map::mask::Mask;
 
@@ -98,6 +94,12 @@ impl BitGrid {
             }
         }
         g
+    }
+    /// `self |= other`; same size.
+    pub fn union_with(&mut self, other: &BitGrid) {
+        for (a, b) in self.bits.iter_mut().zip(&other.bits) {
+            *a |= *b;
+        }
     }
     pub fn put(&mut self, x: u32, y: u32, on: bool) {
         let i = y as usize * self.w as usize + x as usize;
@@ -187,14 +189,28 @@ pub struct RenderFields {
     w: u32,
     h: u32,
     rgba: Vec<u8>,
-    pristine: Option<BitGrid>,
+    wall: Option<BitGrid>,
 }
 
 impl RenderFields {
-    /// The whole world, and a fresh `back` snapshot. **Call it at round start**, when
-    /// the mask is pristine — the same moment `terrain.ts::buildAll` snapshots today.
+    /// The whole world, with the mask as it is now as the "was rock" mask. **Call it at
+    /// round start**, when the mask is pristine — the moment `terrain.ts::buildAll`
+    /// snapshots today. Craters carved later then show the wall.
     pub fn full(&mut self, mask: &impl Solid) -> Rect {
-        self.pristine = Some(BitGrid::from_solid(mask));
+        self.wall = Some(BitGrid::from_solid(mask));
+        self.full_against_snapshot(mask)
+    }
+
+    /// The whole world against an explicit "was rock" mask (R17): the round-start mask
+    /// OR'd with the generator's landform (T23.05B), or a scene's own `back` ∪ solid (the
+    /// look-lab). A `wall` of the wrong size is ignored for the round-start mask.
+    pub fn full_with_wall(&mut self, mask: &impl Solid, wall: BitGrid) -> Rect {
+        if wall.dims() != mask.dims() {
+            return self.full(mask);
+        }
+        let mut wall = wall;
+        wall.union_with(&BitGrid::from_solid(mask));
+        self.wall = Some(wall);
         self.full_against_snapshot(mask)
     }
 
@@ -217,9 +233,7 @@ impl RenderFields {
     /// the map changed size or there is no snapshot yet.
     pub fn dirty(&mut self, mask: &impl Solid, x: i32, y: i32, w: i32, h: i32) -> Rect {
         let (mw, mh) = mask.dims();
-        if self.pristine.as_ref().map(|p| p.dims()) != Some((mw, mh))
-            || (self.w, self.h) != (mw, mh)
-        {
+        if self.wall.as_ref().map(|p| p.dims()) != Some((mw, mh)) || (self.w, self.h) != (mw, mh) {
             return self.full(mask);
         }
         self.dirty_reading(mask, (x, y, w, h), READ_MARGIN)
@@ -271,7 +285,7 @@ impl RenderFields {
             rgba[(y as usize * ww + x as usize) * 4 + 1] = encode_dist(d);
         });
         // B: carved-out rock (module docs).
-        if let Some(p) = &self.pristine {
+        if let Some(p) = &self.wall {
             for y in write.y..write.y + write.h {
                 for x in write.x..write.x + write.w {
                     let back = p.solid(x, y) && !mask.solid(x, y);
@@ -469,6 +483,25 @@ impl GameCore {
         self.render_fields.full(&self.map.mask).to_vec()
     }
 
+    /// R17: like `render_fields_full`, with an extra "was rock" mask — one byte per px,
+    /// row-major, nonzero = rock (the generator's landform, T23.05B; or a look-lab scene's
+    /// `back`). OR'd with the mask as it is now. A buffer of the wrong length is ignored.
+    pub fn render_fields_full_with_wall(&mut self, wall: &[u8]) -> Vec<u32> {
+        let (w, h) = (self.map.mask.w, self.map.mask.h);
+        if wall.len() != w as usize * h as usize {
+            return self.render_fields_full();
+        }
+        let mut g = BitGrid::new(w, h);
+        for (i, &b) in wall.iter().enumerate() {
+            if b != 0 {
+                g.put(i as u32 % w, i as u32 / w, true);
+            }
+        }
+        self.render_fields
+            .full_with_wall(&self.map.mask, g)
+            .to_vec()
+    }
+
     /// After a carve with bounds `(x, y, w, h)` (world px, may overhang the map).
     /// Returns the rect written, `[x, y, w, h]` — upload exactly that.
     pub fn render_fields_dirty(&mut self, x: i32, y: i32, w: i32, h: i32) -> Vec<u32> {
@@ -623,7 +656,7 @@ mod tests {
             let mut g = random_grid(100 + seed, 384, 256);
             let mut f = RenderFields::default();
             f.full(&g);
-            let pristine = f.pristine.clone();
+            let wall = f.wall.clone();
             let mut rng = substream(seed, "carves");
             for _ in 0..4 {
                 let cx = range_i32(&mut rng, -20, 404);
@@ -635,7 +668,7 @@ mod tests {
                 written += wrote.w as u64 * wrote.h as u64;
             }
             let mut fresh = RenderFields {
-                pristine,
+                wall,
                 ..Default::default()
             };
             fresh.full_against_snapshot(&g);
@@ -670,6 +703,41 @@ mod tests {
             incremental_mismatches(WRITE_MARGIN + 32).0 > 0,
             "+96 px read margin still matched"
         );
+    }
+
+    /// The WASM entry point for R17's input: a "was rock" byte mask turns air into wall
+    /// there and only there; without it the same px is sky (the control).
+    #[test]
+    fn the_wall_input_reaches_the_back_channel_through_game_core() {
+        let mut core = GameCore::new();
+        let (w, h) = (core.width(), core.height());
+        let air: Vec<usize> = (0..(w * h) as usize)
+            .filter(|&i| !core.solid_at(i as i32 % w as i32, i as i32 / w as i32))
+            .step_by(997)
+            .collect();
+        assert!(air.len() > 100);
+        let mut wall = vec![0u8; (w * h) as usize];
+        for &i in &air {
+            wall[i] = 1;
+        }
+        core.render_fields_full();
+        let b = |core: &GameCore, i: usize| core.render_fields.rgba()[i * 4 + 2];
+        assert!(
+            air.iter().all(|&i| b(&core, i) == 0),
+            "no wall without the input"
+        );
+        core.render_fields_full_with_wall(&wall);
+        assert!(
+            air.iter().all(|&i| b(&core, i) == 255),
+            "the input's px are wall"
+        );
+        let walled = core
+            .render_fields
+            .rgba()
+            .chunks_exact(4)
+            .filter(|p| p[2] == 255)
+            .count();
+        assert_eq!(walled, air.len(), "and nothing else is");
     }
 
     fn unrle(runs: &[u64], w: u32, h: u32) -> BitGrid {
@@ -710,20 +778,14 @@ mod tests {
         };
         let solid = unrle(&runs("solid_rle"), w, h);
         let back = unrle(&runs("back_rle"), w, h);
-        // The mockup's `back` is carved landform, so its pristine is solid ∪ back.
-        let mut pristine = solid.clone();
-        for y in 0..h {
-            for x in 0..w {
-                if back.solid(x, y) {
-                    pristine.put(x, y, true);
-                }
-            }
-        }
-        let mut f = RenderFields {
-            pristine: Some(pristine),
-            ..Default::default()
-        };
-        f.full_against_snapshot(&solid);
+        // The mockup's `back` is carved landform, so it is the "was rock" input (R17).
+        let mut f = RenderFields::default();
+        f.full_with_wall(&solid, back);
+        // Control (R17): the generated caves are wall only because the landform was fed.
+        let mut round_start_only = RenderFields::default();
+        round_start_only.full(&solid);
+        assert!(channel(&round_start_only, 2).iter().all(|&b| b == 0));
+        assert!(channel(&f, 2).iter().filter(|&&b| b == 255).count() > 1000);
 
         let mut relief = Vec::new();
         for y in 0..h {
@@ -802,7 +864,7 @@ mod tests {
                 f.full(&map.mask);
                 fulls.push(t.elapsed().as_secs_f64() * 1e3);
             }
-            let pristine = f.pristine.clone();
+            let wall = f.wall.clone();
             let p = map.meta.surface_points[map.meta.surface_points.len() / 2];
             let (cx, cy, r) = (p.x, p.y, 60);
             map.carve_circle(cx, cy, r);
@@ -810,7 +872,7 @@ mod tests {
             let wrote = f.dirty(&map.mask, cx - r, cy - r, 2 * r + 1, 2 * r + 1);
             let crater = t.elapsed().as_secs_f64() * 1e3;
             let mut fresh = RenderFields {
-                pristine,
+                wall,
                 ..Default::default()
             };
             fresh.full_against_snapshot(&map.mask);
