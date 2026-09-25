@@ -2061,6 +2061,8 @@ pub fn constants_json() -> String {
         // T22.14C LOW-5: exported, not re-derived — `prediction.ts` read it as
         // `Math.ceil(MAX_FRAME_DT · SIM_HZ)` in two places.
         MAX_FRAME_TICKS => c::MAX_FRAME_TICKS,
+        // T22.14C: the shower's dropping window — the HUD counts it, then "clearing".
+        METEOR_DURATION => c::METEOR_DURATION,
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,

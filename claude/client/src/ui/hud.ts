@@ -39,6 +39,29 @@ export interface EffectRun {
    * gone and burns are finishing. Absent for every other effect.
    */
   tail?: boolean
+  /** `effect_start`'s `duration`: the `Active` window alone, from the activation. */
+  duration?: number
+  /**
+   * T22.14C: round time the last meteor drops — a shower's `Active` runs
+   * `METEOR_DURATION + METEOR_FALL_TIME` (T22.14A H3) and drops only in the first
+   * `METEOR_DURATION`. Absent for every other effect.
+   */
+  dropsUntil?: number
+}
+
+/**
+ * `effect_phase` → `active` at round time `at` (T22.14C): **the effect's own
+ * schedule, anchored where the server anchors it** — `Active` lasts `duration` from
+ * the activation (`EffectScheduler`: `phase_started_at + active_duration`), so the end
+ * is `at + duration`, not the telegraph's start plus it (which ended every banner
+ * `EFFECT_TELEGRAPH` early); and a shower drops for `dropFor` (`METEOR_DURATION`)
+ * of it. `dropFor` null: no dropping window.
+ */
+export function activated(run: EffectRun, at: number, dropFor: number | null): EffectRun {
+  const out: EffectRun = { ...run, phase: 'active' }
+  if (run.duration !== undefined) out.endsAt = at + run.duration
+  if (dropFor !== null) out.dropsUntil = at + dropFor
+  return out
 }
 
 /** `MM:SS`, floored, never negative. */
@@ -100,12 +123,17 @@ export function bannerText(runs: readonly EffectRun[], now: number): string | nu
   if (live.length === 0) return null
   let soonest = live[0]!
   for (const r of live) if (r.endsAt < soonest.endsAt) soonest = r
-  const left = clockText(soonest.endsAt - now)
+  // T22.14C: a shower counts its dropping window while meteors drop, then the rest.
+  const dropping = soonest.phase === 'active' && soonest.dropsUntil !== undefined && now < soonest.dropsUntil
+  const clearing = soonest.phase === 'active' && soonest.dropsUntil !== undefined && !dropping
+  const left = clockText((dropping ? soonest.dropsUntil! : soonest.endsAt) - now)
   // The telegraph says what is *coming*; the active phase says what is here.
   // Same element, so the warning does not move on the screen when it lands.
   // A flare's tail says so (T22.08D F5): a banner counting a hazard that is no
-  // longer on screen reads as a hazard you cannot find.
-  const verb = soonest.phase === 'telegraph' ? 'INCOMING' : soonest.tail ? 'BURNING OUT' : ''
+  // longer on screen reads as a hazard you cannot find — and a shower whose last
+  // meteor has dropped says the sky is clearing (T22.14C), for the same reason.
+  const verb =
+    soonest.phase === 'telegraph' ? 'INCOMING' : soonest.tail ? 'BURNING OUT' : clearing ? 'CLEARING' : ''
   return `${verb ? `${verb} · ` : ''}${effectLabel(soonest.kind)} ${left}`.trim()
 }
 
@@ -204,15 +232,24 @@ export class Hud {
     doc.body.appendChild(this.banner)
   }
 
-  /** `effect_start`: a telegraph has begun. `duration` covers the whole effect. */
+  /**
+   * `effect_start`: a telegraph has begun. `duration` is the `Active` window alone
+   * (`active_duration`); until the activation re-anchors it, the run ends `duration`
+   * after `now` — a telegraph's banner is up well past its own end either way.
+   */
   startEffect(id: number, kind: string, now: number, duration: number): void {
-    this.runs.set(id, { id, kind, phase: 'telegraph', endsAt: now + duration })
+    this.runs.set(id, { id, kind, phase: 'telegraph', endsAt: now + duration, duration })
   }
 
-  /** `effect_phase`: usually the move from telegraph to active. */
-  setEffectPhase(id: number, phase: EffectPhase): void {
+  /**
+   * `effect_phase`: usually the move from telegraph to active, at round time `at`;
+   * `dropFor` is a shower's dropping window (`METEOR_DURATION`), else null.
+   */
+  setEffectPhase(id: number, phase: EffectPhase, at: number, dropFor: number | null): void {
     const run = this.runs.get(id)
-    if (run) run.phase = phase
+    if (!run) return
+    if (phase === 'active') this.runs.set(id, activated(run, at, dropFor))
+    else run.phase = phase
   }
 
   /** The effect's hazard has gone and its tail is running (T22.08D F5). */

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   BANNER_TOP,
+  activated,
   TIMER_H,
   TIMER_TOP,
   bannerText,
@@ -131,6 +132,36 @@ describe('bannerText', () => {
     // The control: lit, it reads like any other effect.
     expect(bannerText([flare], 37)).toBe('Solar Flare 0:03')
     expect(bannerText([{ ...flare, tail: true }], 37)).toBe('BURNING OUT · Solar Flare 0:03')
+  })
+
+  /**
+   * T22.14C: a shower's `Active` runs `METEOR_DURATION + METEOR_FALL_TIME` (T22.14A H3)
+   * but meteors drop only in the first `METEOR_DURATION`. The banner counts the
+   * dropping window, then says the sky is clearing until the effect ends — the
+   * flare's "burning out" for the shower.
+   */
+  it('counts a shower’s dropping window, then says it is clearing', () => {
+    const shower = run({ kind: 'MeteorShower', endsAt: 40, dropsUntil: 24 })
+    expect(bannerText([shower], 14)).toBe('Meteor Shower 0:10')
+    expect(bannerText([shower], 30)).toBe('CLEARING · Meteor Shower 0:10')
+    // The control: an effect with no dropping window counts to its end throughout.
+    expect(bannerText([run({ endsAt: 40 })], 14)).toBe('Toxic Rain 0:26')
+  })
+
+  /**
+   * And both deadlines come from the effect's own schedule, anchored where the
+   * server anchors them — `Active` starts when the telegraph ends (`effect_phase`)
+   * and lasts `duration` (`effect_start`'s, the active window alone). The run
+   * started at the telegraph ended `EFFECT_TELEGRAPH` early before T22.14C.
+   */
+  it('anchors the end and the dropping window on the activation', () => {
+    const started: EffectRun = { id: 3, kind: 'MeteorShower', phase: 'telegraph', endsAt: 0 + 26, duration: 26 }
+    const on = activated(started, 3, 10)
+    expect(on.phase).toBe('active')
+    expect(on.endsAt).toBe(3 + 26)
+    expect(on.dropsUntil).toBe(3 + 10)
+    // No dropping window: none is set.
+    expect(activated({ ...started, kind: 'ToxicRain' }, 3, null).dropsUntil).toBeUndefined()
   })
 
   /** `docs/13` §1 allows overlap; the banner has one line. */

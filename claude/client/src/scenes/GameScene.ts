@@ -1138,7 +1138,10 @@ export class GameScene extends Phaser.Scene {
           // until T22.14C MED-3; a round clock, not the tick clock, either way).
           this.flareClock.start(id, rec.kind, String(p['seed'] ?? '0'), evTick * C().SIM_DT)
         } else if (ev === 'effect_phase') {
-          this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
+          // T22.14C: anchored on the activation's own tick, and a shower's dropping
+          // window (`METEOR_DURATION`, Rust's) so the banner can say when it is clearing.
+          const dropFor = rec.kind === 'MeteorShower' ? C().METEOR_DURATION : null
+          this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase, evAt, dropFor)
           // T19.24: the vents open here, not at `effect_start`. `lava.rs`
           // re-bases every `jet_until` to the moment it goes active, so this is
           // the only event that names the origin the server is using.

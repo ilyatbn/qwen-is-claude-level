@@ -311,6 +311,8 @@ export interface Constants {
   MAX_FRAME_DT: number
   /** T22.14C LOW-5: `ceil(MAX_FRAME_DT · SIM_HZ)`, Rust's — the stand-in claim ceiling. */
   MAX_FRAME_TICKS: number
+  /** T22.14C: how long a shower drops meteors, s — the HUD's dropping window. */
+  METEOR_DURATION: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number

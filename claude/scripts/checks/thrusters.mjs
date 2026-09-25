@@ -262,16 +262,20 @@ export default async function ({ page, shot, log }) {
     }
     await page.keyboard.down('a')
     try {
-      // Firing, slowing (the push is leftward) and still going right.
+      // Firing, slowing (the push is leftward) and still going right — and **frozen
+      // in the same evaluation that saw it** (T22.14C). It froze in a separate
+      // `evaluate` a round trip later, by when a loaded page (`--jobs 4`) had braked
+      // past it: "frozen with vx …, not still moving right" (T22.00H, T22.14A).
       await waitFor(
         ([peakVx, min]) => {
           const p = window.__game.debug().player
-          return p.moveState === 2 && p.vx < peakVx - 10 * min && p.vx > min * 20
+          const braking = p.moveState === 2 && p.vx < peakVx - 10 * min && p.vx > min * 20
+          if (braking) window.__game.freeze(true)
+          return braking
         },
         [peak, k.THRUSTER_PLUME_MIN_SPEED],
         `${label}: never caught braking while still moving right`,
       )
-      await page.evaluate(() => window.__game.freeze(true))
     } finally {
       await page.keyboard.up('a')
     }
