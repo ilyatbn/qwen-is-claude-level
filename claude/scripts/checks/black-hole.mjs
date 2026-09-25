@@ -38,7 +38,7 @@
  *    on it are the frame hidden mixed with the ring's colour at the ring's alpha (a faint
  *    ring, and exactly that one), and probes a ring-width-and-more inside and outside it
  *    did not change (the control). On the minimap (arm 1) the marker carries a circle of
- *    the reach's radius, gone with the layer hidden;
+ *    the reach's radius, gone with the layer hidden (control: 3 px outside it unchanged);
  * 5b. **the bell for a body in the pull** (T22.12D F1): placed at `BELL_PLACE × REACH`
  *    `BELL_LEAD_S` before the round's `ends_tick`, what the page had predicted for its
  *    body when it heard the bell, against the server's state at that tick
@@ -385,7 +385,10 @@ async function minimapMark(page, ringRgb) {
   const shown = await read()
   const where = shown.st?.holeAt
   // T22.18B F4: the reach circle — pixels on it (8 bearings, inside the canvas) and, as
-  // the control, 3 px inside it on the same bearings; read shown, then hidden.
+  // the control, 3 px **outside** it on the same bearings; read shown, then hidden.
+  // Outside, not inside: arm 2's player is placed at 0.9 × reach and pulled in, so her
+  // 3 px dot crosses every radius inside the circle — a control 3 px inside it once
+  // caught the dot moving (T22.19's run of this check).
   const reachPx = (hidden) =>
     page.evaluate(([w, hid]) => {
       const el = document.querySelector('[data-minimap="root"] canvas')
@@ -399,7 +402,7 @@ async function minimapMark(page, ringRgb) {
         const a = (i / 8) * Math.PI * 2 + 0.2
         const p = (d) => [Math.round(w.x + 0.5 + Math.cos(a) * d - 0.5), Math.round(w.y + 0.5 + Math.sin(a) * d - 0.5)]
         const [x, y] = p(r)
-        const [cx, cy] = p(r - 3)
+        const [cx, cy] = p(r + 3)
         if (x < 0 || y < 0 || x >= el.width || y >= el.height) continue
         out.push({ on: Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3)), ctrl: Array.from(ctx.getImageData(cx, cy, 1, 1).data.slice(0, 3)) })
       }
@@ -431,8 +434,8 @@ async function minimapMark(page, ringRgb) {
     const ctrlMoved = pairs.filter((p) => dist(p.s.ctrl, p.h.ctrl) > 3).length
     if (toward < pairs.length * RING_COLOUR_SHARE) fail(`minimap: only ${toward} of ${pairs.length} pixels on the reach circle (r ${reachShown.r.toFixed(1)} px) turned toward the ring's colour: ${JSON.stringify(pairs.slice(0, 3))}`)
     else ok(`minimap: the hole's reach is drawn round it (r ${reachShown.r.toFixed(1)} px): ${toward}/${pairs.length} circle pixels toward the ring's colour`)
-    if (ctrlMoved > 0) fail(`minimap: control — ${ctrlMoved} of ${pairs.length} pixels 3 px inside the reach circle changed with the layer: ${JSON.stringify(pairs.slice(0, 3))}`)
-    else ok(`minimap: control — ${pairs.length} pixels 3 px inside the reach circle did not change`)
+    if (ctrlMoved > 0) fail(`minimap: control — ${ctrlMoved} of ${pairs.length} pixels 3 px outside the reach circle changed with the layer: ${JSON.stringify(pairs.filter((p) => dist(p.s.ctrl, p.h.ctrl) > 3))}`)
+    else ok(`minimap: control — ${pairs.length} pixels 3 px outside the reach circle did not change`)
   }
 }
 
