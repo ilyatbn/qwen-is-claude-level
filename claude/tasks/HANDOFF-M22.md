@@ -38,7 +38,7 @@ does it.
   gated it; now its own serial, gated check; green alone at 1.40 ms median, a 6 ms planted bake reds it at 7.10).
 - **Last green batch gate: `39d2069`** (T22.10G). **57 commits since** (`git log --oneline 39d2069..0c43885 | wc -l`),
   every one gated per task by its Done-when and `--changed` only. **A full `./scripts/check.sh` on an idle box is
-  owed now and is the coordinator's** — `TASKS.md` carries `BATCH GATE: pending` for it.
+  owed now and is the coordinator's** — `TASKS.md` carries `BATCH GATE: green at `a3c5dea` (2026-09-25, 1224 s) — browser 73/73, vitest 1113/1113, Rust 1720 passed / 0 failed / 26 ignored` for it.
 - **Rulings: R1–R100**, plus the T22.14A addenda (H3, R99) and two T22.14B confirmations. `R1`–`R72` in
   `M22-RULINGS.md`; `R73`–`R100` indexed at its end.
 - **The spec: `docs/77-amendments-v9.md`**, §H1–§H21, with superseded values struck in `docs/02`, `docs/13` §7,

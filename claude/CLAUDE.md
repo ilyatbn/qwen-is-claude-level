@@ -7,7 +7,7 @@ Read this file first, every session. It is short on purpose.
 ## The specification
 
 - `docs/00`–`62` are the original spec.
-- **`docs/70`–`75` are amendments and they override the originals**
+- **`docs/70`–`77` are amendments and they override the originals**
   where they disagree. Read the sections a task names.
 - **`docs/00`–`62` are the original spec; `docs/70`–`77` are the amendments.**
 - **Builders still never edit `docs/`.** If a doc is wrong or missing something, report the

@@ -7118,3 +7118,9 @@ M22-RULINGS: index of R73–R100 + H3/R99; DOCS-77-OWED closed with where each p
 R37: the rebake median left parked `perf` for its own serial gated check `chunk-rebake` — `=chunk-rebake` 1/1 (1.40 ms median), 6 ms planted bake → red 7.10 (`gate-closeout-chunk-rebake{,-plant}.txt`).
 flaky-test.md: three rows lead "fixed, ready to un-park — owner decides"; beams-shader carries T22.00H. HANDOFF-M22: STATE and owner decisions. Survey: generator byte, correctPlayerState, 58 exports, 90 checks.
 Not run: cargo, vitest, the full gate (the coordinator's batch gate is owed).
+
+## M22 closing batch gate — green (coordinator, 2026-09-25)
+Full `./scripts/check.sh` on `a3c5dea`, idle box, nothing else running: **EXIT=0, 1224 s** — browser **73/73**, vitest 1113/1113, Rust
+1720 passed / 0 failed / 26 ignored. (A first launch at 10:17 silently ran a subagent's overwritten launcher from the shared
+scratchpad and left yesterday's log in place — caught by the log's mtime; relaunched from a uniquely named script.) M22 is closed.
+Owner decisions pending are listed in HANDOFF-M22.md.
