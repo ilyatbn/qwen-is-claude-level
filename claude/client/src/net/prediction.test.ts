@@ -125,6 +125,71 @@ describe('the reconciliation identity', () => {
   })
 })
 
+/**
+ * T22.14C HIGH-1: a correction installs the server's state **at the ack**, so the
+ * replay must start from the movement state the mirror had there — previous input,
+ * jump buffer, jetpack, airborne ticks — not from the newest applied one. The
+ * `i % 3` identity above cannot see it: its first pending input is RIGHT, whose edge
+ * reads the same against either previous input.
+ */
+describe('a correction replays from the acked seq’s movement state (T22.14C HIGH-1)', () => {
+  it('a jump pressed inside the pending window keeps its edge on the replay', () => {
+    const p = new Predictor(core, 0)
+    const all: InputFrame[] = []
+    for (let i = 1; i <= 12; i++) all.push(inp(i, i <= 4 ? 0 : BTN.JUMP))
+    // The premise: the first pending input and the last pushed one both hold JUMP.
+    expect(all[4]!.buttons & BTN.JUMP).toBeTruthy()
+    expect(all[11]!.buttons & BTN.JUMP).toBeTruthy()
+    for (const f of all.slice(0, 4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
+    // The server's body at the ack, a few px off the prediction so the gate corrects —
+    // the server continues from exactly what it sends.
+    const truth = { ...mirror.playerState(0)!, x: mirror.playerState(0)!.x + C().RECONCILE_EPSILON_PX * 2 }
+    mirror.setPlayerState(0, truth)
+    expect(truth.grounded).toBe(true)
+    for (const f of all) p.pushInput(f, DT)
+    p.reconcile({ tick: 0, lastInputSeq: 4, state: truth })
+    expect(p.stats.corrections).toBe(1)
+    for (const f of all.slice(4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
+    const a = core.playerState(0)!
+    const b = mirror.playerState(0)!
+    // Control: the server did jump on seq 5.
+    expect(b.y).toBeLessThan(truth.y - C().PLAYER_H / 2)
+    expect(a.x).toBeCloseTo(b.x, 4)
+    expect(a.y).toBeCloseTo(b.y, 4)
+    expect(a.vx).toBeCloseTo(b.vx, 4)
+    expect(a.vy).toBeCloseTo(b.vy, 4)
+  })
+
+  /**
+   * The server steps a dead player's input stream (`World::apply_inputs`: the seq and
+   * `prev_input` advance, the body does not move) and `PlayerState::respawn` resets the
+   * jump and the jetpack. So JUMP held from death through the respawn is *held*, not
+   * pressed: no jump. The control is a fresh press after it, which jumps.
+   */
+  it('a respawn while holding JUMP does not jump, and a fresh press does', () => {
+    const p = new Predictor(core, 0)
+    for (let i = 1; i <= 3; i++) p.pushInput(inp(i, 0), DT)
+    const spawn = core.playerState(0)!
+    expect(spawn.grounded).toBe(true)
+    p.reconcile({ tick: 3, lastInputSeq: 3, state: spawn })
+    // Dies by seq 6, pressing nothing; presses JUMP while dead and holds it.
+    for (let i = 4; i <= 6; i++) p.pushInput(inp(i, 0), DT)
+    p.reconcile({ tick: 6, lastInputSeq: 6, state: { ...core.playerState(0)!, alive: false } })
+    for (let i = 7; i <= 14; i++) p.pushInput(inp(i, BTN.JUMP), DT)
+    // Respawned by seq 10, at rest on the ground; 11..14 pending, JUMP still held.
+    p.reconcile({ tick: 10, lastInputSeq: 10, state: { ...spawn, alive: true } })
+    const held = core.playerState(0)!
+    expect(held.alive).toBe(true)
+    // A jump launches at −`JUMP_VELOCITY`; settling on the ground moves a fraction of a px.
+    expect(held.vy).toBeGreaterThanOrEqual(0)
+    expect(Math.abs(held.y - spawn.y)).toBeLessThan(1)
+    // Control: release and press again — that is an edge, and it jumps.
+    p.pushInput(inp(15, 0), DT)
+    p.pushInput(inp(16, BTN.JUMP), DT)
+    expect(core.playerState(0)!.vy).toBeLessThan(0)
+  })
+})
+
 describe('corrections', () => {
   it('ignores error below the epsilon', () => {
     const p = new Predictor(core, 0)

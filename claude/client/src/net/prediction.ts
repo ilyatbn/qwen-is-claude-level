@@ -384,7 +384,10 @@ export class Predictor {
     // error into every prediction after it.
     const was = { x: local.x, y: local.y }
     const lifeChanged = local.alive !== snap.state.alive
-    this.core.setPlayerState(this.localId, snap.state)
+    // T22.14C HIGH-1: from the movement state the mirror had **at the ack** (its
+    // previous input, jump buffer, jetpack), not the newest one — or the first
+    // replayed input's edges read against the last input pushed.
+    this.core.correctPlayerState(this.localId, snap.lastInputSeq, snap.state)
     // The truth at the ack is now the prediction there, for a snapshot that acks it again.
     this.predicted.set(snap.lastInputSeq, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
     for (const { input, dt } of this.pending) {
@@ -453,6 +456,8 @@ export class Predictor {
     const was = { x: now.x, y: now.y }
     const err = Math.hypot(now.x - snap.state.x, now.y - snap.state.y)
     const ahead = n.label !== null ? n.label - snap.tick : 0
+    // Not `correctPlayerState`: every neutral tick runs under the one frozen seq, so
+    // the mirror's copy "at the ack" is its newest — and a neutral tick has no edges.
     this.core.setPlayerState(this.localId, snap.state)
     n.label = snap.tick
     n.at.clear()

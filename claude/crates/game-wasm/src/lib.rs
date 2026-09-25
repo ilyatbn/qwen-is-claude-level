@@ -48,9 +48,46 @@ struct LocalPlayer {
     jump: JumpState,
     jet: JetpackState,
     prev_input: Input,
+    /// T22.14C HIGH-1: the movement state **after** each applied seq, oldest first —
+    /// what [`GameCore::correct_player_state`] restores at the ack before it installs
+    /// the snapshot. At most `PREDICTION_HISTORY_TICKS`; a replay overwrites from its
+    /// first seq on.
+    history: std::collections::VecDeque<(u32, Moved)>,
     /// Health, inventory, cooldowns. The sandbox needs the whole record so firing
     /// goes through the same validation the server will use.
     stats: PlayerState,
+}
+
+/// Everything `apply_input` carries from one seq to the next that the snapshot does
+/// not (T22.14C HIGH-1). The body whole — the wire's position, velocity and grounded
+/// flag are overwritten after the restore; `airborne_ticks` (coyote time) is not on it.
+#[derive(Clone, Copy)]
+struct Moved {
+    body: Body,
+    jump: JumpState,
+    jet: JetpackState,
+    prev_input: Input,
+}
+
+impl LocalPlayer {
+    /// Record the state after `seq` — a replay of `seq` replaces it and every later one.
+    fn remember(&mut self, seq: u32) {
+        while self.history.back().is_some_and(|(s, _)| *s >= seq) {
+            self.history.pop_back();
+        }
+        if self.history.len() >= game_core::constants::PREDICTION_HISTORY_TICKS {
+            self.history.pop_front();
+        }
+        self.history.push_back((
+            seq,
+            Moved {
+                body: self.body,
+                jump: self.jump,
+                jet: self.jet,
+                prev_input: self.prev_input,
+            },
+        ));
+    }
 }
 
 #[wasm_bindgen]
@@ -614,6 +651,7 @@ impl GameCore {
             jet: JetpackState::default(),
             stats,
             prev_input: Input::default(),
+            history: std::collections::VecDeque::new(),
         });
     }
 
@@ -653,6 +691,16 @@ impl GameCore {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
+        // **T21.30, the server's rule and not a copy of it.** Once the round is
+        // over `World::apply_inputs` integrates a neutral input instead of what
+        // was held, so the mirror does the same — gravity still runs, nothing
+        // the player presses does.
+        let buttons = if self.phase.accepts_input() {
+            buttons
+        } else {
+            0
+        };
+        let input = Input::new(seq, buttons, aim);
         // **The gate the server has and this did not** (T20.21).
         // `world/mod.rs::apply_inputs` runs `if !self.players[idx].alive
         // { continue; }` *before* it computes `speed`, so a dead player on the
@@ -671,19 +719,21 @@ impl GameCore {
         // away from the state it protects, where the next caller of
         // `Predictor::pushInput` drops it — share the guard, or share the
         // function.
+        //
+        // T22.14C HIGH-1: **dead, the tick still happens to the input stream** — the
+        // server's words (`World::apply_inputs`): `prev_input` advances and the body
+        // does not move. This returned before it, so a JUMP pressed while dead and
+        // held through the respawn read as a fresh press against the last input
+        // before death: a phantom jump the server never made.
+        // (Only while the phase takes input: in `Ended` the server steps the living
+        // alone, so a dead player's stream stands still there.)
         if !p.stats.alive {
+            if self.phase.accepts_input() {
+                p.prev_input = input;
+                p.remember(seq);
+            }
             return;
         }
-        // **T21.30, the server's rule and not a copy of it.** Once the round is
-        // over `World::apply_inputs` integrates a neutral input instead of what
-        // was held, so the mirror does the same — gravity still runs, nothing
-        // the player presses does.
-        let buttons = if self.phase.accepts_input() {
-            buttons
-        } else {
-            0
-        };
-        let input = Input::new(seq, buttons, aim);
         let dt = if dt > 0.0 { dt } else { SIM_DT };
         // **`PlayerState::move_mods`, the same function the server calls**
         // (T21.02). Not a struct the mirror assembles itself: the whole reason
@@ -720,6 +770,7 @@ impl GameCore {
             dt,
         );
         p.prev_input = input;
+        p.remember(seq);
     }
 
     /// Overwrite a mirrored body from an authoritative snapshot.
@@ -746,6 +797,16 @@ impl GameCore {
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
+        // T22.14C HIGH-1: **a respawn is `PlayerState::respawn`'s reset**, which the
+        // mirror never ran — a fresh body (airborne ticks 0), the jump buffer and the
+        // jetpack cleared (the tank is the wire's, below). A jetpack lit at death stayed
+        // lit into the next life: a phantom thrust. `prev_input` is not reset, as the
+        // server does not: its dead ticks carried the stream (`apply_input`).
+        if !p.stats.alive && alive {
+            p.body = Body::new(Vec2::new(x, y));
+            p.jump = JumpState::default();
+            p.jet = JetpackState::default();
+        }
         p.body.pos = Vec2::new(x, y);
         p.body.vel = Vec2::new(vx, vy);
         p.body.grounded = grounded;
@@ -770,6 +831,50 @@ impl GameCore {
         // storing a second answer that could disagree — the third flag that
         // `shield_until` and `flashlight_on` were both deleted for.
         p.stats.set_move_mod_bits(move_mods);
+    }
+
+    /// **A reconcile's correction** (T22.14C HIGH-1): the movement state this mirror
+    /// had after seq `ack` — previous input, jump buffer, jetpack, airborne ticks —
+    /// restored, then the snapshot installed over it ([`GameCore::set_player_state`]).
+    ///
+    /// `set_player_state` alone left all of those at the **newest** applied seq, so
+    /// the replay's first input compared its edges against the last one pushed: a
+    /// jump pressed inside the pending window, still held at the newest input, lost
+    /// its edge on every correction (43 px in the vitest that found it). The server
+    /// stepped that seq from its own state at the ack, which is this copy.
+    ///
+    /// Copies before `ack` are dropped; with no copy of `ack` (older than
+    /// `PREDICTION_HISTORY_TICKS`, or never applied here) the current state stands,
+    /// as before. `Predictor.reconcile` is the one production caller; the results
+    /// screen's re-anchor and `relocate` are not corrections at an ack and call
+    /// `set_player_state`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn correct_player_state(
+        &mut self,
+        id: u8,
+        ack: u32,
+        x: f32,
+        y: f32,
+        vx: f32,
+        vy: f32,
+        grounded: bool,
+        fuel: f32,
+        health: f32,
+        alive: bool,
+        move_mods: u8,
+    ) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            while p.history.front().is_some_and(|(s, _)| *s < ack) {
+                p.history.pop_front();
+            }
+            if let Some(&(_, m)) = p.history.front().filter(|(s, _)| *s == ack) {
+                p.body = m.body;
+                p.jump = m.jump;
+                p.jet = m.jet;
+                p.prev_input = m.prev_input;
+            }
+        }
+        self.set_player_state(id, x, y, vx, vy, grounded, fuel, health, alive, move_mods);
     }
 
     /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health,
@@ -2810,6 +2915,49 @@ mod tests {
         }
         let after = core.player_state(1);
         assert_ne!(after[0], before[0], "the player did not move");
+    }
+
+    /// T22.14C HIGH-1: **a respawn is `PlayerState::respawn`'s reset** — the jump
+    /// buffer, the jetpack (tank from the wire) and the airborne ticks, which no
+    /// snapshot carries. The control: a snapshot that keeps a player alive keeps them.
+    #[test]
+    fn a_respawn_resets_the_jump_the_jetpack_and_the_airborne_ticks() {
+        let lit = |core: &mut GameCore| {
+            let p = core.players.iter_mut().find(|p| p.id == 2).unwrap();
+            p.jet.active = true;
+            p.jet.locked_out = true;
+            p.jump.buffered_ticks = 3;
+            p.body.airborne_ticks = 40;
+        };
+        let snap = |core: &mut GameCore, alive: bool| {
+            core.set_player_state(2, 10.0, 20.0, 0.0, 0.0, true, 1.5, 100.0, alive, 0);
+        };
+        let mut core = GameCore::new();
+        core.add_player(2, 0.0, 0.0);
+        lit(&mut core);
+        snap(&mut core, true);
+        let p = core.players.iter().find(|p| p.id == 2).unwrap();
+        assert!(
+            p.jet.active && p.jump.buffered_ticks == 3 && p.body.airborne_ticks == 40,
+            "control: an alive → alive snapshot reset the movement state"
+        );
+        snap(&mut core, false);
+        lit(&mut core);
+        snap(&mut core, true);
+        let p = core.players.iter().find(|p| p.id == 2).unwrap();
+        assert!(
+            !p.jet.active && !p.jet.locked_out,
+            "the jetpack lit at death stayed lit"
+        );
+        assert_eq!(
+            p.jump.buffered_ticks, 0,
+            "the jump buffer survived the respawn"
+        );
+        assert_eq!(
+            p.body.airborne_ticks, 0,
+            "the airborne ticks survived the respawn"
+        );
+        assert_eq!(p.jet.fuel, 1.5, "the tank is the wire's");
     }
 
     #[test]

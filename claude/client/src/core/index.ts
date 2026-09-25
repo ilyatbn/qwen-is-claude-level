@@ -1117,6 +1117,29 @@ export class Core {
   }
 
   /**
+   * T22.14C HIGH-1: **a reconcile's correction** — the mirror's movement state after
+   * seq `ack` (previous input, jump buffer, jetpack, airborne ticks) restored, then
+   * `s` installed over it, so the replay steps from where the server's step did.
+   * `setPlayerState` alone left them at the newest applied seq. `Predictor.reconcile`
+   * is the one production caller.
+   */
+  correctPlayerState(id: number, ack: number, s: Omit<PlayerState, 'landingImpact'>): void {
+    this.inner.correct_player_state(
+      id,
+      ack,
+      s.x,
+      s.y,
+      s.vx,
+      s.vy,
+      s.grounded,
+      s.fuel,
+      s.health,
+      s.alive,
+      s.moveMods,
+    )
+  }
+
+  /**
    * Is damage against this player being reduced? (T20.08)
    *
    * The Rust rule, called — not a TypeScript copy of "holds a generator and has

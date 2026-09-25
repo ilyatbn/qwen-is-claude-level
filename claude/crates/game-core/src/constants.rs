@@ -1570,6 +1570,15 @@ pub const INPUT_BACKLOG_TARGET: usize = 2;
 /// `INPUT_BACKLOG_TARGET`'s. `docs/40` §2 and `docs/70` §A30 still say 8 — the
 /// amendment is owed (`tasks/M22/DOCS-77-OWED.md`).
 pub const MAX_INPUT_QUEUE: usize = MAX_FRAME_TICKS;
+/// How many seqs of movement state the client's mirror keeps per local player
+/// (`GameCore::correct_player_state`, T22.14C HIGH-1): a correction restores the
+/// **acked** seq's jump buffer, jetpack, airborne ticks and previous input before it
+/// installs the snapshot, so the replay starts where the server's step did. The ack
+/// trails the newest pushed seq by one round trip plus `INPUT_BACKLOG_TARGET`;
+/// two seconds of it (`2 × SIM_HZ`) is an RTT past which the match is unplayable
+/// anyway. An ack older than the oldest copy falls back to the current state — the
+/// behaviour before T22.14C.
+pub const PREDICTION_HISTORY_TICKS: usize = 2 * SIM_HZ as usize;
 
 // ---------------------------------------------------------------------------
 // Rendering
