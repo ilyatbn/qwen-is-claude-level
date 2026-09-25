@@ -204,6 +204,23 @@ async function coverage(page, h, label, wantShader) {
     if (!ctrl) fail(`${label}: no point in view clear of the hole for the control`)
     else if (cmp.points[pts.length - 1]) fail(`${label}: control — a point clear of the hole changed too: ${JSON.stringify(cmp.detail[pts.length - 1])}`)
     else ok(`${label}: control — a point clear of the hole did not change`)
+    // T22.14A L: **the arrival frame** — the server kills at the full horizon on the
+    // tick the hole opens, so the ring (the rule, R90) and the disc must be full size
+    // from that frame, not swelling in over BLACK_HOLE_GROW_MS. The same probes, the
+    // layer repainted as it looks 0 ms after arrival (growth 0), against the same
+    // hidden frame. The ring's colour is the discriminator (the space backdrop is dark
+    // enough to pass for the disc).
+    const fx0 = await page.evaluate(() => window.__game.drawBlackHoleAt(0))
+    await frames(page, 2)
+    const born = await photo(page)
+    await page.screenshot({ path: join(shotsDir, `black-hole-${label}-arrival.png`) })
+    const cmp0 = await comparePhotos(page, born, off, { points: [...ringPts, ...discPts] })
+    const ring0 = cmp0.detail.slice(0, ringPts.length).filter((q) => q.a.every((c, i) => Math.abs(c - fx.ringRgb[i]) <= RING_TOLERANCE)).length
+    const black0 = cmp0.detail.slice(ringPts.length).filter((q) => q.a.every((c) => c <= DISC_MAX)).length
+    if (!fx0 || !fx0.drawn || fx0.growth !== 0) fail(`${label}: the arrival frame was not drawn at growth 0: ${JSON.stringify(fx0)}`)
+    else if (ring0 < ringPts.length * RING_COLOUR_SHARE || black0 < discPts.length)
+      fail(`${label}: at the arrival frame only ${ring0} of ${ringPts.length} ring points are the ring's colour and ${black0} of ${discPts.length} disc points black — the rule is drawn smaller than it kills`)
+    else ok(`${label}: at the arrival frame (growth 0) the ring (${ring0}/${ringPts.length}) and the disc (${black0}/${discPts.length}) are already full size`)
   } finally {
     await page.evaluate(() => window.__game.freeze(false))
   }

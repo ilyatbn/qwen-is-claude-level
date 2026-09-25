@@ -61,6 +61,8 @@ export interface VortexFxState {
   hidden: boolean
   /** The capture ring's colour, 0–255 — what a check expects at the ring. */
   ringRgb: [number, number, number]
+  /** The radii it was drawn at (`vortexRadii`) — what a check probes, not a copy (T22.14A). */
+  radii: { capture: number; outer: number }
 }
 
 /**
@@ -78,7 +80,8 @@ precision mediump float;
 
 uniform vec2 resolution;
 uniform float time;
-// VORTEX_CAPTURE_R and VORTEX_REACH / 2, world px; fadeFrom is where swirlFade starts.
+// VORTEX_CAPTURE_R and the swirl's outer radius (vortexRadii, T22.14A L), world px;
+// fadeFrom is where swirlFade starts.
 uniform float capture;
 uniform float outer;
 uniform float fadeFrom;
@@ -122,7 +125,7 @@ export class VortexFx {
   private readonly arm: number[] = []
   private hidden = false
   private frames = 0
-  private last: VortexFxState = { drawn: [], shader: false, frames: 0, hidden: false, ringRgb: rgbOf(VORTEX_RING_COLOR) }
+  private last: VortexFxState = { drawn: [], shader: false, frames: 0, hidden: false, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: { capture: 0, outer: 0 } }
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -160,7 +163,7 @@ export class VortexFx {
       }
     }
     if (drawn.length) this.frames++
-    this.last = { drawn, shader: viaShader && drawn.length > 0, frames: this.frames, hidden: this.hidden, ringRgb: rgbOf(VORTEX_RING_COLOR) }
+    this.last = { drawn, shader: viaShader && drawn.length > 0, frames: this.frames, hidden: this.hidden, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: vortexRadii(C()) }
   }
 
   /** e2e only (§C2): hide the layer for a same-instant control frame. */
@@ -175,7 +178,7 @@ export class VortexFx {
   }
 
   get state(): VortexFxState {
-    return { ...this.last, drawn: [...this.last.drawn], ringRgb: [...this.last.ringRgb] }
+    return { ...this.last, drawn: [...this.last.drawn], ringRgb: [...this.last.ringRgb], radii: { ...this.last.radii } }
   }
 
   /** Discard the round's quads; the list itself is the mirror's to clear. */

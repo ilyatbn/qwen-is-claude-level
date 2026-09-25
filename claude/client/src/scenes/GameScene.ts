@@ -3147,6 +3147,16 @@ export class GameScene extends Phaser.Scene {
         return self.blackHoleFx.state
       },
       /**
+       * e2e only (T22.14A L): repaint the black hole as it looks `ms` after its arrival,
+       * for a frozen photograph of the arrival frame — the disc and the ring are the
+       * rule and must be full size from it. The next unfrozen frame repaints as usual.
+       */
+      drawBlackHoleAt(ms: number) {
+        const h = self.mirror.blackHole
+        if (h) self.blackHoleFx.update(h, null, h.arrivedAt + ms, self.time.now / 1000)
+        return self.blackHoleFx.state
+      },
+      /**
        * e2e only (`DEV_PROBE=1`, T22.12B): bring the black hole now (it eats the rock
        * nearest this player) and, with `dist`, put this player at rest that far from it.
        * The answer lands in `debug().blackHole.lastProbe`; the hole arrives as a real one

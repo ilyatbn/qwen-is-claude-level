@@ -96,14 +96,15 @@ pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2) -> Option<u32> {
         .map(|v| v.id)
 }
 
-/// How far `centre` is outside the no-escape disc of every hole, px — negative
-/// inside one. The clearance `World::step_vortices` hands the shared picker
+/// How far `centre` is outside the `VORTEX_REACH / 2` disc of every hole, px —
+/// negative inside one. The clearance `World::step_vortices` hands the shared picker
 /// (`Map::random_body_site_where`, `M22-RULINGS` R86): **a caught player is put
-/// down beyond `VORTEX_REACH / 2` of every hole**, where thrust beats the pull
-/// (`VORTEX_ACCEL_MAX`'s basis — *since R97 thrust beats it everywhere outside the
-/// capture radius; the distance stands as R86 set it, a margin rather than the
-/// escape line*), so the trip cannot deliver them into a second vortex's mouth. Spent holes are held to the same distance although they no
-/// longer pull: one number, and the stricter one.
+/// down beyond `VORTEX_REACH / 2` of every hole**, so the trip cannot deliver them
+/// into a second vortex's mouth. *Not a no-escape disc* (T22.14A L): R86 set the
+/// distance when thrust stopped winning there; since R97 thrust beats every vortex's
+/// pull outside the capture radius, and the half-reach stands as a margin, not a
+/// line. Spent holes are held to the same distance although they no longer pull:
+/// one number, and the stricter one.
 pub fn clearance(vortices: &[Vortex], spent: &[Vortex], centre: Vec2) -> f32 {
     vortices
         .iter()

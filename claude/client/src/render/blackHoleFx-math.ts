@@ -40,7 +40,12 @@ export const BLACK_HOLE_DISC_COLOR = 0x000000
 export const BLACK_HOLE_SPIN = 1.6
 /** Accretion streaks drawn round the ring on the flat path. Drawing only. */
 export const BLACK_HOLE_STREAKS = 7
-/** How long the hole takes to swell into view on arrival, ms. Drawing only. */
+/**
+ * How long the hole's **decoration** (accretion light, halo, streaks) takes to swell
+ * into view on arrival, ms. Drawing only. The disc and the ring are full size from the
+ * arrival frame (T22.14A L): the server kills at the full horizon on that tick, so a
+ * disc drawn growing showed a player outside it who was already inside the rule.
+ */
 export const BLACK_HOLE_GROW_MS = 900
 
 /** `0xRRGGBB` as `[r, g, b]`, 0–255. */
@@ -83,7 +88,8 @@ export function warnClosingRadius(r: BlackHoleRadii, u: number): number {
 }
 
 /**
- * 0 → 1 over `BLACK_HOLE_GROW_MS` from the arrival — a scale for the arrival only.
+ * 0 → 1 over `BLACK_HOLE_GROW_MS` from the arrival — the decoration's scale on arrival
+ * only (never the disc's or the ring's, T22.14A L).
  * Once grown it stays grown, results screen included (R8.4: it stays drawn).
  */
 export function blackHoleGrowth(arrivedAt: number, nowMs: number): number {

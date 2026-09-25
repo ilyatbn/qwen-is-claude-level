@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core } from '../core'
-import { VORTEX_ARM_SAMPLES, VORTEX_FADE_MS, VORTEX_SWIRL_FADE_FROM, armPhase, spiralArm, swirlFade, vortexFade, vortexRadii } from './vortexFx-math'
+import { VORTEX_ARM_SAMPLES, VORTEX_FADE_MS, VORTEX_SWIRL_FADE_FROM, VORTEX_SWIRL_OUTER, armPhase, spiralArm, swirlFade, vortexFade, vortexRadii } from './vortexFx-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -16,7 +16,10 @@ describe('the vortex drawing', () => {
     // Not NaN: the constants reached the client (an absent key reads undefined).
     expect(r.capture).toBeGreaterThan(0)
     expect(r.capture).toBe(k.VORTEX_CAPTURE_R)
-    expect(r.outer).toBe(k.VORTEX_REACH / 2)
+    // T22.14A L: sized off the capture ring (the one rule), not the retired half-reach —
+    // and inside the pull's reach (R98: decoration inside it).
+    expect(r.outer).toBe(k.VORTEX_CAPTURE_R * VORTEX_SWIRL_OUTER)
+    expect(r.outer).toBeLessThan(k.VORTEX_REACH)
     expect(r.outer).toBeGreaterThan(r.capture)
   })
 

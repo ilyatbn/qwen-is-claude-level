@@ -68,7 +68,7 @@ export interface BlackHoleFxState {
   /** Frames in which it was painted. */
   frames: number
   hidden: boolean
-  /** 0 → 1 while it swells in on arrival. */
+  /** 0 → 1 while its decoration swells in on arrival (the disc and ring never do, T22.14A). */
   growth: number
   /** The accretion ring's colour, 0–255 — what a check expects at the ring. */
   ringRgb: [number, number, number]
@@ -114,9 +114,15 @@ float noise(vec2 q) {
 }
 
 void main() {
-  vec2 p = (vec2(fragCoord.x, resolution.y - fragCoord.y) - resolution * 0.5) / max(grow, 0.001);
+  // T22.14A L: the disc and the ring are the rule (R90) and are full size from the
+  // arrival — the server kills at the full horizon on that tick — so they are drawn
+  // at the true radius r0. Only the decoration (accretion light, halo) swells in:
+  // it is drawn at the scaled radius r, and multiplied by step(0.001, grow).
+  vec2 p0 = vec2(fragCoord.x, resolution.y - fragCoord.y) - resolution * 0.5;
+  float r0 = length(p0);
+  if (r0 > reach) { gl_FragColor = vec4(0.0); return; }
+  vec2 p = p0 / max(grow, 0.001);
   float r = length(p);
-  if (r > reach) { gl_FragColor = vec4(0.0); return; }
   float a = atan(p.y, p.x);
   // Accretion light: hot turbulent bands swirling just outside the horizon.
   float band = 1.0 - smoothstep(horizon, horizon * 2.2, r);
@@ -129,17 +135,18 @@ void main() {
   vec3 hotCol = mix(vec3(0.85, 0.25, 0.05), vec3(1.0, 0.9, 0.6), swirl * band);
   // Lensing halo, fading to nothing at the reach; brighter toward the horizon.
   float halo = pow(1.0 - smoothstep(horizon, reach, r), 3.0) * 0.35;
-  vec3 col = hotCol * hot + vec3(1.0, 0.55, 0.25) * halo;
-  float alpha = clamp(hot + halo, 0.0, 1.0);
-  // The accretion ring: solid across ringW — the probe band.
-  float rg = 1.0 - smoothstep(ringW * 0.5, ringW * 0.5 + 1.0, abs(r - ring));
+  float deco = step(0.001, grow) * step(r, reach);
+  vec3 col = (hotCol * hot + vec3(1.0, 0.55, 0.25) * halo) * deco;
+  float alpha = clamp(hot + halo, 0.0, 1.0) * deco;
+  // The accretion ring: solid across ringW — the probe band. Full size (r0).
+  float rg = 1.0 - smoothstep(ringW * 0.5, ringW * 0.5 + 1.0, abs(r0 - ring));
   col = mix(col, ringCol, rg);
   alpha = max(alpha, rg);
-  // The horizon: black, opaque, to its edge.
-  float disc = 1.0 - smoothstep(horizon - 1.0, horizon, r);
+  // The horizon: black, opaque, to its edge. Full size (r0).
+  float disc = 1.0 - smoothstep(horizon - 1.0, horizon, r0);
   col = mix(col, vec3(0.0), disc);
   alpha = max(alpha, disc);
-  gl_FragColor = vec4(col * alpha, alpha) * step(0.001, grow);
+  gl_FragColor = vec4(col * alpha, alpha);
 }
 `
 }
@@ -176,13 +183,14 @@ export class BlackHoleFx {
     let warned = false
     let progress = 0
     if (hole && !this.hidden) {
+      // T22.14A L: drawn from the arrival frame on — the disc and ring at full size
+      // (the server kills at the full horizon on arrival); `growth` swells in only the
+      // decoration.
       growth = blackHoleGrowth(hole.arrivedAt, nowMs)
-      drawn = growth > 0
-      if (drawn) {
-        const r = blackHoleRadii(C())
-        if (viaShader) this.paintShader(hole, growth, r)
-        else this.paintFlat(hole, growth, r, t)
-      }
+      drawn = true
+      const r = blackHoleRadii(C())
+      if (viaShader) this.paintShader(hole, growth, r)
+      else this.paintFlat(hole, growth, r, t)
     } else if (!hole && warn && !this.hidden) {
       progress = warnProgress(warn.since, warn.opensAt, nowMs)
       this.paintWarn(warn, progress, blackHoleRadii(C()))
@@ -284,10 +292,11 @@ export class BlackHoleFx {
       }
     }
     // The accretion ring, solid — the probe band — then the horizon, black to its edge.
-    this.gfx.lineStyle(BLACK_HOLE_RING_W * s, BLACK_HOLE_RING_COLOR, 1)
-    this.gfx.strokeCircle(h.x, h.y, r.ring * s)
+    // **Full size from the arrival** (T22.14A L): they are the rule, not decoration.
+    this.gfx.lineStyle(BLACK_HOLE_RING_W, BLACK_HOLE_RING_COLOR, 1)
+    this.gfx.strokeCircle(h.x, h.y, r.ring)
     this.gfx.fillStyle(BLACK_HOLE_DISC_COLOR, 1)
-    this.gfx.fillCircle(h.x, h.y, r.horizon * s)
+    this.gfx.fillCircle(h.x, h.y, r.horizon)
   }
 
   private paintShader(h: BlackHoleDraw, grow: number, r: BlackHoleRadii): void {
