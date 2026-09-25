@@ -117,7 +117,14 @@ const watchBell = (c, afterS, limitS) =>
           }
           const v = d?.vortex
           if (d && v) {
-            if (d.phase === 'playing') {
+            // **Before the bell is before its seq** (T22.14C MED-2): the prediction
+            // steps the server's `Ended` from the bell's input seq on — no buttons,
+            // so the plume goes out — while `ended` is heard a trip later. A frame
+            // whose newest seq is at or past the bell's is the bell's, not before it.
+            const bs = d.blackHole?.bellSeq
+            const predictedBefore = typeof bs !== 'number' || (d.blackHole?.inputSeq ?? 0) < bs
+            if (d.phase === 'playing' && !predictedBefore) out.pastBellPlaying = (out.pastBellPlaying ?? 0) + 1
+            if (d.phase === 'playing' && predictedBefore) {
               out.pendingPre = Math.max(out.pendingPre, d.pendingInputs ?? 0)
               out.pre = {
                 moveState: d.player?.moveState,
@@ -389,7 +396,8 @@ try {
         } else {
           ok(
             `control: the last frame before the bell is an airborne burn (moveState 2, v ${last.vx.toFixed(1)}, ` +
-              `${last.vy.toFixed(1)}; floor ${minSpeed} px/s)`,
+              `${last.vy.toFixed(1)}; floor ${minSpeed} px/s)` +
+              ` — ${seen.pastBellPlaying ?? 0} frame(s) predicted past the bell's seq before \`ended\` was heard`,
           )
           if (after.plumes?.[bo.id]?.drawn !== false) {
             fail(`the round is over and bo's plume still fires, thrust held: ${JSON.stringify(brief(after, bo))}`)

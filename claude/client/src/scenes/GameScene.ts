@@ -458,6 +458,13 @@ export class GameScene extends Phaser.Scene {
    */
   private bellEndsTick: number | null = null
   /**
+   * T22.14C MED-2: the bell's input seq as last told to the core (`firstSeqAfter` of
+   * `bellEndsTick` against the newest snapshot) — from it on the prediction steps as
+   * the server's `Ended`, before `ended` is heard. Debug only: `thrusters-match`'s
+   * "last frame before the bell" is the last one predicted before it.
+   */
+  private bellSeq: number | null = null
+  /**
    * T22.12E F2: the tick of the `round_state` that said `ended` — the tick the
    * server rang the bell on (`World::step` sets `Ended` last), so `bellEndsTick`
    * must equal it exactly. Debug only: the `black-hole` check compares the two.
@@ -733,6 +740,7 @@ export class GameScene extends Phaser.Scene {
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
     this.bellEndsTick = null
+    this.bellSeq = null
     this.endedAtTick = null
     // T22.00H: a check's held sky is that round's; the next draws on its own clock.
     this.skyHeldAt = null
@@ -893,6 +901,7 @@ export class GameScene extends Phaser.Scene {
       if (this.phase === 'playing' && typeof endsTick === 'number') this.bellEndsTick = endsTick
       else if (this.phase !== 'ended') {
         this.bellEndsTick = null
+        this.bellSeq = null
         this.core.setBell(null)
       }
       // A restart hands us a brand-new `World`, so the server's tick and round
@@ -903,6 +912,7 @@ export class GameScene extends Phaser.Scene {
         this.lastServerTick = stateTick
         if (this.phase !== 'playing') {
           this.bellEndsTick = null
+          this.bellSeq = null
           this.core.setBell(null)
         }
         // T22.10B: a new world has no holes; the core must stop pulling toward
@@ -1740,7 +1750,10 @@ export class GameScene extends Phaser.Scene {
       // T22.14C LOW-4/5: this snapshot's seq ↔ tick anchor (`seqClock.ts`, the one
       // mapping) re-keys the bell and the vortices' and hole's switch-overs.
       const anchor = { ack: s.lastInputSeq, tick: s.tick }
-      if (this.bellEndsTick !== null) this.core.setBell(firstSeqAfter(this.bellEndsTick, anchor))
+      if (this.bellEndsTick !== null) {
+        this.bellSeq = firstSeqAfter(this.bellEndsTick, anchor)
+        this.core.setBell(this.bellSeq)
+      }
       this.mirror.anchorSeqs(this.core.acceptsInput() && s.lastInputSeq > 0 ? anchor : null)
       this.predictor.reconcile({
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
@@ -3759,6 +3772,10 @@ export class GameScene extends Phaser.Scene {
             relocations: self.observed.relocations,
             // T22.12D (R94): the last `Playing` `round_state`'s `ends_tick`.
             bellEndsTick: self.bellEndsTick,
+            // T22.14C MED-2: the bell's seq as the core has it, and the newest seq
+            // pushed — a frame predicted before the bell has `inputSeq < bellSeq`.
+            bellSeq: self.bellSeq,
+            inputSeq: self.seq,
             // T22.12E F2: the tick the server's `ended` `round_state` carried.
             endedAtTick: self.endedAtTick,
           },
