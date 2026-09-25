@@ -2012,3 +2012,48 @@ describe it), space's override of `docs/13` weather, `docs/14` day/night and `do
 generation, radiation, the flare, the vortex, the wells, the black hole — **and the fall
 damage override at `docs/20-player-movement.md:235`**, outstanding since T20.11 and closed
 in the same pass.
+
+**Written 2026-09-25: [`docs/77-amendments-v9.md`](../../docs/77-amendments-v9.md)** (§H1–§H21), with the
+superseded values struck in `docs/02`, `docs/13` §7, `docs/20` (fall damage → `docs/76` §G1), `docs/40`, `docs/42`
+and `docs/70` §A30.
+
+# Index — the rulings recorded in task files (`R73`–`R100`, and the final audit's addenda)
+
+`R1`–`R72` are above. From `R73` on, the coordinator's rulings were recorded in the "As ruled" section
+of the task that built them; the full text, and each one's *Reverse it by*, is there. One line each.
+`docs/77-amendments-v9.md` states the resulting rules.
+
+| id | ruling | full text |
+|---|---|---|
+| R73 | radiation split into a Rust end and a client end | [T22.09](T22.09-radiation-and-the-shield-economy.md) |
+| R74 | the per-second radiation accumulator is a hashed `PlayerState` field (`R25` outranks "no new fields") | [T22.09](T22.09-radiation-and-the-shield-economy.md) |
+| R75 | the radiation death cause is a transient per-tick list on `World`, never re-derived from "space and unsealed" | [T22.09](T22.09-radiation-and-the-shield-economy.md) |
+| R76 | the battery pack's doubling is on the natural Spawn column only; crates unchanged | [T22.09](T22.09-radiation-and-the-shield-economy.md) |
+| R77 | `REPLAY_VERSION` 15 → 16 for radiation | [T22.09](T22.09-radiation-and-the-shield-economy.md) |
+| R78 | the per-mode weather table is derived at roll time, keyed on the map, never on `World::gravity` (overrides `R28`'s constructor) | [T22.08](T22.08-solar-flares.md) |
+| R79 | a hashed `PlayerState::burning_until`, written not added, cleared at death and respawn | [T22.08](T22.08-solar-flares.md) |
+| R80 | no new wire bit for the flare: drawn from `GameCore::flare_points` and the damage events | [T22.08](T22.08-solar-flares.md) |
+| R81 | the flare's burn is logged once a second, before radiation's stage | [T22.08](T22.08-solar-flares.md) |
+| R82 | the suit softens the flare per `R2`; the basis states both totals | [T22.08](T22.08-solar-flares.md) |
+| R83 | forced flares are refused off a space map; `WEATHER=flare`; unknown kinds refused | [T22.08](T22.08-solar-flares.md) |
+| R84 | `R43`'s load guard re-pointed to a meteor-in-space peak guard | [T22.08](T22.08-solar-flares.md) |
+| R85 | `REPLAY_VERSION` 16 → 17; `docs/13` §7 reported for `docs/77` | [T22.08](T22.08-solar-flares.md) |
+| R86 | a vortex's destination is outside `VORTEX_REACH / 2` of every vortex; capture ignores the cooldown; fallback farthest, never skip | [T22.10](T22.10-the-breach-vortex.md) |
+| R87 | a breach is reported only on closed → open of the rim box | [T22.10](T22.10-the-breach-vortex.md) |
+| R88 | an evicted vortex stops pulling and fades but keeps catching | [T22.10](T22.10-the-breach-vortex.md) |
+| R89 | one simulated step per player per tick — stand-ins, a jitter buffer, the ack is the last simulated seq; the catch-up credit deleted | [T22.10F](T22.10F-a-silent-player-hangs-in-the-air.md) |
+| R90 | the black hole's pull at the horizon is `JETPACK_THRUST_DOWN` × 0.9: outside the ring every thrust escapes, inside it you die | [T22.12](T22.12-the-black-hole.md) |
+| R91 | within the hole's reach the asteroid wells do not pull (widened by `T22.14A` H1 to the vortices) | [T22.12](T22.12-the-black-hole.md) |
+| R92 | a black-hole death drops nothing | [T22.12](T22.12-the-black-hole.md) |
+| R93 | a 2 s telegraph at the arrival spot, and the hole on the minimap | [T22.12](T22.12-the-black-hole.md) |
+| R94 | every round phase is counted in ticks; `round_state` carries `ends_tick` | [T22.12](T22.12-the-black-hole.md) |
+| R95 | bots may select zone weapons, scored by damage over time; the space reach measured against standard's own-hit rate | [T22.03C](T22.03C-bots-throw-what-burns.md) |
+| R96 | the summed asteroid wells are capped at `SPACE_WELL_ACCEL_MAX` | [T22.03G](T22.03G-wells-that-outpull-the-thrust.md) |
+| R97 | the wells and every live vortex's pull are capped together; outside the capture radius escape is always possible | [T22.03I](T22.03I-what-the-cap-review-found.md) |
+| R98 | the vortex's one drawn line is the capture ring; the swirl marks no boundary | [T22.10I](T22.10I-the-ring-marks-the-capture.md) |
+| R99 | in space meteors start inside the rim and fly at the asteroids; weather ordnance reaching the rim despawns uncarved | [T22.14A](T22.14A-what-the-final-audit-found-hazards.md) (addenda) |
+| H3 | weather damage is refused in `Ended`; a shower's `active_duration` includes its fall | [T22.14A](T22.14A-what-the-final-audit-found-hazards.md) (addenda) |
+| R100 | a winged player in space feels no field — wells, vortex pull, black-hole pull; capture and the horizon still apply | [T22.14C](T22.14C-what-the-final-audit-found-netcode.md) |
+
+Two confirmations without new ids, both in [T22.14B](T22.14B-what-the-final-audit-found-bots.md)'s "As ruled":
+`R95`'s reading and `BOT_FLAME_REACH_SCALE` 2.0 in standard; `T22.03I`'s "no carve-out inside the capture radius".

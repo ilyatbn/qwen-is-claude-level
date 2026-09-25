@@ -3,6 +3,10 @@
 The coordinator writes `docs/77-amendments-v9.md` when M22 lands (CLAUDE.md). Builders never edit `docs/`; points
 that surface mid-milestone are collected here so they are not lost. Each names its source.
 
+**Closed 2026-09-25: every point below is in [`docs/77-amendments-v9.md`](../../docs/77-amendments-v9.md)** —
+points 1–5 in §H13, 4/19/20/26 in §H16, 6/18/25 in §H15, 7–8/11/12/16 in §H11, 9 in §H14, 10/11/21 in §H10,
+13–14 in §H12, 15/27 in §H4, 17/24 in §H19, 22 in §H11, 23 in §H12. Kept as the record of where each came from.
+
 ## The input path (T22.10B/T22.10D, from the review of `d2d4c07`; points 3–6 rewritten by T22.10F for R89)
 1. **docs/40 §2 `input`:** redundancy no longer means "a dropped packet costs nothing" — every input of a frame is
    sent, in `inputPackets` chunks of `INPUT_REDUNDANCY`. Replace "at most `MAX_INPUT_QUEUE` (8) … per tick are
