@@ -164,6 +164,9 @@ different story (see § 1).
 - **R100 (T22.14C):** `attractors::env_at` takes `MoveMods::flying`: a winged body in space feels no field (wells,
   vortex pull, hole pull); capture radii and the horizon are radii and still apply. Both sides pass the same
   derivation (the mirror's from the move-mod byte).
+- **R101 (T22.15):** an asteroid well pulls at its level's full strength only out to one `WELL_SURFACE_BAND`
+  (`PLAYER_H`) of air past its rock's bounding radius (`attractors::well_reach`) and exactly zero beyond; open space
+  between rocks has no field (measured: 8.3 % of open arena pulled, 99.8 % before). Same `env_at` on both sides.
 
 ## 4. Determinism
 - `docs/01-architecture.md` "Determinism, and how far it needs to go": cross-platform float determinism **not required,
@@ -174,7 +177,7 @@ different story (see § 1).
 - **No test compares wasm vs native output**; game-wasm tests run natively. `golden.rs` is native only.
 - game-core: `f32` 1820 lines, `f64` 61; 50 transcendental calls (map gen, `effects/flare.rs` 6, `world/mod.rs` 5);
   no `libm` dependency (wasm32 gets Rust's libm port, native gets glibc — they can differ in the last bit).
-- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 26 (T22.14C; 19 at T22.10G). The
+- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 28 (T22.15; 27 at T22.17, 26 at T22.14C, 19 at T22.10G). The
   header does not record the weather mode.
 
 ## 5. Authority and exposure

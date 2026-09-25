@@ -970,8 +970,9 @@ mod world_tests {
             }
             pulled.push(w.players[0].body.vel.dot(-dir));
         }
-        // The control is not zero — an asteroid's well reaches this point too — so
-        // what is the vortex's is the difference, against the shape it is built on.
+        // The control need not be zero — an asteroid's band may reach this point too
+        // (rarely since R101, T22.15) — so what is the vortex's is the difference,
+        // against the shape it is built on.
         let want = crate::constants::VORTEX_ACCEL_MAX
             * (1.0 - d / crate::constants::VORTEX_REACH)
             * 15.0

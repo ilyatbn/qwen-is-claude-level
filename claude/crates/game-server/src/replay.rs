@@ -317,7 +317,13 @@ pub const HEADER_BYTES: usize = 46;
 /// first tick anything touches the map. Standard and low-gravity maps are unchanged
 /// (their golden rows did not move), but the version is one number for every
 /// recording. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 27;
+///
+/// **28 (T22.15, R101: short-range wells)**: the silent-divergence shape. An asteroid
+/// pulls at its level's full strength out to one `WELL_SURFACE_BAND` of air past its
+/// rock and not at all beyond (it reached up to a climb budget, falling off), so a
+/// v27 space recording diverges on the first tick of any space round — a player at a
+/// spawn was pulled then and is not now. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 28;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

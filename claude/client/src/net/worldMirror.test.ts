@@ -293,7 +293,8 @@ describe('mask agreement', () => {
     const wire = server.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
     expect(wire.length).toBeGreaterThan(0)
     const deepest = wire.reduce((best, a) => (a.level > best.level ? a : best), wire[0]!)
-    const probe = { x: deepest.x + deepest.r + C().PLAYER_H * 2, y: deepest.y }
+    // One body height off the bounding radius: inside the band (R101, T22.15).
+    const probe = { x: deepest.x + deepest.r + C().PLAYER_H, y: deepest.y }
     const pull = (c: Core) => {
       const f = c.fieldAccelAt(probe.x, probe.y)
       return Math.hypot(f[0]!, f[1]!)
@@ -734,8 +735,23 @@ describe('the black hole (T22.12)', () => {
     const wire = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
     expect(wire.length).toBeGreaterThan(1)
     const mirror = initMirror(core, 0, undefined, undefined, wire)
-    const eaten = wire[1]!
-    const probe = { x: eaten.x + C().BLACK_HOLE_REACH * 0.5, y: eaten.y }
+    // R101 (T22.15): a well reaches only one band past its rock, so the probe is
+    // put where one does — level with the eaten rock (so the hole alone has no
+    // vertical part there), inside the hole's reach, directly over or under a
+    // *surviving* rock close enough in y that the probe is inside its bounding
+    // radius plus a body (its well pulls there, with a vertical part: the control).
+    const pair = wire
+      .flatMap((e) => wire.filter((a) => a !== e).map((a) => ({ e, a })))
+      .find(
+        ({ e, a }) =>
+          a.y !== e.y &&
+          Math.abs(a.y - e.y) < a.r + C().PLAYER_H &&
+          Math.abs(a.x - e.x) > C().PLAYER_H &&
+          Math.abs(a.x - e.x) < C().BLACK_HOLE_REACH * 0.9,
+      )
+    expect(pair).toBeDefined()
+    const eaten = pair!.e
+    const probe = { x: pair!.a.x, y: eaten.y }
     const fx = () => core.fieldAccelAt(probe.x, probe.y)[0]!
     const fy = () => core.fieldAccelAt(probe.x, probe.y)[1]!
     const before = fx()
@@ -751,11 +767,11 @@ describe('the black hole (T22.12)', () => {
     expect(mirror.blackHoleWarn).toBe(null)
     expect(core.meta.asteroids.length).toBe(wire.length - 1)
     expect(core.meta.asteroids.some((a) => a.x === eaten.x && a.y === eaten.y)).toBe(false)
-    // Toward the hole: it sits at smaller x than the probe. And R91 on the mirror's
-    // side: inside the reach **only** the hole pulls, so level with it the field has
-    // no vertical part at all — which the wells gave it before (the control).
+    // Toward the hole. And R91 on the mirror's side: inside the reach **only** the
+    // hole pulls, so level with it the field has no vertical part at all — which
+    // the surviving rock's well gave it before (the control).
     const pulled = fx()
-    expect(pulled).toBeLessThan(0)
+    expect(Math.sign(pulled)).toBe(Math.sign(eaten.x - probe.x))
     expect(pulled).not.toBe(before)
     expect(beforeY).not.toBe(0)
     expect(fy()).toBe(0)

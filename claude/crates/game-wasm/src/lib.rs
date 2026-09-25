@@ -4018,17 +4018,15 @@ mod tests {
 
     /// A feet line inside the strongest rock's well, in open space.
     ///
-    /// **The smallest offset that fits, not a round number**: the pull falls off
-    /// linearly to zero at `well_reach`, so a point chosen near the edge of the
-    /// reach accelerates at almost nothing and a fixture built on one would
-    /// report "the two sides agree" about a body that never moved.
+    /// **The smallest offset that fits, not a round number**: since R101 (T22.15)
+    /// the well reaches only one `WELL_SURFACE_BAND` past its rock (`well_reach`),
+    /// so the search walks outward from one body height off the bounding radius and
+    /// stops at the reach — past it a fixture would report "the two sides agree"
+    /// about a body that never moved.
     ///
-    /// **The direction the body then goes is not this rock's**, and the fixture
-    /// does not pretend otherwise: at the point this returns on the seed below,
-    /// the summed field is `(-145, +448)` px/s² — the chosen rock pulls left and
-    /// two others pull down harder. `field_at` sums *every* rock, which is the
-    /// whole of R11, so the caller reads the direction off the field rather than
-    /// off the geometry.
+    /// **The direction is read off the field, not off the geometry**: `field_at`
+    /// sums *every* rock, which is the whole of R11 (before R101 the point this
+    /// returned was pulled mostly by two *other* rocks).
     fn start_inside_a_well(w: &game_core::world::World) -> (game_core::map::meta::Asteroid, Vec2) {
         use game_core::math::Point;
         let rock = *w
@@ -4038,7 +4036,7 @@ mod tests {
             .iter()
             .max_by_key(|a| a.level)
             .expect("checked non-empty by the caller");
-        let reach = game_core::world::attractors::well_reach(rock.level);
+        let reach = game_core::world::attractors::well_reach(&rock);
         let mut d = rock.r as f32 + PLAYER_H;
         while d < reach {
             let p = Point::new(rock.x + d as i32, rock.y);
@@ -4364,6 +4362,9 @@ mod tests {
         // (844, 274), never taken) — a fixture that no longer exercises the pull,
         // not a prediction that disagrees. Every candidate is compared exactly, tick
         // by tick, whether or not it trips; the control is that one of them trips.
+        // *T22.15 (R101), measured:* with wells one band deep, 5 of the 6 now trip
+        // (2 of 6 at T22.17); the sixth, the bottom breach, starts with the body
+        // inside a rock — a fixture that cannot move, not a well out-pulling it.
         let geo = space_world_and_mirror(true)
             .0
             .map
@@ -4441,6 +4442,80 @@ mod tests {
             "control: no vortex took the player from any breach, so agreement proves \
              nothing: {runs:?}"
         );
+    }
+
+    /// **R101 (T22.15): the band's edge is the same edge on both sides.** Server
+    /// `World::step` and the mirror's `GameCore::apply_input`, side by side, idle,
+    /// from one pixel inside a rock's `well_reach` (directly above it) and one pixel
+    /// outside, compared exactly every tick for a second and a half. The controls:
+    /// the inside body really falls onto the rock (grounded, having closed the gap),
+    /// the outside one really does not move — so agreement is about the edge, not
+    /// two copies of a still body.
+    #[test]
+    fn the_band_edge_is_stepped_exactly_as_the_server_steps_it() {
+        use game_core::player::input::Input;
+        use game_core::world::attractors::well_reach;
+        let (probe_w, _) = space_world_and_mirror(true);
+        // A rock with clear air straight above it, out past its band.
+        let (rock, reach) = probe_w
+            .map
+            .meta
+            .asteroids
+            .iter()
+            .map(|a| (*a, well_reach(a)))
+            .find(|(a, reach)| {
+                // Both starts clear of rock, and inside the rim.
+                [-1.0f32, 1.0].iter().all(|off| {
+                    let at = Vec2::new(a.x as f32, a.y as f32 - reach - off);
+                    let geo = probe_w.map.space_geometry().expect("space");
+                    geo.inside(at.x, at.y - 2.0 * PLAYER_H)
+                        && !game_core::physics::collide::aabb_overlaps_solid(
+                            &probe_w.map,
+                            game_core::math::Aabb::from_center_size(
+                                at,
+                                PLAYER_W + 2.0,
+                                PLAYER_H + 2.0,
+                            ),
+                        )
+                })
+            })
+            .expect("a rock with open air above it");
+        let centre = Vec2::new(rock.x as f32, rock.y as f32);
+        for (off, falls) in [(-1.0f32, true), (1.0, false)] {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            let start = centre - Vec2::new(0.0, reach + off);
+            w.add_player(1, 0, String::new());
+            w.player_mut(1).expect("seated").body = game_core::physics::body::Body::new(start);
+            core.add_player(1, start.x, start.y);
+            let mut seq = 1000u32;
+            for tick in 0..90 {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                core.apply_input(1, seq, 0, 0, SIM_DT);
+                let server = w.player(1).expect("seated").body.pos;
+                let c = core.player_state(1);
+                assert_eq!(
+                    (c[0], c[1]),
+                    (server.x, server.y),
+                    "offset {off} tick {tick}: the mirror left the server at the band's edge"
+                );
+            }
+            let b = &w.player(1).expect("seated").body;
+            if falls {
+                assert!(
+                    b.grounded && centre.distance(b.pos) < reach - PLAYER_H / 2.0,
+                    "control: one pixel inside the band the body did not land ({:?})",
+                    b.pos
+                );
+            } else {
+                assert_eq!(
+                    (b.pos, b.vel),
+                    (start, Vec2::ZERO),
+                    "control: one pixel outside the band the body moved"
+                );
+            }
+        }
     }
 
     /// **R100 (T22.14C): a winged player beside a vortex is stepped exactly as the

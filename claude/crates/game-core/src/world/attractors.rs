@@ -38,6 +38,19 @@
 //!    the design record's own objection that *"a well with a hard edge is a wall
 //!    you fall off"*.
 //!
+//! # R101 (T22.15): the asteroid wells are short-range, and a step
+//!
+//! The owner, after playing it: *"gravity is way way too powerful. i keep being
+//! swayed throughout the map constantly. gravity should be like a few pixels around
+//! each 'asteroid'."* Points 2 and 3 above are **superseded for the asteroids**: a
+//! well pulls at its level's full strength out to one
+//! [`WELL_SURFACE_BAND`](crate::constants::WELL_SURFACE_BAND) of air past its rock
+//! ([`well_reach`]) and exactly zero beyond — the same reach at every level. Point
+//! 1 stands: the full strength *is* `SPACE_WELL_ACCEL_MAX` at level 5. Measured
+//! over 9 seeds (`short_range_wells_report`): open arena with any pull 99.8 % →
+//! 8.3 %; a player left at a spawn for 5 s drifted p50 554 px → 0. The vortices
+//! and the hole keep the linear law (R47), unchanged to the bit.
+//!
 //! # The cutoff is not a performance decision, and the design record's premise was wrong
 //!
 //! *"Tons of tiny islands, so N is large"* does not survive the numbers. N is the
@@ -68,8 +81,8 @@
 //! sharing the function bought.
 
 use crate::constants::{
-    GravityMode, BLACK_HOLE_ACCEL_MAX, BLACK_HOLE_REACH, SPACE_LEVEL_MAX, SPACE_MAX_SPEED,
-    SPACE_WELL_ACCEL_MAX, SPACE_WELL_REACH_MAX, VORTEX_ACCEL_MAX, VORTEX_REACH,
+    GravityMode, BLACK_HOLE_ACCEL_MAX, BLACK_HOLE_REACH, PLAYER_H, SPACE_LEVEL_MAX,
+    SPACE_MAX_SPEED, SPACE_WELL_ACCEL_MAX, VORTEX_ACCEL_MAX, VORTEX_REACH, WELL_SURFACE_BAND,
 };
 use crate::map::meta::Asteroid;
 use crate::map::Map;
@@ -102,11 +115,12 @@ pub enum Kind {
 pub struct Attractor {
     /// Centre, world px.
     pub pos: Vec2,
-    /// Acceleration at `pos`, px/s². Nothing can be *at* `pos` — the core disc is
-    /// solid rock — so this is the top of a range no player reaches, and the
-    /// number a player standing on the rock feels is this times the falloff at
-    /// their closest approach. See [`Attractor::pull_at`].
+    /// Acceleration out to [`Attractor::floor`], px/s². See [`Attractor::pull_at`].
     pub strength: f32,
+    /// Centre distance out to which the pull is the full `strength`, px: 0 for a
+    /// vortex and the hole (their pull falls from the centre, R47); for an asteroid
+    /// its whole reach — a step (R101, T22.15, [`Attractor::asteroid`]).
+    pub floor: f32,
     /// Centre-to-centre distance at which the pull reaches exactly zero, px.
     pub reach: f32,
     /// Which guarantee this one carries. See [`Kind`].
@@ -114,34 +128,65 @@ pub struct Attractor {
 }
 
 impl Attractor {
-    /// The well of one asteroid.
+    /// The well of one asteroid: **a step** — its level's full strength out to
+    /// [`well_reach`], nothing past it (R101, T22.15; `floor` = `reach`).
+    ///
+    /// *Why a step and not R47's linear falloff* (builder's call, T22.15; reverse it
+    /// by setting `floor` to [`well_contact`]): a band returns a body that leaves the
+    /// rock at `v` only while `v²/2` is under the pull integrated across it. Tapered
+    /// from full at contact to zero one band out, that is `strength · BAND / 2`, which
+    /// on a level-1 rock (135 px/s²) returns **61 px/s** from a body resting at the
+    /// bounding radius — under the ~70 px/s of the smallest hop a player can make (UP
+    /// until airborne: two ticks). Measured on the stamped level-1 rock of
+    /// `a_hop_on_a_rock_lands_back_and_a_jump_leaves`, the tapered well brought that
+    /// hop back only after 1.83 s, nearly stalled at the band edge; the step returns **87 px/s**
+    /// there and brings it back in 1.02 s. The objection R47 answered — *"a well with
+    /// a hard edge is a wall you fall off"* — was about a well reaching across the
+    /// arena; this edge sits one body height off the rock.
     pub fn asteroid(a: &Asteroid) -> Self {
+        let reach = well_reach(a);
         Attractor {
             pos: Vec2::new(a.x as f32, a.y as f32),
             strength: well_strength(a.level),
-            reach: well_reach(a.level),
+            floor: reach,
+            reach,
             kind: Kind::Asteroid,
         }
     }
 
     /// This attractor's contribution to the field at `pos`, px/s².
     ///
-    /// Zero at and beyond [`Attractor::reach`], and zero exactly at the centre
-    /// where the direction is undefined — a zero rather than a NaN, for the reason
-    /// [`Vec2::normalized`] gives: NaN positions propagate silently and are
-    /// miserable to debug. No player can occupy the centre of a rock, so that arm
-    /// is a fixture guard rather than a game rule.
+    /// ```text
+    /// a(d) = strength                                    d ≤ floor
+    ///        strength · (1 − (d − floor) / (reach − floor))   floor < d < reach
+    ///        0                                           d ≥ reach
+    /// ```
+    ///
+    /// With `floor` 0 (a vortex, the hole) the middle arm is `1 − d / reach` to the
+    /// bit — `d − 0.0` and `reach − 0.0` are exact — so R101 moved no number of
+    /// theirs.
+    ///
+    /// Zero exactly at the centre, where the direction is undefined — a zero rather
+    /// than a NaN, for the reason [`Vec2::normalized`] gives: NaN positions
+    /// propagate silently and are miserable to debug. No player can occupy the
+    /// centre of a rock, so that arm is a fixture guard rather than a game rule.
     pub fn pull_at(&self, pos: Vec2) -> Vec2 {
         let to_centre = self.pos - pos;
         let d = to_centre.len();
         if d == 0.0 || d >= self.reach {
             return Vec2::ZERO;
         }
-        to_centre / d * (self.strength * (1.0 - d / self.reach))
+        let k = if d <= self.floor {
+            1.0
+        } else {
+            1.0 - (d - self.floor) / (self.reach - self.floor)
+        };
+        to_centre / d * (self.strength * k)
     }
 }
 
-/// The pull at the centre of a level-`level` asteroid, px/s².
+/// The pull of a level-`level` asteroid, px/s² — everywhere inside its
+/// [`well_reach`] since R101 (it was the pull at the centre, falling off outward).
 ///
 /// **Linear in the level**, and that is the whole table: five literals with no
 /// relation to anything is a table nobody can retune (R18), so this is
@@ -157,14 +202,26 @@ pub fn well_strength(level: u8) -> f32 {
     SPACE_WELL_ACCEL_MAX * table_level(level) / SPACE_LEVEL_MAX as f32
 }
 
-/// The reach of a level-`level` asteroid's well, centre to centre, px.
+/// The farthest a body touching an asteroid can be from its centre, px: the rock's
+/// bounding radius plus half a body — a body resting on the rock's highest point.
+/// Every point a body touching the rock can occupy (on a lump, in a valley between
+/// lumps, in a crater carved into the core) is inside it.
 ///
-/// Linear in the level for the same reason [`well_strength`] is, and a function of
-/// the **level** rather than of the rock's radius: the level is already monotone in
-/// the radius by construction (`map::gen::space::level_for`), so a radius term
-/// would be the same fact counted twice and R47 spells the law `R(n)`.
-pub fn well_reach(level: u8) -> f32 {
-    SPACE_WELL_REACH_MAX * table_level(level) / SPACE_LEVEL_MAX as f32
+/// **Measured from the bounding circle `r`, not from the carved surface**: `r`
+/// bounds every lump, it is on the wire and hashed (R36), and a carved rock's
+/// surface is T22.16's concern (its core). Carving never *adds* reach.
+pub fn well_contact(a: &Asteroid) -> f32 {
+    a.r as f32 + PLAYER_H / 2.0
+}
+
+/// **Where an asteroid's pull stops**, centre distance, px — one
+/// [`WELL_SURFACE_BAND`] of air past [`well_contact`] (R101, T22.15); full strength
+/// inside, exactly zero from here out. **The same for every level**: the level
+/// scales the strength, not the reach. *Was* `SPACE_WELL_REACH_MAX × level /
+/// SPACE_LEVEL_MAX` — up to one climb budget, 780 px (R47), so the wells covered
+/// 99.8 % of the open arena.
+pub fn well_reach(a: &Asteroid) -> f32 {
+    well_contact(a) + WELL_SURFACE_BAND
 }
 
 /// The wire's level, clamped into the table. See [`well_strength`].
@@ -179,6 +236,7 @@ impl Attractor {
         Attractor {
             pos,
             strength: VORTEX_ACCEL_MAX,
+            floor: 0.0,
             reach: VORTEX_REACH,
             kind: Kind::Vortex,
         }
@@ -192,6 +250,7 @@ impl Attractor {
         Attractor {
             pos,
             strength: BLACK_HOLE_ACCEL_MAX,
+            floor: 0.0,
             reach: BLACK_HOLE_REACH,
             kind: Kind::BlackHole,
         }
@@ -405,6 +464,15 @@ mod tests {
         SPACE_ASTEROID_CORE_FRAC * r as f32 + PLAYER_H / 2.0
     }
 
+    /// The largest radius a rock can have: the top of the base band, grown by the
+    /// most mass a rock draws (R103).
+    fn r_grown_max() -> i32 {
+        crate::map::gen::space::grown_radius(
+            SPACE_ASTEROID_R_MAX,
+            crate::constants::SPACE_ASTEROID_MASS_MAX,
+        )
+    }
+
     fn rock(x: i32, y: i32, r: i32, level: u8) -> Asteroid {
         Asteroid { x, y, r, level }
     }
@@ -492,7 +560,7 @@ mod tests {
         let mut near = drifting(near_at);
         // Past the cutoff by one pixel. The far body is on the same map, the same
         // tick count and the same code path — the only difference is `d >= reach`.
-        let far_at = centre + Vec2::new(well_reach(level) + 1.0, 0.0);
+        let far_at = centre + Vec2::new(well_reach(&map.meta.asteroids[0]) + 1.0, 0.0);
         let mut far = drifting(far_at);
 
         for _ in 0..30 {
@@ -538,6 +606,10 @@ mod tests {
     /// with `map.meta.asteroids` emptied, which is the one difference the field can
     /// see. In space nothing else accelerates a player who presses nothing, so
     /// "moved at all" is the whole signal and the control is what makes it one.
+    ///
+    /// *R101 (T22.15): the body starts half a band above a rock's top*, not at its
+    /// spawn — a spawn is in open space, where there is no field any more
+    /// (`beyond_the_band_the_pull_is_exactly_zero_on_every_seed`).
     #[test]
     fn a_space_round_pulls_players_and_an_asteroid_free_one_moves_nobody() {
         for scale in crate::constants::MapScale::ALL {
@@ -555,12 +627,21 @@ mod tests {
                     !w.map.meta.asteroids.is_empty(),
                     "{scale:?}: a space world with no rocks to begin with"
                 );
+                let top = (0..w.map.meta.asteroids.len())
+                    .find_map(|i| on_top(&w, i))
+                    .expect("no rock with room on top");
+                let start = top - Vec2::new(0.0, WELL_SURFACE_BAND / 2.0);
                 if !asteroids {
                     w.map.meta.asteroids.clear();
                 }
                 w.set_phase(crate::world::RoundPhase::Playing);
                 w.add_player(0, 0, "ana".into());
-                let start = w.player(0).expect("player 0").body.pos;
+                {
+                    let p = w.player_mut(0).expect("player 0");
+                    p.body.pos = start;
+                    p.body.vel = Vec2::ZERO;
+                    p.body.grounded = false;
+                }
                 for tick in 0..60u32 {
                     w.queue_input(0, Input::new(tick + 1, 0, 0));
                     w.step(SIM_DT);
@@ -602,14 +683,15 @@ mod tests {
     /// px/s² passes the guard as originally written and traps that player forever
     /// with nothing on screen saying why.
     ///
-    /// **Over the whole cross product, not at one radius.** Two reasons. Within the
-    /// table the pull is largest at the *smallest* `d_min`, so the binding rock is
-    /// the smallest one at the top level and not the biggest — R46 makes that point
-    /// about `r = 54`, the smallest radius `level_for` can score as level 5. And
-    /// iterating every `(level, r)` pair rather than only the achievable ones makes
-    /// the guard independent of `level_for`'s jitter arithmetic, which is free to
-    /// be retuned: `r = 24` at level 5 is not a rock the generator makes today, and
-    /// the guard holds for it anyway.
+    /// **Over the whole cross product, not at one radius** — every `(level, r)`
+    /// pair up to the largest grown radius (R103), not only the achievable ones, so
+    /// the guard is independent of `level_for`'s jitter arithmetic.
+    ///
+    /// *R101 (T22.15) moved the binding case:* the pull is now the level's full
+    /// strength everywhere within one band of the rock (`well_reach`), so at
+    /// `d_min` **every radius at the top level binds equally**, at exactly
+    /// `SPACE_WELL_ACCEL_MAX` — it used to be the smallest rock, the one whose
+    /// `d_min` sat deepest in a centre-anchored falloff.
     ///
     /// Falsified by `SPACE_WELL_ESCAPE_MARGIN` 0.75 → 1.5, which is the live
     /// binding site for every number in this test.
@@ -617,7 +699,7 @@ mod tests {
     fn no_well_traps_a_player_on_the_underside_of_a_rock() {
         let mut worst = (0.0f32, 0u8, 0i32);
         for level in 1..=SPACE_LEVEL_MAX {
-            for r in SPACE_ASTEROID_R_MIN..=SPACE_ASTEROID_R_MAX {
+            for r in SPACE_ASTEROID_R_MIN..=r_grown_max() {
                 let a = Attractor::asteroid(&rock(0, 0, r, level));
                 assert_eq!(a.kind, Kind::Asteroid, "the guard is scoped to asteroids");
                 // Directly below the centre, which is the direction the pack is
@@ -638,19 +720,16 @@ mod tests {
              there for the rest of the round"
         );
         assert_eq!(
-            (level, r),
-            (SPACE_LEVEL_MAX, SPACE_ASTEROID_R_MIN),
-            "the binding case moved: it should be the *smallest* rock at the top \
-             level, because `d_min` grows with the radius"
+            level, SPACE_LEVEL_MAX,
+            "the binding case moved off the top level (r = {r})"
         );
         // And the margin is the constant, so this cannot pass by the ceiling having
-        // quietly become unreachable.
+        // quietly become unreachable: a body on a level-5 rock feels exactly it.
         let expected = SPACE_WELL_ESCAPE_MARGIN * JETPACK_THRUST_DOWN;
-        assert!(
-            pull > expected * 0.9 && pull < expected,
-            "the worst pull {pull:.1} should sit just under \
-             SPACE_WELL_ACCEL_MAX ({expected}), not far below it — if it is far \
-             below, the table has stopped being bounded by its own guard"
+        assert_eq!(
+            pull, expected,
+            "the worst pull {pull:.1} should be SPACE_WELL_ACCEL_MAX ({expected}) — a \
+             body resting on a level-5 rock is inside its full-strength floor (R101)"
         );
     }
 
@@ -663,14 +742,12 @@ mod tests {
     /// Without that second half, "escaped" is satisfied by a field that never
     /// fires.
     ///
-    /// **The escape *time* is governed by the reach, not by the pull, and that is
-    /// worth knowing.** `jetpack::apply_thrust` is a speed governor: an axis it
-    /// thrust is clamped back to `JETPACK_MAX_SPEED` whenever its pre-thrust speed
-    /// was within it, so a player pushing away from a rock settles at 260 px/s
-    /// whatever the well is doing, and the pull decides only whether they make
-    /// progress at all. So the ticks below scale with `well_reach`, and the claim
-    /// *"level 5 is harder to escape"* is carried here by *distance under thrust*
-    /// and by `the_pull_is_linear_in_the_level` for the pull itself.
+    /// **The escape *time* is now governed by the pull** (R101, T22.15): every
+    /// level reaches the same one band past the rock, so the distance to clear is
+    /// the same and a deeper well leaves less of the down thrust to cover it with —
+    /// net 765 px/s² at level 1, 225 at level 5. (Before R101 the reach scaled with
+    /// the level and `jetpack::apply_thrust`'s 260 px/s governor made the ticks
+    /// scale with the reach instead.)
     #[test]
     fn a_full_tank_escapes_every_level_downward_and_a_deeper_well_takes_longer() {
         const TANK_TICKS: u32 = (JETPACK_MAX_FUEL / crate::constants::JETPACK_DRAIN) as u32 * 60;
@@ -699,7 +776,7 @@ mod tests {
             );
 
             let mut out = drifting(start);
-            let reach = well_reach(level);
+            let reach = well_reach(&map.meta.asteroids[0]);
             let mut escaped = None;
             for tick in 1..=TANK_TICKS {
                 step(&map, &mut out, button::DOWN, GravityMode::Space);
@@ -735,11 +812,10 @@ mod tests {
     /// **Level 5 outpulls level 1 by at least the level ratio, at the same
     /// distance** — the ratio R18 asked for, against the stated basis.
     ///
-    /// Measured at a fixed distance rather than at each rock's own surface, which
-    /// isolates the pull from the reach. The basis is the table: the strength is
-    /// linear in the level, so at a distance well inside every level's cutoff the
-    /// ratio is at least `SPACE_LEVEL_MAX`, and it is more than that because the
-    /// falloff term is gentler for the longer reach.
+    /// Measured at a fixed distance on the rock (`d_min`, inside every level's
+    /// full-strength floor since R101), so the ratio is the table's: exactly
+    /// `SPACE_LEVEL_MAX`. (It was *more* than that while the reach grew with the
+    /// level and the falloff was gentler for the longer reach.)
     #[test]
     fn the_pull_is_linear_in_the_level() {
         let probe = Vec2::new(0.0, d_min(SPACE_ASTEROID_R_MIN));
@@ -778,7 +854,7 @@ mod tests {
     #[test]
     fn every_well_reaches_past_its_own_rocks_surface() {
         for level in 1..=SPACE_LEVEL_MAX {
-            for r in SPACE_ASTEROID_R_MIN..=SPACE_ASTEROID_R_MAX {
+            for r in SPACE_ASTEROID_R_MIN..=r_grown_max() {
                 let a = Attractor::asteroid(&rock(0, 0, r, level));
                 assert!(
                     a.reach > d_min(r),
@@ -826,10 +902,12 @@ mod tests {
     #[test]
     fn three_wells_sum_in_list_order_and_the_order_is_observable() {
         let probe = Vec2::ZERO;
+        // The probe is inside all three reaches (R101: one band past each rock),
+        // at three bearings, so each term is an irrational unit vector times a strength.
         let rocks = [
-            rock(100, 40, SPACE_ASTEROID_R_MAX, 5),
-            rock(-220, 150, 48, 4),
-            rock(60, -310, 36, 3),
+            rock(0, -60, SPACE_ASTEROID_R_MAX, 5),
+            rock(-32, 30, 36, 4),
+            rock(20, 45, 24, 3),
         ];
         let list: Vec<Attractor> = rocks.iter().map(Attractor::asteroid).collect();
 
@@ -975,43 +1053,67 @@ mod tests {
         );
     }
 
+    /// The deepest single-well dive after R101: a level-5 rock of the largest grown
+    /// radius, from one band out down to `d_min` — measured by the test below.
+    const WELL_DIVE: f32 = 247.8;
+
     /// [`SPACE_MAX_SPEED`] against the measurement its doc comment claims, the way
     /// `capacity.rs::max_rooms_carries_its_basis` pins the claim in its constant's
     /// doc — except that this one recomputes the basis instead of grepping for the
     /// word.
     ///
     /// `CLAUDE.md`: a suite where every assertion is pinned to the constant cannot
-    /// detect the constant itself changing. The three relations below are what make
-    /// this number falsifiable — the well's own free-fall speed, the diagonal
+    /// detect the constant itself changing. The relations below are what make this
+    /// number falsifiable — the attractors' own free-fall speeds, the diagonal
     /// jetpack burn it must not undercut, and the sub-step cap above which it is
     /// inert.
     #[test]
     fn space_max_speed_carries_its_basis() {
-        // The fastest a single well can make you: a free fall from its cutoff to
-        // the closest a body can get. Integrated numerically over the falloff,
-        // rather than trusting a closed form typed into a comment.
-        let mut worst = 0.0f32;
-        for r in SPACE_ASTEROID_R_MIN..=SPACE_ASTEROID_R_MAX {
-            let a = Attractor::asteroid(&rock(0, 0, r, SPACE_LEVEL_MAX));
-            let (mut d, mut energy, stop) = (a.reach, 0.0f64, d_min(r));
+        // A free fall from an attractor's cutoff to the closest a body gets, integrated
+        // numerically over its falloff — never a closed form typed into a comment.
+        let dive = |a: Attractor, stop: f32, cap: f32| {
+            let (mut d, mut energy) = (a.reach, 0.0f64);
             let dd = 0.01f32;
             while d > stop {
-                energy += (a.pull_at(Vec2::new(0.0, d)).len() * dd) as f64;
+                energy += (a.pull_at(Vec2::new(0.0, d)).len().min(cap) * dd) as f64;
                 d -= dd;
             }
-            worst = worst.max((2.0 * energy).sqrt() as f32);
+            (2.0 * energy).sqrt() as f32
+        };
+        // R101 (T22.15): a well reaches one band past its rock, so its dive is short.
+        let mut well = 0.0f32;
+        for r in SPACE_ASTEROID_R_MIN..=r_grown_max() {
+            let a = Attractor::asteroid(&rock(0, 0, r, SPACE_LEVEL_MAX));
+            well = well.max(dive(a, d_min(r), f32::MAX));
         }
         assert!(
-            (worst - 695.8).abs() < 1.0,
-            "the deepest single-well dive measures {worst:.1} px/s and this \
-             constant's doc comment says 695.8 — one of the two is stale"
+            (well - WELL_DIVE).abs() < 1.0,
+            "the deepest single-well dive measures {well:.1} px/s and the doc says \
+             {WELL_DIVE} — one of the two is stale"
         );
+        // The other two attractors: a vortex (capped with the wells, R97) down to its
+        // capture radius, the hole down to its horizon.
+        let vortex = dive(
+            Attractor::vortex(Vec2::ZERO),
+            crate::constants::VORTEX_CAPTURE_R,
+            SPACE_WELL_ACCEL_MAX,
+        );
+        let hole = dive(
+            Attractor::black_hole(Vec2::ZERO),
+            crate::constants::BLACK_HOLE_HORIZON_R,
+            f32::MAX,
+        );
+        let worst = well.max(vortex).max(hole);
         assert!(
-            SPACE_MAX_SPEED > worst * 1.5 && SPACE_MAX_SPEED < worst * 2.5,
-            "SPACE_MAX_SPEED {SPACE_MAX_SPEED} against a {worst:.1} px/s \
-             single-well dive: below ~1.5x the clamp fires on an honest fall \
-             toward one rock, above ~2.5x it stops bounding anything"
+            SPACE_MAX_SPEED > worst * 1.5,
+            "SPACE_MAX_SPEED {SPACE_MAX_SPEED} against the fastest honest dive \
+             {worst:.1} px/s (well {well:.1}, vortex {vortex:.1}, hole {hole:.1}): \
+             the clamp would fire on a fall toward one attractor"
         );
+        // *R101 retired the upper bound* (was: under 2.5x the single-well dive, 695.8
+        // px/s): with no field between rocks there is no chain of wells to run away
+        // along, so the clamp now bounds only stacked thrust and pulls. Left at 1350
+        // rather than retuned — T22.15 changes the field, not the speed.
 
         // R10's two named interactions, both computed here.
         let diagonal = (JETPACK_MAX_SPEED * JETPACK_MAX_SPEED * 2.0).sqrt();
@@ -1059,15 +1161,72 @@ mod tests {
 
     // ---- R96: the summed wells are capped (T22.03G) --------------------------
 
-    /// The traced pocket (T22.03E F7): seed 451383 on the default scale, a body
-    /// under a rock ceiling that three wells summed to (18, −919) px/s² against
-    /// `JETPACK_THRUST_DOWN` 900 — every direction held for 30 ticks moved it 0–1.8 px.
-    /// **Re-traced at T22.17** when R103/R104 moved the map: the same seed, the
-    /// strongest upward raw sum of any rock-free, rock-ceilinged body position inside
-    /// the rim, swept at 1 px — (534, 1344), raw y −1120 px/s² (414 such positions
-    /// on this seed; seeds 7919 and 15838 have 100 and 428, their worst −944 / −999).
+    /// The seed of the traced pocket (T22.03E F7): a body under a rock ceiling that
+    /// three wells summed to (18, −919) px/s² against `JETPACK_THRUST_DOWN` 900 —
+    /// every direction held for 30 ticks moved it 0–1.8 px (re-traced at T22.17 to
+    /// (534, 1344), raw −1120). **R101 (T22.15) dissolved it**: with wells one band
+    /// deep, three rocks cannot reach one point, and the same spot reads (9, −405).
+    /// The world is still this seed's; the pocket is now built on it
+    /// ([`stacked_pocket`]), because the cap still has to hold where wells stack.
     const POCKET_SEED: u64 = 451_383;
-    const POCKET: Vec2 = Vec2::new(534.0, 1344.0);
+
+    /// The first point on the map (32 px grid) with a clear 144 × 496 px box around
+    /// it — room to stamp a fixture rock and move a body under it.
+    fn open_column(w: &World) -> Vec2 {
+        let clear = |c: Vec2| {
+            (-4..=4).all(|i| {
+                (-20..=10).all(|j| {
+                    w.map.body_fits_at(crate::math::Point::new(
+                        c.x as i32 + i * 16,
+                        c.y as i32 + j * 16,
+                    ))
+                })
+            })
+        };
+        let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+        (0..mh)
+            .step_by(32)
+            .flat_map(|y| {
+                (0..mw)
+                    .step_by(32)
+                    .map(move |x| Vec2::new(x as f32, y as f32))
+            })
+            .find(|&c| clear(c))
+            .expect("no open column on the map to build the fixture in")
+    }
+
+    /// **A pocket where two wells stack** (R96 after R101): two of the smallest
+    /// level-5 rocks, cores stamped, side by side `POCKET_HALF_SPAN` either side of an
+    /// open column, and the body resting against both undersides — inside both
+    /// full-strength floors, so each pulls 675 px/s² and their upward components sum
+    /// past the down thrust. Returns where the body rests.
+    fn stacked_pocket(w: &mut World) -> Vec2 {
+        use crate::constants::SPACE_ASTEROID_CORE_FRAC;
+        let c = open_column(w);
+        let r = SPACE_ASTEROID_R_MIN;
+        let core = (SPACE_ASTEROID_CORE_FRAC * r as f32).round() as i32;
+        for dx in [-POCKET_HALF_SPAN, POCKET_HALF_SPAN] {
+            let x = c.x as i32 + dx;
+            let _ = w.map.fill_circle(x, c.y as i32, core);
+            w.map
+                .meta
+                .asteroids
+                .push(rock(x, c.y as i32, r, SPACE_LEVEL_MAX));
+        }
+        // Lowest body centre whose box clears both discs, found rather than solved.
+        let mut at = c;
+        while crate::physics::collide::aabb_overlaps_solid(
+            &w.map,
+            crate::math::Aabb::from_center_size(at, crate::constants::PLAYER_W, PLAYER_H),
+        ) || !touching(w, at)
+        {
+            at.y += 0.25;
+        }
+        at
+    }
+
+    /// Half the distance between the pocket's two rock centres, px.
+    const POCKET_HALF_SPAN: i32 = 20;
 
     fn pocket_world() -> World {
         let mut w = World::with_gravity(
@@ -1087,12 +1246,14 @@ mod tests {
     }
 
     /// **R96: the summed well pull never exceeds `SPACE_WELL_ACCEL_MAX` anywhere a
-    /// body fits**, swept on an 8 px grid over the whole map for 8 seeds.
+    /// body fits**, swept on an 8 px grid over the whole map for 9 seeds.
     ///
-    /// **The presence half is what makes the sweep mean anything**: the raw sum must
-    /// exceed the cap somewhere in the sweep (it does, at the traced pocket among
-    /// others), or the cap was never exercised and "never exceeded" is a property of
-    /// the maps, not of `env_at`. Planted: `wells_at` returning the raw sum → red here.
+    /// **The presence half is what makes the sweep mean anything**: the cap must be
+    /// exercised. Before R101 the generated maps did that themselves (the traced
+    /// pocket among others); with wells one band deep they rarely stack, so the
+    /// sweep ends at the built pocket ([`stacked_pocket`]), where the raw sum is over
+    /// the cap and `env_at` must hand out exactly the cap. Planted: `capped_at`
+    /// without its `clamp_len` → red here.
     #[test]
     fn the_summed_wells_never_exceed_the_cap_anywhere_in_open_air() {
         // f32 rounding of `clamp_len`'s rescale: a few ulps of the cap, no more.
@@ -1136,21 +1297,30 @@ mod tests {
                 }
             }
         }
+        let mut w = pocket_world();
+        let at = stacked_pocket(&mut w);
+        let raw = raw_wells(&w.map, at).len();
+        let got = env_at(&w.map, GravityMode::Space, false, &[], None, false, at)
+            .accel
+            .len();
         assert!(
-            over_raw > 0,
-            "no sampled point's raw well sum exceeded the cap ({sampled} points, worst \
-             {worst_raw:.1} px/s²) — the sweep never exercised the cap"
+            raw > SPACE_WELL_ACCEL_MAX && (got - SPACE_WELL_ACCEL_MAX).abs() <= tol,
+            "the built pocket: raw {raw:.1}, handed out {got:.1}, cap {SPACE_WELL_ACCEL_MAX} \
+             (the generated maps: {over_raw} of {sampled} points over the cap, worst \
+             raw {worst_raw:.1} px/s²)"
         );
     }
 
-    /// **R96, the effect: a human holding DOWN leaves the traced pocket** — through
+    /// **R96, the effect: a human holding DOWN leaves the pocket** — through
     /// `World::step`, the server's own path, on a full tank from rest. Red before the
     /// cap: the body moved 0 px. The control in the same test: the raw sum there
     /// really does out-pull the down thrust, so this is the trap and not a quiet spot.
+    /// *Since R101 the pocket is built* ([`stacked_pocket`]); the traced one is gone.
     #[test]
     fn a_human_holding_down_leaves_the_traced_pocket() {
         let mut w = pocket_world();
-        let raw = raw_wells(&w.map, POCKET);
+        let pocket = stacked_pocket(&mut w);
+        let raw = raw_wells(&w.map, pocket);
         assert!(
             raw.y < -JETPACK_THRUST_DOWN,
             "the pocket moved: the raw wells there are ({:.0}, {:.0}), no longer over \
@@ -1161,7 +1331,7 @@ mod tests {
         w.add_player(0, 0, "ana".into());
         {
             let p = w.player_mut(0).expect("seated");
-            p.body.pos = POCKET;
+            p.body.pos = pocket;
             p.body.vel = Vec2::ZERO;
             p.body.grounded = false;
         }
@@ -1172,20 +1342,18 @@ mod tests {
         }
         let p = w.player(0).expect("seated");
         assert!(p.alive, "died in the pocket");
-        let moved = p.body.pos.y - POCKET.y;
+        let moved = p.body.pos.y - pocket.y;
         assert!(
             moved >= PLAYER_H,
             "{POCKET_ESCAPE_S} s of down-thrust from rest moved the body {moved:.1} px \
-             down (from {POCKET:?} to {:?}) — still held by the summed wells",
+             down (from {pocket:?} to {:?}) — still held by the summed wells",
             p.body.pos
         );
     }
 
-    /// How long the escape from the traced pocket may take: a second. Measured with
-    /// the cap: DOWN clears `PLAYER_H` on tick 32 and is 107 px out at 60; DOWN+LEFT
-    /// / DOWN+RIGHT on tick 21. UP, LEFT, RIGHT and the up-diagonals still move 0–1.8
-    /// px — pressed into the ceiling and a 1 px bump — which is the rock, not the
-    /// field: pushing away from it is the escape R46 guarantees, and now has.
+    /// How long the escape from the pocket may take: a second. Measured with the cap
+    /// in the traced pocket (before R101): DOWN cleared `PLAYER_H` on tick 32 and was
+    /// 107 px out at 60. Pushing away from the rock is the escape R46 guarantees.
     const POCKET_ESCAPE_S: f32 = 1.0;
 
     /// **R96's presence control: a well alone is never clamped.** At the worst
@@ -1292,10 +1460,13 @@ mod tests {
                 }
             }
         }
+        // *R101 (T22.15):* away from a vortex the wells no longer stack past the cap
+        // on generated maps (the R96 sweep's built pocket covers that case), so only
+        // the beside-a-vortex half is required here; the other is printed.
         assert!(
-            near_vortex > 0 && over_raw > near_vortex,
-            "the sweep never exercised the cap beside a vortex ({near_vortex}) or away from \
-             one ({} of {over_raw})",
+            near_vortex > 0,
+            "the sweep never exercised the cap beside a vortex ({near_vortex}; away from \
+             one {} of {over_raw})",
             over_raw - near_vortex
         );
     }
@@ -1321,26 +1492,7 @@ mod tests {
         use crate::constants::{SPACE_ASTEROID_CORE_FRAC, VORTEX_REACH};
         let mut w = pocket_world();
         let r = SPACE_ASTEROID_R_MIN;
-        let clear = |w: &World, c: Vec2| {
-            (-4..=4).all(|i| {
-                (-20..=10).all(|j| {
-                    w.map.body_fits_at(crate::math::Point::new(
-                        c.x as i32 + i * 16,
-                        c.y as i32 + j * 16,
-                    ))
-                })
-            })
-        };
-        let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
-        let centre = (0..mh)
-            .step_by(32)
-            .flat_map(|y| {
-                (0..mw)
-                    .step_by(32)
-                    .map(move |x| Vec2::new(x as f32, y as f32))
-            })
-            .find(|&c| clear(&w, c))
-            .expect("no open column on the map to build the fixture in");
+        let centre = open_column(&w);
         let _ = w.map.fill_circle(
             centre.x as i32,
             centre.y as i32,
@@ -1398,5 +1550,490 @@ mod tests {
              px (to {:?}) — still held by the wells and the vortex beyond",
             p.body.pos
         );
+    }
+
+    // ---- R101 (T22.15): wells are short-range ---------------------------------
+
+    /// **R101: farther than one band from every rock, the pull is exactly zero** —
+    /// every open-arena point (a body fits, inside the rim) on an 8 px grid, 9 seeds,
+    /// through `env_at`, the function both sides call. Red at `7dee0df`: 99.8 % of
+    /// those points were pulled.
+    ///
+    /// The presence half: points **inside** a band are pulled (or the sweep passes for
+    /// a field that is off), and the far points are most of the arena — the owner's
+    /// *"its fine to sometimes have no gravity at all and just float in space"*.
+    #[test]
+    fn beyond_the_band_the_pull_is_exactly_zero_on_every_seed() {
+        let (mut far, mut near, mut near_pulled) = (0usize, 0usize, 0usize);
+        for seed in report_seeds() {
+            let w = pocket_world_seed(seed);
+            let geo = w.map.space_geometry().expect("space");
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            for y in (0..mh).step_by(8) {
+                for x in (0..mw).step_by(8) {
+                    let feet = crate::math::Point::new(x, y + (PLAYER_H / 2.0) as i32);
+                    if !geo.inside(x as f32, y as f32) || !w.map.body_fits_at(feet) {
+                        continue;
+                    }
+                    let at = Vec2::new(x as f32, y as f32);
+                    let accel =
+                        env_at(&w.map, GravityMode::Space, false, &[], None, false, at).accel;
+                    let beyond =
+                        w.map.meta.asteroids.iter().all(|a| {
+                            at.distance(Vec2::new(a.x as f32, a.y as f32)) >= well_reach(a)
+                        });
+                    if beyond {
+                        far += 1;
+                        assert_eq!(
+                            accel,
+                            Vec2::ZERO,
+                            "seed {seed} ({x}, {y}): more than a band from every rock and \
+                             pulled at {accel:?}"
+                        );
+                    } else {
+                        near += 1;
+                        near_pulled += usize::from(accel != Vec2::ZERO);
+                    }
+                }
+            }
+        }
+        assert!(
+            near_pulled * 10 > near * 9,
+            "inside a band only {near_pulled} of {near} points were pulled — the field is off"
+        );
+        let share = far as f32 / (far + near) as f32;
+        assert!(
+            share > OPEN_ARENA_FIELD_FREE_MIN,
+            "only {:.1} % of the open arena is field-free ({far} of {})",
+            100.0 * share,
+            far + near
+        );
+    }
+
+    /// The least share of the open arena that must be field-free after R101:
+    /// measured **0.917** (363 293 of 396 213 points, `report_seeds`, T22.15),
+    /// floored with room for a map sweep that crowds the rocks a little.
+    const OPEN_ARENA_FIELD_FREE_MIN: f32 = 0.85;
+
+    /// A stamped rock (core disc only, no lumps) in open air, its well in the meta.
+    fn stamped_rock(level: u8, r: i32) -> (Map, Asteroid) {
+        use crate::constants::SPACE_ASTEROID_CORE_FRAC;
+        let a = rock(512, 512, r, level);
+        let core = (SPACE_ASTEROID_CORE_FRAC * r as f32).round() as i32;
+        let mut map = field_map(1024, 1024, &[a]);
+        let _ = map.fill_circle(a.x, a.y, core);
+        (map, a)
+    }
+
+    /// Directly above `a`, a body centre `h` px from its centre, at rest.
+    fn above(a: &Asteroid, h: f32) -> MovementState {
+        drifting(Vec2::new(a.x as f32, a.y as f32 - h))
+    }
+
+    fn touching_map(map: &Map, pos: Vec2) -> bool {
+        crate::physics::collide::aabb_overlaps_solid(
+            map,
+            crate::math::Aabb::from_center_size(
+                pos,
+                crate::constants::PLAYER_W + 2.0,
+                PLAYER_H + 2.0,
+            ),
+        )
+    }
+
+    /// **R101: a body just inside the band falls to the surface; just outside, it
+    /// feels nothing** — every level, the smallest and largest rock, through the real
+    /// `apply_input`. The inside body is one pixel in, where the pull is its weakest
+    /// (a 28th of the level's strength), so this is the band's edge and not its core.
+    #[test]
+    fn a_body_just_inside_the_band_falls_to_the_surface_and_one_just_outside_stays() {
+        let ticks = (BAND_FALL_S / SIM_DT).round() as u32;
+        for level in 1..=SPACE_LEVEL_MAX {
+            for r in [SPACE_ASTEROID_R_MIN, r_grown_max()] {
+                let (map, a) = stamped_rock(level, r);
+                let reach = well_reach(&a);
+                let mut inside = above(&a, reach - 1.0);
+                let mut outside = above(&a, reach + 1.0);
+                let out_at = outside.body.pos;
+                let mut landed = None;
+                for t in 0..ticks {
+                    step(&map, &mut inside, 0, GravityMode::Space);
+                    step(&map, &mut outside, 0, GravityMode::Space);
+                    if landed.is_none() && inside.body.grounded {
+                        landed = Some(t);
+                    }
+                }
+                assert!(
+                    landed.is_some() && touching_map(&map, inside.body.pos),
+                    "level {level} r {r}: a body one pixel inside the band did not land \
+                     in {BAND_FALL_S} s (at {:?}, vel {:?})",
+                    inside.body.pos,
+                    inside.body.vel
+                );
+                assert_eq!(
+                    (outside.body.pos, outside.body.vel),
+                    (out_at, Vec2::ZERO),
+                    "level {level} r {r}: a body one pixel outside the band moved"
+                );
+            }
+        }
+    }
+
+    /// How long a body one pixel inside the band may take to land: measured 0.30 s
+    /// (level 5, smallest rock) to **0.80 s** (level 1, largest), floored up.
+    const BAND_FALL_S: f32 = 1.5;
+
+    /// **R101: a hop lands back; a jump leaves** — on every level. Standing on a
+    /// stamped rock, UP held just until the body is off the ground (the smallest lift
+    /// a player can make — two ticks on every level here, ~70 px/s; one tick does
+    /// not unground a body) comes back down onto the rock; a jump (430 px/s, the push-off) goes out past
+    /// the band and keeps going, because nothing pulls out there. The jump is the
+    /// control: without it, "lands back" is satisfied by a band that reaches forever.
+    #[test]
+    fn a_hop_on_a_rock_lands_back_and_a_jump_leaves() {
+        let settle = (0.5 / SIM_DT).round() as u32;
+        let after = (HOP_BACK_S / SIM_DT).round() as u32;
+        for level in 1..=SPACE_LEVEL_MAX {
+            for r in [SPACE_ASTEROID_R_MIN, r_grown_max()] {
+                let (map, a) = stamped_rock(level, r);
+                let core = (crate::constants::SPACE_ASTEROID_CORE_FRAC * r as f32).round();
+                let rest = core + PLAYER_H / 2.0 + 0.5;
+                for (buttons, back) in [(button::UP, true), (button::JUMP, false)] {
+                    let mut st = above(&a, rest);
+                    for _ in 0..settle {
+                        step(&map, &mut st, 0, GravityMode::Space);
+                    }
+                    assert!(st.body.grounded, "level {level} r {r}: never came to rest");
+                    // Pressed from nothing, so JUMP is an edge (`step` holds its input).
+                    let (none, press) = (Input::new(0, 0, 0), Input::new(0, buttons, 0));
+                    let env = env_at(
+                        &map,
+                        GravityMode::Space,
+                        false,
+                        &[],
+                        None,
+                        false,
+                        st.body.pos,
+                    );
+                    st.step(
+                        &map,
+                        &press,
+                        &none,
+                        MoveStep {
+                            mods: MoveMods::NONE,
+                            env,
+                        },
+                        SIM_DT,
+                    );
+                    // The hop: UP held only until the body is off the ground — on a
+                    // deep well one tick of it does not lift a body clear.
+                    let mut held = 1;
+                    while back && st.body.grounded && held < HOP_MAX_TICKS {
+                        step(&map, &mut st, buttons, GravityMode::Space);
+                        held += 1;
+                    }
+                    let (mut left, mut returned) = (!st.body.grounded, false);
+                    let centre = Vec2::new(a.x as f32, a.y as f32);
+                    for _ in 0..after {
+                        step(&map, &mut st, 0, GravityMode::Space);
+                        let on = st.body.grounded;
+                        left |= !on;
+                        returned |= left && on;
+                        // The jump is judged a body past the band, before the world
+                        // clamp at the map's edge can stop it.
+                        if !back && st.body.pos.distance(centre) > well_reach(&a) + PLAYER_H {
+                            break;
+                        }
+                    }
+                    assert!(
+                        left,
+                        "level {level} r {r}: buttons {buttons:#x} never left the rock"
+                    );
+                    if back {
+                        assert!(
+                            returned,
+                            "level {level} r {r}: a hop ({held} ticks of UP) did not land back in \
+                             {HOP_BACK_S} s (at {:?})",
+                            st.body.pos
+                        );
+                    } else {
+                        assert!(
+                            !returned
+                                && st.body.pos.distance(centre) > well_reach(&a)
+                                && st.body.vel.dot(st.body.pos - centre) > 0.0
+                                && env_at(
+                                    &map,
+                                    GravityMode::Space,
+                                    false,
+                                    &[],
+                                    None,
+                                    false,
+                                    st.body.pos
+                                )
+                                .accel
+                                    == Vec2::ZERO,
+                            "level {level} r {r}: a jump did not leave the band for good \
+                             (at {:.1} px from the centre, reach {:.1})",
+                            st.body.pos.distance(centre),
+                            well_reach(&a)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// How long the hop may take to land back: measured 0.15 s (level 5) to **1.02 s**
+    /// (level 1), floored up.
+    const HOP_BACK_S: f32 = 2.0;
+
+    /// The most ticks the hop may hold UP before it counts as not leaving.
+    const HOP_MAX_TICKS: u32 = 10;
+
+    // ---- R101 (T22.15): the measurements, before and after -----------------
+
+    /// Seeds for the R101 measurements: the traced pocket's and eight more.
+    fn report_seeds() -> Vec<u64> {
+        std::iter::once(POCKET_SEED)
+            .chain((1..=8u64).map(|i| i * 7919))
+            .collect()
+    }
+
+    /// A body's box grown by a pixel each way overlaps rock (`balance.rs::touches`).
+    fn touching(w: &World, pos: Vec2) -> bool {
+        crate::physics::collide::aabb_overlaps_solid(
+            &w.map,
+            crate::math::Aabb::from_center_size(
+                pos,
+                crate::constants::PLAYER_W + 2.0,
+                PLAYER_H + 2.0,
+            ),
+        )
+    }
+
+    /// Where a body rests on top of rock `i`: the first solid pixel down the rock's
+    /// centre column, the body half a height above it. `None` when a body does not
+    /// fit there (another rock, the rim).
+    fn on_top(w: &World, i: usize) -> Option<Vec2> {
+        let a = w.map.meta.asteroids[i];
+        let top = (a.y - a.r - 4..=a.y).find(|&y| w.map.mask.get(a.x, y))?;
+        let at = Vec2::new(a.x as f32, top as f32 - PLAYER_H / 2.0 - 0.5);
+        let clear = !crate::physics::collide::aabb_overlaps_solid(
+            &w.map,
+            crate::math::Aabb::from_center_size(at, crate::constants::PLAYER_W, PLAYER_H),
+        );
+        clear.then_some(at)
+    }
+
+    /// Put player 0 at `at`, at rest, and step it `ticks` with `buttons(tick,
+    /// grounded)`; returns the body centre and `grounded` after every tick.
+    fn drive(
+        w: &mut World,
+        at: Vec2,
+        ticks: u32,
+        mut buttons: impl FnMut(u32, bool) -> u8,
+    ) -> Vec<(Vec2, bool)> {
+        {
+            let p = w.player_mut(0).expect("seated");
+            p.body.pos = at;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+            p.alive = true;
+            // A full tank each run: the walk before a hop drains it in the air.
+            p.jetpack = crate::player::JetpackState::default();
+            p.jump = crate::player::JumpState::default();
+        }
+        let mut path = Vec::with_capacity(ticks as usize);
+        let seq0 = w.last_simulated_seq(0).unwrap_or(0);
+        for t in 0..ticks {
+            let grounded = w.player(0).expect("seated").body.grounded;
+            w.queue_input(0, Input::new(seq0 + t + 1, buttons(t, grounded), 0));
+            w.step(SIM_DT);
+            let b = &w.player(0).expect("seated").body;
+            path.push((b.pos, b.grounded));
+        }
+        path
+    }
+
+    /// **R101's measurements** (T22.15): run at the commit before and after, the
+    /// numbers written into the task file. A report: it prints, it asserts nothing.
+    ///
+    /// 1. the fraction of open arena (a body fits, inside the rim) with a nonzero
+    ///    pull, 8 px grid, 9 seeds;
+    /// 2. a free-floating player's drift over 5 s from each spawn point;
+    /// 3. on each rock's top: how long a player stands with no input (10 s run),
+    ///    how long one walking RIGHT stays on the rock, whether a hop (UP until
+    ///    airborne) and a jump come back down onto that rock within 3 s.
+    ///
+    /// `R101_ALONE=1` is the control for 3: only the stood-on rock's well is left in
+    /// the list, so what the neighbours' wells do is visible as the difference.
+    #[test]
+    #[ignore = "report: R101's before/after measurements, seconds in release"]
+    fn short_range_wells_report() {
+        let (mut open, mut pulled, mut strong) = (0usize, 0usize, 0usize);
+        let mut sum = 0.0f64;
+        let (mut drifts, mut moved) = (Vec::new(), 0usize);
+        let (mut rocks, mut stood, mut walk_s, mut tap_back, mut jump_back) =
+            (0usize, 0usize, Vec::new(), 0usize, 0usize);
+        for seed in report_seeds() {
+            let w = pocket_world_seed(seed);
+            let geo = w.map.space_geometry().expect("space");
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            for y in (0..mh).step_by(8) {
+                for x in (0..mw).step_by(8) {
+                    let feet = crate::math::Point::new(x, y + (PLAYER_H / 2.0) as i32);
+                    if !geo.inside(x as f32, y as f32) || !w.map.body_fits_at(feet) {
+                        continue;
+                    }
+                    open += 1;
+                    let a = env_at(
+                        &w.map,
+                        GravityMode::Space,
+                        false,
+                        &[],
+                        None,
+                        false,
+                        Vec2::new(x as f32, y as f32),
+                    )
+                    .accel
+                    .len();
+                    sum += a as f64;
+                    pulled += usize::from(a > 0.0);
+                    strong += usize::from(a > SPACE_WELL_ACCEL_MAX * 0.1);
+                }
+            }
+            // 2: every player seated at a spawn, nothing pressed, 5 s.
+            let mut w = pocket_world_seed(seed);
+            for id in 0..crate::constants::MAX_PLAYERS as u8 {
+                w.add_player(id, 0, format!("p{id}"));
+            }
+            let ids: Vec<u8> = (0..crate::constants::MAX_PLAYERS as u8).collect();
+            let start: Vec<Vec2> = ids
+                .iter()
+                .map(|&i| w.player(i).expect("p").body.pos)
+                .collect();
+            for t in 0..(5.0 / SIM_DT).round() as u32 {
+                for &i in &ids {
+                    w.queue_input(i, Input::new(t + 1, 0, 0));
+                }
+                w.step(SIM_DT);
+            }
+            for (k, &i) in ids.iter().enumerate() {
+                let d = w.player(i).expect("p").body.pos.distance(start[k]);
+                moved += usize::from(d > 1.0);
+                drifts.push(d);
+            }
+            // 3: on each rock's top.
+            // A fresh world per rock: 27 s of steps a rock, and a round long
+            // enough for the black hole to arrive and eat one would move the list.
+            let fresh = pocket_world_seed(seed);
+            for i in 0..fresh.map.meta.asteroids.len() {
+                let mut w = pocket_world_seed(seed);
+                w.add_player(0, 0, "ana".into());
+                let Some(at) = on_top(&w, i) else { continue };
+                let a = w.map.meta.asteroids[i];
+                if std::env::var("R101_ALONE").is_ok() {
+                    let keep = w.map.meta.asteroids[i];
+                    w.map.meta.asteroids = vec![keep];
+                }
+                rocks += 1;
+                let secs = |path: &[(Vec2, bool)], w: &World| {
+                    // On the rock until the first second-long run of no contact.
+                    let mut off = 0u32;
+                    for (t, &(p, _)) in path.iter().enumerate() {
+                        if touching(w, p) {
+                            off = 0;
+                        } else {
+                            off += 1;
+                            if off as f32 * SIM_DT >= 1.0 {
+                                return (t as f32 + 1.0 - off as f32) * SIM_DT;
+                            }
+                        }
+                    }
+                    path.len() as f32 * SIM_DT
+                };
+                let ten = (10.0 / SIM_DT).round() as u32;
+                let idle = drive(&mut w, at, ten, |_, _| 0);
+                stood += usize::from(secs(&idle, &w) >= 10.0 - 1e-3);
+                let walk = drive(&mut w, at, ten, |_, _| button::RIGHT);
+                walk_s.push(secs(&walk, &w));
+                let three = (3.0 / SIM_DT).round() as u32;
+                let settle = (0.5 / SIM_DT).round() as u32;
+                // Back **on this rock**: grounded again, touching it — a body that
+                // lands on another rock or the rim has not come back.
+                let c = Vec2::new(a.x as f32, a.y as f32);
+                let lands = |path: &[(Vec2, bool)]| {
+                    let after = &path[settle as usize..];
+                    let left = after.iter().position(|&(_, g)| !g);
+                    left.is_some_and(|l| {
+                        after[l..]
+                            .iter()
+                            .any(|&(p, g)| g && p.distance(c) <= well_contact(&a) + 1.0)
+                    })
+                };
+                // The hop: UP from rest, held only until the body is off the ground.
+                let mut lifted = false;
+                let hop = drive(&mut w, at, settle + three, |t, grounded| {
+                    if t < settle || lifted {
+                        return 0;
+                    }
+                    lifted = !grounded || t >= settle + HOP_MAX_TICKS;
+                    if lifted {
+                        0
+                    } else {
+                        button::UP
+                    }
+                });
+                tap_back += usize::from(lands(&hop));
+                let jump = drive(&mut w, at, settle + three, |t, _| {
+                    if t == settle {
+                        button::JUMP
+                    } else {
+                        0
+                    }
+                });
+                jump_back += usize::from(lands(&jump));
+            }
+        }
+        drifts.sort_by(f32::total_cmp);
+        walk_s.sort_by(f32::total_cmp);
+        let pct = |a: usize, b: usize| 100.0 * a as f32 / b.max(1) as f32;
+        let q = |v: &[f32], f: f32| v[((v.len() - 1) as f32 * f) as usize];
+        println!(
+            "\nR101 report, {} seeds:\n  open arena: {open} points, {:.1}% with any pull, {:.1}% over a tenth of the cap, mean {:.1} px/s²",
+            report_seeds().len(),
+            pct(pulled, open),
+            pct(strong, open),
+            sum / open.max(1) as f64
+        );
+        println!(
+            "  spawn drift over 5 s: {} players, {moved} moved > 1 px; p50 {:.1} p90 {:.1} max {:.1} px",
+            drifts.len(),
+            q(&drifts, 0.5),
+            q(&drifts, 0.9),
+            q(&drifts, 1.0)
+        );
+        println!(
+            "  rock tops: {rocks}; stood 10 s idle {stood} ({:.1}%); walking RIGHT stays p10 {:.2} p50 {:.2} p90 {:.2} s; \
+             a hop (UP until airborne) lands back on the rock {tap_back} ({:.1}%); a jump lands back {jump_back} ({:.1}%)",
+            pct(stood, rocks),
+            q(&walk_s, 0.1),
+            q(&walk_s, 0.5),
+            q(&walk_s, 0.9),
+            pct(tap_back, rocks),
+            pct(jump_back, rocks)
+        );
+    }
+
+    fn pocket_world_seed(seed: u64) -> World {
+        let mut w = World::with_gravity(
+            seed,
+            crate::constants::DEFAULT_MAP_SCALE,
+            0,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Space,
+        );
+        w.set_phase(crate::world::RoundPhase::Playing);
+        w
     }
 }

@@ -340,7 +340,11 @@ describe('Core', () => {
       expect(core.setGravity(rocks ? mode : 'standard')).toBe(true)
       core.generate(4242n, MapScale.Small)
       expect(core.setGravity(mode)).toBe(true)
-      core.addPlayer(11, 500, 40)
+      // On a map with rocks, one body height over the first rock's bounding radius:
+      // inside its band (R101, T22.15 — (500, 40) is open space, with no field).
+      const a = core.meta.asteroids[0]
+      const [x0, y0start] = rocks && a ? [a.x, a.y - a.r - C().PLAYER_H] : [500, 40]
+      core.addPlayer(11, x0, y0start)
       const y0 = core.playerState(11)!.y
       for (let seq = 0; seq < 20; seq++) core.applyInput(11, seq, 0, 0, C().SIM_DT)
       const dropped = core.playerState(11)!.y - y0
@@ -405,10 +409,12 @@ describe('Core', () => {
     const rocks = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
     expect(rocks.length).toBeGreaterThan(0)
 
-    // The deepest rock's neighbourhood, offset by two body heights so the point
-    // is outside the rock and still well inside its reach.
+    // The deepest rock's neighbourhood, one body height off its bounding radius:
+    // outside the rock and inside its band (R101, T22.15 — a well reaches half a
+    // body plus `WELL_SURFACE_BAND` past the radius; it was two body heights out,
+    // which is now open space with no field at all).
     const deepest = rocks.reduce((best, a) => (a.level > best.level ? a : best), rocks[0]!)
-    const start = { x: deepest.x + deepest.r + C().PLAYER_H * 2, y: deepest.y }
+    const start = { x: deepest.x + deepest.r + C().PLAYER_H, y: deepest.y }
     const field = core.fieldAccelAt(start.x, start.y)
     const mag = Math.hypot(field[0]!, field[1]!)
     expect(mag).toBeGreaterThan(0)
@@ -448,7 +454,9 @@ describe('Core', () => {
     core.setAsteroids(rocks)
     expect(core.meta.asteroids).toEqual(rocks)
     const moved = drift()
-    expect(Math.hypot(moved.x, moved.y)).toBeGreaterThan(C().PLAYER_H)
+    // The rock is at most a body height away now (R101), so the body lands on it
+    // after less than that; half a body width is still a move no rounding makes.
+    expect(Math.hypot(moved.x, moved.y)).toBeGreaterThan(C().PLAYER_W / 2)
     // It went the way the field pointed, which is what attributes the move to
     // the wells rather than to anything else a tick does.
     expect(moved.x * field[0]! + moved.y * field[1]!).toBeGreaterThan(0)

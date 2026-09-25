@@ -101,6 +101,10 @@ MANIFEST=(
   # rate and asserts the miss probability; this one prints the grid rate beside
   # it, which that test does not measure.
   "the_open_space_hit_rate|game-core src/map/gen/space.rs|report"
+  # T22.15 (R101): the short-range wells' before/after measurements — open arena
+  # with a pull, drift at the spawns, standing/hopping/jumping on every rock top.
+  # Prints; asserts nothing (the guards are the tests beside it in attractors.rs).
+  "short_range_wells_report|game-core src/world/attractors.rs|report"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.

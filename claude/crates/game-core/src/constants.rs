@@ -710,27 +710,43 @@ pub const SPACE_OPEN_SPACE_TRIES: u32 = 24;
 /// measures over the whole table rather than at one radius.
 pub const SPACE_WELL_ESCAPE_MARGIN: f32 = 0.75;
 
-/// The pull at the **centre** of a level-[`SPACE_LEVEL_MAX`] asteroid, px/s².
+/// The pull of a level-[`SPACE_LEVEL_MAX`] asteroid **at its surface**, px/s².
 ///
-/// A player can never be at the centre — the core disc is solid — so the pull
-/// they actually feel is this number times the falloff at
-/// `SPACE_ASTEROID_CORE_FRAC * r + PLAYER_H / 2.0`, which is what R46's
-/// inequality bounds and what the test named above asserts.
+/// *Was "at the centre", with a falloff to the surface — R101 (T22.15) makes the
+/// pull full strength everywhere a body touching the rock can be and zero one
+/// [`WELL_SURFACE_BAND`] out*, so this is now exactly what a player standing on a
+/// level-5 rock feels, and R46's inequality (under `JETPACK_THRUST_DOWN`) bounds
+/// it directly.
 ///
 /// For scale: `GRAVITY` is 1400, so the deepest rock in the game pulls at
-/// roughly half of ordinary gravity at its surface, and the shallowest at about
-/// a thirteenth.
+/// roughly half of ordinary gravity at its surface, and the shallowest (level 1,
+/// a fifth of this) at about a tenth.
 pub const SPACE_WELL_ACCEL_MAX: f32 = JETPACK_THRUST_DOWN * SPACE_WELL_ESCAPE_MARGIN;
 
-/// The reach of a level-[`SPACE_LEVEL_MAX`] well, centre to centre, px.
+/// **How far a well reaches past its rock: one body height of air**, px —
+/// `M22-OWNER-ROUND-2` R101 (T22.15). The owner: *"gravity should be like a few
+/// pixels around each 'asteroid' and its fine to sometimes have no gravity at all
+/// and just float in space."*
 ///
-/// **Exactly one climb budget** (`M22-RULINGS` R47, point 2), which makes the
-/// reach a sentence a player can feel: *a full tank always clears the deepest
-/// well*. `JETPACK_CLIMB_BUDGET` already carries its own basis — *"the furthest
-/// a player can climb in one unbroken effort"* — and R18 asked for the level
-/// table to be derived from a measured quantity rather than from five literals.
-/// This is that quantity.
-pub const SPACE_WELL_REACH_MAX: f32 = JETPACK_CLIMB_BUDGET;
+/// **Measured from the body, not from the centre.** `s = |p − c| − r − PLAYER_H / 2`
+/// is the gap between a body's near edge and the rock's bounding circle (`r`, the
+/// grown radius, which bounds every lump): at `s < WELL_SURFACE_BAND` — anywhere a
+/// body touching the rock can be, carved craters included, and one body height of
+/// air above it — the pull is the level's full strength; at and beyond it, exactly
+/// zero (`world::attractors::Attractor::asteroid` says why a step and not a taper).
+/// **The level scales the strength, not this reach** (R101).
+///
+/// **Basis: one body height, `PLAYER_H`** — the ruling's default. A body leaving
+/// the rock at `v` comes back while `v² / 2 < strength · WELL_SURFACE_BAND`, so a
+/// level-1 rock (135 px/s²) returns anything under 87 px/s — the smallest hop, UP
+/// until airborne, is ~70 — and a level-5 one anything under 194 px/s. **A jump
+/// always leaves** (430 px/s would need a 137 px band at the strongest level), and
+/// that is the mode's push-off, not a defect: `short_range_wells_report` measures
+/// both. Two rocks' bands can meet only in a lane narrower than
+/// `2 · (PLAYER_H / 2 + WELL_SURFACE_BAND)` = 84 px, against `SPACE_ASTEROID_GAP_MIN` 80, so the arena
+/// between rocks is field-free almost everywhere (R96's cap still bounds the sliver
+/// where two meet). *Reverse it by:* this constant.
+pub const WELL_SURFACE_BAND: f32 = PLAYER_H;
 
 /// Terminal **speed** in space, px/s — a clamp on `|vel|`, applied through
 /// `physics::resolve::Forces::max_speed`.
@@ -741,16 +757,19 @@ pub const SPACE_WELL_REACH_MAX: f32 = JETPACK_CLIMB_BUDGET;
 /// give it back.
 ///
 /// **Basis, and it is computed rather than asserted.** The fastest a *single*
-/// well can make you is a free fall from its own cutoff to the closest a body
-/// can get, which for the deepest well works out at **695.8 px/s** —
-/// integrated, not remembered, by
-/// `world::attractors::tests::space_max_speed_carries_its_basis`, which also
-/// checks the two bounds R10 names: above the 367.7 px/s a diagonal jetpack burn
-/// already reaches (below it, the clamp re-introduces the *"controls fighting
-/// you"* complaint `jetpack::apply_thrust` refuses in as many words), and below
-/// the 3840 px/s `MAX_SUBSTEPS * MAX_SUBSTEP_PX / SIM_DT` already imposes (above
-/// it, the clamp is inert). 1350 is 1.94x the single-well dive, so it never
-/// fires on an honest fall toward one rock and still bounds the runaway.
+/// attractor can make you is a free fall from its cutoff to the closest a body
+/// can get — integrated, not remembered, by
+/// `world::attractors::tests::space_max_speed_carries_its_basis`, which asserts
+/// this clamp sits above 1.5x the fastest of them (the deepest well, **247.8
+/// px/s** since R101 — it was 695.8 when a well reached a climb budget out; a
+/// vortex capped with the wells; the hole down to its horizon), and checks the
+/// two bounds R10 names: above the 367.7 px/s a diagonal jetpack burn already
+/// reaches (below it, the clamp re-introduces the *"controls fighting you"*
+/// complaint `jetpack::apply_thrust` refuses in as many words), and below the
+/// 3840 px/s `MAX_SUBSTEPS * MAX_SUBSTEP_PX / SIM_DT` already imposes (above it,
+/// the clamp is inert). *R101 (T22.15) left the value at 1350:* with no field
+/// between rocks there is no chain of wells to run away along, so it now bounds
+/// stacked thrust and pulls rather than a well-to-well runaway.
 pub const SPACE_MAX_SPEED: f32 = 1350.0;
 
 // ---------------------------------------------------------------------------

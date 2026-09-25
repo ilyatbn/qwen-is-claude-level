@@ -60,17 +60,32 @@ import { samplePatch, assertChanged, assertUnchanged, toScreen } from './pixels.
  * How far down-field the body has to travel, in body heights.
  *
  * Pinned to `PLAYER_H` rather than to pixels so a change to the body's size
- * cannot leave the subject patch overlapping the start. Two is enough that the
- * body at rest (half a body from its centre in any direction) cannot reach the
- * patch, and short enough that the corridor stays clear of rock.
+ * cannot leave the subject patch overlapping the start.
+ *
+ * **Three quarters, since R101 (T22.15; it was two).** A well now reaches one
+ * `WELL_SURFACE_BAND` (a body height) of air past its rock and no further, so a
+ * body at the band's outer edge has about a body height to fall before it lands:
+ * two body heights of pull no longer exist anywhere. Three quarters stays short of
+ * the landing, and the patches shrink with it (`PATCH_BODIES`) so the body at rest
+ * still cannot reach either one.
  */
-const TRAVEL_BODIES = 2
+const TRAVEL_BODIES = 0.75
 
 /**
- * How much air, in body heights, the run needs around it on every side.
+ * The side of each photographed patch, in body heights (T22.15; it was 1.5).
+ *
+ * Small enough that a patch centred `TRAVEL_BODIES` from the start misses the body
+ * at rest (half a body along the field, at most): `TRAVEL − PATCH / 2 > 1 / 2`.
+ */
+const PATCH_BODIES = 0.4
+
+/**
+ * How much air, in body heights, the run needs around it — up-field, where the
+ * control patch is photographed, and across the start.
  *
  * See the search below: without this the fixture picked a point one body above
- * the arena floor and photographed a landing.
+ * the arena floor and photographed a landing. *Down-field it cannot apply since
+ * R101*: the rock the body falls toward is always within a band of it.
  */
 const CLEAR_BODIES = 1
 
@@ -128,15 +143,26 @@ export default async function ({ page, shot, log }) {
   log(`${rocks.length} rocks, levels ${[...new Set(rocks.map((a) => a.level))].sort().join('/')}`)
 
   /**
-   * A start point in open space with a strong field, and a clear corridor
-   * down-field of it.
+   * A start point in open space **just inside a well's band**, and a clear
+   * corridor down-field of it.
    *
-   * **Two phases, because the honest clearance test is expensive.** Phase one is
-   * the body box and the field, over every rock at every radius and angle; phase
-   * two takes the strongest candidates and demands a `CLEAR_BODIES`-deep margin
-   * of air around the whole run, in *both* directions — the one down-field
-   * because the body crosses it, the one up-field because the control patch is
-   * photographed there.
+   * *R101 (T22.15):* a well pulls only within one `WELL_SURFACE_BAND` of air past
+   * its rock, so the search walks out from each rock along 24 bearings, a body
+   * centre at a time, and takes the **outermost** point the field still reaches
+   * (the band's edge, read off Rust rather than computed here), and it demands the
+   * field be exactly zero one body height further out — the band is thin, which
+   * is the ruling. **`place(x, y)` puts the body's centre at `(x, y)`**
+   * (`GameCore::add_player` → `Body::new`), which is where `apply_input` reads the
+   * field, so the field is read there and the clearance box is `(x, y)` ± half a
+   * body; the drawn sprite hangs half a body higher (`PlayerView`), which is what
+   * the patches below follow. With a band a body deep, reading the field half a
+   * body off is the whole band — the first run of this version did, and the body
+   * it placed sat just outside the band it had measured.
+   *
+   * **Two phases, because the honest clearance test is expensive.** Phase two
+   * takes the strongest candidates and demands a `CLEAR_BODIES`-deep margin of air
+   * up-field of the run (the control patch is photographed there) and a clear box
+   * all the way down-field of it.
    *
    * **The margin is the fix for a real failure, not caution.** The first version
    * checked the body box alone: it chose a point a body's height above the
@@ -152,11 +178,13 @@ export default async function ({ page, shot, log }) {
   const spot = await page.evaluate(
     ([bodyW, bodyH, run, margin, halfW, halfH]) => {
       const core = window.__game.core
+      // `(x, y)` is the body's centre, as `place` sets it.
       const boxClear = (x, y, pad) => {
         const half = Math.ceil(bodyW / 2) + pad
-        for (let dy = -pad; dy <= bodyH + pad; dy += 2) {
+        const halfH = Math.ceil(bodyH / 2) + pad
+        for (let dy = -halfH; dy <= halfH; dy += 2) {
           for (let dx = -half; dx <= half; dx += 2) {
-            if (core.solidAt(Math.round(x + dx), Math.round(y - dy))) return false
+            if (core.solidAt(Math.round(x + dx), Math.round(y + dy))) return false
           }
         }
         return true
@@ -173,40 +201,47 @@ export default async function ({ page, shot, log }) {
         y > halfH + run && y < core.height - halfH - run
       const found = []
       for (const a of core.meta.asteroids) {
-        for (let d = a.r + bodyH; d < a.r + bodyH * 14; d += 6) {
-          for (let i = 0; i < 24; i++) {
-            const th = (i / 24) * Math.PI * 2
-            const x = a.x + Math.cos(th) * d
-            const y = a.y + Math.sin(th) * d
-            if (!inset(x, y)) continue
-            if (!boxClear(x, y, 0)) continue
-            const f = core.fieldAccelAt(x, y)
-            const mag = Math.hypot(f[0], f[1])
-            if (mag <= 0) continue
-            found.push({ x, y, ux: f[0] / mag, uy: f[1] / mag, mag, level: a.level })
+        for (let i = 0; i < 24; i++) {
+          const th = (i / 24) * Math.PI * 2
+          const [cx, cy] = [Math.cos(th), Math.sin(th)]
+          // The outermost body centre the field reaches on this bearing.
+          let edge = null
+          for (let d = a.r; d < a.r + bodyH * 4; d += 1) {
+            const f = core.fieldAccelAt(a.x + cx * d, a.y + cy * d)
+            if (Math.hypot(f[0], f[1]) > 0) edge = d
           }
+          if (edge === null) continue
+          const d = edge - 1
+          const x = a.x + cx * d
+          const y = a.y + cy * d
+          if (!inset(x, y)) continue
+          if (!boxClear(x, y, 0)) continue
+          const f = core.fieldAccelAt(x, y)
+          const mag = Math.hypot(f[0], f[1])
+          if (mag <= 0) continue
+          const beyond = core.fieldAccelAt(a.x + cx * (d + bodyH), a.y + cy * (d + bodyH))
+          found.push({
+            x, y, ux: f[0] / mag, uy: f[1] / mag, mag, level: a.level,
+            beyond: Math.hypot(beyond[0], beyond[1]),
+          })
         }
       }
       found.sort((p, q) => q.mag - p.mag)
       // **Spread the expensive phase out.** The strongest field on a map is a
       // single neighbourhood, and the first version spent all 160 of its
-      // clearance tests on one 12 px patch of it — 43 979 candidates, the top
-      // 160 of them within a body's height of each other, every one of them
-      // failing for the same reason. Skipping anything near a point already
-      // tried turns the budget into 160 *places*.
+      // clearance tests on one 12 px patch of it. Skipping anything near a point
+      // already tried turns the budget into 160 *places*.
       const tried = []
       const spread = (run + bodyH) * 3
       for (const c of found) {
         if (tried.some((t) => Math.hypot(t.x - c.x, t.y - c.y) < spread)) continue
         tried.push(c)
         let ok = true
-        for (let t = 0; t <= run + bodyH && ok; t += 8) {
-          if (
-            !boxClear(c.x + c.ux * t, c.y + c.uy * t, margin) ||
-            !boxClear(c.x - c.ux * t, c.y - c.uy * t, margin)
-          ) {
-            ok = false
-          }
+        for (let t = 0; t <= run + bodyH && ok; t += 4) {
+          if (!boxClear(c.x - c.ux * t, c.y - c.uy * t, margin)) ok = false
+        }
+        for (let t = 0; t <= run && ok; t += 2) {
+          if (!boxClear(c.x + c.ux * t, c.y + c.uy * t, 0)) ok = false
         }
         if (ok) return c
         if (tried.length >= 160) break
@@ -230,8 +265,17 @@ export default async function ({ page, shot, log }) {
   }
   log(
     `start (${spot.x.toFixed(0)}, ${spot.y.toFixed(0)}) beside a level-${spot.level} rock, ` +
-      `field ${spot.mag.toFixed(0)} px/s² toward (${spot.ux.toFixed(2)}, ${spot.uy.toFixed(2)})`,
+      `field ${spot.mag.toFixed(0)} px/s² toward (${spot.ux.toFixed(2)}, ${spot.uy.toFixed(2)}), ` +
+      `${spot.beyond.toFixed(0)} px/s² one body further out`,
   )
+  // **R101: the pull is a band, not a reach across the arena.** One body height
+  // further out than the start the field is exactly zero — read back from Rust.
+  if (spot.beyond !== 0) {
+    throw new Error(
+      `one body height past the band's edge the field is still ${spot.beyond} px/s² — ` +
+        'the well reaches further than R101 allows',
+    )
+  }
 
   // Hold the camera on the middle of the run. Without this the rig follows the
   // body, every pixel in the frame moves with it, and `assertChanged` correctly
@@ -290,7 +334,7 @@ export default async function ({ page, shot, log }) {
     // Screen-space size from a world-space span, so the zoom cannot shrink it.
     const edge = await toScreen(page, spot.x + k.PLAYER_H, spot.y - k.PLAYER_H / 2)
     const unit = Math.max(4, Math.hypot(edge.x - mid.x, edge.y - mid.y)) // one body height
-    const side = Math.round(unit * 1.5)
+    const side = Math.max(4, Math.round(unit * PATCH_BODIES))
     const rect = (p) => ({
       x: Math.round(p.x - side / 2),
       y: Math.round(p.y - side / 2),
@@ -496,6 +540,15 @@ export default async function ({ page, shot, log }) {
   )
   if (Math.hypot(field[0], field[1]) <= 0) {
     throw new Error('the rocks are installed and the field is still zero')
+  }
+  // **The pulled patch is inside the band** (R101): the body centre at the end of
+  // the travel still feels the well — the move is the band's, all of it.
+  const atSubject = await page.evaluate(
+    ([x, y]) => Array.from(window.__game.core.fieldAccelAt(x, y)),
+    [spot.x + spot.ux * travel, spot.y + spot.uy * travel],
+  )
+  if (Math.hypot(atSubject[0], atSubject[1]) <= 0) {
+    throw new Error(`the subject patch is outside the band: no field there (${JSON.stringify(atSubject)})`)
   }
 
   // **This wait is also the proof the scene was never frozen.** A page that had

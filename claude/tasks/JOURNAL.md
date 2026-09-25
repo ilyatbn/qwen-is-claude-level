@@ -7132,3 +7132,11 @@ Chebyshev outside so the void/breach edges are square too. Asteroids draw +0–2
 Five map-dependent fixtures re-searched (reasons in the task file); `debug_breach` takes an optional aim; `core.spaceInside` replaces
 the check's ellipse copy. For T22.15: 4 of 6 rim breaches don't catch an idle player at 1.5 capture radii (wells out-pull).
 For T22.18: horizon = old R_MAX 64 < new max 70; Small holes near the rim. docs/77 §H4 is stale (ellipse).
+
+## T22.15 — short-range wells (R101)
+A well is a step: its level's full strength out to `r + PLAYER_H/2 + WELL_SURFACE_BAND` (=PLAYER_H) from the rock's centre,
+zero beyond, same reach every level; vortex/hole keep the linear law bit-for-bit. Open arena pulled 99.8 % → 8.3 %; spawn
+drift over 5 s p50 554 px → 0; idle on a rock top 62 % → 100 %; a hop lands back 249/249, a jump never (push-off).
+Step over taper: return speed 87 vs 61 px/s on level 1 against a ~70 px/s minimal hop. REPLAY_VERSION 28. Fixtures that
+sat in "open space inside a well" rewritten (R96 pocket now built); bots not retuned (kills 3.1→4.0, trips 0.06→0.29).
+breach-vortex red once (2.53 px), green twice (0.07) on the same map — recorded. rooms.rs AlreadyClosed once (R40 row).

@@ -508,28 +508,41 @@ mod tests {
                 "a rock the hole did not eat lost its pixels"
             );
         }
-        // Its well is gone. Probed **just outside the hole's reach**, where the wells
-        // pull again (R91 mutes them inside it, so a probe there would pass with the
-        // eaten rock's well still in the list): the field is the survivors' alone,
-        // and the eaten rock's own well does reach this far (the control).
-        let probe = centre + Vec2::new(0.0, crate::constants::BLACK_HOLE_REACH + 2.0);
+        // Its well is gone. *R101 (T22.15): probed in the eaten rock's own band*, half
+        // a band out — a well reaches one band past its rock, well inside the hole's
+        // reach, where R91 mutes every well; so the list is read without the hole
+        // (`wells_at`), which is what production sums once the hole stops muting.
+        // The control: with the eaten rock still in the list, that field differs.
+        let probe = centre
+            + Vec2::new(
+                0.0,
+                crate::world::attractors::well_contact(&target)
+                    + crate::constants::WELL_SURFACE_BAND / 2.0,
+            );
         assert_ne!(
             Attractor::asteroid(&target).pull_at(probe),
             Vec2::ZERO,
             "control: the eaten rock's well does not reach the probe"
         );
-        let expect = crate::world::attractors::wells_at(&w.map, probe);
-        let got = env_at(
-            &w.map,
-            GravityMode::Space,
-            false,
-            &[],
-            Some(centre),
-            true,
-            probe,
-        )
-        .accel;
-        assert_eq!(got, expect);
+        let with =
+            crate::world::attractors::field_at(before.iter().map(Attractor::asteroid), probe)
+                .clamp_len(crate::constants::SPACE_WELL_ACCEL_MAX);
+        let got = crate::world::attractors::wells_at(&w.map, probe);
+        assert_ne!(got, with, "the eaten rock's well is still summed");
+        assert_eq!(
+            env_at(
+                &w.map,
+                GravityMode::Space,
+                false,
+                &[],
+                Some(centre),
+                true,
+                probe
+            )
+            .accel,
+            Attractor::black_hole(centre).pull_at(probe),
+            "inside the reach only the hole pulls (R91)"
+        );
         let events = w.drain_events();
         assert_eq!(
             events
@@ -773,13 +786,23 @@ mod tests {
                     let _ = w.map.take_breaches();
                     if k == 0 && !with_vortex {
                         // The control that there are wells to mute: some rock's well
-                        // reaches the horizon on this map.
-                        let at = hole + Vec2::new(BLACK_HOLE_HORIZON_R + 1.0, 0.0);
-                        let wells = crate::world::attractors::field_at(
-                            w.map.meta.asteroids.iter().map(Attractor::asteroid),
-                            at,
-                        );
-                        wells_inside += usize::from(wells != Vec2::ZERO);
+                        // reaches between the horizon and the reach on this map — the
+                        // ground these flights cross. *R101 (T22.15): was "reaches the
+                        // horizon"*; a well now reaches one band past its rock, and the
+                        // neighbours of the eaten rock sit at least a lane further out.
+                        let mut any = false;
+                        for step in 0..=((BLACK_HOLE_REACH - BLACK_HOLE_HORIZON_R) / 4.0) as u32 {
+                            let d = BLACK_HOLE_HORIZON_R + 1.0 + 4.0 * step as f32;
+                            for b in 0..64 {
+                                let t = b as f32 * std::f32::consts::TAU / 64.0;
+                                let at = hole + Vec2::new(t.cos(), t.sin()) * d;
+                                any |= crate::world::attractors::field_at(
+                                    w.map.meta.asteroids.iter().map(Attractor::asteroid),
+                                    at,
+                                ) != Vec2::ZERO;
+                            }
+                        }
+                        wells_inside += usize::from(any);
                     }
                     place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
                     if with_vortex {
@@ -823,7 +846,7 @@ mod tests {
         }
         assert!(
             wells_inside >= 10,
-            "control: a well reaches the horizon on only {wells_inside} of 13 maps"
+            "control: a well reaches inside the hole's reach on only {wells_inside} of 13 maps"
         );
         assert_eq!(
             vortex_premise,
@@ -909,60 +932,42 @@ mod tests {
 
     /// **R91: inside the hole's reach only the hole pulls; outside it the wells do.**
     /// Inside: the field is exactly the hole's own pull, though rocks' wells reach
-    /// there (the control that muting changed something). Outside, one pixel past
-    /// the reach: the wells, exactly the hole-free field, and not zero — a presence
-    /// control, or "muted" would pass for a map with no wells at all.
+    /// there (the control that muting changed something). Outside the reach: the
+    /// wells, exactly the hole-free field, and not zero — a presence control, or
+    /// "muted" would pass for a map with no wells at all.
+    ///
+    /// *R101 (T22.15): probed in the wells' bands*, 16 bearings round every rock,
+    /// half a band out — a well reaches one band past its rock and no further, so
+    /// fixed radii round the hole mostly sample empty space.
     #[test]
     fn inside_the_reach_only_the_hole_pulls_and_outside_it_the_wells_do() {
-        use crate::constants::BLACK_HOLE_REACH;
+        use crate::constants::{BLACK_HOLE_REACH, WELL_SURFACE_BAND};
+        use crate::world::attractors::well_contact;
         let (w, hole) = hole_world(5);
-        // The hole-free field: the wells' sum, capped (R96, T22.03G) — at 1 px past
-        // the reach some side's wells pile past the cap, so the raw sum is not it.
+        // The hole-free field: the wells' sum, capped (R96, T22.03G).
         let wells_at = |p: Vec2| crate::world::attractors::wells_at(&w.map, p);
-        let mut muted = 0;
-        for k in 0..16 {
-            let a = k as f32 * std::f32::consts::TAU / 16.0;
-            let dir = Vec2::new(a.cos(), a.sin());
-            let inside = hole + dir * (BLACK_HOLE_REACH * 0.5);
-            let got = env_at(
-                &w.map,
-                GravityMode::Space,
-                false,
-                &[],
-                Some(hole),
-                true,
-                inside,
-            )
-            .accel;
-            assert_eq!(
-                got,
-                Attractor::black_hole(hole).pull_at(inside),
-                "side {k}: inside"
-            );
-            if wells_at(inside) != Vec2::ZERO {
-                muted += 1;
+        let (mut muted, mut outside) = (0, 0);
+        for a in &w.map.meta.asteroids {
+            let c = Vec2::new(a.x as f32, a.y as f32);
+            let ring = well_contact(a) + WELL_SURFACE_BAND / 2.0;
+            for k in 0..16 {
+                let t = k as f32 * std::f32::consts::TAU / 16.0;
+                let p = c + Vec2::new(t.cos(), t.sin()) * ring;
+                let got = env_at(&w.map, GravityMode::Space, false, &[], Some(hole), true, p).accel;
+                if (p - hole).len() < BLACK_HOLE_REACH {
+                    assert_eq!(got, Attractor::black_hole(hole).pull_at(p), "{p:?}: inside");
+                    muted += usize::from(wells_at(p) != Vec2::ZERO);
+                } else {
+                    assert_eq!(got, wells_at(p), "{p:?}: outside");
+                    assert_ne!(got, Vec2::ZERO, "{p:?}: control — no well in its own band");
+                    outside += 1;
+                }
             }
-            let outside = hole + dir * (BLACK_HOLE_REACH + 1.0);
-            let got = env_at(
-                &w.map,
-                GravityMode::Space,
-                false,
-                &[],
-                Some(hole),
-                true,
-                outside,
-            )
-            .accel;
-            assert_eq!(got, wells_at(outside), "side {k}: outside");
-            assert_ne!(
-                got,
-                Vec2::ZERO,
-                "side {k}: control — no well reaches past the reach"
-            );
         }
         assert!(
-            muted > 0,
-            "control: no well reached inside the reach, so muting proves nothing"
+            muted > 0 && outside > 0,
+            "control: {muted} band points inside the reach, {outside} outside — one side \
+             was never probed"
         );
     }
 
