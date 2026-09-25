@@ -13,8 +13,12 @@ use rand_chacha::ChaCha8Rng;
 mod space;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_EXPLORE_CELL, BOT_FLAME_REACH_SCALE, BOT_FLEE_HEALTH,
-    BOT_SPACE_IN_RANGE, BOT_SPACE_ZONE_REACH, BOT_SUIT_SHOP_BELOW, FLAME_DPS, FLAME_GRAVITY_SCALE,
+    GravityMode, BATTERY_MAX, BOT_BLAST_GUARD, BOT_CHARGE_BELOW, BOT_EXPLORE_CELL,
+    BOT_FLAME_REACH_SCALE, BOT_FLEE_HEALTH, BOT_HAZARD_CLEARANCE, BOT_HAZARD_LOOKAHEAD,
+    BOT_HEAL_BELOW, BOT_JETPACK_RISE, BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP, BOT_OUT_OF_REACH_SCORE,
+    BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE, BOT_SPACE_ZONE_REACH,
+    BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_SUIT_SHOP_BELOW,
+    BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP, BOT_WINGED_SWEEP_LEGS, FLAME_DPS, FLAME_GRAVITY_SCALE,
     FLAME_LIFE, FLAME_RADIUS, FOV_DAY, GRAVITY, INVENTORY_SLOTS, JETPACK_MAX_FUEL, PICKUP_RADIUS,
     SPACE_RIM_CLEARANCE, STEP_UP, WINGS_FLY_SPEED,
 };
@@ -69,51 +73,12 @@ struct Hazard {
     lit_by: Option<PlayerId>,
 }
 
-/// How far above the bot a target must be before it reaches for the jetpack.
-const JETPACK_RISE: f32 = 120.0;
-/// Solid samples along the firing line that still count as a clear shot.
-///
-/// Generous on purpose: every weapon in this game digs (`docs/70-amendments-v2.md`
-/// §A3), so rock between you and your target is soft cover, not a wall. Shooting
-/// through a hill is a legitimate play and the terrain opens as you do it.
-const MAX_BLOCKED_SAMPLES: u32 = 24;
-
-/// Spacing of those samples, in px.
-const LOS_STEP: f32 = 8.0;
-/// Below this, a bot reaches for a medkit.
-const HEAL_BELOW: f32 = 40.0;
-/// Top up below this fraction of a full battery — enough that a laser is
-/// usable and a shield is worth raising.
-const CHARGE_BELOW: f32 = 0.4;
-/// A bot that has not moved this far in `STUCK_WINDOW` jumps.
-/// Margin around a burning patch a bot treats as unsafe, on top of its radius.
-/// One player-width, so a bot standing at the rim is already leaving.
-const HAZARD_CLEARANCE: f32 = 20.0;
-/// How far ahead a bot looks before stepping into fire — about a walk-second.
-const HAZARD_LOOKAHEAD: f32 = 48.0;
-/// How far ahead the throw predictor flies the arc, in ticks. Two seconds is
-/// past every fuse in the arsenal, and capping it matters: running to
-/// `PROJECTILE_MAX_LIFETIME` for every bot every tick is a tick-budget problem,
-/// not a safety improvement.
-const PREDICT_TICKS: u32 = 120;
-
-const STUCK_PX: f32 = 6.0;
-const STUCK_WINDOW: f32 = 0.5;
-
-/// T22.03F: which leg of a stuck winged bot's outward vertical sweep `t` seconds
-/// in — leg `k` lasts `(k + 1) × STUCK_WINDOW`, so legs alternate up/down and
-/// each reaches one window past the last one's start.
-/// T22.03I F4: legs a stuck winged bot sweeps before giving the way up — up one
-/// window, down two, up three, down four: ±2 legs' reach at `WINGS_FLY_SPEED`
-/// (±200 px, seven body heights) either side of where it stuck, in 5 s.
-const WINGED_SWEEP_LEGS: u32 = 4;
-
 /// Would a winged sweep leg pressing `b` (UP or DOWN) from `pos` head somewhere that
-/// kills — the void (past the map's bottom, or outside a space rim) or a space
-/// keep-out disc (`space::forbidden`: the black hole's reach, a vortex's disc)? Probed
-/// one window's flight along the leg, the distance a first leg covers.
+/// kills — the void (`World::body_in_the_void`, the world's own test) or a space
+/// keep-out (`space::forbidden`: the black hole's reach, a vortex's pull or mouth)?
+/// Probed one window's flight along the leg, the distance a first leg covers.
 fn leg_barred(world: &World, pos: Vec2, b: u8) -> bool {
-    let reach = WINGS_FLY_SPEED * STUCK_WINDOW;
+    let reach = WINGS_FLY_SPEED * BOT_STUCK_WINDOW;
     let at = pos + Vec2::new(0.0, if b == button::UP { -reach } else { reach });
     world.body_in_the_void(&crate::physics::body::Body::new(at)) || space::forbidden(world, at)
 }
@@ -137,24 +102,17 @@ fn wing_buttons(dir: Vec2) -> u8 {
     b
 }
 
+/// T22.03F: which leg of a stuck winged bot's outward vertical sweep `t` seconds
+/// in — leg `k` lasts `(k + 1) × BOT_STUCK_WINDOW`, so legs alternate up/down and
+/// each reaches one window past the last one's start.
 fn winged_sweep_leg(t: f32) -> u32 {
-    let (mut k, mut end) = (0u32, STUCK_WINDOW);
+    let (mut k, mut end) = (0u32, BOT_STUCK_WINDOW);
     while t >= end {
         k += 1;
-        end += (k + 1) as f32 * STUCK_WINDOW;
+        end += (k + 1) as f32 * BOT_STUCK_WINDOW;
     }
     k
 }
-/// Seconds a bot heads for one unvisited cell before marking it seen and
-/// choosing another (§E10).
-///
-/// The escape hatch for a cell whose middle is inside rock: without it a bot
-/// walks at a wall for the rest of the round. Local like the rest of the bot's
-/// tuning; `BOT_EXPLORE_CELL` is in `constants.rs` because §E15 names it.
-const WANDER_GIVE_UP: f32 = 6.0;
-/// Near enough a wander target to count as there, px — a quarter cell.
-const WANDER_ARRIVED: f32 = BOT_EXPLORE_CELL as f32 / 4.0;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Goal {
     Enemy(PlayerId),
@@ -353,12 +311,12 @@ pub struct Bot {
     /// exploring wants it to mean.
     wander_for: f32,
     /// For stuck detection: the `x` it is measured from — for a winged bot, the
-    /// current `STUCK_WINDOW`'s start, `stuck_window` s ago (T22.03I F4); for a
+    /// current `BOT_STUCK_WINDOW`'s start, `stuck_window` s ago (T22.03I F4); for a
     /// walking bot, the last tick's (see `think`).
     stuck_from: f32,
     stuck_window: f32,
     still_for: f32,
-    /// T22.03I F4: a winged bot that swept for `WINGED_SWEEP_LEGS` legs and stayed
+    /// T22.03I F4: a winged bot that swept for `BOT_WINGED_SWEEP_LEGS` legs and stayed
     /// stuck gives the way up until this round time — it stops pressing into the
     /// face and hovers, rather than zig-zagging for the rest of the round.
     sweep_refused_until: f32,
@@ -505,7 +463,7 @@ impl Bot {
         // `fleeing` was tracked here and read only by the trigger-planting block
         // §F4 deleted — it stopped a bot planting itself inside a burning patch.
         // With nothing to plant, the flag has no second reader.
-        if let Some(h) = self.hazard_at(world, pos, HAZARD_CLEARANCE) {
+        if let Some(h) = self.hazard_at(world, pos, BOT_HAZARD_CLEARANCE) {
             buttons &= !(button::LEFT | button::RIGHT);
             buttons |= if pos.x >= h.pos.x {
                 button::RIGHT
@@ -521,9 +479,9 @@ impl Bot {
             let ahead = Vec2::new(
                 pos.x
                     + if buttons & button::RIGHT != 0 {
-                        HAZARD_LOOKAHEAD
+                        BOT_HAZARD_LOOKAHEAD
                     } else {
-                        -HAZARD_LOOKAHEAD
+                        -BOT_HAZARD_LOOKAHEAD
                     },
                 pos.y,
             );
@@ -542,19 +500,19 @@ impl Bot {
 
         // Stuck against a wall: pressing a direction and going nowhere.
         //
-        // **A winged bot measures its displacement over each `STUCK_WINDOW`** from the
+        // **A winged bot measures its displacement over each `BOT_STUCK_WINDOW`** from the
         // window's start (T22.03I F4). The test compared one tick's movement with
-        // `STUCK_PX`, which
+        // `BOT_STUCK_PX`, which
         // wings (3.3 px a tick) never reach: 74 % of winged "stuck" ticks in space
         // were moving faster than 100 px/s, and the sweep below zig-zagged bots across
         // open air. **A walking bot keeps the per-tick test** — a walk (2.5 px a tick)
-        // never reaches it either, so it hops every `STUCK_WINDOW` while it walks, and
+        // never reaches it either, so it hops every `BOT_STUCK_WINDOW` while it walks, and
         // that is load-bearing and not re-measured here: moving walkers to the window
         // turned `a_hurt_bot_breaks_contact_and_a_healthy_one_holds_its_ground` red (a
         // bot at the map's edge sampled grounded instead of mid-hop). Filed in T22.03I.
-        // (A first cut measured from where it last moved `STUCK_PX` instead; a bot
+        // (A first cut measured from where it last moved `BOT_STUCK_PX` instead; a bot
         // sliding a few px a second along a face then resets every few windows and
-        // never reaches the long legs. The window is what `STUCK_PX`'s doc says.)
+        // never reaches the long legs. The window is what `BOT_STUCK_PX`'s doc says.)
         let pressing = buttons & (button::LEFT | button::RIGHT) != 0;
         if !pressing {
             self.still_for = 0.0;
@@ -563,15 +521,15 @@ impl Bot {
         } else if winged {
             self.still_for += dt;
             self.stuck_window += dt;
-            if self.stuck_window >= STUCK_WINDOW {
-                if (pos.x - self.stuck_from).abs() >= STUCK_PX {
+            if self.stuck_window >= BOT_STUCK_WINDOW {
+                if (pos.x - self.stuck_from).abs() >= BOT_STUCK_PX {
                     self.still_for = 0.0;
                 }
                 self.stuck_window = 0.0;
                 self.stuck_from = pos.x;
             }
         } else {
-            if (pos.x - self.stuck_from).abs() < STUCK_PX {
+            if (pos.x - self.stuck_from).abs() < BOT_STUCK_PX {
                 self.still_for += dt;
             } else {
                 self.still_for = 0.0;
@@ -580,7 +538,7 @@ impl Bot {
         }
 
         let rise = pos.y - move_to.y; // positive when the target is above
-        let stuck = self.still_for > STUCK_WINDOW;
+        let stuck = self.still_for > BOT_STUCK_WINDOW;
         let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded);
         if wants_jump {
             buttons |= button::JUMP;
@@ -590,48 +548,24 @@ impl Bot {
             }
         }
 
-        // **A bot that picks up T21.03's unicorn wings changes nothing here, and
-        // that is deliberate** — the grep this note answers is the task file's.
-        //
-        // Nothing below knows about wings, so a winged bot goes on pressing
-        // JUMP when it is stuck and JUMP|UP when its target is above. Both are
-        // refused by `apply_input` while the wings are held, and the outcome is
-        // survivable rather than merely harmless:
-        //
-        //  - the jetpack climb's `JUMP|UP` still lands, as a climb: since T21.34
-        //    wings hover with no vertical input and `UP` rises, so a bot whose
-        //    target is above goes up to it at `WINGS_FLY_SPEED`, without fuel;
-        //  - the stuck-jump is refused, and a stuck winged bot with nothing
-        //    above it hovers in place (it can still walk out sideways) —
-        //    *superseded by T22.03F below: it did not walk out, it held its
-        //    sideways press into the rock for the rest of the round;*
-        //  - and `DOWN` descends. That arm already fires when the target is well
-        //    below, so a winged bot chasing something on the ground comes down
-        //    to it.
-        //
-        // The result is a bot that hovers toward its target instead of walking,
-        // which is odd to watch and not broken. Teaching it to *use* flight —
-        // holding DOWN to close vertically rather than only when far above — is
-        // real work and belongs in a bot task, not here.
-        //
         // Jetpack for a real climb, and only with fuel to spare — a bot that
         // empties its tank hovering is a bot that cannot escape.
-        if rise > JETPACK_RISE && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5 {
+        if rise > BOT_JETPACK_RISE && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5 {
             buttons |= button::JUMP | button::UP;
-        } else if rise < -JETPACK_RISE * 2.0 && !me.body.grounded {
+        } else if rise < -BOT_JETPACK_RISE * 2.0 && !me.body.grounded {
             buttons |= button::DOWN;
         }
         // **T22.03F: the stuck-jump is refused while the wings are held, so a winged
         // bot's way over a wall is the wings' own — UP, held for as long as it stays
-        // stuck** (still pressing sideways and not moving). The note above expected it
-        // to "walk out sideways"; traced, it pressed RIGHT into rock for the rest of
+        // stuck** (still pressing sideways and not moving). T21.03's note here expected
+        // it to "walk out sideways"; traced, it pressed RIGHT into rock for the rest of
         // the round — 3–10 runs ≥ 10 s per 32-seed draw in *both* modes, to 152 s —
         // so this is the walking model's, not `space::steer`'s (R5 keeps wings "as
         // anywhere"). The sideways press stays: it rises along the face and moves off
         // the top, which resets `still_for` and releases UP. **Under an overhang UP is
         // blocked too** (traced after the first cut: JUMP|UP|RIGHT held under rock,
         // runs to 73 s), so the vertical press **sweeps outward**: up for one
-        // `STUCK_WINDOW`, down for two, up for three — each leg one window longer,
+        // `BOT_STUCK_WINDOW`, down for two, up for three — each leg one window longer,
         // so the search reaches past the start in both directions and a face of any
         // height is eventually rounded.
         if winged && stuck {
@@ -640,17 +574,17 @@ impl Bot {
                 self.stats.ticks_winged_stuck_moving += 1;
             }
             buttons &= !(button::UP | button::DOWN);
-            let leg = winged_sweep_leg(self.still_for - STUCK_WINDOW);
-            if leg >= WINGED_SWEEP_LEGS {
+            let leg = winged_sweep_leg(self.still_for - BOT_STUCK_WINDOW);
+            if leg >= BOT_WINGED_SWEEP_LEGS {
                 // T22.03I F4: **a way up that is not there is given up** — a closed
                 // pocket swept forever before. A wander cell is marked tried; any other
-                // goal is left alone for `WANDER_GIVE_UP`, hovering, then tried again.
-                self.sweep_refused_until = now + WANDER_GIVE_UP;
+                // goal is left alone for `BOT_WANDER_GIVE_UP`, hovering, then tried again.
+                self.sweep_refused_until = now + BOT_WANDER_GIVE_UP;
                 self.still_for = 0.0;
                 self.stuck_window = 0.0;
                 self.stuck_from = pos.x;
                 if self.goal == Goal::Wander {
-                    self.wander_for = WANDER_GIVE_UP;
+                    self.wander_for = BOT_WANDER_GIVE_UP;
                 }
                 buttons &= !(button::LEFT | button::RIGHT);
             } else {
@@ -675,7 +609,9 @@ impl Bot {
         // guard was `leg_barred` on the sweep's legs: it walked onto an enemy standing in a
         // vortex's mouth and was taken (`a_winged_bot_in_space_keeps_out_of_a_vortex`).
         if wing_space {
-            let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
+            let fire = self
+                .hazard_at(world, pos, BOT_HAZARD_CLEARANCE)
+                .map(|h| h.pos);
             if let Some(out) = space::escape(world, pos, me.body.vel, fire) {
                 buttons &=
                     !(button::LEFT | button::RIGHT | button::UP | button::DOWN | button::JUMP);
@@ -780,10 +716,12 @@ impl Bot {
             },
             Goal::Wander => space::Dest {
                 at: aim_at,
-                stop: WANDER_ARRIVED,
+                stop: BOT_WANDER_ARRIVED,
             },
         };
-        let fire = self.hazard_at(world, pos, HAZARD_CLEARANCE).map(|h| h.pos);
+        let fire = self
+            .hazard_at(world, pos, BOT_HAZARD_CLEARANCE)
+            .map(|h| h.pos);
         let b = space::steer(world, me, Some(dest), fire, &mut self.flight, dt);
         if space::forbidden(world, dest.at) {
             self.stats.ticks_dest_forbidden += 1;
@@ -925,15 +863,15 @@ impl Bot {
             // Arrived, or gave up. Both mark the cell: "seen" means "been there
             // or tried", because a cell whose middle is buried in rock can never
             // be entered and a bot that insists on it stops exploring.
-            let arrived = self
-                .wander_to
-                .is_some_and(|w| cov.cell_of(w) == (cx, cy) || (w - pos).len() < WANDER_ARRIVED);
+            let arrived = self.wander_to.is_some_and(|w| {
+                cov.cell_of(w) == (cx, cy) || (w - pos).len() < BOT_WANDER_ARRIVED
+            });
             // T22.03D: a cell in a space keep-out (a permanent vortex's disc, the
             // hole's reach) is one `space::steer` will not approach, so the bot sat
-            // out `WANDER_GIVE_UP` against whatever rock it was on — "seen" at once.
+            // out `BOT_WANDER_GIVE_UP` against whatever rock it was on — "seen" at once.
             let barred = world.gravity == GravityMode::Space
                 && self.wander_to.is_some_and(|w| space::forbidden(world, w));
-            let gave_up = self.wander_for > WANDER_GIVE_UP || barred;
+            let gave_up = self.wander_for > BOT_WANDER_GIVE_UP || barred;
             if arrived || gave_up {
                 if let Some(w) = self.wander_to {
                     let (wx, wy) = cov.cell_of(w);
@@ -1094,7 +1032,7 @@ impl Bot {
         let reach = w.map_or(0.0, |w| {
             zone_reach(w, world.gravity).unwrap_or(w.blast_radius)
         });
-        (reach * 2.0).max(40.0)
+        (reach * BOT_STAND_OFF_SCALE).max(BOT_STAND_OFF_MIN)
     }
 
     /// The selected weapon, **if it can actually be fired**.
@@ -1251,7 +1189,7 @@ impl Bot {
             // Never fire at something inside our own blast radius: a bot that
             // rockets its own feet is not a difficulty setting, it is a bug that
             // looks like one.
-            if w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
+            if w.blast_radius > 0.0 && dist < w.blast_radius * BOT_BLAST_GUARD {
                 self.stats.rej_blast_guard += 1;
                 return false;
             }
@@ -1290,14 +1228,14 @@ impl Bot {
     /// items on the far side of ordinary ground.
     fn reachable(&self, world: &World, from: Vec2, to: Vec2) -> bool {
         let dist = (to - from).len();
-        let steps = (dist / LOS_STEP).ceil() as u32;
+        let steps = (dist / BOT_LOS_STEP).ceil() as u32;
         let mut blocked = 0u32;
         for i in 1..steps {
             let t = i as f32 / steps as f32;
             let p = from + (to - from) * t;
             if crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32) {
                 blocked += 1;
-                if blocked > MAX_BLOCKED_SAMPLES {
+                if blocked > BOT_LOS_MAX_BLOCKED {
                     return false;
                 }
             }
@@ -1353,7 +1291,7 @@ impl Bot {
                 _ => w.range,
             };
             if reach > 0.0 && dist > reach {
-                score *= 0.25;
+                score *= BOT_OUT_OF_REACH_SCORE;
             }
             // The self-blast penalty, and **not for melee**: a swing's
             // `blast_radius` is the carve at the tip of the arc and `swing` skips
@@ -1361,8 +1299,8 @@ impl Bot {
             // the same distinction, for the same reason — the two must agree, or
             // a bot selects a weapon it will then refuse to use.
             let self_blast = !matches!(w.delivery, Delivery::Melee { .. });
-            if self_blast && w.blast_radius > 0.0 && dist < w.blast_radius * 1.5 {
-                score *= 0.1;
+            if self_blast && w.blast_radius > 0.0 && dist < w.blast_radius * BOT_BLAST_GUARD {
+                score *= BOT_REFUSED_SCORE;
             }
             // T22.03C: and a zone weapon `should_fire` would refuse to throw from
             // here — **the same guard, called, not copied** (`zone_refusal`): too
@@ -1370,7 +1308,7 @@ impl Bot {
             // at first, bots held a molotov they could not throw for 4.7 % of their
             // lives and standard kills fell 14 % (96 seeds, measured).
             if zone_refusal(world, w, wid, pos, target).is_some() {
-                score *= 0.1;
+                score *= BOT_REFUSED_SCORE;
             }
             if best.is_none_or(|(bs, _)| score > bs) {
                 best = Some((score, slot));
@@ -1385,7 +1323,7 @@ impl Bot {
     /// threat scan that had no reader; keeping them "in case" is how the scan
     /// stayed alive through a review.
     fn choose_item(&self, me: &crate::player::state::PlayerState) -> Option<u8> {
-        let hurt = me.health < HEAL_BELOW;
+        let hurt = me.health < BOT_HEAL_BELOW;
 
         for slot in 0..INVENTORY_SLOTS as u8 {
             let Some(stack) = me.inventory.slot(slot) else {
@@ -1403,7 +1341,7 @@ impl Bot {
         // hypothetical: adding the battery and the lasers with no rule here took
         // bot rounds from fighting to `ticks_engaged: 0`, because a bot holding an
         // uncharged laser is permanently unarmed and permanently shopping.
-        if me.battery <= BATTERY_MAX * CHARGE_BELOW {
+        if me.battery <= BATTERY_MAX * BOT_CHARGE_BELOW {
             for slot in 0..INVENTORY_SLOTS as u8 {
                 let Some(stack) = me.inventory.slot(slot) else {
                     continue;
@@ -1517,9 +1455,9 @@ fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMode) -> Opti
 /// Why a zone weapon may not be thrown from `pos` at `target`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZoneRefusal {
-    /// The target is inside the hazard's reach (+ `HAZARD_CLEARANCE`).
+    /// The target is inside the hazard's reach (+ `BOT_HAZARD_CLEARANCE`).
     TooClose,
-    /// The arc lands inside that reach of us, nowhere within `PREDICT_TICKS`, or
+    /// The arc lands inside that reach of us, nowhere within `BOT_PREDICT_TICKS`, or
     /// (zero-g) somewhere that never reaches the target.
     Landing,
 }
@@ -1544,7 +1482,7 @@ fn zone_refusal(
     target: Vec2,
 ) -> Option<ZoneRefusal> {
     let reach = zone_reach(w, world.gravity)?;
-    if (target - pos).len() < reach + HAZARD_CLEARANCE {
+    if (target - pos).len() < reach + BOT_HAZARD_CLEARANCE {
         return Some(ZoneRefusal::TooClose);
     }
     let landing = crate::weapons::projectile::predict_impact(
@@ -1554,7 +1492,7 @@ fn zone_refusal(
         (target - pos).angle(),
         world.wind,
         world.gravity,
-        PREDICT_TICKS,
+        BOT_PREDICT_TICKS,
         crate::constants::SIM_DT,
     );
     // **In zero-g it must also reach the target.** The flight is a straight line, so
@@ -1579,7 +1517,7 @@ fn zone_refusal(
         contact && (pos + seg * t - target).len() <= crate::constants::PLAYER_W
     };
     match landing {
-        Some(at) if (at - pos).len() >= reach + HAZARD_CLEARANCE && reaches(at) => None,
+        Some(at) if (at - pos).len() >= reach + BOT_HAZARD_CLEARANCE && reaches(at) => None,
         _ => Some(ZoneRefusal::Landing),
     }
 }
@@ -1743,7 +1681,7 @@ mod tests {
                 })
                 .expect("a weapon def")
         };
-        let floor = SHOVEL_DAMAGE / SHOVEL_COOLDOWN * 0.25;
+        let floor = SHOVEL_DAMAGE / SHOVEL_COOLDOWN * BOT_OUT_OF_REACH_SCORE;
         for item in [MOLOTOV, TOXIC_GRENADE] {
             let w = wdef(item);
             assert_eq!(w.damage, 0.0, "control: {} does damage itself", w.key);
@@ -1790,7 +1728,7 @@ mod tests {
                 crate::physics::body::Body::new(p).aabb(),
             )
         };
-        let d = (BOT_SPACE_ZONE_REACH + HAZARD_CLEARANCE + FOV_DAY) * 0.5;
+        let d = (BOT_SPACE_ZONE_REACH + BOT_HAZARD_CLEARANCE + FOV_DAY) * 0.5;
         // A target a body's width in front of a rock face to its right, and a
         // thrower `d` to its left along clear air.
         let geo = w.map.space_geometry().expect("space");
@@ -1850,7 +1788,7 @@ mod tests {
                         (to - from).angle(),
                         w.wind,
                         w.gravity,
-                        PREDICT_TICKS,
+                        BOT_PREDICT_TICKS,
                         SIM_DT,
                     )
                     .is_none()
@@ -1901,7 +1839,7 @@ mod tests {
             )
         };
         let geo = w.map.space_geometry().expect("space");
-        let near_band = reach + HAZARD_CLEARANCE + PLAYER_W;
+        let near_band = reach + BOT_HAZARD_CLEARANCE + PLAYER_W;
         // (from, enemy far from the landing, enemy at the landing): searched for, and
         // a map with none is a fixture error, not a pass.
         let (from, far, at) = (0..w.map.mask.h as i32)
@@ -1919,7 +1857,7 @@ mod tests {
                     angle,
                     w.wind,
                     w.gravity,
-                    PREDICT_TICKS,
+                    BOT_PREDICT_TICKS,
                     SIM_DT,
                 )?;
                 let dir = Vec2::new(angle.cos(), angle.sin());
@@ -2512,7 +2450,7 @@ mod tests {
     }
 
     /// **T22.03I F4: a winged bot crossing open air never counts itself stuck.** The
-    /// stuck test compared one tick's movement with `STUCK_PX` (6 px), and wings fly
+    /// stuck test compared one tick's movement with `BOT_STUCK_PX` (6 px), and wings fly
     /// 3.3 px a tick — so a winged bot half a second into any sideways flight "was
     /// stuck" and swept up and down across open air (74 % of winged stuck ticks in
     /// space moving over 100 px/s). The control: it really did cross (≥ half the gap),
@@ -2595,7 +2533,7 @@ mod tests {
         let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, v);
         let below = v + Vec2::new(
             0.0,
-            crate::constants::VORTEX_REACH + WINGS_FLY_SPEED * STUCK_WINDOW,
+            crate::constants::VORTEX_REACH + WINGS_FLY_SPEED * BOT_STUCK_WINDOW,
         );
         assert!(
             leg_barred(&w, below, button::UP),
@@ -2610,7 +2548,7 @@ mod tests {
     /// **T22.03I F4: a winged bot shut in a closed pocket gives the way up within a
     /// bound** — it swept up and down for the rest of the round before. A cavity two
     /// body heights tall in a block of rock, the enemy outside it: the bot presses
-    /// toward the enemy, is stuck, sweeps its `WINGED_SWEEP_LEGS` legs, and then stops
+    /// toward the enemy, is stuck, sweeps its `BOT_WINGED_SWEEP_LEGS` legs, and then stops
     /// pressing. The control: it did press and sweep first. Both gravities.
     /// **T22.14B M4: a winged bot in space keeps out of a vortex.** Wings walk the
     /// walking model in every mode (R5), and in space nothing kept that model out of what
@@ -2703,7 +2641,8 @@ mod tests {
     fn a_winged_bot_in_a_closed_pocket_gives_up_within_a_bound() {
         use crate::items::registry::UNICORN_WINGS;
         // Stuck after one window, four legs of 1..=4 windows: 5.5 s; a second's slack.
-        let bound = STUCK_WINDOW * (1.0 + (1..=WINGED_SWEEP_LEGS).sum::<u32>() as f32) + 1.0;
+        let bound =
+            BOT_STUCK_WINDOW * (1.0 + (1..=BOT_WINGED_SWEEP_LEGS).sum::<u32>() as f32) + 1.0;
         for gravity in [GravityMode::Standard, GravityMode::Space] {
             let mut w = world_with(&[1, 2]);
             w.gravity = gravity;
@@ -3234,7 +3173,7 @@ mod tests {
         // Inside `FOV_DAY` (320) — an item further than that is invisible and
         // the presence half below would fail for the wrong reason, which the
         // first version of this fixture did — and far enough that a wall between
-        // can exceed `MAX_BLOCKED_SAMPLES * LOS_STEP` (192 px).
+        // can exceed `BOT_LOS_MAX_BLOCKED * BOT_LOS_STEP` (192 px).
         let clear = drop_at(&mut w, BAZOOKA, Vec2::new(at.x + 300.0, at.y));
         let mut b = Bot::new(1, SEED, 0, 0.6);
         b.think(&w, 0.0, SIM_DT);
@@ -3246,12 +3185,12 @@ mod tests {
             "a bot ignored an item in plain sight"
         );
 
-        // Now wall it off. The tolerance is a **count**: `MAX_BLOCKED_SAMPLES`
-        // samples at `LOS_STEP` px is 192 px of rock, so a 160 px wall passes it
+        // Now wall it off. The tolerance is a **count**: `BOT_LOS_MAX_BLOCKED`
+        // samples at `BOT_LOS_STEP` px is 192 px of rock, so a 160 px wall passes it
         // — which the first version of this test discovered by failing. This one
         // is 300 px along the line, "behind a mountain" rather than "over a
         // hill", and it is derived from the two constants rather than picked.
-        let thick = (MAX_BLOCKED_SAMPLES as f32 * LOS_STEP * 1.25) as i32;
+        let thick = (BOT_LOS_MAX_BLOCKED as f32 * BOT_LOS_STEP * 1.25) as i32;
         for dx in 30..(30 + thick) {
             for dy in -200..200 {
                 w.map.mask.set(at.x as i32 + dx, at.y as i32 + dy);
@@ -3751,9 +3690,9 @@ mod tests {
         })
         .map_or(0.0, |w| w.blast_radius);
         assert!(
-            stand > blast * 1.5,
+            stand > blast * BOT_BLAST_GUARD,
             "stands at {stand} px inside a {} px blast guard",
-            blast * 1.5
+            blast * BOT_BLAST_GUARD
         );
     }
 

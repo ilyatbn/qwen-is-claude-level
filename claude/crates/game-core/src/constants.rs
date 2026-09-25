@@ -3609,7 +3609,7 @@ pub const LOBBY_BOT_TIMEOUT: f32 = 10.0;
 
 /// Health below which a bot breaks contact instead of closing (§E10).
 ///
-/// Below `HEAL_BELOW` (40) a bot already reaches for a medkit, and this sits
+/// Below `BOT_HEAL_BELOW` (40) a bot already reaches for a medkit, and this sits
 /// under it on purpose: heal first if you can, run only when that has not saved
 /// you. The gap is what stops a bot with a medkit in its bag running away
 /// instead of using it.
@@ -3658,7 +3658,7 @@ pub const BOT_SPACE_BURN_MARGIN: f32 = 1.0;
 /// wants to move is **blocked** (the review's "not moving", 20 px/s).
 pub const BOT_SPACE_STUCK_SPEED: f32 = 20.0;
 /// T22.03D: blocked this long, s, a flying bot turns off the rock
-/// (`space::clear_heading`) — the walking model's `STUCK_WINDOW`.
+/// (`space::clear_heading`) — the walking model's `BOT_STUCK_WINDOW`.
 pub const BOT_SPACE_STUCK_WINDOW: f32 = 0.5;
 /// T22.03D: and holds that detour this long, s, before steering for its
 /// destination again — long enough at `BOT_SPACE_CRUISE` to slide a body length
@@ -3689,6 +3689,74 @@ pub const BOT_SPACE_HAZARD_MARGIN: f32 = 64.0;
 /// below this fraction of `BATTERY_MAX` and it carries none — past a visible
 /// enemy: an unsealed suit loses `RADIATION_DPS` for the rest of the round.
 pub const BOT_SUIT_SHOP_BELOW: f32 = 0.5;
+
+// --- the bots' own tuning (moved out of `bots/mod.rs` by T22.14B; no value changed) ---
+
+/// How far above the bot a target must be, px, before the walking model reaches for
+/// the jetpack (`JUMP | UP`) — and twice it below, airborne, before it presses `DOWN`.
+/// About four body heights: a step or a jump covers less (`STEP_UP`, the jump arm).
+pub const BOT_JETPACK_RISE: f32 = 120.0;
+/// Solid samples along a line that still count as clear (`Bot::reachable`: a shot, an
+/// item). Generous on purpose: every weapon in this game digs (`docs/70` §A3), so rock
+/// between you and your target is soft cover, not a wall — a near-the-muzzle guard was
+/// measured refusing 87 % of the shots this allows. 24 samples at `BOT_LOS_STEP` is
+/// ~190 px of rock.
+pub const BOT_LOS_MAX_BLOCKED: u32 = 24;
+/// Spacing of those samples, px — finer than the thinnest rock a carve leaves.
+pub const BOT_LOS_STEP: f32 = 8.0;
+/// Health below which a bot uses a medkit it carries (and `BOT_FLEE_HEALTH` sits under
+/// it: heal first, run only when that has not saved you).
+pub const BOT_HEAL_BELOW: f32 = 40.0;
+/// A bot uses a battery pack below this fraction of `BATTERY_MAX` — enough that a laser
+/// is usable and a shield is worth raising (§B5: without it an uncharged laser left bots
+/// permanently unarmed, `ticks_engaged: 0`).
+pub const BOT_CHARGE_BELOW: f32 = 0.4;
+/// Margin around a burning patch or flame a bot treats as unsafe, px, on top of its
+/// radius — about a player's width (`PLAYER_W`), so a bot standing at the rim is already
+/// leaving. Also the zone-throw guard's margin (`zone_refusal`).
+pub const BOT_HAZARD_CLEARANCE: f32 = 20.0;
+/// How far ahead a walking bot looks before stepping into fire, px — about a walk-second.
+pub const BOT_HAZARD_LOOKAHEAD: f32 = 48.0;
+/// How far ahead the throw predictor flies the arc, ticks. Two seconds is past every
+/// fuse in the arsenal, and capping it matters: running to `PROJECTILE_MAX_LIFETIME` for
+/// every bot every tick is a tick-budget problem, not a safety improvement.
+pub const BOT_PREDICT_TICKS: u32 = 120;
+/// A bot that has not moved this far, px, is not moving: per tick for a walking bot
+/// (a walk is 2.5 px a tick, so a walking bot hops every `BOT_STUCK_WINDOW` — filed,
+/// load-bearing, T22.03I), over each `BOT_STUCK_WINDOW` for a winged one (T22.03I F4).
+pub const BOT_STUCK_PX: f32 = 6.0;
+/// Pressing sideways and not moving this long, s, a bot is stuck: the walking model
+/// jumps, a winged one sweeps (`BOT_WINGED_SWEEP_LEGS`). Also a sweep leg's unit.
+pub const BOT_STUCK_WINDOW: f32 = 0.5;
+/// T22.03I F4: legs a stuck winged bot sweeps before giving the way up — up one window,
+/// down two, up three, down four: ±2 legs' reach at `WINGS_FLY_SPEED` (±200 px, seven
+/// body heights) either side of where it stuck, in 5 s.
+pub const BOT_WINGED_SWEEP_LEGS: u32 = 4;
+/// Seconds a bot heads for one unvisited cell before marking it seen and choosing another
+/// (§E10) — the escape hatch for a cell whose middle is inside rock, without which a bot
+/// walks at a wall for the rest of the round. Also how long a winged bot that gave its
+/// sweep up hovers before trying its goal again.
+pub const BOT_WANDER_GIVE_UP: f32 = 6.0;
+/// Near enough a wander target to count as there, px — a quarter cell.
+pub const BOT_WANDER_ARRIVED: f32 = BOT_EXPLORE_CELL as f32 / 4.0;
+/// A bot's stand-off from its enemy is this many times its weapon's hazard reach (a zone's
+/// reach, else the blast radius) — outside its own blast either way (`Bot::stand_off`).
+pub const BOT_STAND_OFF_SCALE: f32 = 2.0;
+/// ...and never under this, px — `Bot::hold_off` brings it inside a weapon's range where
+/// that is shorter (the shovel's 28 px reach, T22.03H).
+pub const BOT_STAND_OFF_MIN: f32 = 40.0;
+/// A bot never fires at a target inside this many blast radii (`should_fire`) and scores
+/// a weapon that would down for it (`choose_weapon`) — one rule, both callers: a bot that
+/// rockets its own feet is a bug that looks like a difficulty setting.
+pub const BOT_BLAST_GUARD: f32 = 1.5;
+/// `choose_weapon`'s score for a weapon that cannot reach the target from here: a
+/// quarter — penalised, not disqualified, since walking closer with a bazooka beats
+/// standing still with nothing.
+pub const BOT_OUT_OF_REACH_SCORE: f32 = 0.25;
+/// `choose_weapon`'s score for a weapon `should_fire` would refuse from here (its blast
+/// guard, or `zone_refusal`): a tenth — below any weapon that could fire (T22.03C: scored on
+/// distance only, bots held an unthrowable molotov 4.7 % of their lives).
+pub const BOT_REFUSED_SCORE: f32 = 0.1;
 
 // ---- v7 amendments ----  mirrors docs/75-amendments-v7.md
 
