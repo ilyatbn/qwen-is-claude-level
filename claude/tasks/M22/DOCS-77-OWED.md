@@ -102,3 +102,27 @@ that surface mid-milestone are collected here so they are not lost. Each names i
 - `docs/13` §7 "never a hazard position" is contradicted by lava and the solar flare (T22.08A).
 - `docs/13`, `docs/14`, `docs/10` describe behaviour space overrides; `docs/20-player-movement.md` still refuses fall
   damage outright (TASKS.md M22 section).
+
+## The final audit's hazards (T22.14A; R99 and the H3 ruling are in its addenda)
+11. **Amends point 8 (R91):** within the black hole's reach **neither the asteroid wells nor any vortex pulls** — only
+    the hole (H1: a capped vortex pull of 675 on top of the hole's 810 dragged bodies in from outside the horizon). A
+    vortex still *captures* there (by radius), so no exit through the rim opens.
+12. **Amends point 8's placement sentence:** respawns, mid-round joins and vortex trips keep clear of the hole's reach
+    **from the telegraph on** (`World::black_hole_site`: warned or here), not only once it is here (H2).
+13. **docs/13 (weather) and docs/41 §3:** weather-sourced damage is refused in `Ended`, as in Warmup. New constant
+    `METEOR_FALL_TIME` = 2 × `PROJECTILE_MAX_LIFETIME` (16 s); a shower's `Active` phase is `METEOR_DURATION` +
+    `METEOR_FALL_TIME` (meteors drop only in the first `METEOR_DURATION`), so `effect_start.duration` for a shower is
+    26 s and a shower rolled within 29 s of the bell is refused (H3; the standard weather golden lost one row).
+14. **Space's shower (R99), for the space section:** meteors start `METEOR_SPACE_INSET` (= one tick's flight) inside
+    the rim's inner face at a random angle and fly at a random asteroid at `METEOR_SPEED`; weather ordnance that
+    reaches the rim — past its inner face, or an impact whose blast would bite it — despawns without carving, damage or
+    fragments (`projectile_despawn` reason `void`). The rim breaks only from player weapons. A space block joins the
+    weather golden.
+15. **docs/40 `map_init`:** one new byte after `theme` — the map's generator (`0` v1, `1` v2, `2` space; any other value
+    refused). `MapMeta` gains `generator`, the one answer to "is this a space map?" (it was the asteroid list being
+    non-empty, which the black hole mutates). The client installs it before `loadMask`. The day/night darkness is zero on
+    a space *map* (was keyed on the gravity field).
+16. **The black hole's picture:** the disc and the accretion ring are full size from the arrival frame; only the
+    decoration swells in (`BLACK_HOLE_GROW_MS`). The vortex swirl is sized off the capture ring (drawing only), not
+    `VORTEX_REACH / 2`.
+17. `REPLAY_VERSION` 25 (H1, H2, H3, R99; no layout change).
