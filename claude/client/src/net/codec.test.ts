@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Core, C, MapGenerator, MapScale } from '../core'
 import {
   decodeMapInit,
+  ASTEROID_LUMP_SLOTS,
   ASTEROID_WIRE_BYTES,
   decodeSnapshot,
   encodeInputBatch,
@@ -114,7 +115,13 @@ function mapInitFixture(opts: Partial<{
     v.setInt16(at, 1200 + i, true); at += 2  // y
     v.setUint16(at, 30 + i, true); at += 2   // r
     v.setUint8(at++, 1 + i)                  // level: varies, so a decoder that
-  }                                          // hardcodes one value fails
+    for (let j = 0; j < ASTEROID_LUMP_SLOTS; j++) { // hardcodes one value fails
+      // T22.18B: the lump slots; a filled first slot, the rest empty.
+      v.setInt16(at, j === 0 ? -(5 + i) : 0, true); at += 2 // dx
+      v.setInt16(at, j === 0 ? 7 + i : 0, true); at += 2    // dy
+      v.setUint8(at++, j === 0 ? 9 + i : 0)                 // r
+    }
+  }
   v.setUint32(at, opts.rleLenLie ?? rle.length, true); at += 4
   new Uint8Array(b).set(rle, at)
   return b
@@ -214,11 +221,18 @@ describe('map_init', () => {
     // section above it, everything past it decodes from the right offset only
     // if this one is read. The levels vary so a decoder that hardcodes one
     // fails.
+    const empty = { dx: 0, dy: 0, r: 0 }
+    const lumps = (i: number) => [
+      { dx: -(5 + i), dy: 7 + i, r: 9 + i },
+      ...Array.from({ length: ASTEROID_LUMP_SLOTS - 1 }, () => empty),
+    ]
     expect(m.asteroids).toEqual([
-      { x: 1100, y: 1200, r: 30, level: 1 },
-      { x: 1101, y: 1201, r: 31, level: 2 },
-      { x: 1102, y: 1202, r: 32, level: 3 },
+      { x: 1100, y: 1200, r: 30, level: 1, lumps: lumps(0) },
+      { x: 1101, y: 1201, r: 31, level: 2, lumps: lumps(1) },
+      { x: 1102, y: 1202, r: 32, level: 3, lumps: lumps(2) },
     ])
+    // The slot count is the core's, not a TS copy of it.
+    expect(ASTEROID_LUMP_SLOTS).toBe(C().ASTEROID_LUMP_SLOTS)
     expect(Array.from(m.rle)).toEqual([1, 2, 3, 4])
   })
 

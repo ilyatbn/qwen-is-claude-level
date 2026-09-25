@@ -16,11 +16,17 @@
  * `black-hole` asserts both on the rendered frame in both paths, against the same
  * instant with the layer hidden, plus a control point clear of it (§C2).
  *
+ * **The reach ring** (T22.18B F4) is `Graphics` on **both** paths: a faint thin ring
+ * at `BLACK_HOLE_REACH` — the edge of the pull and of R91's muted wells, not a line of
+ * the death rule. It is far outside the shader's quad (which ends at the glow), so
+ * one stroke serves both paths; `black-hole` photographs it on each.
+ *
  * **The telegraph** (T22.12C, R93) is `Graphics` on **both** paths: a solid ring in
  * `BLACK_HOLE_WARN_COLOR` at the horizon where the hole will open, and a thin ring
- * closing in onto it from the reach over `BLACK_HOLE_TELEGRAPH`. One picture on
- * both paths on purpose — it is a warning, not the event, and a shader for two
- * seconds would be a second thing for the check to prove.
+ * closing in onto it from the glow's edge (`BLACK_HOLE_GLOW_HORIZONS` horizons, not the
+ * reach since T22.18) over `BLACK_HOLE_TELEGRAPH`. One picture on both paths on purpose
+ * — it is a warning, not the event, and a shader for two seconds would be a second
+ * thing for the check to prove.
  */
 
 import Phaser from 'phaser'
@@ -29,6 +35,8 @@ import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
 import {
   BLACK_HOLE_DISC_COLOR,
+  BLACK_HOLE_REACH_RING_ALPHA,
+  BLACK_HOLE_REACH_RING_W,
   BLACK_HOLE_RING_COLOR,
   BLACK_HOLE_RING_W,
   BLACK_HOLE_SPIN,
@@ -72,6 +80,12 @@ export interface BlackHoleFxState {
   growth: number
   /** The accretion ring's colour, 0–255 — what a check expects at the ring. */
   ringRgb: [number, number, number]
+  /**
+   * T22.18B F4: the reach ring was painted this frame (with the hole, both paths), and
+   * its alpha over the frame beneath — a check expects `mix(beneath, ringRgb, alpha)`.
+   */
+  reachRing: boolean
+  reachAlpha: number
   radii: BlackHoleRadii
   /** R93: the telegraph was painted this frame (the hole is not here yet). */
   warned: boolean
@@ -191,6 +205,7 @@ export class BlackHoleFx {
       const r = blackHoleRadii(C())
       if (viaShader) this.paintShader(hole, growth, r)
       else this.paintFlat(hole, growth, r, t)
+      this.paintReach(hole, r)
     } else if (!hole && warn && !this.hidden) {
       progress = warnProgress(warn.since, warn.opensAt, nowMs)
       this.paintWarn(warn, progress, blackHoleRadii(C()))
@@ -249,12 +264,24 @@ export class BlackHoleFx {
       hidden: this.hidden,
       growth,
       ringRgb: rgbOf(BLACK_HOLE_RING_COLOR),
+      reachRing: drawn,
+      reachAlpha: BLACK_HOLE_REACH_RING_ALPHA,
       radii: blackHoleRadii(C()),
       warned,
       warnProgress: progress,
       warnRgb: rgbOf(BLACK_HOLE_WARN_COLOR),
       warnAt: warnAt ? { x: warnAt.x, y: warnAt.y } : null,
     }
+  }
+
+  /**
+   * T22.18B F4: the faint ring at the reach — where the pull ends and the wells come
+   * back (R91). Full size from the arrival, like the disc and the ring: it is where the
+   * pull is, not decoration.
+   */
+  private paintReach(h: BlackHoleDraw, r: BlackHoleRadii): void {
+    this.gfx.lineStyle(BLACK_HOLE_REACH_RING_W, BLACK_HOLE_RING_COLOR, BLACK_HOLE_REACH_RING_ALPHA)
+    this.gfx.strokeCircle(h.x, h.y, r.reach)
   }
 
   /** R93: the solid ring where it will open, and the ring closing in onto it. */

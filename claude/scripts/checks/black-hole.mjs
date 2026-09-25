@@ -34,6 +34,11 @@
  * 5. **coverage in both of GameScene's render paths**: the accretion ring painted in
  *    its own colour and the disc black, against the same frozen instant with the layer
  *    hidden, plus a control point clear of the glow (§C2). Screenshots in the shots dir;
+ * 5a. **the reach ring** (T22.18B F4), both paths: the camera on the ring's arc, probes
+ *    on it are the frame hidden mixed with the ring's colour at the ring's alpha (a faint
+ *    ring, and exactly that one), and probes a ring-width-and-more inside and outside it
+ *    did not change (the control). On the minimap (arm 1) the marker carries a circle of
+ *    the reach's radius, gone with the layer hidden;
  * 5b. **the bell for a body in the pull** (T22.12D F1): placed at `BELL_PLACE × REACH`
  *    `BELL_LEAD_S` before the round's `ends_tick`, what the page had predicted for its
  *    body when it heard the bell, against the server's state at that tick
@@ -291,6 +296,77 @@ async function telegraph(page, w) {
   }
 }
 
+/**
+ * How far off the expected mix a reach-ring probe may be, per channel: antialiasing at
+ * the stroke's centre line, and the PNG round trip.
+ */
+const REACH_TOLERANCE = 16
+/** Reach-ring probes along the arc in view, and their spread either side, rad. */
+const REACH_PROBES = 9
+const REACH_SPREAD = 0.2
+/** The controls sit this far inside and outside the reach, world px — clear of the stroke. */
+const REACH_CTRL_OFF = 24
+
+/**
+ * T22.18B F4: the faint ring at `BLACK_HOLE_REACH` on the rendered frame. The camera is
+ * put on the ring's arc (the reach is ~2 screens wide at the match zoom); every probe on
+ * the arc must be `mix(hidden, ringRgb, reachAlpha)` — the ring, and that faint — and
+ * the controls either side of it unchanged.
+ */
+async function reachRing(page, h, label) {
+  const fx0 = (await page.evaluate(() => window.__game.debug())).blackHole.fx
+  const reach = fx0?.radii?.reach
+  if (!fx0 || !(reach > 0)) {
+    fail(`${label} reach ring: no radii to probe: ${JSON.stringify(fx0)}`)
+    return
+  }
+  // The arc toward the arena's middle from the hole, so the camera is not clamped
+  // against the map's edge with the arc off screen.
+  const mid = await page.evaluate(() => ({ x: window.__game.core.width / 2, y: window.__game.core.height / 2 }))
+  const base = Math.atan2(mid.y - h.y, mid.x - h.x)
+  const at = (a, r) => ({ x: h.x + Math.cos(a) * r, y: h.y + Math.sin(a) * r })
+  const c0 = at(base, reach)
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [c0.x, c0.y])
+  await frames(page, SETTLE_FRAMES)
+  await page.evaluate(() => window.__game.freeze(true))
+  try {
+    await frames(page, 2)
+    const fx = (await page.evaluate(() => window.__game.debug())).blackHole.fx
+    if (!fx.reachRing) fail(`${label} reach ring: the state says it was not painted: ${JSON.stringify(fx)}`)
+    const ring = []
+    const ctrl = []
+    for (let i = 0; i < REACH_PROBES; i++) {
+      const a = base + REACH_SPREAD * ((2 * i) / (REACH_PROBES - 1) - 1)
+      const s = await toScreen(page, at(a, reach).x, at(a, reach).y)
+      if (s.onScreen) ring.push({ x: s.x, y: s.y })
+      for (const off of [-REACH_CTRL_OFF, REACH_CTRL_OFF]) {
+        const q = await toScreen(page, at(a, reach + off).x, at(a, reach + off).y)
+        if (q.onScreen && i % 2 === 0) ctrl.push({ x: q.x, y: q.y })
+      }
+    }
+    const on = await photo(page)
+    await page.screenshot({ path: join(shotsDir, `black-hole-${label}-reach.png`) })
+    await page.evaluate(() => window.__game.showBlackHole(false))
+    await frames(page, 2)
+    const off = await photo(page)
+    await page.evaluate(() => window.__game.showBlackHole(true))
+    const cmp = await comparePhotos(page, on, off, { points: [...ring, ...ctrl] })
+    const want = (b) => b.map((v, i) => v * (1 - fx.reachAlpha) + fx.ringRgb[i] * fx.reachAlpha)
+    const rd = cmp.detail.slice(0, ring.length)
+    const good = rd.filter((q) => want(q.b).every((v, i) => Math.abs(q.a[i] - v) <= REACH_TOLERANCE) && q.peak > REACH_TOLERANCE)
+    const moved = cmp.points.slice(ring.length).filter(Boolean).length
+    if (ring.length < REACH_PROBES * MIN_ON_SCREEN) fail(`${label} reach ring: only ${ring.length} of ${REACH_PROBES} probes on screen`)
+    else if (good.length < ring.length * RING_COLOUR_SHARE)
+      fail(`${label} reach ring: only ${good.length} of ${ring.length} probes are the hidden frame mixed ${fx.reachAlpha} with ${JSON.stringify(fx.ringRgb)}: ${JSON.stringify(rd.slice(0, 4))}`)
+    else ok(`${label} reach ring: ${good.length}/${ring.length} probes at ${reach} px are the frame beneath mixed ${fx.reachAlpha} with the ring's colour`)
+    if (ctrl.length < 2) fail(`${label} reach ring: only ${ctrl.length} control points on screen`)
+    else if (moved > 0) fail(`${label} reach ring: control — ${moved} of ${ctrl.length} points ${REACH_CTRL_OFF} px either side of the reach changed: ${JSON.stringify(cmp.detail.slice(ring.length))}`)
+    else ok(`${label} reach ring: control — ${ctrl.length} points ${REACH_CTRL_OFF} px either side of it did not change`)
+  } finally {
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+}
+
 /** R93: the minimap marker — its ring pixel in the hole's colour, gone with the layer hidden. */
 async function minimapMark(page, ringRgb) {
   const read = () =>
@@ -308,8 +384,31 @@ async function minimapMark(page, ringRgb) {
   await frames(page, 3)
   const shown = await read()
   const where = shown.st?.holeAt
+  // T22.18B F4: the reach circle — pixels on it (8 bearings, inside the canvas) and, as
+  // the control, 3 px inside it on the same bearings; read shown, then hidden.
+  const reachPx = (hidden) =>
+    page.evaluate(([w, hid]) => {
+      const el = document.querySelector('[data-minimap="root"] canvas')
+      const st = window.__game.minimap()
+      if (!el || !w || !(st.holeReachPx > 0 || hid)) return null
+      const ctx = el.getContext('2d')
+      const r = hid ? window.__minimapReach : st.holeReachPx
+      if (!hid) window.__minimapReach = r
+      const out = []
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + 0.2
+        const p = (d) => [Math.round(w.x + 0.5 + Math.cos(a) * d - 0.5), Math.round(w.y + 0.5 + Math.sin(a) * d - 0.5)]
+        const [x, y] = p(r)
+        const [cx, cy] = p(r - 3)
+        if (x < 0 || y < 0 || x >= el.width || y >= el.height) continue
+        out.push({ on: Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3)), ctrl: Array.from(ctx.getImageData(cx, cy, 1, 1).data.slice(0, 3)) })
+      }
+      return { r, alpha: st.holeReachAlpha, out }
+    }, [where, hidden])
+  const reachShown = await reachPx(false)
   await page.evaluate(() => window.__game.showBlackHole(false))
   await frames(page, 3)
+  const reachHidden = await reachPx(true)
   const hidden = await page.evaluate((w) => {
     const el = document.querySelector('[data-minimap="root"] canvas')
     const st = window.__game.minimap()
@@ -323,7 +422,22 @@ async function minimapMark(page, ringRgb) {
   else if (!near(shown.px.ring, ringRgb) || !shown.px.core.every((c) => c <= DISC_MAX)) fail(`minimap: the marker is not the hole's ring round a black core: ${JSON.stringify(shown.px)}`)
   else if (hidden.st?.holeDrawn || near(hidden.ring, ringRgb)) fail(`minimap: control — the marker stayed with the layer hidden: ${JSON.stringify(hidden)}`)
   else ok(`minimap: the hole is marked at (${where.x}, ${where.y}) in its ring's colour round a black core, and goes with the layer hidden`)
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+  if (!reachShown || !reachHidden || reachShown.out.length < 4) fail(`minimap: the reach circle has too few pixels to read: ${JSON.stringify({ reachShown, reachHidden })}`)
+  else {
+    const pairs = reachShown.out.map((s, i) => ({ s, h: reachHidden.out[i] }))
+    // On the circle the pixel moved toward the ring's colour; 3 px inside it, nothing.
+    const toward = pairs.filter((p) => dist(p.h.on, ringRgb) - dist(p.s.on, ringRgb) >= MINIMAP_REACH_MIN).length
+    const ctrlMoved = pairs.filter((p) => dist(p.s.ctrl, p.h.ctrl) > 3).length
+    if (toward < pairs.length * RING_COLOUR_SHARE) fail(`minimap: only ${toward} of ${pairs.length} pixels on the reach circle (r ${reachShown.r.toFixed(1)} px) turned toward the ring's colour: ${JSON.stringify(pairs.slice(0, 3))}`)
+    else ok(`minimap: the hole's reach is drawn round it (r ${reachShown.r.toFixed(1)} px): ${toward}/${pairs.length} circle pixels toward the ring's colour`)
+    if (ctrlMoved > 0) fail(`minimap: control — ${ctrlMoved} of ${pairs.length} pixels 3 px inside the reach circle changed with the layer: ${JSON.stringify(pairs.slice(0, 3))}`)
+    else ok(`minimap: control — ${pairs.length} pixels 3 px inside the reach circle did not change`)
+  }
 }
+
+/** How much closer to the ring's colour a minimap reach-circle pixel must get (RGB distance). */
+const MINIMAP_REACH_MIN = 20
 
 const stack = await startStack({
   port: await freePort(),
@@ -458,6 +572,7 @@ try {
     }
     await frames(page, 2)
     await coverage(page, hole, `match-${path}`, hq)
+    await reachRing(page, hole, `match-${path}`)
   }
   await page.evaluate(() => window.__game.setHighQuality(false))
 

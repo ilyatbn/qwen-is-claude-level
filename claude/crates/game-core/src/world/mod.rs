@@ -5074,6 +5074,12 @@ impl World {
             // T22.16: a destroyed core switches the well off — a pull the two sides
             // could disagree about, so the hash says which tick.
             h.update(&[a.core_intact as u8]);
+            // T22.18B: the lumps measure the band (`Asteroid::outline_radius`).
+            for l in &a.lumps {
+                h.update(&l.dx.to_le_bytes());
+                h.update(&l.dy.to_le_bytes());
+                h.update(&l.r.to_le_bytes());
+            }
         }
         h.update(&self.tick.to_le_bytes());
         h.update(&self.round_time.to_le_bytes());

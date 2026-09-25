@@ -336,7 +336,11 @@ pub const HEADER_BYTES: usize = 46;
 /// at half the rate, and a destroyed core's battery may float where a body can reach —
 /// a v29 space recording diverges on the first tick a sealed suit drains. No new tag,
 /// no layout change.
-pub const REPLAY_VERSION: u16 = 30;
+///
+/// Bumped to 31 by T22.18B (F1): a well's band follows the rock's generated outline
+/// (its lumps), and the state hash covers the lumps — a v30 space recording diverges on
+/// the first tick a player is over a lump. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 31;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

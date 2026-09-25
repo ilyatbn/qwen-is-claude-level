@@ -157,6 +157,13 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.extend_from_slice(&(a.y as i16).to_le_bytes());
         b.extend_from_slice(&(a.r as u16).to_le_bytes());
         b.push(a.level);
+        // T22.18B: the lumps, every slot (radius 0 = empty) — the well's band is
+        // measured from them (`Asteroid::outline_radius`).
+        for l in &a.lumps {
+            b.extend_from_slice(&(l.dx as i16).to_le_bytes());
+            b.extend_from_slice(&(l.dy as i16).to_le_bytes());
+            b.push(l.r as u8);
+        }
     }
 
     b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -277,14 +284,24 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     let asteroids = (0..asteroid_count)
         .map(|i| {
             let o = i * ASTEROID_WIRE_BYTES;
-            game_core::map::meta::Asteroid {
-                x: i16::from_le_bytes([asteroid_bytes[o], asteroid_bytes[o + 1]]) as i32,
-                y: i16::from_le_bytes([asteroid_bytes[o + 2], asteroid_bytes[o + 3]]) as i32,
-                r: u16::from_le_bytes([asteroid_bytes[o + 4], asteroid_bytes[o + 5]]) as i32,
-                level: asteroid_bytes[o + 6],
-                // T22.16: not on this wire — `core_destroyed` carries a dead core.
-                core_intact: true,
+            let b = |k: usize| asteroid_bytes[o + k];
+            // T22.16: `core_intact` is not on this wire — `core_destroyed` carries a
+            // dead core.
+            let mut a = game_core::map::meta::Asteroid::round(
+                i16::from_le_bytes([b(0), b(1)]) as i32,
+                i16::from_le_bytes([b(2), b(3)]) as i32,
+                u16::from_le_bytes([b(4), b(5)]) as i32,
+                b(6),
+            );
+            for (j, l) in a.lumps.iter_mut().enumerate() {
+                let q = ASTEROID_HEAD_BYTES + j * LUMP_WIRE_BYTES;
+                *l = game_core::map::meta::Lump {
+                    dx: i16::from_le_bytes([b(q), b(q + 1)]) as i32,
+                    dy: i16::from_le_bytes([b(q + 2), b(q + 3)]) as i32,
+                    r: b(q + 4) as i32,
+                };
             }
+            a
         })
         .collect();
 
@@ -303,12 +320,19 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     })
 }
 
-/// `i16 x, i16 y, u16 r, u8 level`.
+/// `i16 x, i16 y, u16 r, u8 level`, then every lump slot (T22.18B).
 ///
 /// Named for the same reason `OBJECT_WIRE_BYTES` is: the writer's loop and the
 /// reader's stride are the same number said twice, and the decoration section
 /// above still spells its `7` in two places.
-pub const ASTEROID_WIRE_BYTES: usize = 7;
+pub const ASTEROID_WIRE_BYTES: usize =
+    ASTEROID_HEAD_BYTES + game_core::map::meta::ASTEROID_LUMP_SLOTS * LUMP_WIRE_BYTES;
+
+/// An asteroid's fixed head: `i16 x, i16 y, u16 r, u8 level`.
+const ASTEROID_HEAD_BYTES: usize = 7;
+
+/// One lump slot: `i16 dx, i16 dy, u8 r` (T22.18B; radius 0 = empty).
+const LUMP_WIRE_BYTES: usize = 5;
 
 /// `u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip`.
 ///

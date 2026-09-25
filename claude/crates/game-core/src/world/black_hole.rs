@@ -517,10 +517,11 @@ mod tests {
         // reach, where R91 mutes every well; so the list is read without the hole
         // (`wells_at`), which is what production sums once the hole stops muting.
         // The control: with the eaten rock still in the list, that field differs.
+        let down = centre + Vec2::new(0.0, 1.0);
         let probe = centre
             + Vec2::new(
                 0.0,
-                crate::world::attractors::well_contact(&target)
+                crate::world::attractors::well_contact(&target, down)
                     + crate::constants::WELL_SURFACE_BAND / 2.0,
             );
         assert_ne!(
@@ -979,10 +980,10 @@ mod tests {
         let (mut muted, mut outside) = (0, 0);
         for a in &w.map.meta.asteroids {
             let c = Vec2::new(a.x as f32, a.y as f32);
-            let ring = well_contact(a) + WELL_SURFACE_BAND / 2.0;
             for k in 0..16 {
                 let t = k as f32 * std::f32::consts::TAU / 16.0;
-                let p = c + Vec2::new(t.cos(), t.sin()) * ring;
+                let u = Vec2::new(t.cos(), t.sin());
+                let p = c + u * (well_contact(a, c + u) + WELL_SURFACE_BAND / 2.0);
                 let got = env_at(&w.map, GravityMode::Space, false, &[], Some(hole), true, p).accel;
                 if (p - hole).len() < BLACK_HOLE_REACH {
                     assert_eq!(got, Attractor::black_hole(hole).pull_at(p), "{p:?}: inside");
@@ -1535,5 +1536,87 @@ mod tests {
                 (at - hole).len()
             );
         }
+    }
+
+    /// **F3 (T22.18B): on a Small map, from just outside the horizon, thrust never
+    /// dies** — R90's promise at R106's reach, where the players are. The escape tests
+    /// above fly on Large maps with a disc cleared about the hole (their claim is
+    /// "gets past the reach"; at 512 px no Small map has room for that disc). This arm
+    /// claims only what the ruling does — **outside the ring you do not die** — with
+    /// the rocks in place: seeds 0–12, 16 sides, one pixel outside the horizon, the
+    /// buttons pointing away held for a full tank ([`JETPACK_MAX_FUEL`] seconds, a
+    /// flight's whole thrust); a death by any cause fails it. **The control**: the
+    /// same starts left idle die, every one of them — without it, "never dies" is
+    /// satisfied by a hole that kills nobody. Reviewer's measurement at `6bd5665`:
+    /// 0 / 208 thrusting died, 208 / 208 idle.
+    #[test]
+    fn on_a_small_map_thrust_from_just_outside_the_horizon_never_dies() {
+        use crate::constants::BLACK_HOLE_HORIZON_R;
+        const SIDES: usize = 16;
+        const SEEDS: u64 = 13;
+        let ticks = (JETPACK_MAX_FUEL / SIM_DT).round() as u32;
+        let (mut died, mut idle_died, mut flights) = (Vec::new(), 0usize, 0usize);
+        for seed in 0..SEEDS {
+            for k in 0..SIDES {
+                let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
+                for thrust in [true, false] {
+                    let (mut w, hole) = hole_world_on(seed, MapScale::Small);
+                    place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
+                    let mut dead = None;
+                    for t in 0..ticks {
+                        let pos = w.player(0).expect("ana").body.pos;
+                        step(&mut w, if thrust { away(hole, pos) } else { 0 });
+                        if let Some(c) = deaths(&w.drain_events()).first() {
+                            dead = Some((t, *c));
+                            break;
+                        }
+                    }
+                    if thrust {
+                        flights += 1;
+                        if let Some((t, c)) = dead {
+                            died.push(format!("seed {seed} side {k}: {c:?} at tick {t}"));
+                        }
+                    } else {
+                        idle_died += usize::from(dead.is_some());
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            idle_died, flights,
+            "control: of {flights} idle bodies one pixel outside the horizon only \
+             {idle_died} died — the hole is not what these flights escape"
+        );
+        assert!(
+            died.is_empty(),
+            "{} of {flights} Small-map flights from just outside the horizon died: {died:?}",
+            died.len()
+        );
+    }
+
+    /// R90's reach, in horizons (T22.12, before R106): `BLACK_HOLE_REACH` was
+    /// `4.0 * BLACK_HOLE_HORIZON_R` — 256 px. **The basis R106 is stated against**, kept
+    /// here as the historical value it is: a constant cannot be tested against
+    /// itself.
+    const R90_REACH_HORIZONS: f32 = 4.0;
+
+    /// **F2 (T22.18B): R106 in the owner's words** — *"black hole gravity pull should be
+    /// larger"*, ruled "≈ 2× today's". Every other test is pinned to
+    /// `BLACK_HOLE_REACH` or passes with more room, so the review planted it back to
+    /// 256 and 1218 tests passed; this one reads the reach against R90's.
+    #[test]
+    fn the_black_hole_pulls_from_at_least_twice_r90s_reach() {
+        use crate::constants::{BLACK_HOLE_HORIZON_R, BLACK_HOLE_REACH};
+        let r90 = R90_REACH_HORIZONS * BLACK_HOLE_HORIZON_R;
+        assert!(
+            BLACK_HOLE_REACH >= 2.0 * r90,
+            "R106: the hole pulls from {BLACK_HOLE_REACH} px, and R90's reach was {r90} — \
+             the owner asked for a larger pull, ruled about twice"
+        );
+        // And the pull is really there at the new distance: past R90's reach, inside
+        // the new one, the hole pulls; past the new one, it does not.
+        let hole = Attractor::black_hole(Vec2::ZERO);
+        assert_ne!(hole.pull_at(Vec2::new(r90 + 1.0, 0.0)), Vec2::ZERO);
+        assert_eq!(hole.pull_at(Vec2::new(BLACK_HOLE_REACH, 0.0)), Vec2::ZERO);
     }
 }

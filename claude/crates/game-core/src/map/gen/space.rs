@@ -37,17 +37,17 @@
 
 use crate::constants::{
     MapGenerator, MapScale, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS, PLAYER_H,
-    PLAYER_W, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_MASS_MAX,
-    SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER,
-    SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC,
-    SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_INSET,
-    SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
+    PLAYER_W, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_MASS_MAX, SPACE_ASTEROID_R_MAX,
+    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX,
+    SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC, SPACE_LUMP_R_MIN_FRAC,
+    SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_INSET, SPACE_RIM_THICKNESS,
+    SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
 use crate::map::gen::spawns::pick_separated;
 use crate::map::gen::surface;
 use crate::map::gen::traversal::TraversalReport;
-use crate::map::meta::Asteroid;
+use crate::map::meta::{Asteroid, Lump, ASTEROID_LUMP_SLOTS};
 use crate::map::shape::stamp_circle;
 use crate::map::Mask;
 use crate::math::Point;
@@ -419,13 +419,7 @@ fn place_asteroids_drawn(
         }
         let level = level_for(r, &mut rng);
         out.push((
-            Asteroid {
-                x: x.round() as i32,
-                y: y.round() as i32,
-                r,
-                level,
-                core_intact: true,
-            },
+            Asteroid::round(x.round() as i32, y.round() as i32, r, level),
             m,
         ));
     }
@@ -448,33 +442,40 @@ fn level_for(r: i32, rng: &mut ChaCha8Rng) -> u8 {
     (base + jitter).round().clamp(1.0, SPACE_LEVEL_MAX as f32) as u8
 }
 
-/// Stamp one asteroid: a core disc plus lumps, the whole union inside radius
-/// `r`.
+/// Draw one asteroid's lumps (T22.18B: split from the stamp, same draws in the
+/// same order, so no golden row moves): each lump's radius, centre distance and
+/// bearing, rounded to the integers the stamp is given.
 ///
 /// `r` is the **bounding** radius and it has to stay one: it is what
 /// `place_asteroids` spaces rocks by, what `rocks_are_within_reach` measures
-/// reach by, what goes on the wire, and what `T22.11` will size a well from. So
-/// the core is `SPACE_ASTEROID_CORE_FRAC * r` and each lump's centre distance
-/// is capped at `r - lump_r`, which keeps every stamped pixel inside the disc
-/// while still breaking the silhouette. The lumps cannot detach either: the
-/// furthest possible lump still overlaps the core.
-fn stamp_asteroid(mask: &mut Mask, a: &Asteroid, rng: &mut ChaCha8Rng) {
+/// reach by, and what goes on the wire. So the body is `SPACE_ASTEROID_CORE_FRAC * r`
+/// and each lump's centre distance is capped at `r - lump_r`, which keeps every
+/// stamped pixel inside the disc while still breaking the silhouette. The lumps
+/// cannot detach either: the furthest possible lump still overlaps the body.
+fn draw_lumps(a: &Asteroid, rng: &mut ChaCha8Rng) -> [Lump; ASTEROID_LUMP_SLOTS] {
     let rf = a.r as f32;
-    let core = (rf * SPACE_ASTEROID_CORE_FRAC).round() as i32;
-    stamp_circle(mask, a.x, a.y, core, true);
-
+    let mut out = [Lump::default(); ASTEROID_LUMP_SLOTS];
     let lumps = range_u32(rng, SPACE_LUMPS_MIN, SPACE_LUMPS_MAX);
-    for _ in 0..lumps {
+    for slot in out.iter_mut().take(lumps as usize) {
         let lr = range_f32(rng, SPACE_LUMP_R_MIN_FRAC, SPACE_LUMP_R_MAX_FRAC) * rf;
         let d = range_f32(rng, 0.0, (rf - lr).max(0.0));
         let ang = range_f32(rng, 0.0, std::f32::consts::TAU);
-        stamp_circle(
-            mask,
-            a.x + (d * ang.cos()).round() as i32,
-            a.y + (d * ang.sin()).round() as i32,
-            lr.round() as i32,
-            true,
-        );
+        *slot = Lump {
+            dx: (d * ang.cos()).round() as i32,
+            dy: (d * ang.sin()).round() as i32,
+            r: lr.round() as i32,
+        };
+    }
+    out
+}
+
+/// Stamp one asteroid **from its own description**: the round body, then every
+/// lump in `a.lumps` — so the silhouette the well measures its band from
+/// (`Asteroid::outline_radius`) is the one in the mask, by construction.
+pub fn stamp_asteroid(mask: &mut Mask, a: &Asteroid) {
+    stamp_circle(mask, a.x, a.y, a.body_r(), true);
+    for l in a.lumps.iter().filter(|l| l.r > 0) {
+        stamp_circle(mask, a.x + l.dx, a.y + l.dy, l.r, true);
     }
 }
 
@@ -485,12 +486,13 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
 
     stamp_rim(&mut mask, &geo);
 
-    let asteroids = place_asteroids(seed, &geo, params);
+    let mut asteroids = place_asteroids(seed, &geo, params);
     // A second sub-stream for the silhouette, so tuning the lumps cannot move a
-    // rock and re-roll the whole map.
+    // rock and re-roll the whole map. Each rock keeps the lumps it drew (T22.18B).
     let mut shape_rng = substream(seed, "asteroid_shape");
-    for a in &asteroids {
-        stamp_asteroid(&mut mask, a, &mut shape_rng);
+    for a in &mut asteroids {
+        a.lumps = draw_lumps(a, &mut shape_rng);
+        stamp_asteroid(&mut mask, a);
     }
 
     // The side bands and the floor crust, exactly as the other two generators
@@ -984,7 +986,8 @@ pub fn rocks_are_within_reach(asteroids: &[Asteroid], geo: &SpaceGeometry) -> bo
 mod tests {
     use super::*;
     use crate::constants::{
-        FLOOR_CRUST, MAP_LARGE_W, MINIMAP_W, MIN_BLOB_PX, SKY_MARGIN, SPAWN_MIN_SEPARATION, WALL_W,
+        FLOOR_CRUST, MAP_LARGE_W, MINIMAP_W, MIN_BLOB_PX, SKY_MARGIN, SPACE_ASTEROID_CORE_FRAC,
+        SPAWN_MIN_SEPARATION, WALL_W,
     };
     use crate::map::gen::borders_hold;
     use crate::map::gen::objects::PlacedObject;
@@ -1452,15 +1455,17 @@ mod tests {
         // major axis — the placement filter would have refused it by
         // `SPACE_RIM_CLEARANCE`.
         let r = SPACE_ASTEROID_R_MIN;
-        let intruder = Asteroid {
+        let mut intruder = Asteroid {
             x: (geo.cx - geo.rx + geo.thickness * 0.5) as i32 + r,
             y: geo.cy as i32,
             r,
             level: 1,
             core_intact: true,
+            lumps: Default::default(),
         };
         let mut rng = substream(4242, "control");
-        stamp_asteroid(&mut o.mask, &intruder, &mut rng);
+        intruder.lumps = draw_lumps(&intruder, &mut rng);
+        stamp_asteroid(&mut o.mask, &intruder);
         assert!(
             first_pixel_in_the_lane(&o.mask, &geo).is_some(),
             "a rock stamped flush against the rim was not seen in the lane"
@@ -1651,6 +1656,7 @@ mod tests {
             r: 32,
             level: 3,
             core_intact: true,
+            lumps: Default::default(),
         };
 
         // Control 1: two rocks near the rim, within reach of it and each other.

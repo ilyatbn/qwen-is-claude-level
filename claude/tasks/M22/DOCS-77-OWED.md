@@ -200,3 +200,11 @@ Open — not yet in `docs/77`. Each names its source; §-numbers are `docs/77-am
     `SPACE_CORE_FRAC` 0.3, `SPACE_CORE_DESTROYED_FRAC` 0.2 (T22.16); strike `SPACE_WELL_REACH_MAX`; change the rows
     `VORTEX_CAPTURE_R … | 127, 1800, 4 × capture` → `32 (= SPACE_RIM_THICKNESS), 1800, 4 × capture`;
     `BLACK_HOLE_… | 64, 0.9, 810, 256, 1080` → `64, 0.9, 810, 512, ≈925.7`; `RADIATION_… | 1, 1, 1 s` → `1, 0.5, 1 s`.
+37. **§H4 / §H10 (T22.18B F1):** `MapMeta::asteroids[]` gains `lumps` — `ASTEROID_LUMP_SLOTS` (= `SPACE_LUMPS_MAX`, 4)
+    slots of `{dx, dy, r}` (radius 0 = empty), the generator's rounded lumps, which the stamp now reads. `map_init`'s
+    asteroid record: `i16 x, i16 y, u16 r, u8 level`, then 4 × `i16 dx, i16 dy, u8 r` (27 bytes, was 7). A well's band
+    now ends at `outline_radius(bearing) + PLAYER_H/2 + WELL_SURFACE_BAND` — the generated body-and-lumps outline on the
+    body's bearing, not the round body — and the state hash covers the lumps. `REPLAY_VERSION` **31**.
+38. **§H11 (T22.18B F4):** while the hole is here a faint ring (`BLACK_HOLE_RING_COLOR` at 0.35) is drawn at
+    `BLACK_HOLE_REACH` on both render paths, and the minimap marker carries a circle of the reach's radius — the edge of
+    the pull and of R91's muted wells; the death rule is still the horizon alone.

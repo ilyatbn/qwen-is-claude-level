@@ -153,6 +153,8 @@ export interface Asteroid {
    * core stepped (`GameCore::sync_cores`) — a readback, not what the client acts on.
    */
   core_intact: boolean
+  /** T22.18B: the lumps on its round body, every slot (radius 0 = empty). */
+  lumps: { dx: number; dy: number; r: number }[]
 }
 
 export interface InventoryView {
@@ -321,6 +323,8 @@ export interface Constants {
   METEOR_DURATION: number
   /** T22.14D F4: the highest `MapGenerator` byte (`MapGenerator::from_u8`'s last `Some`). */
   MAP_GENERATOR_MAX: number
+  /** T22.18B: lump slots per asteroid on `map_init` (`codec.ts::ASTEROID_LUMP_SLOTS`). */
+  ASTEROID_LUMP_SLOTS: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number
@@ -919,12 +923,33 @@ export class Core {
     return this.inner.core_discs()
   }
 
-  setAsteroids(rocks: readonly { x: number; y: number; r: number; level: number }[]): void {
+  setAsteroids(
+    rocks: readonly {
+      x: number
+      y: number
+      r: number
+      level: number
+      /**
+       * T22.18B: the lumps (`MapInit.asteroids[].lumps`), which the well's band follows.
+       * Optional only for fixtures: a rock without them is its round body alone,
+       * which is not the server's rock — production passes `map_init`'s list whole.
+       */
+      lumps?: readonly { dx: number; dy: number; r: number }[]
+    }[],
+  ): void {
     const xs = new Int32Array(rocks.map((a) => a.x))
     const ys = new Int32Array(rocks.map((a) => a.y))
     const rs = new Int32Array(rocks.map((a) => a.r))
     const levels = new Uint8Array(rocks.map((a) => a.level))
-    this.inner.set_asteroids(xs, ys, rs, levels)
+    // `[dx, dy, r]` per slot, `ASTEROID_LUMP_SLOTS` slots a rock; missing slots empty.
+    const slots = C().ASTEROID_LUMP_SLOTS
+    const lumps = new Int32Array(rocks.length * slots * 3)
+    rocks.forEach((a, i) =>
+      (a.lumps ?? []).slice(0, slots).forEach((l, j) => {
+        lumps.set([l.dx, l.dy, l.r], (i * slots + j) * 3)
+      }),
+    )
+    this.inner.set_asteroids(xs, ys, rs, levels, lumps)
     // `meta` is cached, and `meta.asteroids` is the readback — a caller that
     // installed rocks and then read the old table back would be told the call
     // had not happened.

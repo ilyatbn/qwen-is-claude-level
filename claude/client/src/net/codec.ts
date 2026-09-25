@@ -80,6 +80,18 @@ export interface MapAsteroid {
   r: number
   /** Gravity level, 1..`SPACE_LEVEL_MAX`. Monotone in `r`, with jitter. */
   level: number
+  /**
+   * T22.18B: the lumps stamped on its round body, every slot (radius 0 = empty) —
+   * the well's band follows this outline (`Asteroid::outline_radius`).
+   */
+  lumps: MapLump[]
+}
+
+/** One lump of a rock: centre offset from the rock's centre and radius, px. */
+export interface MapLump {
+  dx: number
+  dy: number
+  r: number
 }
 
 export interface SnapshotPlayer {
@@ -201,12 +213,22 @@ class Reader {
 export const OBJECT_WIRE_BYTES = 11
 
 /**
- * `i16 x, i16 y, u16 r, u8 level` — `codec.rs`'s own `ASTEROID_WIRE_BYTES`.
+ * T22.18B: the lump slots each asteroid carries (`game_core::map::meta::ASTEROID_LUMP_SLOTS`,
+ * pinned to the core's `constants_json` by `codec.test.ts`).
+ */
+export const ASTEROID_LUMP_SLOTS = 4
+
+/** One lump slot on the wire: `i16 dx, i16 dy, u8 r` (radius 0 = empty). */
+export const LUMP_WIRE_BYTES = 5
+
+/**
+ * `i16 x, i16 y, u16 r, u8 level`, then every lump slot — `codec.rs`'s own
+ * `ASTEROID_WIRE_BYTES`.
  *
  * Exported for the same reason as above: the length check here and the byte
- * fixture in the test both read it rather than spelling 7 twice.
+ * fixture in the test both read it rather than spelling it twice.
  */
-export const ASTEROID_WIRE_BYTES = 7
+export const ASTEROID_WIRE_BYTES = 7 + ASTEROID_LUMP_SLOTS * LUMP_WIRE_BYTES
 
 export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const r = new Reader(new DataView(buf))
@@ -298,7 +320,12 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
   const asteroids: MapAsteroid[] = []
   for (let i = 0; i < astCount; i++) {
-    asteroids.push({ x: r.i16(), y: r.i16(), r: r.u16(), level: r.u8() })
+    const head = { x: r.i16(), y: r.i16(), r: r.u16(), level: r.u8() }
+    const lumps: MapLump[] = []
+    for (let j = 0; j < ASTEROID_LUMP_SLOTS; j++) {
+      lumps.push({ dx: r.i16(), dy: r.i16(), r: r.u8() })
+    }
+    asteroids.push({ ...head, lumps })
   }
 
   const rleLen = r.u32()

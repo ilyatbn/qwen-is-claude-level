@@ -7154,3 +7154,10 @@ the nearest vortex takes you (84 of 180 hole flights needed it). Black hole reac
 (base radius); glow kept at 4 horizons (drawing). Escape flights on Large maps (Small cannot hold the 548 px clearing).
 Shield cost 0.5: radiation deaths 0.25 → 0.12 a player a round. A destroyed core's battery goes where a body can reach
 (flood over body centres); SMG tunnels → 54–57 px out, shaft → centre. REPLAY_VERSION 30. docs/77 list: DOCS-77-OWED 28–36.
+
+## T22.18B — what the cores review found (F1–F5)
+The band now follows each rock's generated outline (body + lumps, `Asteroid::outline_radius`, lumps stored on the rock,
+stamped from it, on the wire, hashed; REPLAY_VERSION 31): a level-1 hop from a lump top on r 47/70 lands back (was lost).
+Air gap intact p50/p90 27.0/32.2 → 27.2/32.8. Mirror == server bit-exact on 72 bearings. R106 pinned against R90's 4
+horizons; Small-map escape arm: 0/208 thrusting die, 208/208 idle do. Faint reach ring drawn at 512 on both paths +
+minimap circle (pixel-asserted). Stale blackHoleFx comments fixed. One integration flake noted in flaky-test.md.

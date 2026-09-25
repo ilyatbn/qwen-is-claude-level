@@ -33,6 +33,13 @@ import { BLACK_HOLE_RING_COLOR } from '../render/blackHoleFx-math'
  * own accretion colour, this many px across. Drawing only.
  */
 const HOLE_MARK_PX = 7
+/** T22.18B F4: the reach circle's alpha on the minimap. Drawing only. */
+const HOLE_REACH_ALPHA = 0.6
+
+/** The hole's reach in minimap px (the map's x scale; the minimap keeps the aspect). */
+function holeReachPx(reach: number, geo: { w: number; mapW: number }): number {
+  return (reach * geo.w) / geo.mapW
+}
 
 /** Terrain is re-sampled at most this often — twice a second, per the task. */
 const TERRAIN_REBAKE_S = 0.5
@@ -60,6 +67,7 @@ export class Minimap {
   /** T22.12C R93: whether the last draw put the black hole's marker on, and where (canvas px). */
   private holeDrawn = false
   private holeAt: { x: number; y: number } | null = null
+  private holeReach = 0
 
   constructor(
     private readonly core: Core,
@@ -130,6 +138,7 @@ export class Minimap {
     this.cratesDrawn = 0
     this.holeDrawn = false
     this.holeAt = null
+    this.holeReach = 0
     if (!this.visible) return
 
     this.terrainAge += dt
@@ -222,6 +231,17 @@ export class Minimap {
       this.ctx.fillRect(x0, y0, HOLE_MARK_PX, HOLE_MARK_PX)
       this.ctx.fillStyle = '#000000'
       this.ctx.fillRect(x0 + 2, y0 + 2, HOLE_MARK_PX - 4, HOLE_MARK_PX - 4)
+      // T22.18B F4: the pull's edge — inside it the rocks' wells are muted (R91), so a
+      // player can see on the map why a rock stopped holding them.
+      const reach = holeReachPx(C().BLACK_HOLE_REACH, this.geo)
+      this.ctx.strokeStyle = `#${BLACK_HOLE_RING_COLOR.toString(16).padStart(6, '0')}`
+      this.ctx.globalAlpha = HOLE_REACH_ALPHA
+      this.ctx.lineWidth = 1
+      this.ctx.beginPath()
+      this.ctx.arc(Math.round(q.x) + 0.5, Math.round(q.y) + 0.5, reach, 0, Math.PI * 2)
+      this.ctx.stroke()
+      this.ctx.globalAlpha = 1
+      this.holeReach = reach
       this.holeDrawn = true
       this.holeAt = { x: Math.round(q.x), y: Math.round(q.y) }
     }
@@ -245,6 +265,9 @@ export class Minimap {
     holeAt: { x: number; y: number } | null
     /** The marker's size, so a check can find its ring (the outer pixel) and core. */
     holeMarkPx: number
+    /** T22.18B F4: the reach circle's radius, canvas px, and its alpha (0 = not drawn). */
+    holeReachPx: number
+    holeReachAlpha: number
   } {
     return {
       visible: this.visible,
@@ -256,6 +279,8 @@ export class Minimap {
       holeDrawn: this.holeDrawn,
       holeAt: this.holeAt ? { ...this.holeAt } : null,
       holeMarkPx: HOLE_MARK_PX,
+      holeReachPx: this.holeReach,
+      holeReachAlpha: HOLE_REACH_ALPHA,
     }
   }
 

@@ -50,6 +50,14 @@ shared cause CLAUDE.md records for the last "moving" family. Pinned to `Some(424
 (`cargo test -p game-server --test bots`). Not proven to be *this* sighting's cause — one sighting cannot
 say — so the entry stays, and a red on a pinned seed now reproduces.
 
+**Not parked, noted (T22.18B, 2026-09-25): `game-server/tests/integration.rs::a_joiner_never_receives_another_player_s_inventory`**
+— red once in the builder's `cargo test -p game-wasm -p game-server` (three suites building and running at once):
+*"the second client received 2 inventory events; exactly one — its own — is correct"* (left 2); green alone right after
+(1/1) and in the next full `cargo test -p game-server --no-fail-fast` (all suites ok). The change under test widened
+`map_init`'s asteroid record (lumps) and touched no event scope (`events.rs::scope_of` unchanged, `Inventory` still
+`Only(owner)`), so no causal path is known; it counts events over a wall-clock window on a socket, the R40 family's
+shape. One sighting: recorded, not `#[ignore]`d — the coordinator's call.
+
 **Not parked, noted (T21.18, 2026-09-15):** `client/src/render/backdrop-real.test.ts` takes **216 s alone** (42/42 green). In one `--changed` gate at load the vitest worker lost its RPC (`Timeout calling "onTaskUpdate"`, 872/914 reported) and the stage went red; the gate before and after it were 914/914. There is no parking mechanism for a vitest file, so it is recorded here — one slow file sits near the runner timeout, and the owner should decide whether it moves out of the default run. **Red again in the coordinator's full gate at `bf76714` on an idle box (load 1.35):** `873 passed (915)`, two `onTaskUpdate` errors, then **915/915 in 217 s alone**. **Split per map on 2026-09-15** into six `backdrop-real-*.test.ts` files over `backdrop-real.suite.ts` (assertions unchanged), so the six run in parallel workers; `backdrop-real-cases.test.ts` asserts every case is still run once.
 
 ## Disabled, not flaky

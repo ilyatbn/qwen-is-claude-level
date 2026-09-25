@@ -554,15 +554,33 @@ impl GameCore {
         }
     }
 
-    pub fn set_asteroids(&mut self, xs: &[i32], ys: &[i32], rs: &[i32], levels: &[u8]) {
+    /// `lumps` (T22.18B): `[dx, dy, r]` per slot, `ASTEROID_LUMP_SLOTS` slots a rock, in
+    /// the rocks' order — the outline the well's band follows. Slots it does not cover
+    /// are empty (a round rock).
+    pub fn set_asteroids(
+        &mut self,
+        xs: &[i32],
+        ys: &[i32],
+        rs: &[i32],
+        levels: &[u8],
+        lumps: &[i32],
+    ) {
+        use game_core::map::meta::{Asteroid, Lump, ASTEROID_LUMP_SLOTS};
         let n = xs.len().min(ys.len()).min(rs.len()).min(levels.len());
         self.map.meta.asteroids = (0..n)
-            .map(|i| game_core::map::meta::Asteroid {
-                x: xs[i],
-                y: ys[i],
-                r: rs[i],
-                level: levels[i],
-                core_intact: true,
+            .map(|i| {
+                let mut a = Asteroid::round(xs[i], ys[i], rs[i], levels[i]);
+                for (j, l) in a.lumps.iter_mut().enumerate() {
+                    let q = (i * ASTEROID_LUMP_SLOTS + j) * 3;
+                    if let Some(v) = lumps.get(q..q + 3) {
+                        *l = Lump {
+                            dx: v[0],
+                            dy: v[1],
+                            r: v[2],
+                        };
+                    }
+                }
+                a
             })
             .collect();
         // A resync re-installs the rocks; a core already dead stays dead.
@@ -2188,6 +2206,9 @@ pub fn constants_json() -> String {
             .find(|b| c::MapGenerator::from_u8(*b).is_some())
             .unwrap_or(0),
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
+        // T22.18B: the lump slots each asteroid carries on `map_init` —
+        // `codec.test.ts` pins `codec.ts::ASTEROID_LUMP_SLOTS` to it.
+        ASTEROID_LUMP_SLOTS => game_core::map::meta::ASTEROID_LUMP_SLOTS,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
         // T22.10H: position/velocity quantum — `codec.ts::decodeSnapshot` multiplies
@@ -4013,7 +4034,12 @@ mod tests {
         let ys: Vec<i32> = rocks.iter().map(|a| a.y).collect();
         let rs: Vec<i32> = rocks.iter().map(|a| a.r).collect();
         let levels: Vec<u8> = rocks.iter().map(|a| a.level).collect();
-        core.set_asteroids(&xs, &ys, &rs, &levels);
+        // T22.18B: the lumps, `[dx, dy, r]` per slot — `core/index.ts`'s flattening.
+        let lumps: Vec<i32> = rocks
+            .iter()
+            .flat_map(|a| a.lumps.iter().flat_map(|l| [l.dx, l.dy, l.r]))
+            .collect();
+        core.set_asteroids(&xs, &ys, &rs, &levels, &lumps);
     }
 
     /// A space `World`, and the `GameCore` a networked client holds after
@@ -4075,6 +4101,53 @@ mod tests {
         (w, core)
     }
 
+    /// **T22.18B F1: the mirror's band follows the lumps exactly as the server's.**
+    /// Every rock of the fixture map, 72 bearings, a probe just inside and just
+    /// outside the band's edge on that bearing (`well_reach`, the generated outline):
+    /// the mirror's field — its rocks from the real `map_init` bytes through
+    /// `set_asteroids` — is the server's to the bit. **Presence:** some probes sit
+    /// where the lumps carry the band past the round body's, and those are pulled —
+    /// so a mirror that dropped the lumps would differ exactly there.
+    #[test]
+    fn the_mirrors_band_follows_the_lumps_as_the_servers_does() {
+        use game_core::world::attractors::{env_at, well_reach};
+        let (w, core) = space_world_and_mirror(true);
+        let (mut probes, mut past_body) = (0, 0);
+        for a in &w.map.meta.asteroids {
+            let c = Vec2::new(a.x as f32, a.y as f32);
+            for k in 0..72 {
+                let t = k as f32 * std::f32::consts::TAU / 72.0;
+                let u = Vec2::new(t.cos(), t.sin());
+                let edge = well_reach(a, c + u);
+                for off in [-0.5f32, 0.5] {
+                    let p = c + u * (edge + off);
+                    let server =
+                        env_at(&w.map, GravityMode::Space, false, &[], None, true, p).accel;
+                    let mirror = core.field_accel_at(p.x, p.y);
+                    assert_eq!(
+                        (server.x.to_bits(), server.y.to_bits()),
+                        (mirror[0].to_bits(), mirror[1].to_bits()),
+                        "rock ({}, {}) bearing {k}×5° off {off}: server {server:?}, mirror {:?}",
+                        a.x,
+                        a.y,
+                        &mirror[..]
+                    );
+                    probes += 1;
+                    let body_edge = a.body_r() as f32
+                        + game_core::constants::PLAYER_H / 2.0
+                        + game_core::constants::WELL_SURFACE_BAND;
+                    past_body +=
+                        usize::from(off < 0.0 && edge + off > body_edge && server != Vec2::ZERO);
+                }
+            }
+        }
+        assert!(
+            past_body > 0,
+            "presence: no probe is pulled past the round body's band, so the lumps are not \
+             what this test compares ({probes} probes)"
+        );
+    }
+
     /// A feet line inside the strongest rock's well, in open space.
     ///
     /// **The smallest offset that fits, not a round number**: since R101 (T22.15)
@@ -4095,7 +4168,9 @@ mod tests {
             .iter()
             .max_by_key(|a| a.level)
             .expect("checked non-empty by the caller");
-        let reach = game_core::world::attractors::well_reach(&rock);
+        // T22.18B: the band's edge on this bearing (east, the search's).
+        let east = Vec2::new(rock.x as f32 + 1.0, rock.y as f32);
+        let reach = game_core::world::attractors::well_reach(&rock, east);
         // T22.16: from the band's outer edge inward — the band now starts at the rock's
         // round body, so there is less of it; the outermost fitting start leaves the
         // longest fall.
@@ -4531,7 +4606,7 @@ mod tests {
             .meta
             .asteroids
             .iter()
-            .map(|a| (*a, well_reach(a)))
+            .map(|a| (*a, well_reach(a, Vec2::new(a.x as f32, a.y as f32 - 1.0))))
             .find(|(a, reach)| {
                 // Both starts clear of rock, and inside the rim.
                 [-1.0f32, 1.0].iter().all(|off| {
@@ -4786,7 +4861,8 @@ mod tests {
             .asteroids
             .iter()
             .filter(|a| {
-                let at = Vec2::new(a.x as f32, a.y as f32 - well_reach(a) + INTO_BAND);
+                let up = Vec2::new(a.x as f32, a.y as f32 - 1.0);
+                let at = Vec2::new(a.x as f32, a.y as f32 - well_reach(a, up) + INTO_BAND);
                 !game_core::physics::collide::aabb_overlaps_solid(
                     &probe_w.map,
                     game_core::math::Aabb::from_center_size(at, PLAYER_W + 2.0, PLAYER_H + 2.0),
@@ -4797,7 +4873,11 @@ mod tests {
             .min_by_key(|a| a.level)
             .expect("a rock with air above its band");
         let centre = Vec2::new(rock.x as f32, rock.y as f32);
-        let start = centre - Vec2::new(0.0, well_reach(&rock) - INTO_BAND);
+        let start = centre
+            - Vec2::new(
+                0.0,
+                well_reach(&rock, centre - Vec2::new(0.0, 1.0)) - INTO_BAND,
+            );
         let c = core_radius(&rock);
         let run = |by_seq: bool| -> (f32, f32) {
             let (mut w, mut core) = space_world_and_mirror(true);
@@ -5326,7 +5406,7 @@ mod tests {
 
         // Take the rocks away, which is the check's control frame.
         let mut cleared = core;
-        cleared.set_asteroids(&[], &[], &[], &[]);
+        cleared.set_asteroids(&[], &[], &[], &[], &[]);
         let none = cleared.field_accel_at(start.x, start.y);
         assert_eq!((none[0], none[1]), (0.0, 0.0));
 

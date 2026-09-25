@@ -125,6 +125,11 @@ pub struct Attractor {
     pub reach: f32,
     /// Which guarantee this one carries. See [`Kind`].
     pub kind: Kind,
+    /// **An asteroid's own silhouette** (T22.18B F1): when set, the step's edge is
+    /// [`well_reach`] along the body's bearing — the generated outline plus half a
+    /// body plus one band — and `reach` is only its bound over every bearing
+    /// ([`well_reach_max`]), the cheap reject. `None` for a vortex and the hole.
+    pub rock: Option<Asteroid>,
 }
 
 impl Attractor {
@@ -144,13 +149,14 @@ impl Attractor {
     /// a hard edge is a wall you fall off"* — was about a well reaching across the
     /// arena; this edge sits one body height off the rock.
     pub fn asteroid(a: &Asteroid) -> Self {
-        let reach = well_reach(a);
+        let reach = well_reach_max(a);
         Attractor {
             pos: Vec2::new(a.x as f32, a.y as f32),
             strength: well_strength(a.level),
             floor: reach,
             reach,
             kind: Kind::Asteroid,
+            rock: Some(*a),
         }
     }
 
@@ -176,10 +182,21 @@ impl Attractor {
         if d == 0.0 || d >= self.reach {
             return Vec2::ZERO;
         }
-        let k = if d <= self.floor {
+        // T22.18B F1: an asteroid's edge follows its outline on this bearing.
+        let (floor, reach) = match &self.rock {
+            Some(a) => {
+                let edge = well_reach(a, pos);
+                (edge, edge)
+            }
+            None => (self.floor, self.reach),
+        };
+        if d >= reach {
+            return Vec2::ZERO;
+        }
+        let k = if d <= floor {
             1.0
         } else {
-            1.0 - (d - self.floor) / (self.reach - self.floor)
+            1.0 - (d - floor) / (reach - floor)
         };
         to_centre / d * (self.strength * k)
     }
@@ -202,36 +219,45 @@ pub fn well_strength(level: u8) -> f32 {
     SPACE_WELL_ACCEL_MAX * table_level(level) / SPACE_LEVEL_MAX as f32
 }
 
-/// Where an asteroid's band starts, centre distance, px: **the rock's round body**
-/// (`SPACE_ASTEROID_CORE_FRAC · r`, the generator's core disc the lumps are stamped
-/// on) plus half a body — a body resting on that disc.
+/// Where an asteroid's band starts **on the bearing from its centre to `at`**, centre
+/// distance, px: **the rock's generated outline on that bearing**
+/// ([`Asteroid::outline_radius`] — its round body and its lumps) plus half a body: a
+/// body resting on the rock there.
 ///
-/// *T22.16, refinement B (the owner's "a few pixels"): was the bounding circle `r`
-/// plus half a body*, so over a rock's lumpless side — most of its silhouette — the
-/// band began up to a quarter of `r` of air out and reached one `WELL_SURFACE_BAND`
-/// past that: 38 px of air at the median (`well_air_gap_report`). Measured from the
-/// body the band sits on the rock itself.
+/// *T22.18B F1 (the review of T22.16): was the round body alone,
+/// `SPACE_ASTEROID_CORE_FRAC · r` in every direction.* Over a lump reaching `r` that
+/// left `WELL_SURFACE_BAND − 0.25 r` of band above the rock — 10.5 px on the largest —
+/// and a level-1 hop of ~19 px from a lump top on r 48 or r 70 never came back
+/// (`tests::a_hop_from_a_lump_top_lands_back_on_every_level`). *T22.16's refinement B
+/// before that: was the bounding circle `r`*, 38 px of air at the median over the
+/// lumpless sides. The outline is both: the rock itself on every bearing. A pure
+/// function of the asteroid (its lump list), not of the mask — **carving never adds
+/// reach**, and the two sides agree whatever carves each has heard.
 ///
-/// **The body a band still has to reach**: one standing on the outermost lump, at up
-/// to `r`, touching it anywhere along its box — `r + ½·hypot(PLAYER_W, PLAYER_H)`
-/// from the centre. `f·r + PLAYER_H/2 + WELL_SURFACE_BAND` exceeds it while
-/// `(1 − f)·r < WELL_SURFACE_BAND + PLAYER_H/2 − ½·hypot(…)` = 25.9 px: at f = 0.75
-/// every rock up to r = 103 (the largest is 70, 8.4 px spare) —
-/// `tests::the_band_still_reaches_a_body_on_the_outermost_lump`. **Not the R102 core**
-/// (`SPACE_CORE_FRAC`, 0.3 r): from it the inequality fails at every r from 37 up, and
-/// a body on a big rock's lump would feel nothing. Carving never *adds* reach.
-pub fn well_contact(a: &Asteroid) -> f32 {
-    crate::constants::SPACE_ASTEROID_CORE_FRAC * a.r as f32 + PLAYER_H / 2.0
+/// **The body a band still has to reach**: one touching the rock anywhere — the
+/// outline at its own bearing is at least the body radius, so the old inequality
+/// (`(1 − f)·r ≤ WELL_SURFACE_BAND + PLAYER_H/2 − ½·hypot(PLAYER_W, PLAYER_H)`, 8.4 px
+/// spare at r 70) still bounds it from below —
+/// `tests::the_band_still_reaches_a_body_on_the_outermost_lump`.
+pub fn well_contact(a: &Asteroid, at: Vec2) -> f32 {
+    a.outline_radius(at - Vec2::new(a.x as f32, a.y as f32)) + PLAYER_H / 2.0
 }
 
-/// **Where an asteroid's pull stops**, centre distance, px — one
-/// [`WELL_SURFACE_BAND`] of air past [`well_contact`] (R101, T22.15); full strength
-/// inside, exactly zero from here out. **The same for every level**: the level
-/// scales the strength, not the reach. *Was* `SPACE_WELL_REACH_MAX × level /
+/// **Where an asteroid's pull stops on the bearing to `at`**, centre distance, px —
+/// one [`WELL_SURFACE_BAND`] of air past [`well_contact`] (R101, T22.15); full
+/// strength inside, exactly zero from here out. **The same for every level**: the
+/// level scales the strength, not the reach. *Was* `SPACE_WELL_REACH_MAX × level /
 /// SPACE_LEVEL_MAX` — up to one climb budget, 780 px (R47), so the wells covered
 /// 99.8 % of the open arena.
-pub fn well_reach(a: &Asteroid) -> f32 {
-    well_contact(a) + WELL_SURFACE_BAND
+pub fn well_reach(a: &Asteroid, at: Vec2) -> f32 {
+    well_contact(a, at) + WELL_SURFACE_BAND
+}
+
+/// The largest [`well_reach`] over every bearing, px — the outline's bound
+/// ([`Asteroid::outline_max`]) plus half a body plus one band. What
+/// [`Attractor::asteroid`] rejects by before it computes the bearing's edge.
+pub fn well_reach_max(a: &Asteroid) -> f32 {
+    a.outline_max() + PLAYER_H / 2.0 + WELL_SURFACE_BAND
 }
 
 /// The wire's level, clamped into the table. See [`well_strength`].
@@ -249,6 +275,7 @@ impl Attractor {
             floor: 0.0,
             reach: VORTEX_REACH,
             kind: Kind::Vortex,
+            rock: None,
         }
     }
 }
@@ -263,6 +290,7 @@ impl Attractor {
             floor: 0.0,
             reach: BLACK_HOLE_REACH,
             kind: Kind::BlackHole,
+            rock: None,
         }
     }
 }
@@ -465,8 +493,7 @@ mod tests {
     use super::*;
     use crate::constants::{
         GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_THRUST_DOWN, MAP_SMALL_W, PLAYER_H,
-        SIM_DT, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN,
-        SPACE_WELL_ESCAPE_MARGIN,
+        SIM_DT, SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_WELL_ESCAPE_MARGIN,
     };
     use crate::map::Map;
     use crate::physics::collide::tests::test_map;
@@ -480,8 +507,12 @@ mod tests {
     /// `M22-RULINGS` R46's `d_min(r)`. The lumps only push you further out, and
     /// `Body::pos` is the body's centre — `clamp_to_world` uses `size.y / 2.0` the
     /// same way.
+    ///
+    /// *T22.18B: the stamped body, `round(SPACE_ASTEROID_CORE_FRAC · r)`* — the disc the
+    /// outline's floor is ([`Asteroid::body_r`]); `f·r` unrounded sat up to half a pixel
+    /// inside it.
     fn d_min(r: i32) -> f32 {
-        SPACE_ASTEROID_CORE_FRAC * r as f32 + PLAYER_H / 2.0
+        rock(0, 0, r, 1).body_r() as f32 + PLAYER_H / 2.0
     }
 
     /// The largest radius a rock can have: the top of the base band, grown by the
@@ -500,6 +531,7 @@ mod tests {
             r,
             level,
             core_intact: true,
+            lumps: Default::default(),
         }
     }
 
@@ -586,7 +618,8 @@ mod tests {
         let mut near = drifting(near_at);
         // Past the cutoff by one pixel. The far body is on the same map, the same
         // tick count and the same code path — the only difference is `d >= reach`.
-        let far_at = centre + Vec2::new(well_reach(&map.meta.asteroids[0]) + 1.0, 0.0);
+        let east = centre + Vec2::new(1.0, 0.0);
+        let far_at = centre + Vec2::new(well_reach(&map.meta.asteroids[0], east) + 1.0, 0.0);
         let mut far = drifting(far_at);
 
         for _ in 0..30 {
@@ -802,7 +835,7 @@ mod tests {
             );
 
             let mut out = drifting(start);
-            let reach = well_reach(&map.meta.asteroids[0]);
+            let reach = well_reach_max(&map.meta.asteroids[0]);
             let mut escaped = None;
             for tick in 1..=TANK_TICKS {
                 step(&map, &mut out, button::DOWN, GravityMode::Space);
@@ -911,15 +944,17 @@ mod tests {
         let mut spare = f32::MAX;
         let mut core_fails = 0;
         for r in SPACE_ASTEROID_R_MIN..=r_grown_max() {
+            // A lumpless rock: the round body is the outline's floor on every bearing.
             let a = rock(0, 0, r, 1);
+            let up = Vec2::new(0.0, -1.0);
             let farthest = r as f32 + corner;
             assert!(
-                well_reach(&a) > farthest,
+                well_reach(&a, up) > farthest,
                 "r {r}: the band ends at {:.1} px and a body on the outermost lump reaches \
                  {farthest:.1}",
-                well_reach(&a)
+                well_reach(&a, up)
             );
-            spare = spare.min(well_reach(&a) - farthest);
+            spare = spare.min(well_reach(&a, up) - farthest);
             let from_core = SPACE_CORE_FRAC * r as f32 + PLAYER_H / 2.0 + WELL_SURFACE_BAND;
             core_fails += usize::from(from_core <= farthest);
         }
@@ -1677,10 +1712,9 @@ mod tests {
                     let at = Vec2::new(x as f32, y as f32);
                     let accel =
                         env_at(&w.map, GravityMode::Space, false, &[], None, false, at).accel;
-                    let beyond =
-                        w.map.meta.asteroids.iter().all(|a| {
-                            at.distance(Vec2::new(a.x as f32, a.y as f32)) >= well_reach(a)
-                        });
+                    let beyond = w.map.meta.asteroids.iter().all(|a| {
+                        at.distance(Vec2::new(a.x as f32, a.y as f32)) >= well_reach(a, at)
+                    });
                     if beyond {
                         far += 1;
                         assert_eq!(
@@ -1750,7 +1784,7 @@ mod tests {
         for level in 1..=SPACE_LEVEL_MAX {
             for r in [SPACE_ASTEROID_R_MIN, r_grown_max()] {
                 let (map, a) = stamped_rock(level, r);
-                let reach = well_reach(&a);
+                let reach = well_reach(&a, Vec2::new(a.x as f32, a.y as f32 - 1.0));
                 let mut inside = above(&a, reach - 1.0);
                 let mut outside = above(&a, reach + 1.0);
                 let out_at = outside.body.pos;
@@ -1840,7 +1874,9 @@ mod tests {
                         returned |= left && on;
                         // The jump is judged a body past the band, before the world
                         // clamp at the map's edge can stop it.
-                        if !back && st.body.pos.distance(centre) > well_reach(&a) + PLAYER_H {
+                        if !back
+                            && st.body.pos.distance(centre) > well_reach(&a, st.body.pos) + PLAYER_H
+                        {
                             break;
                         }
                     }
@@ -1858,7 +1894,7 @@ mod tests {
                     } else {
                         assert!(
                             !returned
-                                && st.body.pos.distance(centre) > well_reach(&a)
+                                && st.body.pos.distance(centre) > well_reach(&a, st.body.pos)
                                 && st.body.vel.dot(st.body.pos - centre) > 0.0
                                 && env_at(
                                     &map,
@@ -1874,7 +1910,7 @@ mod tests {
                             "level {level} r {r}: a jump did not leave the band for good \
                              (at {:.1} px from the centre, reach {:.1})",
                             st.body.pos.distance(centre),
-                            well_reach(&a)
+                            well_reach(&a, st.body.pos)
                         );
                     }
                 }
@@ -2067,7 +2103,7 @@ mod tests {
                     left.is_some_and(|l| {
                         after[l..]
                             .iter()
-                            .any(|&(p, g)| g && p.distance(c) <= well_contact(&a) + 1.0)
+                            .any(|&(p, g)| g && p.distance(c) <= well_contact(&a, p) + 1.0)
                     })
                 };
                 // The hop: UP from rest, held only until the body is off the ground.
@@ -2186,10 +2222,10 @@ mod tests {
                 };
                 for a in &rocks {
                     let centre = Vec2::new(a.x as f32, a.y as f32);
-                    let reach = well_reach(a);
                     for b in 0..72 {
                         let t = b as f32 * std::f32::consts::TAU / 72.0;
                         let u = Vec2::new(t.cos(), t.sin());
+                        let reach = well_reach(a, centre + u);
                         let edge = centre + u * (reach - 0.01);
                         if !geo.inside(edge.x, edge.y)
                             || !fits(&w, edge)
@@ -2296,5 +2332,102 @@ mod tests {
                 hi.y
             );
         }
+    }
+
+    // ---- T22.18B F1: the band over a lump ----------------------------------
+
+    /// A rock of radius `r` whose silhouette reaches `r` straight up: the round body
+    /// plus one lump of the largest radius a lump draws, its top on the bounding
+    /// circle — the review of T22.16's "full-size lump".
+    fn lump_top_rock(level: u8, r: i32) -> (Map, Asteroid) {
+        use crate::constants::SPACE_LUMP_R_MAX_FRAC;
+        let mut a = rock(512, 512, r, level);
+        let lr = (SPACE_LUMP_R_MAX_FRAC * r as f32).round() as i32;
+        a.lumps[0] = crate::map::meta::Lump {
+            dx: 0,
+            dy: -(r - lr),
+            r: lr,
+        };
+        let mut map = field_map(1024, 1024, &[a]);
+        // Filled from the rock's own description, as the generator stamps it.
+        let _ = map.fill_circle(a.x, a.y, a.body_r());
+        for l in a.lumps.iter().filter(|l| l.r > 0) {
+            let _ = map.fill_circle(a.x + l.dx, a.y + l.dy, l.r);
+        }
+        assert!(
+            (a.outline_radius(Vec2::new(0.0, -1.0)) - r as f32).abs() < 0.01,
+            "premise: the lump reaches the bounding circle straight up"
+        );
+        (map, a)
+    }
+
+    /// **F1 (T22.18B): a hop from the top of a lump lands back** — every level, the
+    /// smallest, a middle and the largest rock. The review of T22.16: the band began
+    /// at the round body (`0.75 r`), so over a lump reaching `r` only
+    /// `WELL_SURFACE_BAND − 0.25 r` of it was left, and on level 1 a two-tick hop
+    /// (~18.7 px of rise) left r 48 and r 70 for good. The jump arm of
+    /// [`a_hop_on_a_rock_lands_back_and_a_jump_leaves`] is the control that the band
+    /// does not simply reach forever.
+    #[test]
+    fn a_hop_from_a_lump_top_lands_back_on_every_level() {
+        let settle = (0.5 / SIM_DT).round() as u32;
+        let after = (HOP_BACK_S / SIM_DT).round() as u32;
+        let mut failed = Vec::new();
+        for level in 1..=SPACE_LEVEL_MAX {
+            for r in [
+                SPACE_ASTEROID_R_MIN,
+                (SPACE_ASTEROID_R_MIN + r_grown_max()) / 2,
+                r_grown_max(),
+            ] {
+                let (map, a) = lump_top_rock(level, r);
+                let mut st = above(&a, r as f32 + PLAYER_H / 2.0 + 0.5);
+                for _ in 0..settle {
+                    step(&map, &mut st, 0, GravityMode::Space);
+                }
+                assert!(
+                    st.body.grounded,
+                    "level {level} r {r}: never came to rest on the lump"
+                );
+                let rest = st.body.pos;
+                let (none, up) = (Input::new(0, 0, 0), Input::new(0, button::UP, 0));
+                let env = env_at(&map, GravityMode::Space, false, &[], None, false, rest);
+                st.step(
+                    &map,
+                    &up,
+                    &none,
+                    MoveStep {
+                        mods: MoveMods::NONE,
+                        env,
+                    },
+                    SIM_DT,
+                );
+                let mut held = 1;
+                while st.body.grounded && held < HOP_MAX_TICKS {
+                    step(&map, &mut st, button::UP, GravityMode::Space);
+                    held += 1;
+                }
+                let (mut left, mut returned, mut top) = (!st.body.grounded, false, rest.y);
+                for _ in 0..after {
+                    step(&map, &mut st, 0, GravityMode::Space);
+                    top = top.min(st.body.pos.y);
+                    left |= !st.body.grounded;
+                    returned |= left && st.body.grounded;
+                    if returned {
+                        break;
+                    }
+                }
+                assert!(left, "level {level} r {r}: the hop never left the lump");
+                if !returned {
+                    failed.push(format!(
+                        "level {level} r {r}: a {held}-tick hop never came back — {:.1} px up after {HOP_BACK_S} s \
+                         (at {:.1} px from the centre, vel {:?})",
+                        rest.y - top,
+                        st.body.pos.distance(Vec2::new(a.x as f32, a.y as f32)),
+                        st.body.vel
+                    ));
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
     }
 }

@@ -275,6 +275,7 @@ mod tests {
                 r,
                 level: 1,
                 core_intact: true,
+                lumps: Default::default(),
             };
             let c = core_radius(&a);
             let mut mask = Mask::new_empty(256, 256);
@@ -329,7 +330,7 @@ mod tests {
         let mut w = space_world(4242);
         let (i, a) = largest(&w);
         let centre = Vec2::new(a.x as f32, a.y as f32);
-        let band = centre - Vec2::new(0.0, well_reach(&a) - 1.0);
+        let band = centre - Vec2::new(0.0, well_reach(&a, centre - Vec2::new(0.0, 1.0)) - 1.0);
         let wells = |w: &World| {
             asteroid_attractors(&w.map)
                 .filter(|x| x.pos == centre)

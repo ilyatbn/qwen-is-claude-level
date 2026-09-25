@@ -639,6 +639,7 @@ instead of your health.
 - [x] [T22.15](M22/T22.15-short-range-wells.md) — Short-range wells: gravity only a few pixels around each asteroid, free float between — R101
 - [x] [T22.16](M22/T22.16-asteroid-cores.md) — Asteroid cores: destroy the core, the gravity goes and a battery spawns — R102
 - [x] [T22.18](M22/T22.18-vortex-black-hole-drain.md) — Smaller vortices, a black hole that pulls from farther, suit energy drains 50 % slower — R105, R106, R108
+- [x] [T22.18B](M22/T22.18B-what-the-cores-review-found.md) — What the cores review found: the band over a lump, R106's basis, the Small-map escape, the reach drawn — F1–F5
 - [ ] [T22.19](M22/T22.19-standing-on-asteroids.md) — Characters rotate to stand on the asteroid pulling them, upright in free space — R107
 
 **M22 closed 2026-09-25.** 67 of 77 rows ticked; the 10 open are follow-ups filed for later (T22.00D, T22.00E, three from T22.03I/H, two from T22.14B, two from T22.00C) and T22.07, superseded by M23's `R9`. The last M22 work commit is `ae749b2` (T22.14E); after it come the close-out commits — [`docs/77`](../docs/77-amendments-v9.md), the rulings index, these rows, the handoff, and `chunk-rebake` (R37's rebake budget, gated again). The last green batch gate is `39d2069` (T22.10G). **BATCH GATE: green at `a3c5dea` (2026-09-25, 1224 s) — browser 73/73, vitest 1113/1113, Rust 1720 passed / 0 failed / 26 ignored** — the coordinator runs the full `./scripts/check.sh` on the close-out HEAD and fills this in. What is left for the owner is in [HANDOFF-M22.md](HANDOFF-M22.md)'s *Owner decisions*.

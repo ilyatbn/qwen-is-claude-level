@@ -76,6 +76,96 @@ pub struct Asteroid {
     /// event carries it). The mirror sets it per replayed seq
     /// (`GameCore::apply_input`), so a seq stepped before the destruction still pulls.
     pub core_intact: bool,
+    /// **The lumps stamped on the round body** (T22.18B F1), exactly as the generator
+    /// rounded them — `map::gen::space::stamp_asteroid` stamps *from* this list, so
+    /// the list and the pixels cannot disagree. A slot of radius 0 is empty. With the
+    /// body (`body_r`) this is the rock's whole generated silhouette, which the well's
+    /// band is measured from ([`Asteroid::outline_radius`]). On the wire
+    /// (`codec.rs::encode_map_init`) and in `World::state_hash`; not in the golden
+    /// digest — it is drawn from the stream the mask already pins.
+    pub lumps: [Lump; ASTEROID_LUMP_SLOTS],
+}
+
+/// How many lumps an asteroid can carry: the most the generator stamps.
+pub const ASTEROID_LUMP_SLOTS: usize = crate::constants::SPACE_LUMPS_MAX as usize;
+
+/// One lump of an asteroid (T22.18B): a disc stamped on the round body, its centre
+/// `(dx, dy)` from the rock's centre and its radius `r`, px — the generator's rounded
+/// integers, the ones `stamp_circle` was given. `r == 0` is an empty slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Lump {
+    pub dx: i32,
+    pub dy: i32,
+    pub r: i32,
+}
+
+impl Asteroid {
+    /// A rock with no lumps: the round body alone (fixtures, and the wire's decoder
+    /// before it reads the lump slots).
+    pub fn round(x: i32, y: i32, r: i32, level: u8) -> Self {
+        Asteroid {
+            x,
+            y,
+            r,
+            level,
+            core_intact: true,
+            lumps: [Lump::default(); ASTEROID_LUMP_SLOTS],
+        }
+    }
+
+    /// The round body's radius, px — the disc the generator stamps first,
+    /// `round(SPACE_ASTEROID_CORE_FRAC · r)`.
+    pub fn body_r(&self) -> i32 {
+        (self.r as f32 * crate::constants::SPACE_ASTEROID_CORE_FRAC).round() as i32
+    }
+
+    /// The generated silhouette's discs, body first: `(dx, dy, radius)`.
+    fn discs(&self) -> impl Iterator<Item = (f32, f32, f32)> + '_ {
+        std::iter::once((0.0, 0.0, self.body_r() as f32)).chain(
+            self.lumps
+                .iter()
+                .filter(|l| l.r > 0)
+                .map(|l| (l.dx as f32, l.dy as f32, l.r as f32)),
+        )
+    }
+
+    /// **How far the generated rock reaches along `dir`** from its centre, px
+    /// (T22.18B F1): the farthest point of the body-and-lumps union on that ray.
+    ///
+    /// A pure function of the asteroid — its lump list, not the mask: carving never
+    /// changes it (the same "carving never adds reach" rule the band always had), so
+    /// the server and the mirror agree whatever each has heard of the carves. Taken as
+    /// a direction rather than an angle so the per-tick sum adds no transcendental
+    /// call (`docs/01`'s determinism note: the fewer, the better). A zero `dir` is the
+    /// body's radius. For each disc centred `c`, radius `ρ`, the ray `t·u` leaves it at
+    /// `t = c·u + √(ρ² − |c|² + (c·u)²)` where the root is real; the union's outline is
+    /// the largest such `t`, and the body (centred, `ρ` = `body_r`) always counts.
+    pub fn outline_radius(&self, dir: crate::math::Vec2) -> f32 {
+        let len = dir.len();
+        if len == 0.0 {
+            return self.body_r() as f32;
+        }
+        let (ux, uy) = (dir.x / len, dir.y / len);
+        self.discs().fold(0.0f32, |far, (cx, cy, rho)| {
+            let along = cx * ux + cy * uy;
+            let perp2 = cx * cx + cy * cy - along * along;
+            let h2 = rho * rho - perp2;
+            if h2 < 0.0 {
+                far
+            } else {
+                far.max(along + h2.sqrt())
+            }
+        })
+    }
+
+    /// The farthest the generated rock reaches in any direction, px: the bound of
+    /// [`Asteroid::outline_radius`] over every bearing (`|c| + ρ` of its discs).
+    pub fn outline_max(&self) -> f32 {
+        self.discs()
+            .map(|(cx, cy, rho)| (cx * cx + cy * cy).sqrt() + rho)
+            .fold(0.0f32, f32::max)
+    }
 }
 
 /// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).
