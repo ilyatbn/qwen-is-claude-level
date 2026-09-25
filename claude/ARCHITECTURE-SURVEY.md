@@ -21,7 +21,9 @@ different story (see § 1).
   hand-copy of `room.rs::drive_bots`. Otherwise only `#[cfg(test)]`.
 - **GameScene (networked match)** calls (via GameScene.ts, `net/prediction.ts`, `net/worldMirror.ts`, `render/flareFx.ts`):
   - prediction: `applyInput`, `correctPlayerState` (a reconcile's correction: the acked seq's movement state
-    restored, then the snapshot; T22.14C), `setPlayerState` (relocation, results-screen re-anchor), `playerState`,
+    restored, then the snapshot; T22.14C — with the footer's stepped buttons as the previous input, T22.14D),
+    `relocatePlayer` (a trip's arrival: the body and every history copy from its seq get the respawn's reset, fuel
+    kept; T22.14D), `setPlayerState` (results-screen re-anchor), `playerState`,
     `addPlayer`/`removePlayer` (local), `setPhase`, `acceptsInput` (the `Predictor`'s results-screen switch,
     T22.10E), `setGravity`, `setVortices` (from `WorldMirror.pushVortices`, with seq spans since T22.14C),
     `setBlackHole` (T22.12, from seq since T22.14C), `setBell(seq | null)` (T22.12C; `clear_bell` behind `null`)
@@ -51,8 +53,11 @@ different story (see § 1).
   a death countdown read "5.1s" on a 5 s respawn; darkness u8, count u8) + 28 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as **`i32` counts of `SNAPSHOT_QUANTUM` = 1/8 px (px/s), rounded**
   since T22.10H — before, `i16` whole px truncated; aim
   u16; health u8 truncated; flags; fuel; selected item; vision; battery; heals/batteries; teleport charge; move_mods)
-  + 4-byte footer (per-recipient ack: since T22.10F the last *simulated* seq, real input or stand-in,
-  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 182 B at 6 players before base64 (T22.14C; 180 at T22.10H, 132 before it).
+  + 5-byte footer (`SNAPSHOT_FOOTER_BYTES`), per recipient: the ack `u32` — since T22.10F the last *simulated* seq,
+  real input or stand-in, `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before
+  that the last received — then **the buttons the server stepped the recipient at it** `u8` (T22.14D F1,
+  `World::last_stepped_buttons`: a stand-in's held buttons when the seq was one, not what was sent for it; the
+  correction's previous input). 183 B at 6 players before base64 (T22.14D; 182 at T22.14C, 180 at T22.10H, 132 before it).
   Health stays the truncated u8 on purpose: `speed_multiplier` reads `health.floor()` (T22.10H).
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
   `select_slot` are separate events. **Every in-match verb runs synchronously in arrival order** — `input` since
@@ -122,7 +127,11 @@ different story (see § 1).
   input, so a jump pressed inside the pending window and still held lost its edge on every correction (43.5 px in
   the vitest). A dead player's input stream advances in the mirror as on the server (`prev_input`), and `alive`
   false → true resets jump, jetpack and airborne ticks as `PlayerState::respawn` does (a JUMP held through a respawn
-  was a phantom jump).
+  was a phantom jump). **Since T22.14D** the restored previous input's buttons are the snapshot's stepped buttons: a
+  press sent under seqs the server stood in for (a hiccup) is stepped a stand-in late, and replayed against the
+  client's own copy it was no edge (19 px off in the unit, 63 px in the review's browser run). A pad or vortex trip
+  (`Predictor.relocate`) resets jump and jetpack (fuel kept) and the body, now and in the history from the trip's
+  seq, as `fire_pads` / `step_vortices` (and `dev_relocate`) do.
 - Remotes: `interpolation.ts::RemoteInterpolator`, `INTERP_DELAY_MS` 100, `MAX_EXTRAPOLATION_MS` 250, keyed on local
   arrival time.
 - **Four clocks in GameScene:** `ClockSync` (EWMA, debug HUD only), `render/weather-math.ts::ServerClock` (monotonic,

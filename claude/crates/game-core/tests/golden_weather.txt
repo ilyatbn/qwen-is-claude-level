@@ -1,8 +1,8 @@
 # seed tick kind effect-seed — standard mode, 1200 s round
 # regenerated at 4dfc5a5 (T22.12D, R94: rounds counted in ticks); regenerate only on an
+# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden
 # T22.14A H3 removed one row: a shower's Active covers its fall (METEOR_FALL_TIME), so
 # seed 90210's last shower, rolled 24.2 s before the bell, no longer fits the round
-# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden
 1 1886 MeteorShower 4104408234782783542
 1 3912 HeavyFog 2933937750682261972
 1 6492 MeteorShower 14661844956364110559

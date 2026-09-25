@@ -1396,6 +1396,19 @@ impl World {
             .map(|(_, v)| v.seq)
     }
 
+    /// The buttons `id`'s last simulated tick ran — at [`World::last_simulated_seq`],
+    /// the snapshot's ack — and so the baseline the next tick's edges read against
+    /// (T22.14D F1). **Not the buttons the client pressed at that seq** when the tick
+    /// was a stand-in: then they are the newest held input's, and a press sent for the
+    /// seq was discarded. The snapshot carries them (`codec::encode_snapshot`) so a
+    /// correction replays the next seq's edges against what the server stepped.
+    pub fn last_stepped_buttons(&self, id: PlayerId) -> Option<u8> {
+        self.prev_input
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, v)| v.buttons)
+    }
+
     /// Unconsumed inputs still queued. At most `INPUT_BACKLOG_TARGET` per player
     /// after each tick (T22.10F, R89).
     pub fn pending_len(&self) -> usize {
@@ -3408,6 +3421,13 @@ impl World {
     pub fn dev_relocate(&mut self, id: PlayerId, at: Vec2) -> Option<Vec2> {
         let p = self.player_mut(id)?;
         p.body = crate::physics::body::Body::new(at);
+        // T22.14D F3: and the arrival's reset, as a pad or a trip makes it — the
+        // prediction applies one reset to every relocation it is told of.
+        p.jump = crate::player::movement::JumpState::default();
+        p.jetpack = crate::player::jetpack::JetpackState {
+            fuel: p.jetpack.fuel,
+            ..Default::default()
+        };
         let tick = self.tick + 1;
         self.events.push(GameEvent::Relocate {
             tick,
@@ -14422,5 +14442,95 @@ mod space_meteor_tests {
             "control: flung at an asteroid it did not go off and carve (rim {rim}, {lived:.2} s, \
              {a:?}, {geo:?})"
         );
+    }
+
+    /// **The control R99's despawn arms owed** (T22.14D F2): the rim breaks from a
+    /// player's weapon — R99 took the weather's power to break it, not everyone's. On
+    /// four maps, from just inside the rim's top: a meteor fragment flung straight up
+    /// despawns at the intact rim without carving (the impact arm), and then ana's
+    /// bazooka, aimed the same way, carves the rim and opens a vortex. The review planted
+    /// R99's despawn for **all** ordnance and every test stayed green; this one does not.
+    #[test]
+    fn a_players_rocket_breaks_the_rim_where_weather_ordnance_despawns() {
+        use crate::constants::PLAYER_H;
+        use crate::items::registry::{max_stack, BAZOOKA};
+        use crate::player::input::Input;
+        for seed in 0..4u64 {
+            let mut w = World::with_gravity(
+                seed,
+                MapScale::Medium,
+                0,
+                DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            w.set_round_seconds(600.0);
+            w.set_phase(RoundPhase::Playing);
+            w.effects.postpone_until(1.0e9);
+            let geo = w.map.space_geometry().expect("space");
+            let from = Vec2::new(
+                geo.cx,
+                geo.cy - geo.ry + geo.thickness * 0.5 + 2.0 * PLAYER_H,
+            );
+            let up = Vec2::new(0.0, -1.0);
+
+            // The arm: weather ordnance at the intact rim despawns there, carving nothing.
+            let (rim, lived, carved) = fling(&mut w, from, up);
+            assert!(
+                rim && !carved,
+                "seed {seed}: a fragment flung at the rim did not despawn there uncarved (rim \
+                 {rim}, carved {carved}, {lived:.2} s)"
+            );
+
+            // The control: a player's rocket at the same rim breaks it.
+            w.add_player(0, 0, "ana".into());
+            give(&mut w, 0, BAZOOKA, max_stack(BAZOOKA));
+            wield(&mut w, 0, BAZOOKA);
+            w.players.iter_mut().for_each(|p| {
+                p.body = crate::physics::body::Body::new(from);
+            });
+            w.drain_events();
+            let aim = crate::math::quantize_angle(up.y.atan2(up.x));
+            let (mut rim_carves, mut opened, mut shots) = (0usize, 0usize, 0usize);
+            for _ in 0..((4.0 * PROJECTILE_MAX_LIFETIME) / SIM_DT) as u32 {
+                // The aim rides the input, as a client's does — a tick with none reads 0.
+                w.queue_input(0, Input::new(0, 0, aim));
+                if opened == 0 && w.fire(0, w.round_time).is_ok() {
+                    shots += 1;
+                }
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    match e {
+                        GameEvent::Carve {
+                            x,
+                            y,
+                            r,
+                            kind: CarveKind::Weapon,
+                            ..
+                        } if geo.distance_to_rim(x as f32, y as f32)
+                            < geo.thickness * 0.5 + r as f32 =>
+                        {
+                            rim_carves += 1
+                        }
+                        GameEvent::VortexOpen { .. } => opened += 1,
+                        _ => {}
+                    }
+                }
+                if opened > 0 {
+                    break;
+                }
+            }
+            eprintln!("seed {seed}: {shots} rockets, {rim_carves} rim carves, {opened} vortex");
+            assert!(shots > 0, "seed {seed}: control: ana never fired");
+            assert!(
+                rim_carves > 0,
+                "seed {seed}: ana's {shots} rockets at the rim never carved it — player \
+                 ordnance despawned at the rim like the weather's"
+            );
+            assert_eq!(
+                opened, 1,
+                "seed {seed}: ana's rockets carved the rim {rim_carves} times and opened no \
+                 vortex"
+            );
+        }
     }
 }

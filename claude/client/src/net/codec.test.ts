@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { Core, C, MapScale } from '../core'
+import { Core, C, MapGenerator, MapScale } from '../core'
 import {
   decodeMapInit,
   ASTEROID_WIRE_BYTES,
@@ -159,7 +159,8 @@ function snapshotFixture(
     v.setUint8(at++, 191) // §C5: teleport charge, 0.749 of the way
     v.setUint8(at++, MOVE_MOD.boots) // T21.02: passive-movement bits
   }
-  v.setUint32(at, 9999, true)
+  v.setUint32(at, 9999, true); at += 4
+  v.setUint8(at, C().BTN_JUMP | C().BTN_RIGHT) // T22.14D F1: the stepped buttons
   return b
 }
 
@@ -227,8 +228,13 @@ describe('map_init', () => {
    * and read.
    */
   it('refuses a generator byte that names no generator (T22.14A)', () => {
+    const max = C().MAP_GENERATOR_MAX
     expect(decodeMapInit(mapInitFixture({ generator: 0 })).generator).toBe(0)
-    expect(() => decodeMapInit(mapInitFixture({ generator: 3 }))).toThrow(/names no map generator/)
+    expect(decodeMapInit(mapInitFixture({ generator: max })).generator).toBe(max)
+    expect(() => decodeMapInit(mapInitFixture({ generator: max + 1 }))).toThrow(/names no map generator/)
+    // T22.14D F4: the bound is the core's (`MapGenerator::from_u8`), and the client's
+    // enum ends where it does — a generator added in Rust alone fails here.
+    expect(max).toBe(MapGenerator.Space)
   })
 
   it('decodes a map with no asteroids and still finds the mask', () => {
@@ -308,6 +314,7 @@ describe('snapshot', () => {
     expect(s.roundTime).toBe(Math.fround(30.61667))
     expect(s.darkness).toBeCloseTo(209 / 255, 5)
     expect(s.lastInputSeq).toBe(9999)
+    expect(s.steppedButtons).toBe(C().BTN_JUMP | C().BTN_RIGHT)
     expect(s.players).toHaveLength(3)
     const p = s.players[1]!
     expect(p.id).toBe(1)

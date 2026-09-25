@@ -392,13 +392,13 @@ describe('roster and entities', () => {
       selectedItem: null,
     })
     mirror.applySnapshot(
-      { tick: 1, roundTime: 1, darkness: 0, players: [p(1), p(2)], lastInputSeq: 0 },
+      { tick: 1, roundTime: 1, darkness: 0, players: [p(1), p(2)], lastInputSeq: 0, steppedButtons: 0 },
       0,
     )
     expect([...mirror.players.keys()].sort()).toEqual([1, 2])
 
     mirror.applySnapshot(
-      { tick: 2, roundTime: 1, darkness: 0, players: [p(1)], lastInputSeq: 0 },
+      { tick: 2, roundTime: 1, darkness: 0, players: [p(1)], lastInputSeq: 0, steppedButtons: 0 },
       0,
     )
     expect([...mirror.players.keys()]).toEqual([1])

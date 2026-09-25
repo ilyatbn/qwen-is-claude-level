@@ -7094,3 +7094,11 @@ MED-2 one `past_bell(seq)` (walk across the bell 16.28 px → 0; thrusters-match
 MED-3 exact f32 round time (header 10 B), monotonic clock, countdown ≤ RESPAWN_DELAY. LOW-4/5 `seqClock.ts`, attractors
 switch by seq (7.07 px → 0). R100: wings feel no field — the hole's pull too (26/208 winged died with it, 0 without).
 Placements share the trip's clearance (respawn trips 15 → 0). Shower banner "CLEARING". REPLAY_VERSION 26. Survey updated.
+
+## T22.14D — the stood-in press (builder, 2026-09-25)
+F1: the snapshot footer carries the buttons the server stepped at the ack (5 B); the correction takes them as the
+previous input — a press the server stood in for replays a stand-in late, as stepped (unit 19.12 → 0.04 px; TS plant
+43.3 px). F2: a player's rocket breaks the rim where weather ordnance despawns (all-ordnance plant red). F3: a trip's
+reset (jump, jetpack but fuel, body) reaches the prediction and its history from the trip's seq; `dev_relocate` resets
+too. F4 `MAP_GENERATOR_MAX` via constants_json; F5 seqClock lead = MAX_FRAME_DT, golden header order. canvas-renderer
+settles across drawn frames. Browser numbers in the task file.

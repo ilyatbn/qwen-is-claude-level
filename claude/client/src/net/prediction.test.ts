@@ -190,6 +190,50 @@ describe('a correction replays from the acked seq’s movement state (T22.14C HI
   })
 })
 
+/**
+ * T22.14D F1: the server **stood in** for the seqs a press was sent under — its input
+ * was late, so it stepped them with the held buttons and discarded the press when it
+ * landed — and so first saw the press a seq later. The snapshot's footer names the
+ * buttons it stepped at the ack; the replay reads the next seq's edges against those,
+ * not against the press this client sent (the mirror's own copy at the ack).
+ */
+describe('a press the server stood in for (T22.14D F1)', () => {
+  function run(passStepped: boolean): { a: PlayerState; b: PlayerState; ground: number } {
+    reset()
+    const p = new Predictor(core, 0)
+    const sent: InputFrame[] = []
+    for (let i = 1; i <= 12; i++) sent.push(inp(i, i >= 3 ? BTN.JUMP : 0))
+    // The server: seqs 3 and 4 stood in with the held buttons (none), then the press.
+    const stepped = sent.map((f) => (f.seq <= 4 ? inp(f.seq, 0) : f))
+    for (const f of stepped.slice(0, 4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
+    const truth = mirror.playerState(0)!
+    for (const f of sent) p.pushInput(f, DT)
+    p.reconcile({
+      tick: 0,
+      lastInputSeq: 4,
+      state: truth,
+      ...(passStepped ? { steppedButtons: stepped[3]!.buttons } : {}),
+    })
+    expect(p.stats.corrections).toBe(1)
+    for (const f of stepped.slice(4)) mirror.applyInput(0, f.seq, f.buttons, f.aim, DT)
+    return { a: core.playerState(0)!, b: mirror.playerState(0)!, ground: truth.y }
+  }
+
+  it('is replayed as the press the server made', () => {
+    const { a, b, ground } = run(true)
+    // Control: the server did jump, on seq 5.
+    expect(b.y).toBeLessThan(ground - C().PLAYER_H / 2)
+    expect(a.x).toBeCloseTo(b.x, 4)
+    expect(a.y).toBeCloseTo(b.y, 4)
+    expect(a.vy).toBeCloseTo(b.vy, 4)
+  })
+
+  it('control: without the stepped buttons the replay loses the press', () => {
+    const { a, b } = run(false)
+    expect(Math.abs(a.y - b.y)).toBeGreaterThan(C().RECONCILE_EPSILON_PX)
+  })
+})
+
 describe('corrections', () => {
   it('ignores error below the epsilon', () => {
     const p = new Predictor(core, 0)
@@ -532,6 +576,38 @@ describe('relocate', () => {
     p.reconcile({ tick: 12, lastInputSeq: 12, state: { ...arrive, x: arrive.x + wrong } })
     expect(p.stats.settled - settled).toBe(0)
     expect(p.stats.maxAckErrorPx).toBeCloseTo(wrong, 3)
+  })
+
+  /**
+   * T22.14D F3: a pad or a vortex resets the jump buffer and the jetpack (fuel kept) on
+   * the server (`fire_pads`, `step_vortices`). `relocate` moved the body only, so a
+   * jetpack lit before the trip stayed lit after it — and a correction at an ack past the
+   * trip restored the pre-trip copy from the history. Both halves, against the premise
+   * that the jetpack was burning.
+   */
+  it('a trip resets the jetpack, now and in the copies a later correction restores', () => {
+    const p = new Predictor(core, 0)
+    let seq = 0
+    while (seq < C().SIM_HZ && core.playerState(0)!.moveState !== 2) p.pushInput(inp(++seq, BTN.JUMP), DT)
+    expect(core.playerState(0)!.moveState).toBe(2)
+    // An anchor: seq `seq` ran on tick `seq`, and the prediction there is the server's.
+    p.reconcile({ tick: seq, lastInputSeq: seq, state: core.playerState(0)! })
+    p.pushInput(inp(seq + 1, BTN.JUMP), DT)
+    p.pushInput(inp(seq + 2, BTN.JUMP), DT)
+    expect(core.playerState(0)!.moveState).toBe(2)
+    const s = core.playerState(0)!
+    const to = { x: s.x + 600, y: s.y - 200 }
+    expect(p.relocate(to.x, to.y, seq + 1)).toBe(true)
+    expect(core.playerState(0)!.moveState, 'the jetpack still burns after the trip').not.toBe(2)
+    // The snapshot for the trip's next tick, acking the last seq pushed: it corrects.
+    const off = C().RECONCILE_EPSILON_PX * 10
+    p.reconcile({
+      tick: seq + 2,
+      lastInputSeq: seq + 2,
+      state: { ...core.playerState(0)!, x: to.x + off, y: to.y, vx: 0, vy: 0, grounded: false },
+    })
+    expect(p.stats.corrections).toBe(1)
+    expect(core.playerState(0)!.moveState, 'the correction restored the pre-trip jetpack').not.toBe(2)
   })
 
   it('does nothing when the prediction is already there (the snapshot came first)', () => {

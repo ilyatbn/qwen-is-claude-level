@@ -212,13 +212,14 @@ fn compute_weather() -> String {
     out.push_str(
         "# regenerated at 4dfc5a5 (T22.12D, R94: rounds counted in ticks); regenerate only on an\n",
     );
+    // T22.14D F5: the H3 note after the sentence it had been inserted into.
+    out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
     out.push_str(
         "# T22.14A H3 removed one row: a shower's Active covers its fall (METEOR_FALL_TIME), so\n",
     );
     out.push_str(
         "# seed 90210's last shower, rolled 24.2 s before the bell, no longer fits the round\n",
     );
-    out.push_str("# intended schedule change: GOLDEN_UPDATE=1 cargo test -p game-core --release --test golden\n");
     // T22.14A (R99): the space table beside it, for F2's reason — nothing else can
     // say space's schedule did not move. Its rows carry a `space` prefix; the
     // standard block above is byte-for-byte what it was.

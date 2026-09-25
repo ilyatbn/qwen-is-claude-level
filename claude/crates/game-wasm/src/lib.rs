@@ -91,6 +91,20 @@ struct Moved {
     prev_input: Input,
 }
 
+/// **A trip's arrival, as the server makes it** (T22.14D F3): `World::fire_pads` and
+/// `World::step_vortices` put a fresh body at the destination (at rest, airborne ticks
+/// 0) and clear the jump buffer and the jetpack **but its fuel** — the respawn's reset
+/// (`set_player_state` on `alive` false → true) with the tank kept. `prev_input` is not
+/// touched: the server's is not.
+fn trip_reset(body: &mut Body, jump: &mut JumpState, jet: &mut JetpackState, at: Vec2) {
+    *body = Body::new(at);
+    *jump = JumpState::default();
+    *jet = JetpackState {
+        fuel: jet.fuel,
+        ..Default::default()
+    };
+}
+
 impl LocalPlayer {
     /// Record the state after `seq` — a replay of `seq` replaces it and every later one.
     fn remember(&mut self, seq: u32) {
@@ -892,10 +906,9 @@ impl GameCore {
         // jetpack cleared (the tank is the wire's, below). A jetpack lit at death stayed
         // lit into the next life: a phantom thrust. `prev_input` is not reset, as the
         // server does not: its dead ticks carried the stream (`apply_input`).
+        // (T22.14D F3: the trip's reset — one function; the tank is the wire's, below.)
         if !p.stats.alive && alive {
-            p.body = Body::new(Vec2::new(x, y));
-            p.jump = JumpState::default();
-            p.jet = JetpackState::default();
+            trip_reset(&mut p.body, &mut p.jump, &mut p.jet, Vec2::new(x, y));
         }
         p.body.pos = Vec2::new(x, y);
         p.body.vel = Vec2::new(vx, vy);
@@ -923,6 +936,31 @@ impl GameCore {
         p.stats.set_move_mod_bits(move_mods);
     }
 
+    /// **A trip's arrival** (T22.14D F3) — a pad or a vortex put the local player at
+    /// `(x, y)` on the server tick whose seq is `from_seq` (`seqClock.ts::seqAtTick`; 0
+    /// with no anchor yet: every copy). The server reset the jump buffer, the jetpack
+    /// (fuel kept) and the body there ([`trip_reset`]); `relocate` only moved the body,
+    /// so the jetpack lit before a trip stayed lit after it, and a later correction
+    /// restored the pre-trip jump and jetpack from the history.
+    ///
+    /// `place` — the body is moved (`Predictor.relocate`'s snap): the current state gets
+    /// the whole reset at `(x, y)`. Either way every history copy from `from_seq` on gets
+    /// it at the copy's own position (a correction overwrites that with the wire's), so a
+    /// correction at an ack past the trip restores what the server had. `Predictor.relocate`
+    /// is the one production caller.
+    pub fn relocate_player(&mut self, id: u8, from_seq: u32, x: f32, y: f32, place: bool) {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return;
+        };
+        if place {
+            trip_reset(&mut p.body, &mut p.jump, &mut p.jet, Vec2::new(x, y));
+        }
+        for (_, m) in p.history.iter_mut().filter(|(s, _)| *s >= from_seq) {
+            let at = m.body.pos;
+            trip_reset(&mut m.body, &mut m.jump, &mut m.jet, at);
+        }
+    }
+
     /// **A reconcile's correction** (T22.14C HIGH-1): the movement state this mirror
     /// had after seq `ack` — previous input, jump buffer, jetpack, airborne ticks —
     /// restored, then the snapshot installed over it ([`GameCore::set_player_state`]).
@@ -938,11 +976,20 @@ impl GameCore {
     /// as before. `Predictor.reconcile` is the one production caller; the results
     /// screen's re-anchor and `relocate` are not corrections at an ack and call
     /// `set_player_state`.
+    ///
+    /// **T22.14D F1: `stepped_buttons` — the snapshot's footer — are the previous
+    /// input's buttons**, over the copy's. The copy holds what this client pressed at
+    /// `ack`; when the server ran `ack` as a stand-in it stepped the newest held buttons
+    /// instead and threw the press away, so it first saw the press on a later seq. A
+    /// replay reading edges against the copy saw no press there: a jump held through a
+    /// hiccup was lost on the correction (19 px off after it in the side-by-side unit, 63 px
+    /// in the review's browser run). `None` (a caller with no snapshot footer) keeps the copy.
     #[allow(clippy::too_many_arguments)]
     pub fn correct_player_state(
         &mut self,
         id: u8,
         ack: u32,
+        stepped_buttons: Option<u8>,
         x: f32,
         y: f32,
         vx: f32,
@@ -962,6 +1009,9 @@ impl GameCore {
                 p.jump = m.jump;
                 p.jet = m.jet;
                 p.prev_input = m.prev_input;
+            }
+            if let Some(b) = stepped_buttons {
+                p.prev_input.buttons = b;
             }
         }
         self.set_player_state(id, x, y, vx, vy, grounded, fuel, health, alive, move_mods);
@@ -2063,6 +2113,13 @@ pub fn constants_json() -> String {
         MAX_FRAME_TICKS => c::MAX_FRAME_TICKS,
         // T22.14C: the shower's dropping window — the HUD counts it, then "clearing".
         METEOR_DURATION => c::METEOR_DURATION,
+        // T22.14D F4: the highest generator byte a `map_init` may carry — read off
+        // `MapGenerator::from_u8`, the server's own decoder, rather than a TS copy of it
+        // (`codec.ts` had `MAP_GENERATOR_MAX = 2`, true only while `Space` is the last).
+        MAP_GENERATOR_MAX => (0..=u8::MAX)
+            .rev()
+            .find(|b| c::MapGenerator::from_u8(*b).is_some())
+            .unwrap_or(0),
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
@@ -4484,6 +4541,8 @@ mod tests {
             core.correct_player_state(
                 1,
                 *back_ack,
+                // Idle throughout: the server stepped no buttons at any ack.
+                Some(0),
                 back.body.pos.x,
                 back.body.pos.y,
                 back.body.vel.x,
@@ -5129,6 +5188,182 @@ mod tests {
              bell seq, {:.4} with it",
             (server - untold).abs(),
             (server - told).abs()
+        );
+    }
+
+    /// What [`the_stood_in_press`] measured: the prediction at each snapshot's ack against
+    /// the server's state there (px, through the codec), over the acks from the server's
+    /// first real step of the press on.
+    struct StoodIn {
+        /// …at the ack after a correction at the **last** stood-in seq: that correction
+        /// knows everything the server did, so the replay should land where it did.
+        from_last_stand_in: f32,
+        /// …over every ack from the server's press on. It includes corrections at an
+        /// **earlier** seq — before the press or inside the stand-ins — whose replay cannot
+        /// know the stand-ins still to come (it presses a tick early for each: 12.42 px at
+        /// worst here, the hiccup's own correction).
+        after_press: f32,
+        /// Seqs the server ran as stand-ins from the press on — the hiccup, measured.
+        stood_in: u32,
+    }
+
+    /// T22.14D F1: **a press the server stood in for.** Server (`World`) and mirror
+    /// (`GameCore`) on the shelf; the client presses JUMP at seq `press` and holds it
+    /// (under gravity that is the jump, then the jetpack). From the press, its inputs are
+    /// held back `lag` ticks past the jitter buffer's lead and then arrive in one burst:
+    /// the server stands in for `lag` seqs with the **old** buttons (R89), discards the
+    /// real ones when they land, and first sees the press on the next seq — a jump
+    /// `lag` ticks late. Every `SIM_HZ / SNAPSHOT_HZ` ticks a snapshot goes through the
+    /// codec and the mirror corrects at its ack and replays everything after it, as
+    /// `Predictor.reconcile` does. `press` runs over every phase of the snapshot cadence.
+    fn the_stood_in_press(lag: u32) -> StoodIn {
+        use game_core::constants::{INPUT_BACKLOG_TARGET, JETPACK_MAX_FUEL, SIM_HZ, SNAPSHOT_HZ};
+        use game_core::player::input::button;
+        let every = SIM_HZ / SNAPSHOT_HZ;
+        let mut out = StoodIn {
+            from_last_stand_in: 0.0,
+            after_press: 0.0,
+            stood_in: 0,
+        };
+        for phase in 0..every {
+            let mut w = game_core::world::World::new(4242, MapScale::Small);
+            w.set_phase(game_core::world::RoundPhase::Playing);
+            w.set_round_seconds(600.0);
+            w.add_player(1, 0, String::new());
+            let (stand_x, stand_y) = build_shelf(&mut w);
+            {
+                let p = w.player_mut(1).expect("seated");
+                p.body.pos = Vec2::new(stand_x, stand_y);
+                p.body.vel = Vec2::ZERO;
+            }
+            let mut core = GameCore::new();
+            assert!(core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)));
+            core.add_player(1, stand_x, stand_y);
+            // Two seconds idle to land, then the press, then a second held.
+            let press = 2 * SIM_HZ + phase;
+            let last = press + SIM_HZ;
+            let burst = press + lag + INPUT_BACKLOG_TARGET as u32;
+            let buttons = |seq: u32| if seq >= press { button::JUMP } else { 0 };
+            let mut predicted: std::collections::BTreeMap<u32, Vec2> = Default::default();
+            // The server's first step of the press under its own seq.
+            let mut first_real_press: Option<u32> = None;
+            // The ack of the correction the current prediction was replayed from.
+            let mut corrected_at = 0u32;
+            for k in 1..=last + INPUT_BACKLOG_TARGET as u32 + lag + every {
+                if k <= last {
+                    core.apply_input(1, k, buttons(k), 0, SIM_DT);
+                    let s = core.player_state(1);
+                    predicted.insert(k, Vec2::new(s[0], s[1]));
+                }
+                // The network: on time, except the press's first `lag + lead` seqs,
+                // which land together on the burst's tick.
+                let deliver: Vec<u32> = if (press..burst).contains(&k) {
+                    vec![]
+                } else if k == burst {
+                    (press..=burst).collect()
+                } else if k <= last {
+                    vec![k]
+                } else {
+                    vec![]
+                };
+                for s in deliver {
+                    w.queue_input(1, Input::new(s, buttons(s), 0));
+                }
+                w.step(SIM_DT);
+                let ack = w.last_simulated_seq(1).expect("stepped");
+                let stepped = w.last_stepped_buttons(1).expect("stepped");
+                if ack >= press && stepped & button::JUMP == 0 {
+                    out.stood_in = out.stood_in.max(ack + 1 - press);
+                } else if ack >= press && first_real_press.is_none() {
+                    first_real_press = Some(ack);
+                }
+                if k % every != 0 || ack == 0 || ack > last {
+                    continue;
+                }
+                let snap = game_server::codec::decode_snapshot(
+                    &game_server::codec::encode_snapshot(&w, 1, ack),
+                )
+                .expect("the server's own bytes");
+                assert_eq!(
+                    snap.stepped_buttons, stepped,
+                    "the footer is the stepped buttons"
+                );
+                let me = snap.players.iter().find(|p| p.id == 1).expect("in it");
+                if let (Some(at), Some(first)) = (predicted.get(&ack), first_real_press) {
+                    let err = (*at - Vec2::new(me.x, me.y)).len();
+                    if ack >= first {
+                        out.after_press = out.after_press.max(err);
+                        if corrected_at + 1 == first {
+                            out.from_last_stand_in = out.from_last_stand_in.max(err);
+                        }
+                    }
+                }
+                // Off the wire, as `GameScene` reads them: grounded is flag bit 1, the
+                // tank a byte of `JETPACK_MAX_FUEL`.
+                core.correct_player_state(
+                    1,
+                    ack,
+                    Some(snap.stepped_buttons),
+                    me.x,
+                    me.y,
+                    me.vx,
+                    me.vy,
+                    me.flags & 2 != 0,
+                    me.jetpack_fuel as f32 / 255.0 * JETPACK_MAX_FUEL,
+                    me.health as f32,
+                    me.flags & 1 != 0,
+                    me.move_mods,
+                );
+                corrected_at = ack;
+                for s in ack + 1..=k.min(last) {
+                    core.apply_input(1, s, buttons(s), 0, SIM_DT);
+                    let st = core.player_state(1);
+                    predicted.insert(s, Vec2::new(st[0], st[1]));
+                }
+            }
+            assert!(
+                first_real_press.is_some(),
+                "phase {phase}: the server never stepped the press"
+            );
+        }
+        out
+    }
+
+    /// T22.14D F1 — a correction takes the buttons the server **stepped** at the ack as
+    /// the previous input, so a press the server stood in for is replayed as the press it
+    /// made a stand-in's length later. The sharp arm: the ack after a correction at the
+    /// last stood-in seq lands on the server's state to the wire's rounding (it was 19 px
+    /// off: the replay saw no press). Control: on time, every ack is within the rounding.
+    #[test]
+    fn a_press_the_server_stood_in_for_is_replayed_as_the_server_stepped_it() {
+        use game_core::constants::SNAPSHOT_QUANTUM;
+        const LAG: u32 = 2;
+        let on_time = the_stood_in_press(0);
+        let late = the_stood_in_press(LAG);
+        eprintln!(
+            "a press stood in for {LAG} seqs: {:.2} px at the ack after a correction at the \
+             last stand-in, {:.2} px worst from the press on (on time: {:.2} / {:.2})",
+            late.from_last_stand_in,
+            late.after_press,
+            on_time.from_last_stand_in,
+            on_time.after_press
+        );
+        assert_eq!(on_time.stood_in, 0, "control: on time, the server stood in");
+        assert!(
+            on_time.after_press <= SNAPSHOT_QUANTUM,
+            "control: on time the prediction is {:.4} px off at an ack",
+            on_time.after_press
+        );
+        assert_eq!(
+            late.stood_in, LAG,
+            "the hiccup did not make the server stand in for {LAG} seqs"
+        );
+        assert!(
+            late.from_last_stand_in <= SNAPSHOT_QUANTUM,
+            "corrected at the last stood-in seq, the replay is still {:.2} px off the server \
+             at the next ack — it replayed the press against the buttons it sent, not the \
+             ones the server stepped",
+            late.from_last_stand_in
         );
     }
 

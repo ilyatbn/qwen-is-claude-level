@@ -160,3 +160,10 @@ that surface mid-milestone are collected here so they are not lost. Each names i
     before, it ended `EFFECT_TELEGRAPH` early. A meteor shower's banner counts its dropping window
     (`METEOR_DURATION`), then reads `CLEARING` until the effect ends.
 24. `REPLAY_VERSION` 26 (R100, the placement clearance; no layout change).
+25. **docs/40 §3 (the snapshot footer; T22.14D):** 5 bytes — the per-recipient ack `u32`, then **the buttons the
+    server stepped that player at the ack** `u8` (a stand-in's held buttons when the seq was one). 183 B at 6 players.
+26. **docs/42 §2 (amends point 19):** the correction's restored previous input takes the footer's stepped buttons, so a
+    press sent under seqs the server stood in for is replayed as the server stepped it — a stand-in later. A pad or
+    vortex arrival (and a dev placement) resets the prediction's jump buffer, jetpack (fuel kept) and airborne ticks,
+    now and in the history from the arrival's seq, as the server's arrival does.
+27. `constants_json` gains `MAP_GENERATOR_MAX` (the last byte `MapGenerator::from_u8` names; `map_init`'s bound).

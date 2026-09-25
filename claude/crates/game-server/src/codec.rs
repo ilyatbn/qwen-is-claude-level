@@ -342,9 +342,11 @@ fn scale_byte(s: game_core::constants::MapScale) -> u8 {
 /// and because hitting the stated 14 would mean dropping a field the client needs.
 ///
 /// `last_input_seq` is **per recipient** — the highest sequence the server had
-/// processed *from that client* — which is why this takes `for_player`. Everything
+/// processed *from that client* — which is why this takes `for_player`, and so is the
+/// footer's last byte: the buttons the server stepped `for_player` at that seq
+/// (T22.14D F1, `World::last_stepped_buttons`; 0 before a first step). Everything
 /// else is identical for everyone.
-pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32) -> Vec<u8> {
+pub fn encode_snapshot(world: &World, for_player: PlayerId, last_input_seq: u32) -> Vec<u8> {
     let players: Vec<_> = world.players.iter().collect();
     let mut b = Vec::with_capacity(
         SNAPSHOT_HEADER_BYTES + players.len() * SNAPSHOT_PLAYER_BYTES + SNAPSHOT_FOOTER_BYTES,
@@ -464,6 +466,13 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
     }
 
     b.extend_from_slice(&last_input_seq.to_le_bytes());
+    // T22.14D F1: **what the server stepped at the ack, not what the client sent.** A
+    // stand-in runs the newest held buttons under the next seq (R89) and discards the
+    // client's input for it when it lands, so a press sent inside a hiccup is stepped a
+    // stand-in's length late. The mirror's own copy at the ack has the press; replayed
+    // against it, the late press was no edge (63 px in the review). Only
+    // `for_player`'s — beside the ack it belongs to.
+    b.push(world.last_stepped_buttons(for_player).unwrap_or(0));
     b
 }
 
@@ -487,6 +496,8 @@ pub struct SnapshotView {
     pub darkness: u8,
     pub players: Vec<SnapshotPlayer>,
     pub last_input_seq: u32,
+    /// The buttons the server stepped the recipient at `last_input_seq` (T22.14D F1).
+    pub stepped_buttons: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -542,6 +553,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
         });
     }
     let last_input_seq = r.u32()?;
+    let stepped_buttons = r.u8()?;
     r.finish()?;
     Ok(SnapshotView {
         tick,
@@ -549,6 +561,7 @@ pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
         darkness,
         players,
         last_input_seq,
+        stepped_buttons,
     })
 }
 
@@ -1457,6 +1470,25 @@ mod tests {
         // Everything else is identical, which is what makes the future
         // encode-once-patch-the-tail optimisation possible.
         assert_eq!(a.players, b.players);
+    }
+
+    /// T22.14D F1: the footer's last byte is **the recipient's** stepped buttons at its
+    /// ack — a world-numbered input (seq 0) steps at once, so one tick sets them. Two
+    /// players holding different buttons get their own; control: before anyone steps
+    /// the byte is 0.
+    #[test]
+    fn the_stepped_buttons_are_the_recipients_own() {
+        let mut w = world_with(2);
+        let before = decode_snapshot(&encode_snapshot(&w, 1, 0)).expect("before");
+        assert_eq!(before.stepped_buttons, 0);
+        w.queue_input(0, Input::new(0, button::LEFT, 0));
+        w.queue_input(1, Input::new(0, button::RIGHT | button::JUMP, 0));
+        w.step(SIM_DT);
+        let a = decode_snapshot(&encode_snapshot(&w, 0, 1)).expect("a");
+        let b = decode_snapshot(&encode_snapshot(&w, 1, 1)).expect("b");
+        assert_eq!(a.stepped_buttons, button::LEFT);
+        assert_eq!(b.stepped_buttons, button::RIGHT | button::JUMP);
+        assert_eq!(a.players, b.players, "everything else is shared");
     }
 
     #[test]

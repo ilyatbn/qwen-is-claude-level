@@ -23,9 +23,6 @@ export interface MapObject {
   flip: boolean
 }
 
-/** `MapGenerator::Space`'s byte, the highest a `map_init` may carry (T22.14A). */
-export const MAP_GENERATOR_MAX = 2
-
 export interface MapInit {
   width: number
   height: number
@@ -137,6 +134,12 @@ export interface Snapshot {
   darkness: number
   players: SnapshotPlayer[]
   lastInputSeq: number
+  /**
+   * T22.14D F1: the buttons the server **stepped** this client at `lastInputSeq` — a
+   * stand-in's (the newest held buttons) when the seq was one, not what was sent for it.
+   * The correction's previous input (`Predictor.reconcile` → `Core.correctPlayerState`).
+   */
+  steppedButtons: number
 }
 
 export interface InputFrame {
@@ -229,7 +232,9 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const theme = r.u8()
   const generator = r.u8()
   // Refused, not guessed: a byte naming no generator would otherwise be some map.
-  if (generator > MAP_GENERATOR_MAX) {
+  // T22.14D F4: the highest byte `MapGenerator::from_u8` names, off the core — this was
+  // a hand copy (`MAP_GENERATOR_MAX = 2`) that a fourth generator would have outrun.
+  if (generator > C().MAP_GENERATOR_MAX) {
     throw new CodecError(`generator ${generator} names no map generator`)
   }
   const wind = r.f32()
@@ -376,10 +381,11 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
     })
   }
   const lastInputSeq = r.u32()
+  const steppedButtons = r.u8()
   if (r.remaining !== 0) {
     throw new CodecError(`${r.remaining} trailing bytes after the snapshot`)
   }
-  return { tick, roundTime, darkness, players, lastInputSeq }
+  return { tick, roundTime, darkness, players, lastInputSeq, steppedButtons }
 }
 
 /** Snapshot flag bits (`docs/40-net-protocol.md` §3). */

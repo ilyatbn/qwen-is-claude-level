@@ -107,6 +107,15 @@ export interface LocalSnapshotView {
   tick: number
   lastInputSeq: number
   /**
+   * T22.14D F1: the buttons the server stepped at `lastInputSeq` (the snapshot's footer,
+   * `Snapshot.steppedButtons`) — the correction's previous input. When the server ran
+   * the ack as a stand-in they are the held buttons it repeated, not the press this
+   * client sent, and the replay must read the next seq's edges against them. Optional
+   * for fixtures that model no server; absent, the mirror's own copy at the ack stands.
+   * `GameScene` always passes it.
+   */
+  steppedButtons?: number
+  /**
    * **Minus `landingImpact`**, which no snapshot carries (T20.11): it is
    * measured locally by `integrate` on the tick the body touches down, and a
    * caller asked for one here would have to invent it.
@@ -387,8 +396,10 @@ export class Predictor {
     const lifeChanged = local.alive !== snap.state.alive
     // T22.14C HIGH-1: from the movement state the mirror had **at the ack** (its
     // previous input, jump buffer, jetpack), not the newest one — or the first
-    // replayed input's edges read against the last input pushed.
-    this.core.correctPlayerState(this.localId, snap.lastInputSeq, snap.state)
+    // replayed input's edges read against the last input pushed. T22.14D F1: with the
+    // buttons the server stepped there as the previous input, which a stand-in makes
+    // differ from the ones this client sent.
+    this.core.correctPlayerState(this.localId, snap.lastInputSeq, snap.state, snap.steppedButtons)
     // The truth at the ack is now the prediction there, for a snapshot that acks it again.
     this.predicted.set(snap.lastInputSeq, { x: snap.state.x, y: snap.state.y, vx: snap.state.vx, vy: snap.state.vy })
     for (const { input, dt } of this.pending) {
@@ -652,14 +663,25 @@ export class Predictor {
   relocate(x: number, y: number, tick: number): boolean {
     const s = this.state
     if (!s) return false
-    if (this.lastTick !== null && Number.isFinite(tick) && this.lastTick >= tick) return false
+    // T22.14D F3: the server's arrival reset the jump buffer and the jetpack (fuel kept)
+    // on the trip's tick — for the copies a later correction restores from that seq on
+    // (every one, with no anchor yet), and for the body when it is moved here. A
+    // snapshot that came first moves nothing (its correction already put the body there)
+    // but the copies it restored from were the pre-trip ones.
+    const anchor = this.anchor()
+    const fromSeq = anchor && Number.isFinite(tick) ? Math.max(0, seqAtTick(tick, anchor)) : 0
+    if (this.lastTick !== null && Number.isFinite(tick) && this.lastTick >= tick) {
+      this.core.relocatePlayer(this.localId, fromSeq, x, y, false)
+      return false
+    }
     const d = Math.hypot(s.x - x, s.y - y)
     if (d <= SNAP_PX) {
+      this.core.relocatePlayer(this.localId, fromSeq, x, y, false)
       const then = this.predictionAt(tick) ?? s
       if (Math.hypot(then.x - x, then.y - y) > C().RECONCILE_EPSILON_PX) this.unsettled = true
       return false
     }
-    this.core.setPlayerState(this.localId, { ...s, x, y, vx: 0, vy: 0, grounded: false })
+    this.core.relocatePlayer(this.localId, fromSeq, x, y, true)
     this.render = { x, y }
     this.stats.snaps++
     // T22.10E F-4: the next snapshot may still ack an input from before the trip.

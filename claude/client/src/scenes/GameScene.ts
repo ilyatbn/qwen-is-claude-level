@@ -1759,6 +1759,8 @@ export class GameScene extends Phaser.Scene {
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
         tick: s.tick,
         lastInputSeq: s.lastInputSeq,
+        // T22.14D F1: what the server stepped at the ack — the correction's previous input.
+        steppedButtons: s.steppedButtons,
         state: {
           x: mine.x,
           y: mine.y,

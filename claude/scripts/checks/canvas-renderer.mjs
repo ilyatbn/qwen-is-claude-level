@@ -24,6 +24,8 @@
  * - **Drift**: two frames with nothing toggled, so the fixture's own motion is measured, not assumed.
  */
 
+import { drawnFrames } from './harness.mjs'
+
 /** Install the page-side sampler once: frames stay in the page, only numbers come back. */
 async function installSampler(page) {
   await page.evaluate(() => {
@@ -110,11 +112,23 @@ async function airColumns(page, y0, y1) {
   )
 }
 
-/** Poll until the camera stops moving — never a flat sleep. */
+/**
+ * Rendered frames between two samples of a settled camera (T22.14D): ~100 ms at 60 fps.
+ */
+const SETTLE_FRAMES = 6
+
+/**
+ * Poll until the camera stops moving — never a flat sleep. **Across drawn frames**
+ * (T22.14D): two samples 100 ms apart were "settled" when they agreed, so a page that drew
+ * nothing between them — a stalled frame under load — read as a still camera, and the foot
+ * was sampled mid-pan (1 red in 22 runs under the full suite). Each interval now spans
+ * `SETTLE_FRAMES` rendered frames; `drawnFrames` throws if the page stops drawing.
+ */
 async function settle(page) {
   let last = await page.evaluate(() => window.__game.debug().worldView)
   for (let i = 0; i < 80; i++) {
     await page.waitForTimeout(100)
+    await drawnFrames(page, SETTLE_FRAMES)
     const now = await page.evaluate(() => window.__game.debug().worldView)
     if (Math.abs(now.y - last.y) < 0.5 && Math.abs(now.x - last.x) < 0.5) return now
     last = now

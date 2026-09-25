@@ -313,6 +313,8 @@ export interface Constants {
   MAX_FRAME_TICKS: number
   /** T22.14C: how long a shower drops meteors, s — the HUD's dropping window. */
   METEOR_DURATION: number
+  /** T22.14D F4: the highest `MapGenerator` byte (`MapGenerator::from_u8`'s last `Some`). */
+  MAP_GENERATOR_MAX: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number
@@ -1132,16 +1134,36 @@ export class Core {
   }
 
   /**
+   * T22.14D F3: **a trip's arrival** — the server's pad/vortex reset (a fresh body at
+   * rest, the jump buffer and the jetpack cleared, fuel kept), applied to every history
+   * copy from `fromSeq` (the trip tick's seq) and, when `place`, to the current state at
+   * `(x, y)`. `Predictor.relocate` is the one production caller.
+   */
+  relocatePlayer(id: number, fromSeq: number, x: number, y: number, place: boolean): void {
+    this.inner.relocate_player(id, fromSeq, x, y, place)
+  }
+
+  /**
    * T22.14C HIGH-1: **a reconcile's correction** — the mirror's movement state after
    * seq `ack` (previous input, jump buffer, jetpack, airborne ticks) restored, then
    * `s` installed over it, so the replay steps from where the server's step did.
    * `setPlayerState` alone left them at the newest applied seq. `Predictor.reconcile`
    * is the one production caller.
+   *
+   * T22.14D F1: `steppedButtons` — the snapshot footer's buttons the server stepped at
+   * `ack` — replace the copy's previous input buttons (a stand-in stepped the held ones,
+   * not the press sent for the seq); `undefined` keeps the copy.
    */
-  correctPlayerState(id: number, ack: number, s: Omit<PlayerState, 'landingImpact'>): void {
+  correctPlayerState(
+    id: number,
+    ack: number,
+    s: Omit<PlayerState, 'landingImpact'>,
+    steppedButtons?: number,
+  ): void {
     this.inner.correct_player_state(
       id,
       ack,
+      steppedButtons,
       s.x,
       s.y,
       s.vx,

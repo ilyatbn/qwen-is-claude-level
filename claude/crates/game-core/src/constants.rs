@@ -1526,8 +1526,10 @@ const _: () = assert!(8192.0 / SNAPSHOT_QUANTUM < i32::MAX as f32);
 /// Header bytes before the player array: tick `u32`, round time `f32` (T22.14C
 /// MED-3: exact; it was a `u16` of truncated deciseconds), darkness `u8`, count `u8`.
 pub const SNAPSHOT_HEADER_BYTES: usize = 10;
-/// Trailing `last_input_seq`.
-pub const SNAPSHOT_FOOTER_BYTES: usize = 4;
+/// Trailing, per recipient: `last_input_seq` `u32` (the ack), then the buttons the
+/// server **stepped** at it `u8` (T22.14D F1: a stand-in's, when the seq was one —
+/// the correction's previous input; `World::last_stepped_buttons`).
+pub const SNAPSHOT_FOOTER_BYTES: usize = 5;
 /// The longest frame a client steps, seconds: a tab that stalled for ten seconds
 /// is not simulated ten seconds forward in one frame. **The client's
 /// `input/autoFire.ts::MAX_FRAME_DT` is this number** — exported through

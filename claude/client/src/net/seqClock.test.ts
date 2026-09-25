@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { C, Core } from '../core'
 import { firstSeqAfter, roundClockOnSnapshot, seqAtTick, tickAtSeq } from './seqClock'
+
+// T22.14D F5: the lead is the core's `MAX_FRAME_DT` (what `GameScene` passes), not a copy.
+beforeAll(async () => {
+  await Core.init(readFileSync(fileURLToPath(new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url))))
+}, 60_000)
 
 describe('the seq ↔ tick mapping (T22.14C LOW-5)', () => {
   // A snapshot on tick 500 acking seq 100: seq 100 + k runs on tick 500 + k (R89).
@@ -31,8 +39,11 @@ describe('the seq ↔ tick mapping (T22.14C LOW-5)', () => {
 })
 
 describe('the round clock on a snapshot (T22.14C MED-3)', () => {
-  // One frame's worth of lead is jitter; the fixture's frame ceiling.
-  const lead = 0.25
+  // One frame's worth of lead is jitter: the frame ceiling `GameScene` passes.
+  let lead = 0
+  beforeAll(() => {
+    lead = C().MAX_FRAME_DT
+  })
 
   it('never steps back for a late snapshot', () => {
     // The frames ran the clock to 10.05; a snapshot of 10.0 arrives late.
