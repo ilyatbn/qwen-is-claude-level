@@ -7206,3 +7206,8 @@ recorders (temp copy; reference untouched; re-run is byte-identical) — no tran
 by kind vs hand-read source counts, light counts vs `L(` in source, P fields vs `P.x` in f_scene.js (set-equal), figures stand
 on their mask; planting a dropped `halo` + one misported actor turns 2 red. tsc clean. Step 4: F1–F4 re-render byte-identical
 (cmp) — floor 0. Left for after M22: `?look=` page + check. R17 (cave wall = landform ∨ round start) in M23-art.md; `render_fields_full_with_wall` input; T23.05B filed.
+
+## M22 owner round 2 + M23 start — batch gate green (coordinator, 2026-09-25)
+Full `./scripts/check.sh` on `21b040b` (T22.15–T22.19B + the merged M23 worktree: T23.05, T23.02/T23.01 partial), idle box:
+**EXIT=0, 1245 s** — browser **76/76**, vitest 1143/1143, Rust 1750 passed / 0 failed / 29 ignored. Owner round 2 (R101–R108) is
+done and reviewed; docs/77 §H22 written. M23 continues from T23.00 (WebGL2 on the owner's machine) now that M22's builders are idle.
