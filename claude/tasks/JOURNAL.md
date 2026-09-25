@@ -7111,3 +7111,10 @@ rubber-band assertion 0/9 vs 0/10, plus 0/5 at HEAD `--jobs 4` — pooled 2/24 a
 No path: after the bell `reconcileNeutral` uses `setPlayerState`, never the stepped byte. The arm's precondition also went
 red 2/24 at random (bo landed / pinned before the bell) → **parked** (`flaky: true`, row in `flaky-test.md`). vitest 1113,
 tsc clean, `--changed --fast` green, e2e `--jobs 4` 72/72 (`gate-t2214e-*.txt`).
+
+## M22 close-out — docs/77 and the handoff (coordinator's delegate, 2026-09-25)
+`docs/77-amendments-v9.md` (§H1–§H21: every M22 rule with its ruling, constants by name, the original it overrides; REPLAY_VERSION 14→26 table); superseded values struck in docs/02, 13 §7, 20, 40, 42, 70 §A30; CLAUDE.md line → docs/70–77.
+M22-RULINGS: index of R73–R100 + H3/R99; DOCS-77-OWED closed with where each point landed. TASKS: header (77), 67 ticked, T22.08/T22.11 parents ticked, T22.14E row, two T22.00C follow-ups filed (split `thrusters-match` — its park covers every arm; the five `rAF(rAF)` waits), `BATCH GATE: pending`.
+R37: the rebake median left parked `perf` for its own serial gated check `chunk-rebake` — `=chunk-rebake` 1/1 (1.40 ms median), 6 ms planted bake → red 7.10 (`gate-closeout-chunk-rebake{,-plant}.txt`).
+flaky-test.md: three rows lead "fixed, ready to un-park — owner decides"; beams-shader carries T22.00H. HANDOFF-M22: STATE and owner decisions. Survey: generator byte, correctPlayerState, 58 exports, 90 checks.
+Not run: cargo, vitest, the full gate (the coordinator's batch gate is owed).
