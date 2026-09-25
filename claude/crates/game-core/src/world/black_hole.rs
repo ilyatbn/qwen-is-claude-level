@@ -144,24 +144,6 @@ pub fn clearance(hole: Option<Vec2>, centre: Vec2) -> f32 {
     hole.map_or(f32::INFINITY, |h| (centre - h).len() - BLACK_HOLE_REACH)
 }
 
-/// **The first input seq the server steps after the bell** (T22.12C F5) — the seq
-/// from which a client's prediction must stop pulling toward the hole.
-///
-/// The server stops the pull on its `Ended` tick; a client hears `ended` a trip
-/// later and, until then, predicted the pull on inputs the server stepped without
-/// it. Derived from what the client already holds, **in integers** (T22.12D, R94): a
-/// `Playing` `round_state`'s `ends_tick` is the last tick stepped in `Playing`
-/// (`World::phase_ends_tick`; `World::step` changes phase last, so that tick still
-/// pulled); and a snapshot says seq `ack` ran on tick `snap_tick`, one seq a tick
-/// after it (R89: one step per player per tick). So the first seq stepped in `Ended`
-/// is `ack + ends_tick − snap_tick + 1`. (T22.12C derived the bell from an `f32`
-/// `time_left`, which a round counted by a float sum missed by 1/2/6 ticks on
-/// 240/300/600 s rounds.)
-pub fn bell_seq(ends_tick: u32, ack: u32, snap_tick: u32) -> u32 {
-    (i64::from(ack) + i64::from(ends_tick) - i64::from(snap_tick) + 1).clamp(0, i64::from(u32::MAX))
-        as u32
-}
-
 impl World {
     /// The hole, if it has arrived.
     pub fn black_hole(&self) -> Option<Vec2> {

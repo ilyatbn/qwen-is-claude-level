@@ -1791,7 +1791,7 @@ impl World {
         // Phase advance last, so a tick is never half in two phases.
         // **Counted in ticks** (T22.12D, R94): the phase ends on its deadline tick,
         // `phase_ends_tick`, which `round_state` carries — so a client derives the
-        // bell (`black_hole::bell_seq`) as an integer. (T22.12C compared an `f32`
+        // bell (`client/src/net/seqClock.ts::firstSeqAfter`) as an integer. (T22.12C compared an `f32`
         // round-time sum against a float deadline with half a tick of slack, which
         // fixed ties only: 240/300/600 s rounds ran 14401/18002/36006 ticks.)
         if warmup && self.phase_over() {
@@ -14037,7 +14037,11 @@ mod round_ticks_tests {
                 // A snapshot on the round's first tick: seq `tick + ACK_OFFSET` ran on it.
                 w.step(SIM_DT);
                 let (ack, snap) = (w.tick + ACK_OFFSET, w.tick);
-                let predicted = crate::world::black_hole::bell_seq(start, ack, snap);
+                // The client's rule (`seqClock.ts::firstSeqAfter`, T22.14C LOW-5 — it was
+                // `black_hole::bell_seq` here): seq `ack` ran on tick `snap`, one seq a
+                // tick (R89), and the first tick stepped in `Ended` follows `ends_tick`
+                // (`World::step` changes phase last). This test is its server-side check.
+                let predicted = ack + start - snap + 1;
                 let _ = run_out(&mut w, RoundPhase::Playing, 2 * ticks_of(round));
                 // The first tick stepped in `Ended` is the next one; its seq:
                 let actual = w.tick + 1 + ACK_OFFSET;

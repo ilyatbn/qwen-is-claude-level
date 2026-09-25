@@ -58,6 +58,28 @@ struct LocalPlayer {
     stats: PlayerState,
 }
 
+/// T22.14C LOW-4: the input seqs an attractor pulls for, `from..until` — from the
+/// first seq the server stepped after the event that made it (`vortex_open`,
+/// `black_hole`: the world opens and arrives after `apply_inputs` on the event's
+/// tick) to the first stepped after the one that ended it (`vortex_close`),
+/// exclusive. `seqClock.ts::firstSeqAfter(tick)` maps each event's tick; `0` and
+/// `u32::MAX` are "always" and "never".
+#[derive(Clone, Copy)]
+struct SeqSpan {
+    from: u32,
+    until: u32,
+}
+
+impl SeqSpan {
+    /// `seq` `None` is "now": everything announced and not closed.
+    fn holds(self, seq: Option<u32>) -> bool {
+        match seq {
+            Some(s) => self.from <= s && s < self.until,
+            None => self.until == u32::MAX,
+        }
+    }
+}
+
 /// Everything `apply_input` carries from one seq to the next that the snapshot does
 /// not (T22.14C HIGH-1). The body whole — the wire's position, velocity and grounded
 /// flag are overwritten after the restore; `airborne_ticks` (coyote time) is not on it.
@@ -119,22 +141,25 @@ pub struct GameCore {
     /// `Standard` until told otherwise, which is what the sandbox — never told
     /// — always was.
     gravity: GravityMode,
-    /// T22.10: the live breach vortices' centres, in the server's opening order —
-    /// the list `env_at` chains after the asteroids. Filled by [`GameCore::set_vortices`]
+    /// T22.10: the breach vortices' centres, in the server's opening order — the
+    /// list `env_at` chains after the asteroids. Filled by [`GameCore::set_vortices`]
     /// from `vortex_open` / `vortex_close`; empty on a client told nothing, which
     /// predicts no pull while the server pulls — the rubber-band `set_asteroids`'s
-    /// doc describes, for this list.
-    vortices: Vec<Vec2>,
+    /// doc describes, for this list. T22.14C LOW-4: each with the **seqs** it pulls
+    /// for (`from..until`, see [`SeqSpan`]), so a replay of a seq stepped before the
+    /// server opened or closed it is stepped as the server stepped it.
+    vortices: Vec<(Vec2, SeqSpan)>,
     /// T22.12: the black hole, once `black_hole` announced it — chained after the
     /// vortices by `env_at`, gated on `phase` by `black_hole::pulls` exactly as
     /// the server gates it. `None` on a client told nothing, which predicts no pull
     /// while the server pulls: the rubber-band this field exists to prevent.
-    black_hole: Option<Vec2>,
-    /// T22.12C F5: the first input seq the server steps after the bell
-    /// (`black_hole::bell_seq`, set by [`GameCore::set_bell`] each snapshot from the
-    /// round clock). From it on, the prediction does not pull toward the hole —
-    /// the server stopped on its `Ended` tick, and `ended` arrives a trip later.
-    /// `None` before a `Playing` round clock is known.
+    /// T22.14C LOW-4: from the first seq the server stepped with it there.
+    black_hole: Option<(Vec2, SeqSpan)>,
+    /// T22.12C F5: the first input seq the server steps after the bell (set by
+    /// [`GameCore::set_bell`] each snapshot, from the round clock through
+    /// `seqClock.ts::firstSeqAfter`). From it on the prediction is the server's
+    /// `Ended` step — [`GameCore::past_bell`]. `None` before a `Playing` round clock
+    /// is known.
     bell_seq: Option<u32>,
 }
 
@@ -519,30 +544,85 @@ impl GameCore {
             .collect();
     }
 
-    /// T22.10: the live vortices, as the server holds them — centres in **opening
+    /// T22.10: the vortices, as the server holds them — centres in **opening
     /// order**, which is the order `env_at` sums them in on the server. Parallel
     /// arrays for `set_asteroids`' reason. The client keeps the list in the order
-    /// `vortex_open` arrived and drops on `vortex_close`; it never sorts.
-    pub fn set_vortices(&mut self, xs: &[f32], ys: &[f32]) {
-        let n = xs.len().min(ys.len());
-        self.vortices = (0..n).map(|i| Vec2::new(xs[i], ys[i])).collect();
+    /// `vortex_open` arrived; it never sorts.
+    ///
+    /// T22.14C LOW-4: each with the seqs it pulls for, `froms[i]..untils[i]` (see
+    /// `SeqSpan`) — a closed one stays listed while a replay can still reach a seq
+    /// it pulled for. `WorldMirror.pushVortices` re-derives them on every snapshot.
+    pub fn set_vortices(&mut self, xs: &[f32], ys: &[f32], froms: &[u32], untils: &[u32]) {
+        let n = xs.len().min(ys.len()).min(froms.len()).min(untils.len());
+        self.vortices = (0..n)
+            .map(|i| {
+                let span = SeqSpan {
+                    from: froms[i],
+                    until: untils[i],
+                };
+                (Vec2::new(xs[i], ys[i]), span)
+            })
+            .collect();
     }
 
     /// T22.12: the black hole the server announced (`black_hole`), or none — a new
     /// match's mirror clears it. `WorldMirror` is the one production caller.
-    pub fn set_black_hole(&mut self, present: bool, x: f32, y: f32) {
-        self.black_hole = present.then(|| Vec2::new(x, y));
+    /// T22.14C LOW-4: there from input seq `from` on (the first the server stepped
+    /// after its arrival tick; `0` when not known).
+    pub fn set_black_hole(&mut self, present: bool, x: f32, y: f32, from: u32) {
+        self.black_hole = present.then(|| {
+            let span = SeqSpan {
+                from,
+                until: u32::MAX,
+            };
+            (Vec2::new(x, y), span)
+        });
     }
 
-    /// T22.12C F5: where the bell falls in **input seqs** — from a `Playing`
-    /// `round_state`'s integer `ends_tick` (T22.12D, R94) and a snapshot (`ack` ran
-    /// on `snap_tick`), through `black_hole::bell_seq`, the one derivation. Called
-    /// by `GameScene` on every snapshot before the reconcile replays, so a replayed
-    /// input past the bell is stepped as the server stepped it: without the pull.
-    pub fn set_bell(&mut self, ends_tick: u32, ack: u32, snap_tick: u32) {
-        self.bell_seq = Some(game_core::world::black_hole::bell_seq(
-            ends_tick, ack, snap_tick,
-        ));
+    /// T22.12C F5: where the bell falls in **input seqs** — the first seq the server
+    /// steps in `Ended`, `seqClock.ts::firstSeqAfter(ends_tick)` of a `Playing`
+    /// `round_state`'s `ends_tick` against the latest snapshot (T22.14C LOW-5: the one
+    /// TS derivation of every seq ↔ tick mapping; it was `black_hole::bell_seq` here).
+    /// Called by `GameScene` on every snapshot before the reconcile replays, so a
+    /// replayed input past the bell is stepped as the server stepped it.
+    pub fn set_bell(&mut self, seq: u32) {
+        self.bell_seq = Some(seq);
+    }
+
+    /// **Is `seq` stepped as the server's `Ended` tick?** (T22.14C MED-2.) The phase
+    /// this core heard does not take input, or `seq` is at or past the bell's seq.
+    ///
+    /// **The one answer, read for both halves of the step** — the buttons (zeroed,
+    /// T21.30) and the hole's pull (stopped, R8.4). It was two: the pull by seq
+    /// (T22.12C F5), the buttons by the heard phase, so every input between the
+    /// server's bell tick and this client hearing `ended` was predicted with the
+    /// buttons held — a walking body took a ~15 px correction at every bell.
+    fn past_bell(&self, seq: u32) -> bool {
+        !self.phase.accepts_input() || self.bell_seq.is_some_and(|b| seq >= b)
+    }
+
+    /// The attractors the server summed for `seq` (`None`: now), in its order.
+    fn attractors_at(
+        &self,
+        seq: Option<u32>,
+    ) -> (
+        [Vec2; game_core::constants::MAX_ACTIVE_VORTICES],
+        usize,
+        Option<Vec2>,
+    ) {
+        let mut out = [Vec2::ZERO; game_core::constants::MAX_ACTIVE_VORTICES];
+        let mut n = 0;
+        for &(v, span) in &self.vortices {
+            if n < out.len() && span.holds(seq) {
+                out[n] = v;
+                n += 1;
+            }
+        }
+        let hole = self
+            .black_hole
+            .filter(|&(_, span)| span.holds(seq))
+            .map(|(h, _)| h);
+        (out, n, hole)
     }
 
     /// No bell known (a new round, the lobby, warmup).
@@ -566,11 +646,12 @@ impl GameCore {
     /// what makes the check's control frame (`set_asteroids` with an empty list)
     /// assert the *effect* rather than the ask.
     pub fn field_accel_at(&self, x: f32, y: f32) -> Box<[f32]> {
+        let (vortices, n, hole) = self.attractors_at(None);
         let env = game_core::world::attractors::env_at(
             &self.map,
             self.gravity,
-            &self.vortices,
-            self.black_hole,
+            &vortices[..n],
+            hole,
             game_core::world::black_hole::pulls(self.phase),
             Vec2::new(x, y),
         );
@@ -681,25 +762,24 @@ impl GameCore {
         // `World::apply_inputs` copies it: it is the world's setting, not the
         // player's.
         let gravity = self.gravity;
-        let vortices = &self.vortices;
-        // T22.12: the server's gate, the server's function (R8.4 — frozen at `Ended`),
-        // and T22.12C F5: frozen from the bell's seq on, which the server stepped in
-        // `Ended` before this client heard so.
-        let hole = self.black_hole;
-        let hole_pulls = game_core::world::black_hole::pulls(self.phase)
-            && self.bell_seq.is_none_or(|b| seq < b);
+        // T22.14C LOW-4: what the server summed for **this** seq — a vortex or the
+        // hole heard since is not in a replay of a seq stepped before it.
+        let (vortices, n_vortices, hole) = self.attractors_at(Some(seq));
+        let vortices = &vortices[..n_vortices];
+        // T22.12: the server's gate (R8.4 — frozen at `Ended`), and T22.12C F5: from
+        // the bell's seq on, which the server stepped in `Ended` before this client
+        // heard so. T22.14C MED-2: one `past_bell` for this and the buttons below.
+        let past_bell = self.past_bell(seq);
+        let hole_pulls = game_core::world::black_hole::pulls(self.phase) && !past_bell;
         let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
             return;
         };
         // **T21.30, the server's rule and not a copy of it.** Once the round is
         // over `World::apply_inputs` integrates a neutral input instead of what
         // was held, so the mirror does the same — gravity still runs, nothing
-        // the player presses does.
-        let buttons = if self.phase.accepts_input() {
-            buttons
-        } else {
-            0
-        };
+        // the player presses does. From the bell's **seq** (MED-2), not from
+        // hearing `ended` a trip later.
+        let buttons = if past_bell { 0 } else { buttons };
         let input = Input::new(seq, buttons, aim);
         // **The gate the server has and this did not** (T20.21).
         // `world/mod.rs::apply_inputs` runs `if !self.players[idx].alive
@@ -728,7 +808,7 @@ impl GameCore {
         // (Only while the phase takes input: in `Ended` the server steps the living
         // alone, so a dead player's stream stands still there.)
         if !p.stats.alive {
-            if self.phase.accepts_input() {
+            if !past_bell {
                 p.prev_input = input;
                 p.remember(seq);
             }
@@ -1968,6 +2048,9 @@ pub fn constants_json() -> String {
         // intake (`MAX_FRAME_TICKS`) — `constants-parity.test.ts` pins
         // `autoFire.ts::MAX_FRAME_DT` to it.
         MAX_FRAME_DT => c::MAX_FRAME_DT,
+        // T22.14C LOW-5: exported, not re-derived — `prediction.ts` read it as
+        // `Math.ceil(MAX_FRAME_DT · SIM_HZ)` in two places.
+        MAX_FRAME_TICKS => c::MAX_FRAME_TICKS,
         SNAPSHOT_PLAYER_BYTES => c::SNAPSHOT_PLAYER_BYTES,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
@@ -4208,7 +4291,7 @@ mod tests {
         w.step(SIM_DT);
         assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
         let v = w.vortices[0].pos;
-        core.set_vortices(&[v.x], &[v.y]);
+        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
 
         let start = v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R);
         w.add_player(1, 0, String::new());
@@ -4256,6 +4339,113 @@ mod tests {
         );
     }
 
+    /// **T22.14C LOW-4: a vortex heard late pulls only the seqs the server pulled.**
+    ///
+    /// The server opens a vortex on tick `T`, after that tick's `apply_inputs`; the
+    /// client hears `vortex_open` `HEARD_AFTER` ticks later and then corrects from a
+    /// snapshot `BACK` ticks before `T`, replaying every seq since. Told the vortex
+    /// from the first seq stepped after `T` (`seqClock.ts::firstSeqAfter` of the
+    /// event's tick against the latest snapshot), the replay lands exactly where the
+    /// server is. The control is the vortex switched on when heard, for every replayed
+    /// seq — what the mirror did before T22.14C: it pulled `BACK + 1` seqs too many.
+    #[test]
+    fn a_vortex_heard_late_pulls_only_the_seqs_the_server_pulled() {
+        use game_core::constants::{METEOR_CARVE_R, SNAPSHOT_QUANTUM, VORTEX_CAPTURE_R};
+        use game_core::world::GameEvent;
+        const HEARD_AFTER: u32 = 6;
+        const BACK: u32 = 4;
+        const IDLE: u32 = 30;
+        let run = |by_seq: bool| -> (f32, f32) {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            let geo = w.map.space_geometry().expect("space");
+            let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+            // Where the breach will open: the same world, carved once, on the side.
+            let v = {
+                let (mut probe, _) = space_world_and_mirror(true);
+                let _ = probe.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+                probe.step(SIM_DT);
+                probe.vortices[0].pos
+            };
+            let start = v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R);
+            w.add_player(1, 0, String::new());
+            w.player_mut(1).expect("seated").body = Body::new(start);
+            core.add_player(1, start.x, start.y);
+            // (tick, ack, state) after every server tick.
+            let mut snaps: Vec<(u32, u32, game_core::player::state::PlayerState)> = Vec::new();
+            let (mut seq, mut opened) = (1000u32, None::<u32>);
+            for i in 0.. {
+                if i == IDLE {
+                    let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+                    core.carve(tx, ty, METEOR_CARVE_R as i32);
+                }
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if let GameEvent::VortexOpen { tick, .. } = e {
+                        opened = Some(tick);
+                    }
+                }
+                if let Some(ack) = w.last_simulated_seq(1).filter(|&a| a > 0) {
+                    snaps.push((w.tick, ack, w.player(1).expect("seated").clone()));
+                }
+                if opened.is_some_and(|t| w.tick >= t + HEARD_AFTER) {
+                    break;
+                }
+                assert!(i < IDLE + 60, "the breach opened no vortex");
+            }
+            let open_tick = opened.expect("opened");
+            let &(now_tick, now_ack, ref now) = snaps.last().expect("snapshots");
+            let from = if by_seq {
+                now_ack + open_tick - now_tick + 1
+            } else {
+                0
+            };
+            core.set_vortices(&[v.x], &[v.y], &[from], &[u32::MAX]);
+            let (_, back_ack, back) = snaps
+                .iter()
+                .find(|(t, _, _)| *t == open_tick - BACK)
+                .expect("a snapshot before the open");
+            assert!(back.alive && now.alive, "premise: nobody was taken");
+            core.correct_player_state(
+                1,
+                *back_ack,
+                back.body.pos.x,
+                back.body.pos.y,
+                back.body.vel.x,
+                back.body.vel.y,
+                back.body.grounded,
+                back.jetpack.fuel,
+                back.health,
+                back.alive,
+                back.move_mod_bits(),
+            );
+            for s in back_ack + 1..=now_ack {
+                core.apply_input(1, s, 0, 0, SIM_DT);
+            }
+            let c = core.player_state(1);
+            let off = (Vec2::new(c[0], c[1]) - now.body.pos).len();
+            let pulled = (now.body.pos - back.body.pos).len();
+            (off, pulled)
+        };
+        let (by_seq, pulled) = run(true);
+        let (when_heard, _) = run(false);
+        assert!(
+            by_seq <= SNAPSHOT_QUANTUM,
+            "told the vortex from the seq after its tick, the replay still left the server \
+             by {by_seq:.4} px"
+        );
+        assert!(
+            when_heard > SNAPSHOT_QUANTUM,
+            "control: switched on when heard, the replay is only {when_heard:.4} px off — \
+             this test cannot see the seq (the body moved {pulled:.1} px)"
+        );
+        eprintln!(
+            "a vortex heard {HEARD_AFTER} ticks late, corrected from {BACK} before it: \
+             {when_heard:.3} px switched on when heard, {by_seq:.4} px by seq"
+        );
+    }
+
     /// **T22.10: the mirror sums the vortex the server sums**, once told. A breach is
     /// opened on the server world through its own carve and step; the mirror is
     /// handed the list through `set_vortices` and must then report the server's
@@ -4292,7 +4482,7 @@ mod tests {
             (untold[0] - server.x).abs() + (untold[1] - server.y).abs() > 100.0,
             "control: a mirror told nothing already agrees, so the setter proves nothing"
         );
-        core.set_vortices(&[v.x], &[v.y]);
+        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
         let told = core.field_accel_at(at.x, at.y);
         assert_eq!((told[0], told[1]), (server.x, server.y));
     }
@@ -4315,7 +4505,7 @@ mod tests {
         w.step(SIM_DT);
         assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
         let v = w.vortices[0].pos;
-        core.set_vortices(&[v.x], &[v.y]);
+        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
         let mut binding = 0;
         for k in 0..36 {
             for m in [1.2f32, 1.6, 2.0, 2.5, 3.0] {
@@ -4350,8 +4540,8 @@ mod tests {
         let geo = w.map.space_geometry().expect("space");
         let hole = Vec2::new(geo.cx, geo.cy);
         let v = hole + Vec2::new(BLACK_HOLE_REACH, 0.0);
-        core.set_vortices(&[v.x], &[v.y]);
-        core.set_black_hole(true, hole.x, hole.y);
+        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
+        core.set_black_hole(true, hole.x, hole.y, 0);
         assert!(core.set_phase("playing"));
         let told = |p: Vec2| {
             let a = core.field_accel_at(p.x, p.y);
@@ -4410,7 +4600,7 @@ mod tests {
             let parts = game_server::codec::decode_map_init_parts(&bytes).expect("own bytes");
             install_asteroids(&mut core, &parts.asteroids);
             if tell_hole {
-                core.set_black_hole(true, hole.x, hole.y);
+                core.set_black_hole(true, hole.x, hole.y, 0);
             }
             w.add_player(1, 0, String::new());
             let start = w
@@ -4471,7 +4661,7 @@ mod tests {
     /// The server stops the hole's pull on its `Ended` tick; a client hears `ended`
     /// a trip later and, until then, predicted the pull on inputs the server stepped
     /// without it. `set_bell` (from a `Playing` round clock and a snapshot, through
-    /// `black_hole::bell_seq`) stops the prediction's pull at the right seq. Server
+    /// `seqClock.ts::firstSeqAfter`) stops the prediction's pull at the right seq. Server
     /// and mirror side by side, idle, in the pull, across the bell; the client
     /// "hears" `ended` `HEARD_AFTER` ticks late. Measured at the moment it hears:
     /// **with the bell seq the two agree exactly; without it they are this far apart**
@@ -4502,7 +4692,7 @@ mod tests {
             let bytes = game_server::codec::encode_map_init(&w.map);
             let parts = game_server::codec::decode_map_init_parts(&bytes).expect("own bytes");
             install_asteroids(&mut core, &parts.asteroids);
-            core.set_black_hole(true, hole.x, hole.y);
+            core.set_black_hole(true, hole.x, hole.y, 0);
             w.add_player(1, 0, String::new());
             let start = w
                 .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.97)
@@ -4520,8 +4710,9 @@ mod tests {
                     clock = w.phase_ends_tick().expect("playing");
                 }
                 if use_bell {
-                    // A snapshot of this tick: `seq` ran on it.
-                    core.set_bell(clock, seq, w.tick);
+                    // A snapshot of this tick: `seq` ran on it — and the bell's seq as
+                    // `seqClock.ts::firstSeqAfter(clock)` derives it from that snapshot.
+                    core.set_bell(seq + clock + 1 - w.tick);
                 }
                 core.apply_input(1, seq, 0, 0, SIM_DT);
                 if w.phase == RoundPhase::Ended && ended_at.is_none() {
@@ -4730,6 +4921,112 @@ mod tests {
             "installing an empty asteroid table changed an ordinary match's \
              prediction: ({:.2}, {:.2}) against ({:.2}, {:.2})",
             with_call.x, with_call.y, without.x, without.y
+        );
+    }
+
+    /// **T22.14C MED-2: a direction held across the bell is predicted as the server
+    /// steps it** — the buttons stop at the bell's seq, not when `ended` is heard.
+    ///
+    /// Server and mirror hold RIGHT on the shelf through the natural end of a short
+    /// round; the mirror is told the bell's seq each tick (as `GameScene` does per
+    /// snapshot) and hears `ended` `HEARD_AFTER` ticks late — measured at that moment.
+    /// The two bell tests before this used buttons 0, so the button half of "past the
+    /// bell" (gated on the heard phase) was never exercised. The control: a mirror
+    /// never told the bell walks on past it.
+    #[test]
+    fn a_direction_held_across_the_bell_is_predicted_as_the_server_steps_it() {
+        use game_core::player::input::button;
+        use game_core::world::RoundPhase;
+        const HEARD_AFTER: u32 = 6;
+        // Pressed from this many ticks before the bell: the walk stays on the shelf.
+        const PRESS_BEFORE: u32 = WALK_TICKS - HEARD_AFTER - 1;
+        let run = |use_bell: bool| -> (f32, f32, f32) {
+            let mut w = game_core::world::World::new(4242, MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, String::new());
+            let (stand_x, stand_y) = build_shelf(&mut w);
+            {
+                let p = w.player_mut(1).expect("seated");
+                p.body.pos = Vec2::new(stand_x, stand_y);
+                p.body.vel = Vec2::ZERO;
+            }
+            let mut seq = 0u32;
+            while !w.player(1).expect("seated").body.grounded {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                assert!(seq < 120, "the server player never landed on the shelf");
+            }
+            // The bell falls a second from now.
+            w.set_round_seconds(w.round_time + 1.0);
+            let clock = w.phase_ends_tick().expect("playing");
+            let mut core = GameCore::new();
+            assert!(core.load_mask(w.map.mask.w, w.map.mask.h, &rle::encode(&w.map.mask)));
+            let p = w.player(1).expect("seated");
+            let start_x = p.body.pos.x;
+            core.add_player(1, p.body.pos.x, p.body.pos.y);
+            core.set_player_state(
+                1,
+                p.body.pos.x,
+                p.body.pos.y,
+                p.body.vel.x,
+                p.body.vel.y,
+                p.body.grounded,
+                p.jetpack.fuel,
+                p.health,
+                p.alive,
+                p.move_mod_bits(),
+            );
+            let mut ended_at = None::<u32>;
+            loop {
+                seq += 1;
+                let buttons = if w.tick + PRESS_BEFORE >= clock {
+                    button::RIGHT
+                } else {
+                    0
+                };
+                w.queue_input(1, Input::new(seq, buttons, 0));
+                w.step(SIM_DT);
+                if use_bell {
+                    // A snapshot of this tick and the seq it acks — the jitter buffer's
+                    // lead makes that not `seq` — through `seqClock.ts::firstSeqAfter`.
+                    let ack = w.last_simulated_seq(1).expect("stepped");
+                    core.set_bell(ack + clock + 1 - w.tick);
+                }
+                core.apply_input(1, seq, buttons, 0, SIM_DT);
+                if w.phase == RoundPhase::Ended && ended_at.is_none() {
+                    ended_at = Some(w.tick);
+                }
+                if ended_at.is_some_and(|t| w.tick >= t + HEARD_AFTER) {
+                    let server = w.player(1).expect("seated").body.pos.x;
+                    return (start_x, server, core.player_state(1)[0]);
+                }
+                assert!(w.tick < clock + game_core::constants::SIM_HZ, "no bell");
+            }
+        };
+        let (start, server, told) = run(true);
+        assert!(
+            server - start > PLAYER_W / 2.0,
+            "control: the server only walked {:.2} px before the bell",
+            server - start
+        );
+        assert!(
+            (server - told).abs() <= f32::EPSILON * server.abs(),
+            "told the bell's seq, the mirror still walked past it: {told:.3} against the \
+             server's {server:.3} ({HEARD_AFTER} ticks after the bell)"
+        );
+        let (_, server, untold) = run(false);
+        assert!(
+            (server - untold).abs() > RECONCILE_EPSILON_PX,
+            "control: a mirror never told the bell is only {:.3} px off — this test cannot \
+             see the bell",
+            (server - untold).abs()
+        );
+        eprintln!(
+            "a walk held across the bell, heard {HEARD_AFTER} ticks late: {:.2} px without the \
+             bell seq, {:.4} with it",
+            (server - untold).abs(),
+            (server - told).abs()
         );
     }
 

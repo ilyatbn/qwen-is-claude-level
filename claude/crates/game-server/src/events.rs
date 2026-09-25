@@ -501,7 +501,7 @@ fn cause_name(c: DeathCause) -> &'static str {
 /// absent fields: a vote exists only while the round is `Ended`.
 ///
 /// **`ends_tick`** (T22.12D, R94) is the last tick the phase is stepped in —
-/// integer, so a client derives the bell exactly (`black_hole::bell_seq`) — and
+/// integer, so a client derives the bell exactly (`seqClock.ts::firstSeqAfter`) — and
 /// `time_left` is derived from it, never sent separately; both `null` in `Lobby`
 /// (`time_left` was `INFINITY`, which JSON writes as `null`: unchanged).
 fn round_state_payload(

@@ -67,6 +67,9 @@ export const enum MapGenerator {
  */
 export const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator.V2
 
+/** A `u32`'s largest value — `SeqSpan`'s "never" (T22.14C LOW-4). */
+const U32_MAX = 0xffffffff
+
 export interface Point {
   x: number
   y: number
@@ -306,6 +309,8 @@ export interface Constants {
   MAX_INPUT_QUEUE: number
   /** T22.10D: `input/autoFire.ts::MAX_FRAME_DT` is pinned to this. */
   MAX_FRAME_DT: number
+  /** T22.14C LOW-5: `ceil(MAX_FRAME_DT · SIM_HZ)`, Rust's — the stand-in claim ceiling. */
+  MAX_FRAME_TICKS: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number
@@ -909,8 +914,15 @@ export class Core {
    * the sum is taken in list order on both sides. `WorldMirror` keeps the list
    * in the order `vortex_open` arrived and is the one production caller.
    */
-  setVortices(list: readonly { x: number; y: number }[]): void {
-    this.inner.set_vortices(new Float32Array(list.map((v) => v.x)), new Float32Array(list.map((v) => v.y)))
+  setVortices(list: readonly { x: number; y: number; fromSeq?: number; untilSeq?: number }[]): void {
+    // T22.14C LOW-4: the input seqs each pulls for — absent, always (the sandbox, which
+    // has no server to be late behind).
+    this.inner.set_vortices(
+      new Float32Array(list.map((v) => v.x)),
+      new Float32Array(list.map((v) => v.y)),
+      new Uint32Array(list.map((v) => v.fromSeq ?? 0)),
+      new Uint32Array(list.map((v) => v.untilSeq ?? U32_MAX)),
+    )
   }
 
   /**
@@ -919,19 +931,20 @@ export class Core {
    * predicts no pull near the hole while the server pulls: a rubber-band.
    * `WorldMirror` is the one production caller.
    */
-  setBlackHole(hole: { x: number; y: number } | null): void {
-    this.inner.set_black_hole(hole !== null, hole?.x ?? 0, hole?.y ?? 0)
+  setBlackHole(hole: { x: number; y: number; fromSeq?: number } | null): void {
+    // T22.14C LOW-4: from the first seq the server stepped with it there (absent: always).
+    this.inner.set_black_hole(hole !== null, hole?.x ?? 0, hole?.y ?? 0, hole?.fromSeq ?? 0)
   }
 
   /**
-   * T22.12C F5: where the bell falls, in input seqs — from the last `Playing`
-   * `round_state`'s integer `endsTick` (T22.12D, R94: the last tick stepped in
-   * `Playing`) and this snapshot (`ack` ran on `snapTick`); `null` clears it. The
-   * derivation is Rust's (`black_hole::bell_seq`); from that seq on the prediction
-   * stops pulling toward the hole, as the server did on its `Ended` tick.
+   * T22.12C F5: where the bell falls — the first input seq the server steps in
+   * `Ended`, `seqClock.ts::firstSeqAfter` of the last `Playing` `round_state`'s
+   * `endsTick` against this snapshot (T22.14C LOW-5: the one derivation); `null`
+   * clears it. From that seq on the prediction steps as the server's `Ended` tick —
+   * no buttons, no pull toward the hole (T22.14C MED-2: one `past_bell`).
    */
-  setBell(bell: { endsTick: number; ack: number; snapTick: number } | null): void {
-    if (bell) this.inner.set_bell(bell.endsTick, bell.ack, bell.snapTick)
+  setBell(seq: number | null): void {
+    if (seq !== null) this.inner.set_bell(seq)
     else this.inner.clear_bell()
   }
 

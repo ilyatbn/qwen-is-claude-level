@@ -634,6 +634,63 @@ describe('breach vortices', () => {
     core.setGravity('standard')
   })
 
+  /**
+   * T22.14C LOW-4: the pull switches on **the seq after the event's tick**, not when
+   * the event is heard — a replay of a seq the server stepped before the vortex opened
+   * (or after it closed) is stepped without it. Anchored at ack 100 on tick 500: an
+   * open on tick 503 first pulls seq 104, a close on tick 510 last pulls seq 110.
+   * Each seq is stepped from the same body on this core and on one never told
+   * (`other`); the control is the seqs inside the span, where the two differ.
+   */
+  it('pulls from the seq after its open tick until the seq after its close tick', () => {
+    for (const c of [core, other]) {
+      c.generate(4242n, MapScale.Small)
+      expect(c.setGravity('space')).toBe(true)
+      c.removePlayer(0)
+      c.setVortices([])
+      c.setBlackHole(null)
+      c.setBell(null)
+      c.setPhase('playing')
+      // No wells: the vortex is the only field, so any difference is its pull.
+      c.setAsteroids([])
+    }
+    const mirror = new WorldMirror(core)
+    const at = { x: 600, y: 300 }
+    const probe = { x: at.x + C().VORTEX_CAPTURE_R * 1.5, y: at.y }
+    mirror.anchorSeqs({ ack: 100, tick: 500 })
+    mirror.applyEvent('vortex_open', { id: 7, x: at.x, y: at.y, tick: 503 }, 0)
+    const pulledAt = (seq: number): boolean => {
+      for (const c of [core, other]) {
+        c.removePlayer(0)
+        c.addPlayer(0, probe.x, probe.y)
+        c.applyInput(0, seq, 0, 0, C().SIM_DT)
+      }
+      return core.playerState(0)!.vx !== other.playerState(0)!.vx
+    }
+    expect(pulledAt(103)).toBe(false)
+    expect(pulledAt(104)).toBe(true)
+    mirror.applyEvent('vortex_close', { id: 7, tick: 510 }, 1234)
+    expect(pulledAt(110)).toBe(true)
+    expect(pulledAt(111)).toBe(false)
+    // Once the ack passes its last pulled seq it is no longer sent at all.
+    mirror.anchorSeqs({ ack: 111, tick: 511 })
+    expect(pulledAt(110)).toBe(false)
+    // The black hole the same way: it arrives on tick 503, so seq 104 is its first.
+    mirror.clearVortices()
+    mirror.applyEvent('black_hole', { x: at.x, y: at.y, tick: 503 }, 0)
+    expect(pulledAt(103)).toBe(false)
+    expect(pulledAt(104)).toBe(true)
+    mirror.clearBlackHole()
+    // In `ended` (no anchor) a heard open pulls at once, as before.
+    mirror.anchorSeqs(null)
+    mirror.applyEvent('vortex_open', { id: 8, x: at.x, y: at.y, tick: 900 }, 0)
+    expect(pulledAt(1)).toBe(true)
+    for (const c of [core, other]) {
+      c.removePlayer(0)
+      c.setGravity('standard')
+    }
+  })
+
   it('keeps opening order, unsorted — the order the server sums in', () => {
     core.generate(4242n, MapScale.Small)
     const mirror = new WorldMirror(core)

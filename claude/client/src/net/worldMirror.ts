@@ -11,6 +11,7 @@ import type { Core } from '../core'
 import { fromBase64 } from './connection'
 import { decodeMapInit, decodeSnapshot, type MapInit, type Snapshot } from './codec'
 import type { TombstoneView } from '../render/tombstones-math'
+import { firstSeqAfter, type SeqAnchor } from './seqClock'
 
 export interface RemotePlayerState {
   id: number
@@ -110,6 +111,14 @@ export interface VortexView {
   x: number
   y: number
   closedAt: number | null
+  /**
+   * T22.14C LOW-4: the server ticks it opened and closed on (`vortex_open` /
+   * `vortex_close` carry them) — what the core's pull is keyed to, through the seq
+   * mapping, rather than when the event was heard. Absent or `null` when not known
+   * (the sandbox's, which has no server to be late behind).
+   */
+  openTick?: number | null
+  closeTick?: number | null
 }
 
 /**
@@ -121,6 +130,8 @@ export interface BlackHoleView {
   y: number
   /** `performance.now()` when the event arrived; the drawing's clock. */
   arrivedAt: number
+  /** T22.14C LOW-4: the server tick it arrived on (`black_hole`'s `tick`), or `null`. */
+  tick: number | null
 }
 
 /**
@@ -182,6 +193,13 @@ export class WorldMirror {
   blackHoleWarn: BlackHoleWarnView | null = null
   /** The rocks `map_init` shipped, so the one the hole ate can be dropped by centre. */
   private asteroids: MapInit['asteroids'] = []
+  /**
+   * T22.14C LOW-4: the latest snapshot's seq anchor while the phase takes input
+   * (`anchorSeqs`), which maps each attractor event's tick to the first seq it
+   * changed. `null` before one, and in `ended` — where every step runs under one
+   * frozen seq, so an event there switches the pull at once, as before.
+   */
+  private anchor: SeqAnchor | null = null
 
   private readonly core: Core
   private nextCarveSeq = 0
@@ -215,11 +233,41 @@ export class WorldMirror {
   }
 
   /**
-   * Tell the core the pulling list again. Idempotent; `GameScene.onMapInit` calls
-   * it so a list that arrived before the map is applied after it.
+   * Tell the core the list again. Idempotent; `GameScene.onMapInit` calls it so a list
+   * that arrived before the map is applied after it, and `anchorSeqs` on every snapshot.
+   *
+   * T22.14C LOW-4: each with the seqs it pulls for — from the first stepped after its
+   * `vortex_open` tick, until the first stepped after its `vortex_close` tick — so a
+   * replay of a seq the server stepped before the event is stepped as the server did.
+   * A closed one is sent while its last pulled seq is still past the ack (a replay can
+   * reach it), and dropped after. Without an anchor, the old rule: open pulls, closed
+   * does not.
    */
   pushVortices(): void {
-    this.core.setVortices(this.pullingVortices)
+    const a = this.anchor
+    const list: { x: number; y: number; fromSeq: number; untilSeq?: number }[] = []
+    for (const v of this.vortices) {
+      const fromSeq = a && typeof v.openTick === 'number' ? firstSeqAfter(v.openTick, a) : 0
+      if (v.closedAt === null) {
+        list.push({ x: v.x, y: v.y, fromSeq })
+        continue
+      }
+      if (!a || typeof v.closeTick !== 'number') continue
+      const untilSeq = firstSeqAfter(v.closeTick, a)
+      if (untilSeq > a.ack) list.push({ x: v.x, y: v.y, fromSeq, untilSeq })
+    }
+    this.core.setVortices(list)
+  }
+
+  /**
+   * T22.14C LOW-4: a snapshot — input seq `a.ack` ran on tick `a.tick` — re-anchors
+   * the attractors' seqs (`null` while the phase takes no input). `GameScene.onSnapshot`
+   * calls it before the reconcile replays, as it sets the bell.
+   */
+  anchorSeqs(a: SeqAnchor | null): void {
+    this.anchor = a
+    this.pushVortices()
+    if (this.blackHole) this.pushBlackHole()
   }
 
   /**
@@ -236,7 +284,8 @@ export class WorldMirror {
         this.core.setAsteroids(kept)
       }
     }
-    this.core.setBlackHole(h)
+    const a = this.anchor
+    this.core.setBlackHole(h && { x: h.x, y: h.y, fromSeq: a && h.tick !== null ? firstSeqAfter(h.tick, a) : 0 })
   }
 
   /** A new round: no black hole, no pull toward it. */
@@ -417,14 +466,14 @@ export class WorldMirror {
         // By id, so the join catch-up re-announcing a live one is not a second.
         const id = n(p['id'])
         if (!this.vortices.some((v) => v.id === id)) {
-          this.vortices.push({ id, x: n(p['x']), y: n(p['y']), closedAt: null })
+          this.vortices.push({ id, x: n(p['x']), y: n(p['y']), closedAt: null, openTick: tickOf(p), closeTick: null })
         }
         this.pushVortices()
         break
       }
       case 'black_hole': {
         // Sticky: a catch-up re-announcing it keeps the first arrival's clock.
-        if (!this.blackHole) this.blackHole = { x: n(p['x']), y: n(p['y']), arrivedAt: now }
+        if (!this.blackHole) this.blackHole = { x: n(p['x']), y: n(p['y']), arrivedAt: now, tick: tickOf(p) }
         this.blackHoleWarn = null
         this.pushBlackHole()
         break
@@ -440,7 +489,10 @@ export class WorldMirror {
       case 'vortex_close': {
         // R88: it stops pulling and fades; it stays in the list to be drawn so.
         const v = this.vortices.find((w) => w.id === n(p['id']))
-        if (v && v.closedAt === null) v.closedAt = now
+        if (v && v.closedAt === null) {
+          v.closedAt = now
+          v.closeTick = tickOf(p)
+        }
         this.pushVortices()
         break
       }
@@ -614,6 +666,12 @@ export class WorldMirror {
 
 function n(v: unknown, dflt = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : dflt
+}
+
+/** An event's server `tick`, or `null` when it carries none (T22.14C LOW-4). */
+function tickOf(p: Record<string, unknown>): number | null {
+  const t = p['tick']
+  return typeof t === 'number' && Number.isFinite(t) ? t : null
 }
 
 export function hex(bytes: Uint8Array): string {

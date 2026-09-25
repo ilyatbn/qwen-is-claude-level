@@ -11,6 +11,7 @@
 
 import { C, type Core, type PlayerState } from '../core'
 import type { InputFrame } from './codec'
+import { seqAtTick, tickAtSeq, type SeqAnchor } from './seqClock'
 
 export interface PredictorStats {
   pending: number
@@ -438,7 +439,7 @@ export class Predictor {
     // Owed ticks are one frame's worth at most (`MAX_FRAME_DT`, the fixed step's
     // own ceiling); further behind than that, the local clock has lost the server's
     // (a hidden tab) and the correction re-anchors instead.
-    if (n.label !== null && snap.tick - n.label > Math.ceil(C().MAX_FRAME_DT / dt)) {
+    if (n.label !== null && snap.tick - n.label > C().MAX_FRAME_TICKS) {
       n.label = null
       // Lost time (T22.10F): the re-anchor is the hitch's correction, not a misprediction.
       this.unsettled = true
@@ -484,7 +485,7 @@ export class Predictor {
   private standIn(ack: number): boolean {
     const from = Math.max(this.lastPushed, this.stoodIn)
     if (this.lastPushed === 0 || ack <= from) return false
-    if (ack - this.lastPushed > Math.ceil(C().MAX_FRAME_DT * C().SIM_HZ)) return false
+    if (ack - this.lastPushed > C().MAX_FRAME_TICKS) return false
     const dt = C().SIM_DT
     for (let seq = from + 1; seq <= ack; seq++) {
       this.core.applyInput(this.localId, seq, this.lastButtons, this.lastAim, dt)
@@ -503,11 +504,12 @@ export class Predictor {
     this.pending.length = 0
     // T22.12D F1: before they go, the predictions keyed by the tick each seq ran on.
     let bell: Neutral['bell'] = null
-    if (this.lastTick !== null && this.stats.lastAck > 0 && this.predicted.size > 0) {
+    const anchor = this.anchor()
+    if (anchor && this.stats.lastAck > 0 && this.predicted.size > 0) {
       const at = new Map<number, Kinematics>()
       let label = -Infinity
       for (const [seq, k] of this.predicted) {
-        const t = this.lastTick + (seq - this.stats.lastAck)
+        const t = tickAtSeq(seq, anchor)
         at.set(t, k)
         label = Math.max(label, t)
       }
@@ -665,8 +667,14 @@ export class Predictor {
 
   /** Where the prediction left the body at server tick `tick`, if a pending seq ran on it. */
   private predictionAt(tick: number): Kinematics | undefined {
-    if (this.lastTick === null || !Number.isFinite(tick)) return undefined
-    return this.predicted.get(this.stats.lastAck + (tick - this.lastTick))
+    const anchor = this.anchor()
+    if (!anchor || !Number.isFinite(tick)) return undefined
+    return this.predicted.get(seqAtTick(tick, anchor))
+  }
+
+  /** The last reconciled snapshot's seq ↔ tick anchor (`seqClock.ts`), or `null` before one. */
+  private anchor(): SeqAnchor | null {
+    return this.lastTick === null ? null : { ack: this.stats.lastAck, tick: this.lastTick }
   }
 
   /** Ease the rendered position toward the simulation. */

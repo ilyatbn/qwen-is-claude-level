@@ -72,6 +72,7 @@ import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
+import { firstSeqAfter } from '../net/seqClock'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
@@ -1729,10 +1730,12 @@ export class GameScene extends Phaser.Scene {
     }
     if (mine && this.predictor) {
       // T22.12C F5: before the reconcile replays, so a replayed input past the bell
-      // is stepped without the hole's pull, as the server stepped it.
-      if (this.bellEndsTick !== null) {
-        this.core.setBell({ endsTick: this.bellEndsTick, ack: s.lastInputSeq, snapTick: s.tick })
-      }
+      // is stepped as the server stepped it (T22.14C MED-2: no buttons, no pull).
+      // T22.14C LOW-4/5: this snapshot's seq ↔ tick anchor (`seqClock.ts`, the one
+      // mapping) re-keys the bell and the vortices' and hole's switch-overs.
+      const anchor = { ack: s.lastInputSeq, tick: s.tick }
+      if (this.bellEndsTick !== null) this.core.setBell(firstSeqAfter(this.bellEndsTick, anchor))
+      this.mirror.anchorSeqs(this.core.acceptsInput() && s.lastInputSeq > 0 ? anchor : null)
       this.predictor.reconcile({
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
         tick: s.tick,
