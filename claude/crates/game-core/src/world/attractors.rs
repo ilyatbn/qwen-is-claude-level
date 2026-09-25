@@ -1062,8 +1062,12 @@ mod tests {
     /// The traced pocket (T22.03E F7): seed 451383 on the default scale, a body
     /// under a rock ceiling that three wells summed to (18, −919) px/s² against
     /// `JETPACK_THRUST_DOWN` 900 — every direction held for 30 ticks moved it 0–1.8 px.
+    /// **Re-traced at T22.17** when R103/R104 moved the map: the same seed, the
+    /// strongest upward raw sum of any rock-free, rock-ceilinged body position inside
+    /// the rim, swept at 1 px — (534, 1344), raw y −1120 px/s² (414 such positions
+    /// on this seed; seeds 7919 and 15838 have 100 and 428, their worst −944 / −999).
     const POCKET_SEED: u64 = 451_383;
-    const POCKET: Vec2 = Vec2::new(2194.0, 1235.0);
+    const POCKET: Vec2 = Vec2::new(534.0, 1344.0);
 
     fn pocket_world() -> World {
         let mut w = World::with_gravity(

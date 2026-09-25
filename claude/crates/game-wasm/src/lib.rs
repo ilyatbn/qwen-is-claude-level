@@ -558,6 +558,14 @@ impl GameCore {
             .collect();
     }
 
+    /// T22.17 (R104): is `(x, y)` inside the space arena? `SpaceGeometry::inside`,
+    /// the one rim predicate, or `false` off a space map — so a browser check that
+    /// asks *"inside the rim?"* (`breach-vortex.mjs`) carries no copy of the rim's
+    /// shape. It carried the ellipse's formula until the rim became a rectangle.
+    pub fn space_inside(&self, x: f32, y: f32) -> bool {
+        self.map.space_geometry().is_some_and(|g| g.inside(x, y))
+    }
+
     /// T22.10: the vortices, as the server holds them — centres in **opening
     /// order**, which is the order `env_at` sums them in on the server. Parallel
     /// arrays for `set_asteroids`' reason. The client keeps the list in the order
@@ -4350,48 +4358,75 @@ mod tests {
         use game_core::constants::{METEOR_CARVE_R, VORTEX_CAPTURE_R};
         use game_core::player::input::Input;
         use game_core::world::GameEvent;
-        let (mut w, mut core) = space_world_and_mirror(true);
-        let geo = w.map.space_geometry().expect("space");
-        let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
-        // Both sides carve the hole: the server's map, and the mirror's from the
-        // `carve` event.
-        let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
-        core.carve(tx, ty, METEOR_CARVE_R as i32);
-        w.step(SIM_DT);
-        assert_eq!(w.vortices.len(), 1, "control: the breach opened no vortex");
-        let v = w.vortices[0].pos;
-        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
-
-        let start = v + Vec2::new(0.0, 1.5 * VORTEX_CAPTURE_R);
-        w.add_player(1, 0, String::new());
-        {
-            let p = w.player_mut(1).expect("seated");
-            p.body = game_core::physics::body::Body::new(start);
-        }
-        core.add_player(1, start.x, start.y);
-        let _ = w.drain_events();
-
-        let (mut seq, mut last, mut tripped) = (1000u32, start, false);
-        for tick in 0..240 {
-            seq += 1;
-            w.queue_input(1, Input::new(seq, 0, 0));
+        // T22.17: **the breach is searched for along the rim**, not fixed at the top
+        // centre. R103/R104 moved the map, and from the top centre a rock's well now
+        // out-pulls the vortex at 1.5 capture radii (the body drifted to
+        // (844, 274), never taken) — a fixture that no longer exercises the pull,
+        // not a prediction that disagrees. Every candidate is compared exactly, tick
+        // by tick, whether or not it trips; the control is that one of them trips.
+        let geo = space_world_and_mirror(true)
+            .0
+            .map
+            .space_geometry()
+            .expect("space");
+        let candidates = [
+            (geo.cx, geo.cy - geo.ry),
+            (geo.cx - geo.rx * 0.5, geo.cy - geo.ry),
+            (geo.cx + geo.rx * 0.5, geo.cy - geo.ry),
+            (geo.cx - geo.rx, geo.cy),
+            (geo.cx + geo.rx, geo.cy),
+            (geo.cx, geo.cy + geo.ry),
+        ];
+        let mut runs = Vec::new();
+        for (bx, by) in candidates {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            let (tx, ty) = (bx.round() as i32, by.round() as i32);
+            // Both sides carve the hole: the server's map, and the mirror's from the
+            // `carve` event.
+            let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+            core.carve(tx, ty, METEOR_CARVE_R as i32);
             w.step(SIM_DT);
-            core.apply_input(1, seq, 0, 0, SIM_DT);
-            if w.drain_events()
-                .iter()
-                .any(|e| matches!(e, GameEvent::VortexTrip { id: 1, .. }))
-            {
-                tripped = true;
-                break;
-            }
-            let server = w.player(1).expect("seated").body.pos;
-            let c = core.player_state(1);
             assert_eq!(
-                (c[0], c[1]),
-                (server.x, server.y),
-                "tick {tick}: the prediction left the server near a vortex"
+                w.vortices.len(),
+                1,
+                "control: the breach at ({tx}, {ty}) opened no vortex"
             );
-            last = server;
+            let v = w.vortices[0].pos;
+            core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
+
+            let (nx, ny) = geo.inward_normal(v.x, v.y);
+            let start = v + Vec2::new(nx, ny) * (1.5 * VORTEX_CAPTURE_R);
+            w.add_player(1, 0, String::new());
+            {
+                let p = w.player_mut(1).expect("seated");
+                p.body = game_core::physics::body::Body::new(start);
+            }
+            core.add_player(1, start.x, start.y);
+            let _ = w.drain_events();
+
+            let (mut seq, mut last, mut tripped) = (1000u32, start, false);
+            for tick in 0..240 {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                core.apply_input(1, seq, 0, 0, SIM_DT);
+                if w.drain_events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::VortexTrip { id: 1, .. }))
+                {
+                    tripped = true;
+                    break;
+                }
+                let server = w.player(1).expect("seated").body.pos;
+                let c = core.player_state(1);
+                assert_eq!(
+                    (c[0], c[1]),
+                    (server.x, server.y),
+                    "breach ({tx}, {ty}) tick {tick}: the prediction left the server near a vortex"
+                );
+                last = server;
+            }
+            runs.push(((tx, ty), start, last, tripped));
         }
         // The control is the trip: from 1.5 capture radii the server only takes the
         // player at the capture radius, so a trip is at least half a radius of pull,
@@ -4400,11 +4435,11 @@ mod tests {
         // approach speed: R96's cap on the wells pulling the body away from this
         // vortex, 820 → 658 px/s², brought the trip a tick sooner and `last` to
         // 61.5 px of the 63.5 the old bound asked for.)
+        eprintln!("breach runs (site, start, last before trip, tripped): {runs:?}");
         assert!(
-            tripped,
-            "control: the vortex never took the player ({:?} -> {:?}), so agreement \
-             proves nothing",
-            start, last
+            runs.iter().any(|r| r.3),
+            "control: no vortex took the player from any breach, so agreement proves \
+             nothing: {runs:?}"
         );
     }
 

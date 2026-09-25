@@ -461,8 +461,9 @@ pub enum MapGenerator {
     V1,
     /// The height-profile landscape.
     V2,
-    /// The zero-gravity arena: a closed elliptical rim with asteroids inside it
-    /// (M22, `T22.05A`, `M22-RULINGS` R13/R15).
+    /// The zero-gravity arena: a closed rim with asteroids inside it (M22,
+    /// `T22.05A`, `M22-RULINGS` R13/R15) — a square-cornered rectangle since T22.17
+    /// (`M22-OWNER-ROUND-2` R104), an ellipse before.
     ///
     /// **Derived from [`GravityMode::Space`], never chosen beside it** — see
     /// [`MapGenerator::for_gravity`]. Two independent fields would let a lobby
@@ -546,25 +547,34 @@ pub const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator::V2;
 // The space map (M22 `T22.05A`, `M22-RULINGS` R13). `map/gen/space.rs`.
 // ---------------------------------------------------------------------------
 
-/// Nominal thickness of the space map's rim, in px — the diameter of the discs
-/// [`crate::map::gen::space::stamp_rim`] lays on the centreline.
+/// Thickness of the space map's rim, in px — the band
+/// [`crate::map::gen::space::stamp_rim`] fills either side of the centreline.
 ///
-/// **What the mask delivers is 29.75-30.00 px, not 32**, and the gap is a
-/// property of the construction rather than noise: the disc chain steps in
-/// ellipse parameter, so its spacing varies 2:1 and it scallops between
-/// centres. `stamp_rim`'s doc derives the number and
-/// `space.rs::the_rim_is_thicker_than_one_minimap_cell` measures it off the
-/// mask and asserts the window. **This constant is what is asked for; that test
-/// is what is got** (R34 — the commit that landed the rim recorded this value
-/// as the measurement).
+/// **The mask delivers exactly this, on every side** (T22.17, `R104`): the rim is
+/// a square-cornered rectangular band, stamped as every pixel whose distance to
+/// the centreline rectangle is within half of it, so there is no disc chain to
+/// scallop. (The ellipse it replaced delivered 29.75-30.00 px against 32 — R34.)
+/// `space.rs::the_rim_is_thicker_than_one_minimap_cell` measures it off the mask.
 ///
 /// **The floor is one minimap cell.** `Minimap::resampleTerrain` point-samples
 /// `core.solidAt` once per cell, so a rim thinner than `mapW / MINIMAP_W` —
 /// 10.24 px on Small, 15.36 on Medium, **20.48 on Large** — aliases into a
-/// broken dashed ring or vanishes (R13, point 2). The delivered 29.75 px clears
-/// the worst of those by 45 %, which is the margin that makes the shortfall a
-/// documentation bug rather than a geometry one.
+/// broken dashed frame or vanishes (R13, point 2).
 pub const SPACE_RIM_THICKNESS: u32 = 32;
+
+/// How far the rim's **outer edge** sits in from every edge of the map, px
+/// (T22.17, `M22-OWNER-ROUND-2` R104: *"edge of the map should be square around
+/// the edges"*). The same on all four sides, so the frame is even on the minimap.
+///
+/// **`SKY_MARGIN`, and not a free choice at the top**: `force_borders` forces the
+/// top `SKY_MARGIN` rows empty, and `borders_hold` is asserted in three files, so
+/// the rim can start no higher. The sides and the bottom match it rather than
+/// hugging the `WALL_W` bands and the `FLOOR_CRUST`, because **a rim flush against
+/// solid border has no air outside it** — `space::breach_in` floods from air past
+/// the outer edge, so that side could never be breached (R87), and the void past it
+/// (`SPACE_VOID_GRACE` 45 px) would not exist. 96 px leaves 88 px of air outside
+/// each side and 80 px above the crust, both wider than the grace band.
+pub const SPACE_RIM_INSET: u32 = SKY_MARGIN;
 
 /// Clear space between an asteroid's surface and the rim's inner edge, px.
 ///
@@ -590,6 +600,16 @@ pub const SPACE_RIM_CLEARANCE: f32 = 64.0;
 /// would otherwise have enforced.
 pub const SPACE_ASTEROID_R_MIN: i32 = 24;
 pub const SPACE_ASTEROID_R_MAX: i32 = 64;
+
+/// The most extra **mass** an asteroid draws, as a fraction (T22.17,
+/// `M22-OWNER-ROUND-2` R103: *"make some asteroids bigger, 0-20% more mass"*).
+///
+/// Each rock draws `m` uniformly on `[0, SPACE_ASTEROID_MASS_MAX]` on its own
+/// sub-stream (`"asteroid_mass"`) and its radius becomes `r · sqrt(1 + m)` —
+/// mass goes as area, so 20 % more mass is 9.5 % more radius: a radius-64 rock
+/// grows to at most 70 (`space::grown_radius`). `SPACE_ASTEROID_R_MIN..=_R_MAX`
+/// stays the band the *base* radius is drawn on.
+pub const SPACE_ASTEROID_MASS_MAX: f32 = 0.2;
 
 /// Minimum clear gap between two asteroid **surfaces**, px.
 ///
@@ -646,14 +666,16 @@ pub const SPACE_SPAWN_GRID: i32 = 64;
 
 /// Rejection-sampling attempts for one point in open space (`T22.05B`).
 ///
-/// `map::gen::space::random_open_space` draws uniformly from the rim ellipse's
-/// **bounding box** and keeps the first point a player box fits in — so a draw
-/// fails on the box corners outside the rim as well as on rock.
+/// `map::gen::space::random_open_space` draws uniformly from the rim's
+/// centreline rectangle and keeps the first point a player box fits in — so a
+/// draw fails on the band by the rim as well as on rock.
 ///
 /// **The basis is a measured rate, not a round number.** Over 60 seeds x 3
 /// scales, `space::tests::the_open_space_hit_rate` reports a single draw
-/// succeeding **0.534 / 0.569 / 0.592** of the time on Small / Medium / Large.
-/// At the worst of those, 24 attempts all miss with probability **1.1e-8** —
+/// succeeding **0.692 / 0.748 / 0.772** of the time on Small / Medium / Large
+/// (T22.17's square rim, R104; the ellipse's bounding box gave 0.534 / 0.569 /
+/// 0.592). At the worst of those, 24 attempts all miss with probability
+/// **5.2e-13** —
 /// against roughly one crate a minute, one item batch every
 /// `ITEM_SPAWN_INTERVAL`, and a round measured in minutes.
 ///
@@ -3452,7 +3474,11 @@ pub struct ScaleParams {
     /// stars"*. Small is the binding one: its ellipse is 880x440 and, after the
     /// rim clearance is taken off, sequential adsorption at this gap saturates
     /// at roughly 18 rocks, so 14 is a count it reaches rather than a target it
-    /// misses.
+    /// misses. **T22.17 (R103, R104) left the counts alone**: the square rim's
+    /// arena is bigger (0.657 / 0.765 / 0.821 of the map against the ellipse's
+    /// 0.549 / 0.623 / 0.662) and the rocks up to 20 % heavier, and they now cover
+    /// **6.5 / 6.3 / 6.3 %** of it (p50, 999 seeds, `density_and_gap_report`) —
+    /// sparser, with every map still seating its full count first try.
     pub asteroid_count: u32,
     /// Destructible scenery stamped into the terrain at pass 6b (§D5).
     ///

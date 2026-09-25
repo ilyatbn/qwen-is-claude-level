@@ -986,7 +986,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             // server's own terms. Dev-only for `debug_effects`' reason.
             if config.dev_probe {
                 let ctx = ctx.clone();
-                socket.on("debug_breach", move |socket: SocketRef| {
+                socket.on(
+                    "debug_breach",
+                    move |socket: SocketRef, data: Data<serde_json::Value>| {
                     let ctx = ctx.clone();
                     async move {
                         let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
@@ -995,9 +997,20 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                         let Some(id) = sessions.player_of(socket.id) else {
                             return;
                         };
+                        // T22.17: an optional `{x, y}` to aim the ray through instead of
+                        // the player. The square rim (R104) reaches the corners the
+                        // ellipse cut, so the ray through a spawn can land a breach at a
+                        // corner or a side, where half the swirl is off the map and
+                        // `breach-vortex.mjs` cannot photograph it. Absent, the player.
+                        let aim = data.0.get("x").and_then(|x| x.as_f64()).zip(
+                            data.0.get("y").and_then(|y| y.as_f64()),
+                        );
                         let reply = room
                             .inspect(move |w| {
-                                let toward = w.player(id)?.body.pos;
+                                let toward = match aim {
+                                    Some((x, y)) => game_core::math::Vec2::new(x as f32, y as f32),
+                                    None => w.player(id)?.body.pos,
+                                };
                                 let at = w.dev_breach_toward(toward)?;
                                 let placed = w.dev_place_inward_of(id, at);
                                 let geo = w.map.space_geometry()?;
@@ -1017,7 +1030,8 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             &reply.unwrap_or(serde_json::Value::Null),
                         );
                     }
-                });
+                },
+                );
             }
             // T22.12: **the black hole, now, for a check** (`DEV_PROBE=1`) — it eats
             // the asteroid nearest the asking player through the same arrival the

@@ -308,7 +308,16 @@ pub const HEADER_BYTES: usize = 46;
 /// the first placement a vortex would have refused. No new tag, no layout change (the
 /// snapshot header's exact round time is the wire's, not a replay's: replays store
 /// inputs).
-pub const REPLAY_VERSION: u16 = 26;
+///
+/// **27 (T22.17, R103 + R104)**: the space map moved. A replay stores the seed, scale,
+/// generator and gravity and **regenerates** the map, so a v26 space recording
+/// replayed on this build is played on a different arena — the rim is a
+/// square-cornered rectangle inset from every edge instead of an ellipse, and every
+/// asteroid draws up to 20 % extra mass on its own sub-stream — and diverges at the
+/// first tick anything touches the map. Standard and low-gravity maps are unchanged
+/// (their golden rows did not move), but the version is one number for every
+/// recording. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 27;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

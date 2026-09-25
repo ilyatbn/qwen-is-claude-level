@@ -598,6 +598,11 @@ mod tests {
     use super::super::tests::*;
     use super::*;
 
+    /// The space fixtures below search "well inside the arena, off the rim": within
+    /// this share of the way from the centre to the rim, by the rim predicate's own
+    /// `SpaceGeometry::norm` (T22.17 — they carried the ellipse's formula as a copy).
+    const WELL_INSIDE: f32 = 0.6;
+
     /// T22.02 — the flame stand-off follows the match's gravity.
     ///
     /// **This is the reader of `GRAVITY` that does not integrate**, so no
@@ -777,20 +782,43 @@ mod tests {
             )
         };
         let d = (BOT_SPACE_ZONE_REACH + BOT_HAZARD_CLEARANCE + FOV_DAY) * 0.5;
+        let wid = crate::items::registry::def(MOLOTOV)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => Some(wid),
+                _ => None,
+            })
+            .expect("the molotov's weapon id");
         // A target a body's width in front of a rock face to its right, and a
-        // thrower `d` to its left along clear air.
+        // thrower `d` to its left along clear air — **and the throw at it lands on
+        // that rock** (T22.17). The body-box test alone accepted a rock whose top
+        // sat below the throw line: the map moved under R103/R104 and the search's
+        // first hit became a graze the molotov flew over (`predict_impact` None, the
+        // bot rightly refusing 120 of 120 ticks).
+        let lands_by = |from: Vec2, t: Vec2| {
+            crate::weapons::projectile::predict_impact(
+                &w.map,
+                wid,
+                from,
+                (t - from).angle(),
+                w.wind,
+                w.gravity,
+                BOT_PREDICT_TICKS,
+                SIM_DT,
+            )
+            .is_some_and(|at| (at - t).len() <= PLAYER_W * 4.0)
+        };
         let geo = w.map.space_geometry().expect("space");
         let (target, thrower) = (0..w.map.mask.h as i32)
             .step_by(8)
             .flat_map(|y| (0..w.map.mask.w as i32).step_by(8).map(move |x| (x, y)))
             .map(|(x, y)| Vec2::new(x as f32, y as f32))
-            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .filter(|p| geo.norm(p.x, p.y) < WELL_INSIDE)
             .find_map(|t| {
                 let rock = !clear(&w, t + Vec2::new(PLAYER_W * 2.0, 0.0));
                 let from = t - Vec2::new(d, 0.0);
                 let open = (0..=(d / 4.0) as i32)
                     .all(|k| clear(&w, from + Vec2::new(k as f32 * 4.0, 0.0)));
-                (rock && open).then_some((t, from))
+                (rock && open && lands_by(from, t)).then_some((t, from))
             })
             .expect("a rock face with clear air in front of it");
         let throws = |w: &mut World, from: Vec2, target: Vec2| {
@@ -809,12 +837,6 @@ mod tests {
         // Control: an enemy the same distance off with **nothing behind it** — a pair
         // whose throw `predict_impact` says never lands. Searched for, not assumed,
         // and a map with none is a fixture error, not a pass.
-        let wid = crate::items::registry::def(MOLOTOV)
-            .and_then(|d| match d.kind {
-                ItemKind::Weapon(wid) => Some(wid),
-                _ => None,
-            })
-            .expect("the molotov's weapon id");
         let dirs = [
             Vec2::new(1.0, 0.0),
             Vec2::new(-1.0, 0.0),
@@ -825,7 +847,7 @@ mod tests {
             .step_by(16)
             .flat_map(|y| (0..w.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
             .map(|(x, y)| Vec2::new(x as f32, y as f32))
-            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .filter(|p| geo.norm(p.x, p.y) < WELL_INSIDE)
             .flat_map(|from| dirs.iter().map(move |&dir| (from, from + dir * d)))
             .find(|&(from, to)| {
                 (0..=(d / 4.0) as i32).all(|k| clear(&w, from + (to - from) * (k as f32 * 4.0 / d)))
@@ -894,7 +916,7 @@ mod tests {
             .step_by(16)
             .flat_map(|y| (0..w.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
             .map(|(x, y)| Vec2::new(x as f32, y as f32))
-            .filter(|p| ((p.x - geo.cx) / geo.rx).powi(2) + ((p.y - geo.cy) / geo.ry).powi(2) < 0.6)
+            .filter(|p| geo.norm(p.x, p.y) < WELL_INSIDE)
             .filter(|&p| clear(&w, p))
             .flat_map(|from| (0..16).map(move |k| (from, k as f32 * std::f32::consts::TAU / 16.0)))
             .find_map(|(from, angle)| {

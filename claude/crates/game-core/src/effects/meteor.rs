@@ -91,10 +91,12 @@ impl MeteorShower {
     /// what reaches the rim again despawns without carving ([`reaches_rim`], read by
     /// `World::step_projectiles`).
     ///
-    /// The angle is the rim's parametric angle; the point is the centreline's, moved
-    /// along the inward normal by half a thickness (the inner face) plus
-    /// [`METEOR_SPACE_INSET`]. Its own draws on the shower's stream — the ground's
-    /// branch draws exactly what it always did, so no standard schedule moves.
+    /// The angle is a ray from the arena's centre; the point is where that ray meets
+    /// the rim's inner face moved [`METEOR_SPACE_INSET`] further in
+    /// (`SpaceGeometry::along_ray`, T22.17: the rim is a square-cornered rectangle
+    /// now, and the shrunk rectangle's corners sit that far from both faces). The
+    /// same one angle draw as before on the shower's stream — the ground's branch
+    /// draws exactly what it always did, so no standard schedule moves.
     fn spawn_in_space(
         &mut self,
         projectiles: &mut Projectiles,
@@ -103,10 +105,8 @@ impl MeteorShower {
         now: f32,
     ) -> ProjectileId {
         let a = range_f32(&mut self.rng, 0.0, std::f32::consts::TAU);
-        let (c, s) = (a.cos(), a.sin());
-        let on_rim = Vec2::new(geo.cx + geo.rx * c, geo.cy + geo.ry * s);
-        let normal = Vec2::new(c / geo.rx, s / geo.ry).normalized();
-        let at = on_rim - normal * (geo.thickness * 0.5 + METEOR_SPACE_INSET);
+        let (x, y) = geo.along_ray(a.cos(), a.sin(), geo.thickness * 0.5 + METEOR_SPACE_INSET);
+        let at = Vec2::new(x, y);
         let rocks = &map.meta.asteroids;
         let pick = rand::RngCore::next_u32(&mut self.rng) as usize;
         // A space map always has a rock (the black hole never eats the last one);

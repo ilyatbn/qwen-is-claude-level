@@ -25,7 +25,7 @@
  *    (`lastAckErrorPx`) is measured beside the jump and bounded the same, and a red
  *    names which half moved: the prediction, or the ack skipping inputs (F9);
  * 3. **the trip**: the player is taken, snapped to where the server put them, and that
- *    is inside the rim (the server's own geometry, off `debug_breach`) and clear of the
+ *    is inside the rim (the rim predicate itself, `core.spaceInside` — T22.17) and clear of the
  *    vortex's pull (R86);
  * 4. **coverage in both of GameScene's render paths** — the capture ring (`VORTEX_CAPTURE_R`,
  *    what takes you) is painted where `vortex_open` put it, against the same frozen
@@ -282,7 +282,15 @@ try {
     },
     [TRIP_BUDGET_S * 1000 + deadlineMs(10, 'the breach')],
   )
-  await page.evaluate(() => window.__game.debugBreach())
+  // T22.17 (R104): **aimed at the top side, above the player**, not along the ray
+  // through them. On the square rim that ray reaches a side or a corner (it put the
+  // hole at (112, 836), a side one corner away), where the map's edge cuts the
+  // swirl and only 8 of its 48 edge probes are in view. Straight up from the player's
+  // x is always the top side on a 2:1 map, the breach the ellipse gave this check.
+  await page.evaluate(() => {
+    const p = window.__game.debug().player
+    window.__game.debugBreach({ x: p.x, y: 0 })
+  })
   const opened = await page
     .waitForFunction(() => window.__game.debug().vortex.list.length > 0 && window.__game.debug().vortex.lastBreach, null, { timeout: deadlineMs(10, 'the breach'), polling: 'raf' })
     .then(() => true)
@@ -412,16 +420,19 @@ try {
     await frames(page, 10)
     const d3 = await dbg()
     const trip = d3.vortex.myTrips[0]
-    const norm = Math.hypot((trip.x - breach.cx) / breach.rx, (trip.y - breach.cy) / breach.ry)
+    // T22.17 (R104): the rim predicate itself, through the page's core — this held the
+    // ellipse's formula until the rim became a rectangle, and a copy here would have
+    // passed a trip into a corner the ellipse excluded.
+    const inside = await page.evaluate(([x, y]) => window.__game.core.spaceInside(x, y), [trip.x, trip.y])
     const clear = Math.hypot(trip.x - v.x, trip.y - v.y)
     const at = atTrip && atTrip.trips > 0 ? atTrip.p : null
     const drift = at ? Math.hypot(at.x - trip.x, at.y - trip.y) : Infinity
     const later = d3.player ? Math.hypot(d3.player.x - trip.x, d3.player.y - trip.y) : Infinity
-    if (!(norm < 1)) fail(`the trip put the player outside the rim: ${JSON.stringify({ trip, norm, breach })}`)
+    if (inside !== true) fail(`the trip put the player outside the rim: ${JSON.stringify({ trip, inside, breach })}`)
     else if (clear < k.VORTEX_REACH / 2) fail(`the trip put the player ${clear.toFixed(0)} px from the vortex, inside its pull (R86)`)
     else if (!at) fail(`control: the recording holds no drawn frame after the trip, so the snap was never seen: ${JSON.stringify(atTrip ?? null)}`)
     else if (drift > k.VORTEX_CAPTURE_R / 2) fail(`the predicted body is ${drift.toFixed(0)} px from where the server put it at the first frame after the trip — it glided or never snapped`)
-    else ok(`the trip put the player inside the rim (norm ${norm.toFixed(2)}), ${clear.toFixed(0)} px from the vortex, and the prediction is there at the first frame after it (${drift.toFixed(1)} px; ${later.toFixed(1)} px ten frames on, reported; snapped by the event: ${trip.snapped})`)
+    else ok(`the trip put the player inside the rim (core.spaceInside), ${clear.toFixed(0)} px from the vortex, and the prediction is there at the first frame after it (${drift.toFixed(1)} px; ${later.toFixed(1)} px ten frames on, reported; snapped by the event: ${trip.snapped})`)
   }
 
   // --- 4. coverage, flat and shader; 5. not on the minimap -----------------------------

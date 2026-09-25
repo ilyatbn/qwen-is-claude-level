@@ -3381,7 +3381,10 @@ impl World {
     #[doc(hidden)]
     pub fn dev_place_inward_of(&mut self, id: PlayerId, hole: Vec2) -> Option<Vec2> {
         let geo = self.map.space_geometry()?;
-        let inward = (Vec2::new(geo.cx, geo.cy) - hole).normalized();
+        // T22.17: the rim's own inward normal at the hole — on the rectangle (R104)
+        // "toward the centre" runs diagonally off a hole near a corner.
+        let (nx, ny) = geo.inward_normal(hole.x, hole.y);
+        let inward = Vec2::new(nx, ny);
         let r = crate::constants::VORTEX_CAPTURE_R;
         let fits = |p: Vec2| {
             !crate::physics::collide::aabb_overlaps_solid(

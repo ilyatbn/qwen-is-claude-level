@@ -728,7 +728,35 @@ mod tests {
         let vortex_arm_d = 1.5 * VORTEX_CAPTURE_R;
         let mut vortex_trapped = Vec::new();
         let mut vortex_premise = 0;
-        for seed in 0..13u64 {
+        // T22.17: **13 maps whose cleared disc stays off the rim**, the first 13 of the
+        // seeds that have one. The clearing below is `REACH + 8 + PLAYER_H` about the
+        // hole; where the rim is nearer than that it cuts the rim, and a flight out
+        // through the cut dies in the void — a claim about the rim, not the field. The
+        // square rim (R104) sits 80 px higher at the bottom than the ellipse did, and
+        // seed 1's hole (the rock nearest the centre, 203 px above the rim) was the
+        // first such map. Skipped maps are counted and printed.
+        let clearing = BLACK_HOLE_REACH + 8.0 + PLAYER_H;
+        let mut skipped = Vec::new();
+        let seeds: Vec<u64> = (0..64u64)
+            .filter(|&seed| {
+                let (w, hole) = hole_world(seed);
+                let geo = w.map.space_geometry().expect("space");
+                let off = geo.distance_to_rim(hole.x, hole.y) - geo.thickness * 0.5 > clearing;
+                if !off {
+                    skipped.push(seed);
+                }
+                off
+            })
+            .take(13)
+            .collect();
+        assert_eq!(
+            seeds.len(),
+            13,
+            "only {} maps keep the clearing off the rim",
+            seeds.len()
+        );
+        eprintln!("escape: maps {seeds:?}; skipped (clearing reaches the rim) {skipped:?}");
+        for seed in seeds {
             for k in 0..SIDES {
                 let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
                 for with_vortex in [false, true] {
@@ -738,7 +766,7 @@ mod tests {
                     // arm is about the hole and the wells, and the vortex a breach
                     // opens is the other arm's subject (placed where it is worst,
                     // rather than wherever this disc happens to reach the rim).
-                    let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
+                    let clear = clearing.ceil() as i32;
                     let _ = w
                         .map
                         .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);

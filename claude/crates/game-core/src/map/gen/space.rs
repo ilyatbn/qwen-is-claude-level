@@ -4,14 +4,13 @@
 //! 1 geometry → 2 rim → 3 asteroids → 4 levels → 5 surface → 6 validation
 //! ```
 //!
-//! **The shape is an ellipse, not a circle** (`M22-RULINGS` R13). Every map is
-//! 2:1 — `MAP_SMALL_W/H` 2048/1024, `MEDIUM` 3072/1536, `LARGE` 4096/2048 — so
-//! a true circle is limited by the short axis and leaves `w - h` px of dead
-//! arena: 2048 px on Large, half the map. `MINIMAP_W` x `MINIMAP_H` is
-//! 200 x 100, **also 2:1**, so an ellipse inscribed in the map draws as a true
-//! circle on the minimap, which is the only place the arena's shape is ever
-//! visible — from inside, the camera shows an arc. The owner's circle appears
-//! where a circle can be seen, and the arena is not half empty to buy it.
+//! **The shape is a square-cornered rectangle** (T22.17, `M22-OWNER-ROUND-2`
+//! R104: *"edge of the map should be square around the edges"*), inset
+//! `SPACE_RIM_INSET` from all four map edges. It supersedes R13's ellipse, which
+//! was inscribed in the 2:1 map so it drew as a true circle on the 2:1 minimap;
+//! the rectangle is what the owner asked for, and it reclaims the four corners
+//! the ellipse left as dead map. [`SpaceGeometry`] is the one rim predicate every
+//! reader asks.
 //!
 //! **The three passes this pipeline does not run, and why.** v1 and v2 both end
 //! `smooth::smooth` → `components::cleanup` → `objects::stamp_objects`:
@@ -37,12 +36,12 @@
 //! — unreported, because `tests/map_sweep.rs` is `#[ignore]`d.
 
 use crate::constants::{
-    MapGenerator, MapScale, FLOOR_CRUST, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS,
-    PLAYER_H, PLAYER_W, SKY_MARGIN, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_GAP_MIN,
+    MapGenerator, MapScale, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS, PLAYER_H,
+    PLAYER_W, SPACE_ASTEROID_CORE_FRAC, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_MASS_MAX,
     SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER,
     SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC,
-    SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_THICKNESS,
-    SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
+    SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_INSET,
+    SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
 use crate::map::gen::spawns::pick_separated;
@@ -56,16 +55,23 @@ use crate::rng::{range_f32, range_i32, range_u32, substream, ChaCha8Rng};
 
 use super::GenOutcome;
 
-/// The rim's **centreline** ellipse, in world pixels.
+/// The rim's **centreline rectangle**, in world pixels (T22.17, R104).
 ///
-/// Every number here is derived, not picked. Reverse the shape by changing this
-/// one struct: the circle R13 started from is `rx = ry`.
+/// **The one rim predicate.** Every reader of the rim — closure, breaches, the
+/// void, vortex placement, meteors, spawns, bots — asks one of the methods
+/// below; none of them carries its own copy of the shape. That is what let the
+/// ellipse become a rectangle by editing this struct.
+///
+/// `rx`/`ry` are the **half-extents** of the centreline rectangle (they were the
+/// ellipse's semi-axes, and every caller that used them as "the far side of the
+/// arena from the centre" still reads them that way).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpaceGeometry {
     pub cx: f32,
     pub cy: f32,
-    /// Semi-axis of the rim centreline, not of its outer edge.
+    /// Half-width of the rim centreline, not of its outer edge.
     pub rx: f32,
+    /// Half-height of the rim centreline, not of its outer edge.
     pub ry: f32,
     pub thickness: f32,
 }
@@ -83,57 +89,34 @@ impl SpaceGeometry {
     /// pass 8 has just changed, and `game-wasm`'s `load_mask` runs over a mask
     /// that arrived from the server while `meta.scale` is whatever the client
     /// last generated. Deriving from `(w, h)` makes a scale mismatch
-    /// unrepresentable rather than merely unlikely — the ellipse is a function
-    /// of the map rect and of nothing else.
+    /// unrepresentable rather than merely unlikely — the rim is a function of
+    /// the map rect and of nothing else.
+    ///
+    /// **The outer edge sits `SPACE_RIM_INSET` in from all four map edges**
+    /// (R104; the constant's doc says why that is `SKY_MARGIN` and why the sides
+    /// and bottom do not hug the solid borders). The centreline is half a
+    /// thickness further in. Supersedes R13's ellipse, which was inscribed in the
+    /// same rect so that it drew as a circle on the 2:1 minimap; the owner asked
+    /// for square edges, and the rectangle reclaims the four corners the ellipse
+    /// left as dead map.
     pub fn for_dims(width: u32, height: u32) -> Self {
         let (w, h) = (width as f32, height as f32);
         let t = SPACE_RIM_THICKNESS as f32;
-
-        // Vertical: `force_borders` owns the top `SKY_MARGIN` band (forced
-        // empty) and the bottom `FLOOR_CRUST` band (forced solid), and
-        // `borders_hold` is asserted in `gen/mod.rs`, `gen/v2/mod.rs` and
-        // `tests/map_sweep.rs`. So the rim's **outer edge** stops exactly at
-        // `SKY_MARGIN` and exactly at `h - FLOOR_CRUST`, and the centreline is
-        // half a thickness inside each. Insetting keeps all three green and
-        // untouched; disabling `force_borders` would cost three amended tests
-        // to buy nothing.
-        let ry = (h - SKY_MARGIN as f32 - FLOOR_CRUST as f32 - t) * 0.5;
-        let cy = SKY_MARGIN as f32 + t * 0.5 + ry;
-
-        // Horizontal: **derived from ry, never chosen**. The map is 2:1 and the
-        // minimap is 2:1, so `rx = 2 * ry` is the one value that draws a true
-        // circle there (R13 point 1). Any other x-inset makes it an ellipse on
-        // the minimap too, which is the single thing the ruling was bought for.
-        //
-        // **The x-inset that falls out is 128 px, not R13's 112** (R34), and it
-        // is the same on every scale. `w = 2h` and `rx = 2 * ry`, so
-        // `cx - rx = SKY_MARGIN + FLOOR_CRUST + SPACE_RIM_THICKNESS` = 144 px
-        // to the centreline and 128 px to the outer edge, with `h` cancelling.
-        // R13 derived 112 = `SKY_MARGIN + FLOOR_CRUST` from the *outer* edge
-        // being 2:1. **Only one of the three edges can be**, because the rim
-        // has constant thickness rather than constant `norm`: with the
-        // centreline exactly 2:1 the outer edge is 1.965 and the inner 2.038 on
-        // Small (1.984 / 2.017 on Large, tightening with size). The centreline
-        // is the right one to pin — it is the middle of what the minimap's
-        // point sample lands on — and the ring is out of round by half a
-        // thickness on each edge as a consequence, not by accident.
-        let rx = ry * 2.0;
-        let cx = w * 0.5;
+        let inset = SPACE_RIM_INSET as f32 + t * 0.5;
         SpaceGeometry {
-            cx,
-            cy,
-            rx,
-            ry,
+            cx: w * 0.5,
+            cy: h * 0.5,
+            rx: w * 0.5 - inset,
+            ry: h * 0.5 - inset,
             thickness: t,
         }
     }
 
-    /// Normalised ellipse radius: `< 1` inside the centreline, `> 1` outside.
-    /// Cheap, and used only where inside/outside is the whole question.
+    /// Normalised rectangle "radius": `max(|dx| / rx, |dy| / ry)` — `< 1` inside
+    /// the centreline, `> 1` outside, exactly `1` on it. Cheap, and used only
+    /// where inside/outside is the whole question.
     pub fn norm(&self, x: f32, y: f32) -> f32 {
-        let dx = (x - self.cx) / self.rx;
-        let dy = (y - self.cy) / self.ry;
-        (dx * dx + dy * dy).sqrt()
+        ((x - self.cx).abs() / self.rx).max((y - self.cy).abs() / self.ry)
     }
 
     /// Is `(x, y)` **inside the arena** — the side of the rim a player belongs
@@ -150,84 +133,92 @@ impl SpaceGeometry {
     /// one.** R16 puts the void *outside the rim plus a grace band*, so the
     /// rim's own rock is neither inside the arena by this test nor lethal by
     /// that one — the two agree about everywhere a body can actually be, and
-    /// disagree only about pixels of solid rock. `T22.10`/`T22.11` own the
-    /// void arm; this one exists so pass 8 stops handing the rest of the game
-    /// the full-width floor crust (R35).
+    /// disagree only about pixels of solid rock.
     pub fn inside(&self, x: f32, y: f32) -> bool {
         self.norm(x, y) < 1.0
     }
 
     /// `(x, y)` moved along its ray from the centre onto the rim centreline, rounded
     /// — where a breach's vortex sits (T22.10). Radial rather than closest-point:
-    /// the two differ by under a pixel inside a thickness of the rim, which is the
-    /// only place a breach can be, and this one needs no iteration.
+    /// inside a thickness of the rim, which is the only place a breach can be, the
+    /// two differ only within a half-thickness of a corner, and this one is exact
+    /// arithmetic.
     pub fn onto_rim(&self, x: f32, y: f32) -> (i32, i32) {
-        let n = self.norm(x, y);
-        if n < 1e-6 {
-            return ((self.cx + self.rx).round() as i32, self.cy.round() as i32);
-        }
-        let (px, py) = (self.cx + (x - self.cx) / n, self.cy + (y - self.cy) / n);
+        let (dx, dy) = (x - self.cx, y - self.cy);
+        let (px, py) = if self.norm(x, y) < 1e-6 {
+            (self.cx + self.rx, self.cy)
+        } else {
+            self.along_ray(dx, dy, 0.0)
+        };
         (px.round() as i32, py.round() as i32)
+    }
+
+    /// The point on the ray from the centre along `(dx, dy)` that lies `inset` px
+    /// **inside** the rim centreline — on the rectangle shrunk by `inset` on every
+    /// side. `inset` 0 is the centreline itself ([`SpaceGeometry::onto_rim`]);
+    /// `thickness / 2 + METEOR_SPACE_INSET` is where a meteor starts (R99).
+    ///
+    /// Because the shrunk rectangle keeps square corners, a point on the diagonal
+    /// lands `inset` from **both** faces — so nothing started there sits in the rim.
+    pub fn along_ray(&self, dx: f32, dy: f32, inset: f32) -> (f32, f32) {
+        let (hx, hy) = ((self.rx - inset).max(1.0), (self.ry - inset).max(1.0));
+        let n = (dx.abs() / hx).max(dy.abs() / hy);
+        if n < 1e-9 {
+            return (self.cx + hx, self.cy);
+        }
+        (self.cx + dx / n, self.cy + dy / n)
+    }
+
+    /// The rim's **inward normal** at the side nearest `(x, y)` — the side that
+    /// decides [`SpaceGeometry::norm`]: straight down under the top, straight left
+    /// from the right side, and so on. Where "inward" means *away from the rim*,
+    /// which on a rectangle is not *toward the centre* (the two agree only at the
+    /// middle of each side; a hole near a corner sent a body at the centre diagonally).
+    pub fn inward_normal(&self, x: f32, y: f32) -> (f32, f32) {
+        let (dx, dy) = (x - self.cx, y - self.cy);
+        if dx.abs() / self.rx >= dy.abs() / self.ry {
+            (-dx.signum(), 0.0)
+        } else {
+            (0.0, -dy.signum())
+        }
     }
 
     /// Past the rim's **outer edge** by more than `SPACE_VOID_GRACE`: the void
     /// (`M22-RULINGS` R16). `World::is_in_the_void`'s space arm, here so the band
-    /// and the ellipse it is measured from live together.
+    /// and the rim it is measured from live together.
     pub fn in_the_void(&self, x: f32, y: f32) -> bool {
         self.norm(x, y) > 1.0
             && self.distance_to_rim(x, y) > self.thickness * 0.5 + SPACE_VOID_GRACE
     }
 
-    /// Distance from `(x, y)` to the rim **centreline**, in px, to sub-pixel
-    /// accuracy.
-    ///
-    /// **Exact rather than bounded, and that matters.** The obvious cheap
-    /// stand-ins are both wrong in one direction each: `(1 - norm) * ry`
-    /// under-reports (by a factor of two at the ends of the major axis, which
-    /// would push every rock into the middle 64 % of the arena and leave the
-    /// ends empty — losing the area the ellipse was chosen to reclaim), and the
-    /// radial distance to the centre ray's intersection over-reports (which
-    /// would seat rocks inside the clearance they asked for).
-    ///
-    /// The iteration is the standard closest-point-on-ellipse fixed point,
-    /// driven from the evolute. Four rounds are sub-pixel at these axis ratios;
-    /// it is pure f32 arithmetic, so it is as deterministic as the noise field
-    /// the other two generators already run on.
-    pub fn distance_to_rim(&self, x: f32, y: f32) -> f32 {
-        let (a, b) = (self.rx, self.ry);
-        let px = (x - self.cx).abs();
-        let py = (y - self.cy).abs();
-        let (a2, b2) = (a * a, b * b);
-
-        let mut tx = std::f32::consts::FRAC_1_SQRT_2;
-        let mut ty = std::f32::consts::FRAC_1_SQRT_2;
-        for _ in 0..4 {
-            let ex = (a2 - b2) * tx * tx * tx / a;
-            let ey = (b2 - a2) * ty * ty * ty / b;
-            let (rx, ry) = (a * tx - ex, b * ty - ey);
-            let (qx, qy) = (px - ex, py - ey);
-            let q = (qx * qx + qy * qy).sqrt();
-            if q < 1e-4 {
-                // The point sits on the evolute: the direction is undefined and
-                // the current guess is already a closest point. Stop rather
-                // than divide by zero.
-                break;
-            }
-            let r = (rx * rx + ry * ry).sqrt();
-            tx = ((qx * r / q + ex) / a).clamp(0.0, 1.0);
-            ty = ((qy * r / q + ey) / b).clamp(0.0, 1.0);
-            let t = (tx * tx + ty * ty).sqrt().max(1e-6);
-            tx /= t;
-            ty /= t;
-        }
-        let (dx, dy) = (a * tx - px, b * ty - py);
-        (dx * dx + dy * dy).sqrt()
+    /// Is **pixel** `(x, y)` part of the rim's rock as stamped — is its centre
+    /// within half a thickness of the centreline? `stamp_rim` fills exactly these
+    /// pixels. Judged at the pixel's centre (`+ 0.5`), so the band is `thickness`
+    /// px on every side and symmetric: the first rock is column/row
+    /// `SPACE_RIM_INSET` from the left and top, the last is `SPACE_RIM_INSET + 1`
+    /// from the right and bottom, and no pixel sits exactly on an edge.
+    pub fn in_rim_band(&self, x: i32, y: i32) -> bool {
+        self.signed_distance(x as f32 + 0.5, y as f32 + 0.5).abs() < self.thickness * 0.5
     }
 
-    /// Ramanujan's approximation. Used only to pick a stamp step.
-    fn perimeter(&self) -> f32 {
-        let (a, b) = (self.rx, self.ry);
-        std::f32::consts::PI * (3.0 * (a + b) - ((3.0 * a + b) * (a + 3.0 * b)).sqrt())
+    /// Distance from `(x, y)` to the rim **centreline**, in px.
+    ///
+    /// **Inside, exact Euclidean** — the nearer of the four sides, which is the
+    /// distance to a rectangle from within. **Outside, the Chebyshev distance**
+    /// (the larger per-axis overshoot), deliberately: its level sets are
+    /// square-cornered, so the rim's outer edge, the band `breach_in` floods from
+    /// and the void's grace line are all rectangles with square corners, matching
+    /// the rock `stamp_rim` lays. Euclidean outside would round those corners and
+    /// let a breach flood seed from rim rock at the corner. The two agree
+    /// everywhere off the corners' diagonals.
+    pub fn distance_to_rim(&self, x: f32, y: f32) -> f32 {
+        self.signed_distance(x, y).abs()
+    }
+
+    /// Negative inside the centreline, positive outside; see
+    /// [`SpaceGeometry::distance_to_rim`] for the metric on each side.
+    fn signed_distance(&self, x: f32, y: f32) -> f32 {
+        ((x - self.cx).abs() - self.rx).max((y - self.cy).abs() - self.ry)
     }
 }
 
@@ -239,6 +230,9 @@ pub struct SpaceParams {
     pub asteroid_count: u32,
     /// Minimum clear gap between two asteroid surfaces, px.
     pub gap_min: f32,
+    /// The most extra mass a rock draws (R103): `SPACE_ASTEROID_MASS_MAX`, or 0
+    /// for the control that shows the draw is what grew the rocks.
+    pub mass_max: f32,
     // **No `theme` field**, unlike `GenParams` and `V2Params`. Theme is carried
     // on those two because `objects::stamp_objects` weights its categories by
     // it — and this pipeline does not run `stamp_objects`, because there is no
@@ -253,6 +247,7 @@ impl SpaceParams {
             scale,
             asteroid_count: scale.params().asteroid_count,
             gap_min: SPACE_ASTEROID_GAP_MIN,
+            mass_max: SPACE_ASTEROID_MASS_MAX,
         }
     }
 
@@ -279,56 +274,53 @@ impl SpaceParams {
     }
 }
 
-/// Pass 2. The rim, as a closed chain of overlapping discs on the centreline.
+/// Pass 2. The rim: every pixel [`SpaceGeometry::in_rim_band`] names, set solid.
 ///
-/// **No construction here is uniformly `thickness` thick, and the first
-/// version of this comment claimed the disc chain was.** The measurements, all
-/// of them re-run (`M22-RULINGS` R34):
+/// **A square-cornered rectangular band, `thickness` px on every side** (T22.17,
+/// R104). It replaces R13's disc chain on an ellipse, which scalloped to 29.75-30
+/// px (R34); a band stamped from the predicate has nothing to scallop, and
+/// `the_rim_is_thicker_than_one_minimap_cell` measures exactly `thickness` off the
+/// mask. Closed by construction — the band is a rectangle's annulus — and
+/// `rim_is_closed` asserts the closure off the mask rather than trusting this.
 ///
-/// - This chain measures **29.75-30.00 px at its thinnest**, not 32 —
-///   `the_rim_is_thicker_than_one_minimap_cell` prints the figure and asserts
-///   the window.
-/// - The reason is **not** rasterisation noise. The loop below steps in
-///   *ellipse parameter*, not arc length, and on a 2:1 ellipse the arc speed
-///   varies 2:1 with it: the same `step_px` puts consecutive centres 5.19 px
-///   apart at the ends of the major axis and **10.38 px** apart at the top and
-///   bottom. A chain of radius-16 discs at spacing `s` scallops to
-///   `2 * sqrt(16^2 - (s/2)^2)` between centres, which is **30.27 px** at
-///   `s = 10.38` — and the thinnest point is measured at 113-117 deg, which is
-///   where that prediction puts it.
-/// - The alternative construction — an *inside-the-outer-ellipse and
-///   outside-an-inner-one* pixel test — is **not** materially thicker. Brute
-///   forced against both offset ellipses, that annulus measures **30.17 px**
-///   (0.943x nominal) at its worst. The original comment said 0.80x, which
-///   matches no construction; the two candidates are within half a pixel of
-///   each other and thickness does not choose between them.
-///
-/// **So what the discs buy is the closure, not the thickness**: the ring is
-/// closed by construction while consecutive centres are nearer than the disc
-/// radius (10.38 < 16 at the worst), it reuses `stamp_circle`, and it needs no
-/// two-`norm` test per pixel of the map. `rim_is_closed` asserts the closure
-/// off the mask rather than trusting this paragraph.
-///
-/// **And 29.75 px is not a problem to fix.** It clears the 20.48 px
-/// `mapW / MINIMAP_W` floor on Large by 45 %. Evening the spacing out by
-/// stepping in arc length would give `2 * sqrt(16^2 - 4^2)` = 30.98 px — still
-/// not 32, for the reason at the top of this comment.
+/// Only the four strips are visited, not the arena: the rows of the top and
+/// bottom strips whole, and a thickness-wide run at each side of every other row.
+/// Each pixel is still decided by the predicate, so the loop bounds are an
+/// economy, not a second copy of the shape — `the_stamped_rim_is_exactly_the_band`
+/// compares the two over every pixel of the map.
 pub fn stamp_rim(mask: &mut Mask, geo: &SpaceGeometry) {
     let half = geo.thickness * 0.5;
-    // Quarter-thickness **nominal** spacing — and nominal is the word, because
-    // this is a step in ellipse parameter divided into the perimeter, so what
-    // it buys varies with arc speed: 5.19 px between centres at the ends of the
-    // major axis and 10.38 px at the top and bottom. Both are well inside the
-    // 16 px disc radius, so the chain is solid — not merely 8-connected — at
-    // every curvature the three scales produce; the 10.38 is what sets the
-    // scallop, and the doc above carries that arithmetic.
-    let step_px = (half * 0.5).max(1.0);
-    let steps = (geo.perimeter() / step_px).ceil().max(8.0) as i32;
-    for i in 0..steps {
-        let a = (i as f32 / steps as f32) * std::f32::consts::TAU;
-        let x = geo.cx + geo.rx * a.cos();
-        let y = geo.cy + geo.ry * a.sin();
-        stamp_circle(mask, x.round() as i32, y.round() as i32, half as i32, true);
+    // One pixel of slack past each edge of the band, so rounding cannot drop a row.
+    let (ox0, ox1) = (
+        (geo.cx - geo.rx - half).floor() as i32 - 1,
+        (geo.cx + geo.rx + half).ceil() as i32 + 1,
+    );
+    let (oy0, oy1) = (
+        (geo.cy - geo.ry - half).floor() as i32 - 1,
+        (geo.cy + geo.ry + half).ceil() as i32 + 1,
+    );
+    let (ix0, ix1) = (
+        (geo.cx - geo.rx + half).ceil() as i32 + 1,
+        (geo.cx + geo.rx - half).floor() as i32 - 1,
+    );
+    let (iy0, iy1) = (
+        (geo.cy - geo.ry + half).ceil() as i32 + 1,
+        (geo.cy + geo.ry - half).floor() as i32 - 1,
+    );
+    let row = |y: i32, from: i32, to: i32, mask: &mut Mask| {
+        for x in from..=to {
+            if geo.in_rim_band(x, y) {
+                mask.set(x, y);
+            }
+        }
+    };
+    for y in oy0..=oy1 {
+        if y < iy0 || y > iy1 {
+            row(y, ox0, ox1, mask);
+        } else {
+            row(y, ox0, ix0, mask);
+            row(y, ix1, ox1, mask);
+        }
     }
 }
 
@@ -349,19 +341,51 @@ pub fn stamp_rim(mask: &mut Mask, geo: &SpaceGeometry) {
 /// out `1:16.2% 2:27.2% 3:24.0% 4:21.6% 5:10.9%`, not the 13/25/25/25/13 the
 /// draw alone implies. Level 5 is still one rock in nine, which is about seven
 /// on a Large map and one or two on a Small one. Bias the radius small as well
-/// and it would be neither.
+/// and it would be neither. (Those are the ellipse's figures; on T22.17's square
+/// rim with the R103 mass draw, whose grown radius pushes levels up, Large reads
+/// `1:12.5% 2:25.4% 3:23.3% 4:22.1% 5:16.7%` — level 5 one rock in six.)
+///
+/// **R103 (T22.17): some rocks are bigger.** After the uniform base radius, each
+/// candidate draws an extra mass `m` on `[0, params.mass_max]` from its **own**
+/// sub-stream, `"asteroid_mass"`, one draw per candidate so the two streams stay
+/// in step — and its radius becomes [`grown_radius`]. Everything downstream (rim
+/// clearance, spacing, the level, the stamp, the wire) sees the grown radius, so
+/// the lanes are measured between the rocks as they are drawn. The level is read
+/// off the grown radius too: *"a big rock with a weak pull reads as wrong"*.
 pub fn place_asteroids(seed: u64, geo: &SpaceGeometry, params: &SpaceParams) -> Vec<Asteroid> {
+    place_asteroids_drawn(seed, geo, params)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect()
+}
+
+/// A rock's radius after `m` extra mass: mass goes as area, so `r · sqrt(1 + m)`,
+/// rounded (R103).
+pub fn grown_radius(base: i32, m: f32) -> i32 {
+    (base as f32 * (1.0 + m).sqrt()).round() as i32
+}
+
+/// [`place_asteroids`], with each rock's mass draw beside it — so the 0-20 % spread
+/// is measured off the draw the generator made, not re-derived from a radius.
+fn place_asteroids_drawn(
+    seed: u64,
+    geo: &SpaceGeometry,
+    params: &SpaceParams,
+) -> Vec<(Asteroid, f32)> {
     let mut rng = substream(seed, "asteroids");
+    let mut mass_rng = substream(seed, "asteroid_mass");
     let target = params.asteroid_count as usize;
-    let mut out: Vec<Asteroid> = Vec::with_capacity(target);
+    let mut out: Vec<(Asteroid, f32)> = Vec::with_capacity(target);
 
     for _ in 0..(params.asteroid_count * SPACE_ASTEROID_TRIES) {
         if out.len() >= target {
             break;
         }
-        let r = range_i32(&mut rng, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_R_MAX);
+        let base = range_i32(&mut rng, SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_R_MAX);
         let x = range_f32(&mut rng, geo.cx - geo.rx, geo.cx + geo.rx);
         let y = range_f32(&mut rng, geo.cy - geo.ry, geo.cy + geo.ry);
+        let m = range_f32(&mut mass_rng, 0.0, params.mass_max);
+        let r = grown_radius(base, m);
 
         // Inside the rim, clear of it by the rock's own radius, the rim's half
         // thickness and a lane to fly down.
@@ -376,7 +400,7 @@ pub fn place_asteroids(seed: u64, geo: &SpaceGeometry, params: &SpaceParams) -> 
         // centre to centre: `gap_min` is the width of the lane a player floats
         // down, and a centre distance would make that lane depend on the sizes
         // of the two rocks that happen to bound it.
-        let clash = out.iter().any(|a| {
+        let clash = out.iter().any(|(a, _)| {
             let (dx, dy) = (a.x as f32 - x, a.y as f32 - y);
             (dx * dx + dy * dy).sqrt() < a.r as f32 + r as f32 + params.gap_min
         });
@@ -384,12 +408,15 @@ pub fn place_asteroids(seed: u64, geo: &SpaceGeometry, params: &SpaceParams) -> 
             continue;
         }
         let level = level_for(r, &mut rng);
-        out.push(Asteroid {
-            x: x.round() as i32,
-            y: y.round() as i32,
-            r,
-            level,
-        });
+        out.push((
+            Asteroid {
+                x: x.round() as i32,
+                y: y.round() as i32,
+                r,
+                level,
+            },
+            m,
+        ));
     }
     out
 }
@@ -946,7 +973,7 @@ pub fn rocks_are_within_reach(asteroids: &[Asteroid], geo: &SpaceGeometry) -> bo
 mod tests {
     use super::*;
     use crate::constants::{
-        MAP_LARGE_W, MINIMAP_H, MINIMAP_W, MIN_BLOB_PX, SPAWN_MIN_SEPARATION, WALL_W,
+        FLOOR_CRUST, MAP_LARGE_W, MINIMAP_W, MIN_BLOB_PX, SKY_MARGIN, SPAWN_MIN_SEPARATION, WALL_W,
     };
     use crate::map::gen::borders_hold;
     use crate::map::gen::objects::PlacedObject;
@@ -971,41 +998,99 @@ mod tests {
         }
     }
 
-    /// R13's whole argument, as an equation rather than a claim.
-    ///
-    /// The minimap is 200x100 and every map is 2:1, so an ellipse whose axes are
-    /// in the same ratio draws as a **true circle** there. If either ratio moves,
-    /// this is what says the circle was lost.
+    /// **R104: the rim is square-cornered**, read off the mask. At each of the four
+    /// corners the pixel at the band's outer corner and the one at its inner corner
+    /// are rock — an ellipse, or a rectangle with rounded corners, leaves both air —
+    /// and the controls: one pixel diagonally outside the outer corner and one
+    /// diagonally inside the inner corner are air, so "rock at the corner" is not a
+    /// rim that fills everything.
     #[test]
-    fn the_rim_draws_as_a_true_circle_on_the_minimap() {
-        let minimap_ratio = MINIMAP_W as f32 / MINIMAP_H as f32;
+    fn the_rim_is_square_cornered() {
         for scale in MapScale::ALL {
-            let p = scale.params();
-            let map_ratio = p.width as f32 / p.height as f32;
-            assert_eq!(map_ratio, minimap_ratio, "{scale:?} map is not 2:1");
-            let geo = SpaceGeometry::for_scale(scale);
-            assert_eq!(geo.rx / geo.ry, map_ratio, "{scale:?} rim is not 2:1");
+            let o = generate_terrain(7, scale);
+            let (w, h) = (o.mask.w as i32, o.mask.h as i32);
+            let (i, t) = (SPACE_RIM_INSET as i32, SPACE_RIM_THICKNESS as i32);
+            // (outer corner pixel, the step that goes *outward* along the diagonal)
+            for ((ox, oy), (sx, sy)) in [
+                ((i, i), (-1, -1)),
+                ((w - 1 - i, i), (1, -1)),
+                ((i, h - 1 - i), (-1, 1)),
+                ((w - 1 - i, h - 1 - i), (1, 1)),
+            ] {
+                let inner = (ox - sx * (t - 1), oy - sy * (t - 1));
+                let beyond = (ox + sx, oy + sy);
+                let within = (inner.0 - sx, inner.1 - sy);
+                let at = |p: (i32, i32)| o.mask.get(p.0, p.1);
+                assert!(at((ox, oy)), "{scale:?}: outer corner ({ox}, {oy}) is air");
+                assert!(at(inner), "{scale:?}: inner corner {inner:?} is air");
+                assert!(!at(beyond), "{scale:?}: {beyond:?} past the corner is rock");
+                assert!(
+                    !at(within),
+                    "{scale:?}: {within:?} inside the corner is rock"
+                );
+            }
         }
     }
 
-    /// The rim's outer edge stops exactly at the two bands `force_borders` owns.
-    /// A pixel either way and `borders_hold` breaks, which three other files
-    /// assert.
+    /// The rim's outer edge sits `SPACE_RIM_INSET` in from **every** map edge
+    /// (R104), which at the top is exactly the `SKY_MARGIN` band `force_borders`
+    /// owns — a pixel higher and `borders_hold` breaks, which three other files
+    /// assert — and read off the mask: the first rock down the centre column is
+    /// that row, and the first rock in from each side along the middle row is that
+    /// column. The bottom edge stays clear of the `FLOOR_CRUST` and the sides of the
+    /// `WALL_W` bands, with air between (the void a breach opens into).
     #[test]
-    fn the_rim_sits_exactly_inside_the_forced_bands() {
+    fn the_rim_sits_the_inset_from_every_edge() {
+        let inset = SPACE_RIM_INSET as f32;
+        assert_eq!(
+            SPACE_RIM_INSET, SKY_MARGIN,
+            "the top edge is the forced band's"
+        );
         for scale in MapScale::ALL {
             let geo = SpaceGeometry::for_scale(scale);
-            let h = scale.params().height as f32;
+            let (w, h) = (scale.params().width as f32, scale.params().height as f32);
             let half = geo.thickness * 0.5;
-            assert_eq!(geo.cy - geo.ry - half, SKY_MARGIN as f32, "{scale:?} top");
-            assert_eq!(
-                geo.cy + geo.ry + half,
-                h - FLOOR_CRUST as f32,
-                "{scale:?} bottom"
+            assert_eq!(geo.cy - geo.ry - half, inset, "{scale:?} top");
+            assert_eq!(geo.cy + geo.ry + half, h - inset, "{scale:?} bottom");
+            assert_eq!(geo.cx - geo.rx - half, inset, "{scale:?} left");
+            assert_eq!(geo.cx + geo.rx + half, w - inset, "{scale:?} right");
+            assert!(
+                h - inset < h - FLOOR_CRUST as f32,
+                "{scale:?}: the rim sits on the crust"
             );
             assert!(
-                geo.cx - geo.rx - half > WALL_W as f32,
-                "{scale:?} left: rim reaches the indestructible side band"
+                inset > WALL_W as f32,
+                "{scale:?}: the rim reaches the side band"
+            );
+
+            let o = generate_terrain(7, scale);
+            let (cx, cy) = (geo.cx as i32, geo.cy as i32);
+            let first_down = (0..o.mask.h as i32).find(|&y| o.mask.get(cx, y));
+            assert_eq!(
+                first_down,
+                Some(SPACE_RIM_INSET as i32),
+                "{scale:?}: top edge in the mask"
+            );
+            let first_right = (WALL_W as i32..o.mask.w as i32).find(|&x| o.mask.get(x, cy));
+            assert_eq!(
+                first_right,
+                Some(SPACE_RIM_INSET as i32),
+                "{scale:?}: left edge in the mask"
+            );
+            let (mw, mh) = (o.mask.w as i32, o.mask.h as i32);
+            let last_left = (0..mw - WALL_W as i32).rev().find(|&x| o.mask.get(x, cy));
+            assert_eq!(
+                last_left,
+                Some(mw - 1 - SPACE_RIM_INSET as i32),
+                "{scale:?}: right edge"
+            );
+            let last_up = (0..mh - FLOOR_CRUST as i32)
+                .rev()
+                .find(|&y| o.mask.get(cx, y));
+            assert_eq!(
+                last_up,
+                Some(mh - 1 - SPACE_RIM_INSET as i32),
+                "{scale:?}: bottom edge"
             );
         }
     }
@@ -1020,17 +1105,34 @@ mod tests {
         }
     }
 
-    /// The exact distance function, against a brute-force search of the
-    /// centreline.
-    ///
-    /// **Brute force rather than arithmetic by hand**, because the hand version
-    /// of this test was wrong: on the major axis of a 2:1 ellipse the nearest
-    /// boundary point is nowhere near the axis, and `rx/2` from the centre is
-    /// 359 px from the rim, not 440. That is exactly the error the cheap
-    /// stand-ins make, in the two opposite directions the doc comment names.
+    /// The distance function, against a brute-force search of the centreline
+    /// rectangle: **Euclidean from inside** and **Chebyshev from outside**, the two
+    /// metrics `distance_to_rim`'s doc names (square-cornered offsets outside). A
+    /// hand-written expectation is what this project's first version of this test
+    /// got wrong on the ellipse, so the reference is a search, not arithmetic.
     #[test]
     fn the_distance_to_the_rim_matches_a_brute_force_search() {
         let geo = SpaceGeometry::for_scale(MapScale::Small);
+        // The centreline, sampled every quarter pixel along all four sides.
+        let mut rim: Vec<(f32, f32)> = Vec::new();
+        let (x0, x1, y0, y1) = (
+            geo.cx - geo.rx,
+            geo.cx + geo.rx,
+            geo.cy - geo.ry,
+            geo.cy + geo.ry,
+        );
+        let mut t = 0.0;
+        while t <= 2.0 * geo.rx {
+            rim.push((x0 + t, y0));
+            rim.push((x0 + t, y1));
+            t += 0.25;
+        }
+        let mut t = 0.0;
+        while t <= 2.0 * geo.ry {
+            rim.push((x0, y0 + t));
+            rim.push((x1, y0 + t));
+            t += 0.25;
+        }
         for &(fx, fy) in &[
             (0.0f32, 0.0f32),
             (0.5, 0.0),
@@ -1040,104 +1142,123 @@ mod tests {
             (0.5, 0.5),
             (0.7, 0.3),
             (-0.2, -0.8),
+            (0.95, 0.95),
+            // Outside, including off a corner's diagonal where the metrics differ.
+            (1.05, 0.0),
+            (0.0, -1.1),
+            (1.04, 1.08),
+            (-1.1, 1.1),
         ] {
             let (x, y) = (geo.cx + fx * geo.rx, geo.cy + fy * geo.ry);
-            let mut brute = f32::MAX;
-            for i in 0..20_000 {
-                let a = (i as f32 / 20_000.0) * std::f32::consts::TAU;
-                let (ex, ey) = (geo.cx + geo.rx * a.cos(), geo.cy + geo.ry * a.sin());
-                brute = brute.min(((ex - x).powi(2) + (ey - y).powi(2)).sqrt());
-            }
+            let outside = geo.norm(x, y) > 1.0;
+            let brute = rim
+                .iter()
+                .map(|&(ex, ey)| {
+                    let (dx, dy) = ((ex - x).abs(), (ey - y).abs());
+                    if outside {
+                        dx.max(dy)
+                    } else {
+                        (dx * dx + dy * dy).sqrt()
+                    }
+                })
+                .fold(f32::MAX, f32::min);
             let d = geo.distance_to_rim(x, y);
             assert!(
                 (d - brute).abs() < 0.5,
-                "at ({fx}, {fy}) of the axes: iterated {d:.2}, brute force {brute:.2}"
+                "at ({fx}, {fy}) of the half-extents ({}): {d:.2}, brute force {brute:.2}",
+                if outside { "outside" } else { "inside" }
             );
         }
+    }
 
-        // And the cheap stand-in really is wrong on the major axis, by the
-        // factor the doc comment claims — so the exactness is load-bearing
-        // rather than decoration. Under it, rocks would be pushed out of the
-        // ends of the arena the ellipse was chosen to reclaim.
-        let p = (geo.cx + geo.rx * 0.5, geo.cy);
-        let cheap = (1.0 - geo.norm(p.0, p.1)) * geo.ry;
-        let exact = geo.distance_to_rim(p.0, p.1);
-        assert!(
-            cheap < exact * 0.7,
-            "the (1-norm)*ry stand-in reported {cheap:.0} against the true {exact:.0}"
+    /// Every pixel `stamp_rim` sets is one `in_rim_band` names, and every one it
+    /// names is set — over the whole of a Small map, so `stamp_rim`'s loop bounds
+    /// (it visits only the four strips) cannot have dropped a row or a corner. The
+    /// band's area is the control: `thickness` px around the whole rectangle.
+    #[test]
+    fn the_stamped_rim_is_exactly_the_band() {
+        let (w, h) = (
+            MapScale::Small.params().width,
+            MapScale::Small.params().height,
+        );
+        let geo = SpaceGeometry::for_dims(w, h);
+        let mut mask = Mask::new_empty(w, h);
+        stamp_rim(&mut mask, &geo);
+        let mut set = 0u64;
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let want = geo.in_rim_band(x, y);
+                assert_eq!(mask.get(x, y), want, "pixel ({x}, {y})");
+                set += want as u64;
+            }
+        }
+        let t = geo.thickness as u64;
+        let (ow, oh) = ((2.0 * geo.rx) as u64 + t, (2.0 * geo.ry) as u64 + t);
+        assert_eq!(
+            set,
+            ow * oh - (ow - 2 * t) * (oh - 2 * t),
+            "the band's area"
         );
     }
 
     /// R13 point 2: `Minimap::resampleTerrain` point-samples `core.solidAt` once
     /// per cell, so a rim thinner than `mapW / MINIMAP_W` — 20.48 px on Large —
-    /// aliases into a dashed ring or vanishes.
+    /// aliases into a dashed frame or vanishes.
     ///
-    /// **Measured off the mask, not asserted against the constant** — and the
-    /// two are not the same number, which is the whole reason this sentence is
-    /// worth writing. `SPACE_RIM_THICKNESS` is 32; what the mask delivers is
-    /// **29.75-30.00 px**, printed below, for the scalloping reason
-    /// `stamp_rim`'s doc derives. The commit that landed this rim recorded 32
-    /// as the measurement; it was the constant (R34).
-    ///
-    /// So there are **two** assertions here and they do different jobs: the
-    /// floor is the requirement, and `WINDOW` is what makes the figure in
-    /// `stamp_rim`'s doc a measurement a reader can re-run rather than a number
-    /// to be trusted. Widening `WINDOW` to make a change pass is the one thing
-    /// not to do with it — the prediction is closed-form, so a value outside it
-    /// means the construction moved.
+    /// **Measured off the mask, not asserted against the constant.** Every column
+    /// across the top and bottom strips and every row across the two side strips
+    /// is walked perpendicular to its side, and the run of rock counted. The
+    /// ellipse's disc chain delivered 29.75-30.00 px against a nominal 32 (R34);
+    /// the band stamped from the predicate delivers `thickness` exactly, and this
+    /// is where that sentence in `stamp_rim`'s doc is re-run rather than trusted.
+    /// Seed 7's rocks cannot reach the rim (`SPACE_RIM_CLEARANCE`), so a longer
+    /// run would be a rock in the lane, which `no_asteroid_pixel_touches_the_rim`
+    /// owns.
     #[test]
     fn the_rim_is_thicker_than_one_minimap_cell() {
-        /// The predicted scallop is 30.27 px and the 0.25 px sampling step
-        /// below quantises what is read off the mask; half a pixel either side
-        /// of the measured 29.75-30.00 covers both.
-        const WINDOW: (f32, f32) = (29.25, 30.75);
         let floor = MAP_LARGE_W as f32 / MINIMAP_W as f32;
         for scale in MapScale::ALL {
             let o = generate_terrain(7, scale);
             let geo = SpaceGeometry::for_scale(scale);
-            let mut worst = f32::MAX;
-            let mut worst_at = 0.0f32;
-            for i in 0..720 {
-                let a = (i as f32 / 720.0) * std::f32::consts::TAU;
-                let (px, py) = (geo.cx + geo.rx * a.cos(), geo.cy + geo.ry * a.sin());
-                // Outward normal of the centreline ellipse at this angle.
-                let (mut nx, mut ny) = (a.cos() / geo.rx, a.sin() / geo.ry);
-                let len = (nx * nx + ny * ny).sqrt();
-                nx /= len;
-                ny /= len;
-                let at = |t: f32| {
-                    o.mask
-                        .get((px + nx * t).round() as i32, (py + ny * t).round() as i32)
-                };
-                let mut solid = 0.0f32;
-                let mut t = -geo.thickness;
-                while t <= geo.thickness {
-                    if at(t) {
-                        solid += 0.25;
-                    }
-                    t += 0.25;
-                }
-                if solid < worst {
-                    worst = solid;
-                    worst_at = a;
+            let reach = geo.thickness as i32 * 2;
+            let run = |xy: &dyn Fn(i32) -> (i32, i32)| {
+                (-reach..=reach)
+                    .filter(|&t| {
+                        let (x, y) = xy(t);
+                        o.mask.get(x, y)
+                    })
+                    .count() as f32
+            };
+            let (x0, x1) = ((geo.cx - geo.rx) as i32, (geo.cx + geo.rx) as i32);
+            let (y0, y1) = ((geo.cy - geo.ry) as i32, (geo.cy + geo.ry) as i32);
+            let (mut thinnest, mut thickest) = (f32::MAX, 0.0f32);
+            // Off the corners by a thickness: across a corner the run is along
+            // the other side's strip, and the corners are
+            // `the_rim_is_square_cornered`'s.
+            let t = geo.thickness as i32;
+            for x in x0 + t..=x1 - t {
+                for y in [y0, y1] {
+                    let r = run(&|t| (x, y + t));
+                    thinnest = thinnest.min(r);
+                    thickest = thickest.max(r);
                 }
             }
-            println!(
-                "{scale:?}: thinnest rim {worst:.2} px at {:.0} deg",
-                worst_at.to_degrees()
-            );
+            for y in y0 + t..=y1 - t {
+                for x in [x0, x1] {
+                    let r = run(&|t| (x + t, y));
+                    thinnest = thinnest.min(r);
+                    thickest = thickest.max(r);
+                }
+            }
+            println!("{scale:?}: rim {thinnest:.0}-{thickest:.0} px across, every side");
             assert!(
-                worst >= floor,
-                "{scale:?}: the rim is {worst:.2} px at its thinnest, under the {floor:.2} px \
-                 minimap cell on Large"
+                thinnest >= floor,
+                "{scale:?}: {thinnest} px, under the {floor:.2} px cell"
             );
-            assert!(
-                worst >= WINDOW.0 && worst <= WINDOW.1,
-                "{scale:?}: thinnest rim {worst:.2} px is outside the documented \
-                 {:.2}-{:.2} px window — `stamp_rim`'s doc now says something the mask does \
-                 not. Re-derive it there before touching this line.",
-                WINDOW.0,
-                WINDOW.1
+            assert_eq!(
+                (thinnest, thickest),
+                (geo.thickness, geo.thickness),
+                "{scale:?}: the rim is not `thickness` px on every side"
             );
         }
     }
@@ -1195,7 +1316,9 @@ mod tests {
                 counts.push(o.asteroids.len());
                 for (i, a) in o.asteroids.iter().enumerate() {
                     assert!(
-                        (SPACE_ASTEROID_R_MIN..=SPACE_ASTEROID_R_MAX).contains(&a.r),
+                        (SPACE_ASTEROID_R_MIN
+                            ..=grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX))
+                            .contains(&a.r),
                         "{scale:?} seed {seed}: radius {} is outside the band",
                         a.r
                     );
@@ -1231,7 +1354,8 @@ mod tests {
     ///
     /// The lane is what `SPACE_RIM_CLEARANCE` buys and what `T22.10`'s vortex
     /// needs to work in, so it is the right thing to measure: rays are cast
-    /// inward along the centreline ellipse's normal and every pixel from just
+    /// inward from every pixel of the centreline rectangle, along its side's
+    /// normal, and every pixel from just
     /// past the rim's inner edge to `SPACE_RIM_CLEARANCE` in must be air.
     /// `a_rock_in_the_lane_is_seen` is the control.
     #[test]
@@ -1264,21 +1388,34 @@ mod tests {
     /// filter reasons in.
     fn first_pixel_in_the_lane(mask: &Mask, geo: &SpaceGeometry) -> Option<(i32, i32)> {
         let half = geo.thickness * 0.5;
-        // 1440 rays: at the ends of the major axis on Large, consecutive rays
-        // are 8.3 px apart, so nothing as wide as `2 * SPACE_ASTEROID_R_MIN`
-        // can slip between two of them.
-        for i in 0..1440 {
-            let a = (i as f32 / 1440.0) * std::f32::consts::TAU;
-            let (px, py) = (geo.cx + geo.rx * a.cos(), geo.cy + geo.ry * a.sin());
-            // Inward normal of the centreline ellipse at this angle.
-            let (mut nx, mut ny) = (a.cos() / geo.rx, a.sin() / geo.ry);
-            let len = (nx * nx + ny * ny).sqrt();
-            nx /= -len;
-            ny /= -len;
+        // Every pixel along each side of the centreline rectangle, cast inward
+        // along that side's normal. The walks along the top and bottom cover the
+        // lane's corner squares too (the pixels there that are nearer the other
+        // side's rock are skipped as rim, not lane), and at one-pixel spacing
+        // nothing can slip between two walks.
+        let (x0, x1) = (geo.cx - geo.rx, geo.cx + geo.rx);
+        let (y0, y1) = (geo.cy - geo.ry, geo.cy + geo.ry);
+        let mut starts: Vec<((f32, f32), (f32, f32))> = Vec::new();
+        let mut t = 0.0;
+        while t <= 2.0 * geo.rx {
+            starts.push(((x0 + t, y0), (0.0, 1.0)));
+            starts.push(((x0 + t, y1), (0.0, -1.0)));
+            t += 1.0;
+        }
+        let mut t = 0.0;
+        while t <= 2.0 * geo.ry {
+            starts.push(((x0, y0 + t), (1.0, 0.0)));
+            starts.push(((x1, y0 + t), (-1.0, 0.0)));
+            t += 1.0;
+        }
+        for ((px, py), (nx, ny)) in starts {
             let mut t = half + 2.0;
             while t <= half + SPACE_RIM_CLEARANCE - 4.0 {
                 let (x, y) = ((px + nx * t).round() as i32, (py + ny * t).round() as i32);
-                if mask.get(x, y) {
+                // Near a corner a walk runs down the *other* side's rock; the lane
+                // is what lies past the inner edge of the nearest side.
+                let lane = geo.distance_to_rim(x as f32, y as f32) >= half + 2.0;
+                if lane && mask.get(x, y) {
                     return Some((x, y));
                 }
                 t += 1.0;
@@ -1491,7 +1628,7 @@ mod tests {
     /// framework.
     #[test]
     fn a_stranded_rock_fails_the_reach_test() {
-        // **Large, not Small.** On Small the arena's own centre is 392 px from
+        // **Large, not Small.** On Small the arena's own centre is 400 px from
         // the rim — half a climb budget — so nothing on that map can be
         // stranded at all, and the first version of this fixture asserted a
         // failure the predicate was right to refuse.
@@ -1595,15 +1732,16 @@ mod tests {
     /// **T22.05C/F4 corrected this doc**, which used to say *"because the floor
     /// crust is one"*. `GenOutcome.surface` is `arena_surface` — `extract_surface`
     /// filtered by `geo.inside` — and the crust sits at `y = h - FLOOR_CRUST - 1`,
-    /// outside the ellipse, which is exactly what that filter removes. Its
+    /// outside the rim, which is exactly what that filter removes. Its
     /// neighbour `the_arena_surface_drops_everything_outside_the_rim` asserts
     /// the same thing one screen away, so the two disagreed and the wrong one
     /// was the one a reader reaches for.
     ///
     /// Measured rather than re-reasoned, and now asserted below: Small/4242
-    /// with `asteroid_count: 0` yields **22 surface points, 0 of them on the
-    /// crust line, all 22 within 2.8 px of the rim's inner face** (thickness
-    /// 32). That is what keeps the fixture falsifying.
+    /// with `asteroid_count: 0` yields **111 surface points, 0 of them on the
+    /// crust line, all 111 within 1.0 px of the rim's inner face** (thickness
+    /// 32; the ellipse gave 22 within 2.8 px — the square rim's bottom is one flat
+    /// standable face, T22.17). That is what keeps the fixture falsifying.
     #[test]
     fn a_map_with_no_asteroids_has_no_standable_rock() {
         let scale = MapScale::Small;
@@ -1657,9 +1795,9 @@ mod tests {
     ///
     /// Two numbers, because they are different: the **grid** rate is the share
     /// of `open_space_grid`'s probes that land in open space, and the **draw**
-    /// rate is the share of uniform draws from the ellipse's *bounding box*
-    /// that do — the box being bigger than the ellipse by `4/pi`, and the
-    /// draw rate being what the attempt budget actually has to survive.
+    /// rate is the share of uniform draws from the centreline rectangle (it was
+    /// the ellipse's bounding box, `4/pi` bigger than the ellipse, until R104) that
+    /// do — the draw rate being what the attempt budget actually has to survive.
     #[test]
     #[ignore = "a measurement, not a gate"]
     fn the_open_space_hit_rate() {
@@ -2143,16 +2281,33 @@ mod tests {
     }
 
     /// The density and gap distributions the task asks to be reported, over a
-    /// 999-seed sweep — `T21.40`'s shape.
+    /// 999-seed sweep — `T21.40`'s shape. T22.17 added the three R103/R104 asked to
+    /// be measured: the **fraction of the map inside the rim's inner edge** (pixel
+    /// count, off the mask's own geometry), the **open-space spawn candidates** per
+    /// map (`open_space_grid`, the pool the six spawns are sampled from), and the
+    /// **mass draw** (R103) with the radius it grew each rock to.
     #[test]
     #[ignore = "a measurement, not a gate"]
     fn density_and_gap_report() {
         for scale in MapScale::ALL {
             let geo = SpaceGeometry::for_scale(scale);
-            let ellipse = std::f32::consts::PI * geo.rx * geo.ry;
+            let p = scale.params();
+            let inner = |x: f32, y: f32| {
+                geo.norm(x, y) < 1.0 && geo.distance_to_rim(x, y) >= geo.thickness * 0.5
+            };
+            let mut arena_px = 0u64;
+            for y in 0..p.height as i32 {
+                for x in 0..p.width as i32 {
+                    arena_px += inner(x as f32, y as f32) as u64;
+                }
+            }
+            let arena = arena_px as f32;
             let mut counts: Vec<usize> = Vec::new();
             let mut coverage: Vec<f32> = Vec::new();
             let mut gaps: Vec<f32> = Vec::new();
+            let mut candidates: Vec<f32> = Vec::new();
+            let mut masses: Vec<f32> = Vec::new();
+            let mut growth: Vec<f32> = Vec::new();
             let mut levels = [0usize; (SPACE_LEVEL_MAX + 1) as usize];
             let mut attempts = [0usize; 16];
             let mut safe = 0usize;
@@ -2164,12 +2319,22 @@ mod tests {
                     safe += 1;
                 }
                 counts.push(o.asteroids.len());
+                candidates.push(open_space_grid(&o.mask, &geo, &o.asteroids).len() as f32);
+                let params = if o.used_safe_preset {
+                    SpaceParams::safe_for(scale)
+                } else {
+                    SpaceParams::default_for(scale)
+                };
+                for (a, m) in place_asteroids_drawn(o.seed, &geo, &params) {
+                    masses.push(m);
+                    growth.push(a.r as f32);
+                }
                 let rock_area: f32 = o
                     .asteroids
                     .iter()
                     .map(|a| std::f32::consts::PI * (a.r as f32) * (a.r as f32))
                     .sum();
-                coverage.push(rock_area / ellipse);
+                coverage.push(rock_area / arena);
                 for (i, a) in o.asteroids.iter().enumerate() {
                     levels[a.level as usize] += 1;
                     let mut nearest = f32::MAX;
@@ -2196,16 +2361,35 @@ mod tests {
             let total: usize = levels.iter().sum();
             println!("--- {scale:?} over 999 seeds ---");
             println!(
+                "  arena inside the rim's inner edge: {arena_px} px, {:.3} of the map",
+                arena / (p.width as f32 * p.height as f32)
+            );
+            println!(
                 "  rocks per map: min {} p50 {} max {}",
                 counts[0],
                 counts[counts.len() / 2],
                 counts[counts.len() - 1]
             );
             println!(
-                "  coverage of the rim ellipse: p05 {:.3} p50 {:.3} p95 {:.3}",
+                "  open-space spawn candidates per map: min {:.0} p50 {:.0} max {:.0}",
+                pct(&mut candidates, 0.0),
+                pct(&mut candidates, 0.5),
+                pct(&mut candidates, 1.0)
+            );
+            println!(
+                "  coverage of the arena: p05 {:.3} p50 {:.3} p95 {:.3}",
                 pct(&mut cov, 0.05),
                 pct(&mut cov, 0.50),
                 pct(&mut cov, 0.95)
+            );
+            println!(
+                "  mass drawn: min {:.3} p50 {:.3} max {:.3}; radius min {:.0} p50 {:.0} max {:.0}",
+                pct(&mut masses, 0.0),
+                pct(&mut masses, 0.5),
+                pct(&mut masses, 1.0),
+                pct(&mut growth, 0.0),
+                pct(&mut growth, 0.5),
+                pct(&mut growth, 1.0)
             );
             println!(
                 "  nearest-neighbour gap px: min {:.0} p05 {:.0} p50 {:.0} p95 {:.0} max {:.0}",
@@ -2221,6 +2405,96 @@ mod tests {
                 .collect();
             println!("  levels over {total} rocks: {}", shares.join(" "));
             println!("  attempts {attempts:?}, safe preset {safe}");
+        }
+    }
+
+    /// **R103: every rock draws 0-20 % extra mass, and the draw is what grew it.**
+    ///
+    /// Over 8 seeds on every scale, off the generator's own draws
+    /// (`place_asteroids_drawn`): every `m` is in `[0, SPACE_ASTEROID_MASS_MAX]`,
+    /// the spread reaches both ends (the lowest under a tenth of the range, the
+    /// highest over nine tenths — a draw pinned at 0 or at the top fails), every
+    /// shipped radius is `grown_radius(base, m)` of a base on the old band, and
+    /// the per-seed spread is printed.
+    ///
+    /// **The control is the live binding site**: the same seeds with
+    /// `mass_max: 0.0` give rocks whose mean area is smaller by the mean draw —
+    /// so the growth is the mass, not a side effect of the rim moving. The ratio
+    /// is asserted near `1 + E[m]` = 1.10, loose enough for rounding and the
+    /// placement's bias against big rocks.
+    #[test]
+    fn some_asteroids_are_bigger_by_up_to_a_fifth_of_their_mass() {
+        let grown_max = grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX);
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            let with = SpaceParams::default_for(scale);
+            let without = SpaceParams {
+                mass_max: 0.0,
+                ..SpaceParams::default_for(scale)
+            };
+            let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+            let (mut area_with, mut area_without) = (0.0f64, 0.0f64);
+            let (mut n_with, mut n_without) = (0usize, 0usize);
+            for seed in seeds(8) {
+                let drawn = place_asteroids_drawn(seed, &geo, &with);
+                let ms: Vec<f32> = drawn.iter().map(|(_, m)| *m).collect();
+                let (slo, shi) = ms
+                    .iter()
+                    .fold((f32::MAX, 0.0f32), |(l, h), &m| (l.min(m), h.max(m)));
+                println!(
+                    "{scale:?} seed {seed}: {} rocks, mass +{:.1}% .. +{:.1}%",
+                    ms.len(),
+                    slo * 100.0,
+                    shi * 100.0
+                );
+                lo = lo.min(slo);
+                hi = hi.max(shi);
+                for (a, m) in &drawn {
+                    assert!(
+                        (0.0..=SPACE_ASTEROID_MASS_MAX).contains(m),
+                        "{scale:?} seed {seed}: mass {m}"
+                    );
+                    assert!(
+                        (SPACE_ASTEROID_R_MIN..=grown_max).contains(&a.r),
+                        "{scale:?} seed {seed}: radius {} off the grown band",
+                        a.r
+                    );
+                    let base_ok = (SPACE_ASTEROID_R_MIN..=SPACE_ASTEROID_R_MAX)
+                        .any(|b| grown_radius(b, *m) == a.r);
+                    assert!(
+                        base_ok,
+                        "{scale:?} seed {seed}: radius {} is no base grown by {m}",
+                        a.r
+                    );
+                    area_with += (a.r as f64).powi(2);
+                    n_with += 1;
+                }
+                assert_eq!(
+                    drawn.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+                    place_asteroids(seed, &geo, &with),
+                    "the measured draw is not the shipped one"
+                );
+                for a in place_asteroids(seed, &geo, &without) {
+                    area_without += (a.r as f64).powi(2);
+                    n_without += 1;
+                }
+            }
+            assert!(
+                lo < SPACE_ASTEROID_MASS_MAX * 0.1,
+                "{scale:?}: lowest draw {lo}"
+            );
+            assert!(
+                hi > SPACE_ASTEROID_MASS_MAX * 0.9,
+                "{scale:?}: highest draw {hi}"
+            );
+            let ratio = (area_with / n_with as f64) / (area_without / n_without as f64);
+            println!(
+                "{scale:?}: mass {lo:.3}..{hi:.3}, mean area with/without the draw {ratio:.3}"
+            );
+            assert!(
+                (1.04..=1.16).contains(&ratio),
+                "{scale:?}: mean rock area moved by {ratio:.3}, not by the ~1.10 the draw gives"
+            );
         }
     }
 }

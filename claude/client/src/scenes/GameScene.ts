@@ -3156,13 +3156,14 @@ export class GameScene extends Phaser.Scene {
       },
       /**
        * e2e only (`DEV_PROBE=1`, T22.10B): ask the server to breach the rim on the ray
-       * through this player. The answer lands in `debug().vortex.lastBreach`; the
-       * vortex arrives as any other does, through `vortex_open`.
+       * through this player — or, with `aim` (T22.17), through that world point. The
+       * answer lands in `debug().vortex.lastBreach`; the vortex arrives as any other
+       * does, through `vortex_open`.
        */
-      debugBreach() {
+      debugBreach(aim?: { x: number; y: number }) {
         self.observed.lastBreach = null
         self.observed.myRelocateTick = null
-        self.conn.sendRaw('debug_breach', {})
+        self.conn.sendRaw('debug_breach', aim ? { x: aim.x, y: aim.y } : {})
       },
       /** e2e only (§C2, T22.12B): hide the black hole for a same-instant control frame. */
       showBlackHole(on: boolean) {

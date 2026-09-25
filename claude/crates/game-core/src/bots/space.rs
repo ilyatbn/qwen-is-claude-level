@@ -671,12 +671,32 @@ mod tests {
             w.black_hole().is_none(),
             "premise: telegraphed, not arrived"
         );
-        let inside = warned + Vec2::new(BLACK_HOLE_REACH * 0.5, 0.0);
+        // Half-way out on a bearing whose straight run away from the hole is clear
+        // rock-free air for four body heights — searched for, not assumed (T22.17: the
+        // fixed bearing +x had a rock across it once R103/R104 moved the map, and
+        // `clear_heading` rightly turned 45° off it). The claim is the keep-out's, not
+        // the rock-dodge's, so the bearing is one with nothing to dodge.
+        let clear_run = |p: Vec2, dir: Vec2| {
+            (0..=(4.0 * PLAYER_H / 2.0) as i32).all(|k| {
+                !crate::physics::collide::aabb_overlaps_solid(
+                    &w.map,
+                    Body::new(p + dir * (k as f32 * 2.0)).aabb(),
+                )
+            })
+        };
+        let (inside, dir) = (0..16)
+            .map(|k| {
+                let a = k as f32 * std::f32::consts::TAU / 16.0;
+                let dir = Vec2::new(a.cos(), a.sin());
+                (warned + dir * (BLACK_HOLE_REACH * 0.5), dir)
+            })
+            .find(|&(p, dir)| clear_run(p, dir))
+            .expect("a clear bearing out of the telegraphed reach");
         let out =
             escape(&w, inside, Vec2::ZERO, None).expect("no escape from the telegraphed reach");
         assert!(
-            out.x > 0.9,
-            "the escape points {out:?}, not away from the hole"
+            out.dot(dir) > 0.9,
+            "the escape points {out:?}, not away from the hole along {dir:?}"
         );
         assert!(
             forbidden(&w, warned),

@@ -7124,3 +7124,11 @@ Full `./scripts/check.sh` on `a3c5dea`, idle box, nothing else running: **EXIT=0
 1720 passed / 0 failed / 26 ignored. (A first launch at 10:17 silently ran a subagent's overwritten launcher from the shared
 scratchpad and left yesterday's log in place — caught by the log's mtime; relaunched from a uniquely named script.) M22 is closed.
 Owner decisions pending are listed in HANDOFF-M22.md.
+
+## T22.17 — square rim + bigger asteroids (R103, R104)
+`SpaceGeometry` is now a centreline rectangle inset `SPACE_RIM_INSET` (= SKY_MARGIN) from every edge; stamped as an exact 32 px band;
+Chebyshev outside so the void/breach edges are square too. Asteroids draw +0–20 % mass on `"asteroid_mass"` (r·√(1+m), 64→70 max).
+12 space golden rows regenerated, v1/v2 + weather unchanged; REPLAY_VERSION 27. Arena 0.55/0.62/0.66 → 0.66/0.77/0.82 of the map.
+Five map-dependent fixtures re-searched (reasons in the task file); `debug_breach` takes an optional aim; `core.spaceInside` replaces
+the check's ellipse copy. For T22.15: 4 of 6 rim breaches don't catch an idle player at 1.5 capture radii (wells out-pull).
+For T22.18: horizon = old R_MAX 64 < new max 70; Small holes near the rim. docs/77 §H4 is stale (ellipse).

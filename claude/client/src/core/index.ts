@@ -42,7 +42,8 @@ export const enum MapGenerator {
   /** The height-profile landscape: ground, islands, and a cave or two. */
   V2 = 1,
   /**
-   * T22.05A's zero-gravity arena: a closed elliptical rim with asteroids inside.
+   * T22.05A's zero-gravity arena: a closed rim (a square-cornered rectangle since
+   * T22.17, R104) with asteroids inside.
    *
    * **Derived from the gravity mode, never selected beside it.** Use
    * `generateForGravity`; passing this to `generateWith` under a gravity that
@@ -894,6 +895,15 @@ export class Core {
     // `meta.generator` is the readback, and `meta` is cached.
     this.invalidate()
     return ok
+  }
+
+  /**
+   * T22.17 (R104): is `(x, y)` inside the space arena — the rim predicate itself
+   * (`SpaceGeometry::inside`), `false` off a space map. For checks, so none of them
+   * carries a copy of the rim's shape.
+   */
+  spaceInside(x: number, y: number): boolean {
+    return this.inner.space_inside(x, y)
   }
 
   setAsteroids(rocks: readonly { x: number; y: number; r: number; level: number }[]): void {
