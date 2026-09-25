@@ -7147,3 +7147,13 @@ off for the round, `core_destroyed{tick,x,y}`, the core crumbles (Carve) and one
 to firstSeqAfter(tick) (0.0000 px side by side). Band now from the rock's round body (0.75 r): air gap p50 38.2 → 27.0 px.
 The reviewer's hollow bounce (36.8 px @146 px/s) is gone. Core drawn ember/amber in the bake, both renderers, photographed.
 REPLAY_VERSION 29. Split A `8218aaf` / B. docs/77 lines listed in the task file.
+
+## T23.05 — terrain fields in Rust (R4)
+New render-only `game-wasm/src/render_fields.rs`: kit.js's RGBA8 encoding (dIn/dOut ×4 sat 64, back, relief), exact EDT (column
+pass + world.js::edt1d, u16 capped at 65²); `GameCore::render_fields_{full,dirty,ptr,len}`; lib.rs +6 lines. All four channels and
+the relief f32s hash-equal the mockup's ARENA_E dump (fixture: mask RLE + FNV); dIn/dOut = brute force (7 grids); incremental ==
+full on 20 seeds; planted: read margin 96 → 11/20 red, relief margin −1 → 10/20 red, boulder 0.62 / cap 60² → fixture red.
+Bench (release, niced, load ~6): full S/M/L 139/344/587 ms; r=60 crater 2.0–2.35 ms (was 4.4–6.5 before relief got its own 10 px
+margin; relief is ~70 % of full). Research guessed 0.1 s / 1–3 ms. **back ≠ mockup**: here = round-start solid ∧ air now (every
+in-play carve); generator caves are not back (the client has no pre-carve landform; BackdropMask's heuristic is off). Coordinator.
+No production caller yet (T23.07). golden.rs untouched; `cargo test -p game-wasm` 55 ok, `-p game-core golden` 2 ok.

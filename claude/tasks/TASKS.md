@@ -797,7 +797,7 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.02](M23/T23.02-look-compare.md) — `look-compare` — the instrument and its must-fail controls, thresholds measured between the noise floor and the smallest failing control
 - [ ] [T23.03](M23/T23.03-three-under-phaser.md) — three.js under Phaser — one world canvas, Phaser's camera the single source of truth, laid out in `preRender`
 - [ ] [T23.04](M23/T23.04-the-hazy-stepped-sky.md) — The sky — stepped haze layers, stars, moons, god rays; the old sky, ridge and clouds retire with their checks
-- [ ] [T23.05](M23/T23.05-terrain-fields-in-rust.md) — Terrain fields in Rust — exact EDT, cave-back and relief per dirty rectangle, render-only in `game-wasm`, incremental == full
+- [x] [T23.05](M23/T23.05-terrain-fields-in-rust.md) — Terrain fields in Rust — exact EDT, cave-back and relief per dirty rectangle, render-only in `game-wasm`, incremental == full
 - [ ] [T23.06](M23/T23.06-albedo-and-scorch.md) — Painting the rock — albedo on the GPU with the mockup's hash bit-exact, one palette, scorch from explosions
 - [ ] [T23.07](M23/T23.07-the-lit-terrain.md) — The lit terrain — bevel, rim, lip, cave interiors, 16–24 lights, two tiers; `masks.bin` byte-identical
 - [ ] [T23.08](M23/T23.08-fog-depth-and-post.md) — Fog, foreground depth and the post chain — **the first picture gate**: nothing after it starts until F1's numbers are in

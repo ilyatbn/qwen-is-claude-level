@@ -109,6 +109,9 @@ MANIFEST=(
   # in before it touches its rock, intact and with the lumps blown off, 9 seeds.
   # Prints; asserts nothing (the band's guard is the inequality test beside it).
   "well_air_gap_report|game-core src/world/attractors.rs|report"
+  # T23.05 (R4): the M23 terrain fields — full pass per scale and a radius-60 crater on
+  # real maps. A guard: the crater's incremental bytes must equal a full pass. Prints ms.
+  "render_fields_bench|game-wasm src/render_fields.rs|guard"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.
