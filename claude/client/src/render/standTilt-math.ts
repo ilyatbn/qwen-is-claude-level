@@ -60,22 +60,81 @@ export function stepTilt(theta: number, target: number | null, dt: number): numb
 
 /**
  * Where the container's origin (the figure's feet) goes, relative to the body's centre,
- * for a figure of height `h` rotated by `theta` — the pivot is the body's centre, so a
- * figure turned feet-up under a rock still covers the body's box.
+ * for a body box `w × h` and a figure rotated by `theta`.
+ *
+ * **T22.19B F3 (ruling): the pivot is where the box meets the rock** — the point where
+ * the figure's down `(−sin θ, cos θ)`, cast from the box centre, leaves the box. At
+ * T22.19 it was the centre (the feet always half a *height* away), so at a quarter turn
+ * the feet sat `h/2` beside a box only `w/2` wide — sunk `(h − w)/2` into the rock's
+ * flank. Here the feet stand on the box's own edge on every bearing: upright `(0, h/2)`
+ * (the old `(x, y + PLAYER_H/2)` exactly), feet-up `(0, −h/2)` (the figure covers the box
+ * as before), a quarter turn `(∓w/2, 0)`. Continuous in θ (the box outline is).
+ * **Accepted cost of "visual only":** turned sideways, the drawn figure is `h` long
+ * across a box `w` wide, so it overhangs the axis-aligned hitbox by `h − w` on the side
+ * away from the rock — the box, which is what collides and is shot at, does not turn.
  */
-export function feetOffset(theta: number, h: number): { x: number; y: number } {
-  return { x: -Math.sin(theta) * (h / 2), y: Math.cos(theta) * (h / 2) }
+export function feetOffset(theta: number, w: number, h: number): { x: number; y: number } {
+  const dx = -Math.sin(theta)
+  const dy = Math.cos(theta)
+  const tx = Math.abs(dx) > 1e-9 ? w / 2 / Math.abs(dx) : Infinity
+  const ty = Math.abs(dy) > 1e-9 ? h / 2 / Math.abs(dy) : Infinity
+  const t = Math.min(tx, ty)
+  return { x: dx * t, y: dy * t }
 }
 
 /**
- * A point given in **screen** offsets from the body's centre, in the container's
- * rotated frame (whose origin is the feet): what keeps the name tag upright and above
- * the body whatever way the figure faces. `rot(−θ) · (screen) − (0, h/2)`.
+ * A point given in **screen** offsets `(sx, sy)` from the body's centre, in the
+ * container's rotated frame whose origin is the feet at `feet` (`feetOffset`) from that
+ * centre: what keeps the name tag upright and above the body whatever way the figure
+ * faces. `rot(−θ) · ((sx, sy) − feet)`.
  */
-export function uprightLocal(theta: number, h: number, sx: number, sy: number): { x: number; y: number } {
-  const c = Math.cos(theta)
-  const s = Math.sin(theta)
-  return { x: c * sx + s * sy, y: -s * sx + c * sy - h / 2 }
+export function uprightLocal(
+  theta: number,
+  feet: { x: number; y: number },
+  sx: number,
+  sy: number,
+): { x: number; y: number } {
+  return toLocal(theta, sx - feet.x, sy - feet.y)
+}
+
+/**
+ * **T22.19B F5: how far a body must move in one frame, beyond what its velocity carried
+ * it, to count as moved rather than travelled** — a pad, a vortex trip, a respawn or a
+ * dev placement. Then the tilt snaps to the new spot's target instead of turning for a
+ * quarter second from wherever it stood before. `net/prediction.ts`'s `SNAP_PX` basis
+ * (64 px, "above this the render teleports as well as the simulation"), so the figure
+ * snaps exactly when the body it is drawn on does. Drawing only.
+ */
+export const STAND_SNAP_PX = 64
+
+/** One body's tilt and where it was drawn last frame (`trackTilt`'s state). */
+export interface TiltTrack {
+  theta: number
+  x: number
+  y: number
+}
+
+/**
+ * **One frame of one body's tilt** (T22.19B F5): `stepTilt` toward `target`, except that
+ * a body seen for the first time (`prev` null — a new remote, a remote back in the
+ * sampled set, a new round) or one that jumped (`STAND_SNAP_PX` past what `(vx, vy)`
+ * carried it in `dt`) **snaps** to the target: its figure was never drawn turning there.
+ * The scene calls it every frame for every body it holds, visible or not, so a remote
+ * culled by the dark keeps its angle current and reappears already standing.
+ */
+export function trackTilt(
+  prev: TiltTrack | null,
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  target: number | null,
+  dt: number,
+): TiltTrack {
+  const jumped =
+    prev !== null && Math.hypot(x - prev.x - vx * Math.max(dt, 0), y - prev.y - vy * Math.max(dt, 0)) > STAND_SNAP_PX
+  const theta = prev === null || jumped ? wrapAngle(target ?? 0) : stepTilt(prev.theta, target, dt)
+  return { theta, x, y }
 }
 
 /**

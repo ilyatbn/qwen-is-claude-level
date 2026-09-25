@@ -45,6 +45,13 @@ Asked after M22 closed, verbatim:
   **Controls stay screen-relative** (the cheap ruling the old R-ruling on orientation chose; rotating controls would
   be a movement-model change). Local and remote players, both render paths; derived from the same field the
   prediction uses (`field_accel_at`), no second copy.
+  **T22.19B (coordinator, 2026-09-25): the figure tilts toward asteroid wells only** — not the black hole's pull, not a
+  vortex's (T22.19 used the full field, so anyone within the hole's 512 px reach was drawn feet-toward-the-hole with no
+  rock under them). Rust's capped wells sum through the same `env_at` (no vortices, the hole present but not pulling),
+  winged still zero; **on a rock inside the hole's reach the figure stands upright too**, because R91 mutes the wells
+  there. The figure pivots at the **feet contact point** (where the body's box meets the rock), not the box centre; the
+  drawing overhangs the axis-aligned hitbox sideways — the accepted cost of "visual only". Names now show over players.
+  See `T22.19B-what-the-standing-review-found.md`.
 - **R108 — energy drains 50 % slower.** Read as the suit's **EN** bar: `RADIATION_SHIELD_COST` halves (1.0 → 0.5 /s).
   Thruster fuel (JET) is unchanged. Re-run the radiation balance report and write the new numbers here.
   **Measured (T22.18, `gate-t2218-reports-{before,after}.txt`, release, same seeds, before `6d8c7df` → after):**
@@ -60,6 +67,7 @@ Asked after M22 closed, verbatim:
 - T22.17 — bigger asteroids and the square rim (R103, R104) — `T22.17-bigger-asteroids-square-rim.md`
 - T22.18 — smaller vortices, farther black hole, slower drain (R105, R106, R108) — `T22.18-vortex-black-hole-drain.md`
 - T22.19 — standing on asteroids (R107) — `T22.19-standing-on-asteroids.md`
+- T22.19B — what the standing review found (R107: wells only, feet pivot, name tags) — `T22.19B-what-the-standing-review-found.md`
 
 Order: T22.17 first (the map shape everything else reads), then T22.15, T22.16, T22.18, T22.19. Each gets a harsh
 review; one batch gate at the end; `docs/77` gains a §H22 for this round.

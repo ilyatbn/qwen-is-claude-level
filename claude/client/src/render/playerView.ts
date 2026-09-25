@@ -92,8 +92,8 @@ export interface PlayerFlags {
   thrust: { x: number; y: number } | null
   /**
    * T22.19 (R107): the figure's rotation, radians — 0 upright, π feet-up — the scene's
-   * smoothed `standTilt-math.ts::stepTilt` of the pull the body stands against. **Visual
-   * only**: the body turns about its centre and so do its boots, wings, hat and bubble;
+   * smoothed `standTilt-math.ts::trackTilt` of the pull the body stands against. **Visual
+   * only**: the body turns about its feet where the box meets the rock (T22.19B F3) and so do its boots, wings, hat and bubble;
    * the **weapon and the plume ride with it but point in screen space** (the aim and
    * the thrust are the controls' directions, R107: controls stay screen-relative); the
    * **name tag stays upright** above the body. Required, for `space`'s reason: a scene
@@ -373,16 +373,16 @@ export class PlayerView {
   ): void {
     const c = C()
     this.last = [x, y, vx, vy, aim, flags]
-    // T22.19 (R107): turned about the body's centre, so the feet sit half a body along
-    // the pull from it; upright this is the old `(x, y + PLAYER_H / 2)` exactly.
+    // T22.19 (R107): turned about the feet, which stand where the body's box meets the
+    // rock (T22.19B F3, `feetOffset`); upright this is the old `(x, y + PLAYER_H / 2)`.
     const tilt = flags.tilt
     this.drawnTilt = tilt
-    const feet = feetOffset(tilt, c.PLAYER_H)
+    const feet = feetOffset(tilt, c.PLAYER_W, c.PLAYER_H)
     this.container.setPosition(x + feet.x, y + feet.y)
     this.container.setRotation(tilt)
-    // The tag stays upright, above the body's centre on screen (`-PLAYER_H - 6` from
+    // The tag stays upright, above the body's box on screen (`-PLAYER_H - 6` from
     // the feet when upright — the constructor's spot).
-    const tag = uprightLocal(tilt, c.PLAYER_H, 0, -c.PLAYER_H / 2 - 6)
+    const tag = uprightLocal(tilt, feet, 0, -c.PLAYER_H / 2 - 6)
     this.nameLabel.setPosition(tag.x, tag.y).setRotation(-tilt)
 
     const inputs: AnimInputs = {
@@ -504,10 +504,29 @@ export class PlayerView {
    * T22.19, e2e only (§C2): redraw the last `setState` at another tilt — the same
    * instant, for a frozen photograph to compare the drawn figure against itself upright.
    */
-  poseTilt(tilt: number): void {
+  poseTilt(tilt: number, aim?: number): void {
     if (!this.last) return
-    const [x, y, vx, vy, aim, flags] = this.last
-    this.setState(x, y, vx, vy, aim, { ...flags, tilt })
+    const [x, y, vx, vy, lastAim, flags] = this.last
+    // T22.19B F1: `aim` lets the check pose the reference *facing the way the drawn figure
+    // faces* — upright with the aim in the figure's frame (`aim − tilt`) — instead of
+    // the screen aim, which turned 180° faces away.
+    this.setState(x, y, vx, vy, aim ?? lastAim, { ...flags, tilt })
+  }
+
+  /** T22.19B: the feet the last frame drew at (world px) — the container's origin, the pivot. */
+  get drawnFeet(): { x: number; y: number } {
+    return { x: this.container.x, y: this.container.y }
+  }
+
+  /** T22.19B: the screen aim the last frame drew with, radians. */
+  get drawnAim(): number | null {
+    return this.last ? this.last[4] : null
+  }
+
+  /** T22.19B F6, e2e only: show or hide the name tag; returns the tag's visibility now. */
+  setNameVisible(on: boolean): boolean {
+    this.nameLabel.setVisible(on)
+    return this.nameLabel.visible
   }
 
   /** T22.04: what the plume drew last frame, for a check to count at both ends. */
@@ -520,8 +539,21 @@ export class PlayerView {
     this.plume.setHidden(on)
   }
 
+  /**
+   * The name tag's text. **T22.19B F6: called every frame by `GameScene`** for the local
+   * player and every remote, from `scores` (the lobby's names) — it had no caller from
+   * T3.08 until then, so no name ever showed in a match. Phaser's `setText` is a no-op
+   * when the text is unchanged. The tag is a child of `container`, so it hides whenever
+   * the body is hidden (a remote culled by the dark, a dead one) — the same rule.
+   */
   setName(name: string): void {
     this.nameLabel.setText(name)
+  }
+
+  /** T22.19B F6, for a check: the tag's text and where it is drawn (world px, its bottom centre). */
+  get nameTag(): { text: string; x: number; y: number; visible: boolean } {
+    const m = this.nameLabel.getWorldTransformMatrix()
+    return { text: this.nameLabel.text, x: m.tx, y: m.ty, visible: this.container.visible && this.nameLabel.visible }
   }
 
   setVisible(v: boolean): void {

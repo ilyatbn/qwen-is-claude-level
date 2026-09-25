@@ -750,14 +750,33 @@ impl GameCore {
     /// **The pull a body at `(x, y)` stands against** (T22.19, R107), px/s², `[ax, ay]`
     /// — what `render/standTilt-math.ts` turns the drawn figure's feet along. `move_mod_bits`
     /// is the body's snapshot byte (`PlayerState::move_mod_bits`): a winged body feels no
-    /// field (R100) and so stands upright. **The same `env_at` the prediction steps
-    /// with**, with this core's live attractors, and `flying` derived by the functions the
-    /// mirror uses for its own player (`set_move_mod_bits` → `move_mods`), so the drawing
-    /// has no second spelling of either. Exactly `[0, 0]` off a space map and in open space.
+    /// field (R100) and so stands upright. `flying` is derived by the functions the mirror
+    /// uses for its own player (`set_move_mod_bits` → `move_mods`).
+    ///
+    /// **The asteroid wells only** (T22.19B ruling): a figure stands on *rock*, so neither
+    /// the black hole's pull nor a vortex's turns it — at T22.19 this was the full field, and
+    /// anyone inside the hole's 512 px reach was drawn feet-toward-the-hole with no rock
+    /// under them. It is still **the prediction's own composition**, not a second sum:
+    /// `env_at` with no vortices and the hole *present but not pulling*, which leaves the
+    /// capped wells sum (`capped_at` with no vortex = `wells_at`) and keeps every rule that
+    /// sum already obeys — **R91: inside the hole's reach the wells are muted, so a body
+    /// on a rock there stands upright too** (nothing it stands against pulls it), R100's
+    /// wings, the standard/low-gravity zero, a destroyed core's missing well. Exactly
+    /// `[0, 0]` off a space map, in open space, and near the hole.
     pub fn stand_pull_at(&self, x: f32, y: f32, move_mod_bits: u8) -> Box<[f32]> {
         let mut st = game_core::player::state::PlayerState::new(0, Vec2::new(x, y), 0);
         st.set_move_mod_bits(move_mod_bits);
-        let a = self.field_for(x, y, st.move_mods().flying);
+        let (_, _, hole) = self.attractors_at(None);
+        let a = game_core::world::attractors::env_at(
+            &self.map,
+            self.gravity,
+            st.move_mods().flying,
+            &[],
+            hole,
+            false,
+            Vec2::new(x, y),
+        )
+        .accel;
         Box::new([a.x, a.y])
     }
 
@@ -4159,6 +4178,63 @@ mod tests {
             &standard.stand_pull_at(bottom.x, bottom.y, 0)[..],
             &[0.0, 0.0]
         );
+    }
+
+    /// **T22.19B (ruling): the figure stands on rock, not on the hole or a vortex.**
+    /// `stand_pull_at` is the capped wells alone. Three arms, each with the control that
+    /// the thing *does* pull there (`field_accel_at`, the prediction's field, non-zero):
+    /// open space beside the black hole → upright; open space beside a vortex → upright;
+    /// **a rock's underside inside the hole's reach → upright too**, because R91 mutes the
+    /// wells there — and the same spot with the hole gone is pulled (feet-up), so the zero
+    /// is the hole's reach doing it, not a probe that missed the band.
+    #[test]
+    fn the_stand_pull_is_the_wells_alone_and_r91_mutes_it_by_the_hole() {
+        use game_core::constants::{BLACK_HOLE_REACH, VORTEX_REACH};
+        use game_core::world::attractors::well_reach;
+        let (_, mut core) = space_world_and_mirror(true);
+        let a = *core.map.meta.asteroids.first().expect("rocks");
+        let c = Vec2::new(a.x as f32, a.y as f32);
+        let bottom = c + Vec2::new(0.0, well_reach(&a, c + Vec2::new(0.0, 1.0)) - 2.0);
+        let far = c + Vec2::new(0.0, well_reach(&a, c + Vec2::new(0.0, 1.0)) + 1.0);
+        let pulled = core.stand_pull_at(bottom.x, bottom.y, 0);
+        assert!(
+            pulled[1] < 0.0,
+            "control: the underside stands feet-up with no hole: {pulled:?}"
+        );
+        assert_eq!(&core.stand_pull_at(far.x, far.y, 0)[..], &[0.0, 0.0]);
+
+        // A vortex beside open space: it pulls the body, it does not stand it.
+        let v = far + Vec2::new(VORTEX_REACH * 0.5, 0.0);
+        core.set_vortices(&[v.x], &[v.y], &[0], &[u32::MAX]);
+        let field = core.field_accel_at(far.x, far.y);
+        assert!(
+            field[0] > 0.0,
+            "control: the vortex pulls at the probe: {field:?}"
+        );
+        assert_eq!(&core.stand_pull_at(far.x, far.y, 0)[..], &[0.0, 0.0]);
+        core.set_vortices(&[], &[], &[], &[]);
+
+        // The hole below the rock, the underside inside its reach.
+        let h = bottom + Vec2::new(0.0, BLACK_HOLE_REACH * 0.5);
+        core.set_black_hole(true, h.x, h.y, 0);
+        let field = core.field_accel_at(far.x, far.y);
+        assert!(
+            field[1] > 0.0,
+            "control: the hole pulls at the open-space probe: {field:?}"
+        );
+        assert_eq!(&core.stand_pull_at(far.x, far.y, 0)[..], &[0.0, 0.0]);
+        let field = core.field_accel_at(bottom.x, bottom.y);
+        assert!(
+            field[1] > 0.0,
+            "control: at the underside only the hole pulls (R91): {field:?}"
+        );
+        assert_eq!(
+            &core.stand_pull_at(bottom.x, bottom.y, 0)[..],
+            &[0.0, 0.0],
+            "R91 mutes the well inside the hole's reach, so the figure on the rock stands upright"
+        );
+        core.set_black_hole(false, 0.0, 0.0, 0);
+        assert_eq!(&core.stand_pull_at(bottom.x, bottom.y, 0)[..], &pulled[..]);
     }
 
     /// **T22.18B F1: the mirror's band follows the lumps exactly as the server's.**

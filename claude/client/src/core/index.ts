@@ -1033,8 +1033,10 @@ export class Core {
   /**
    * T22.19 (R107): the pull a body at `(x, y)` stands against, px/s², `[ax, ay]` — what
    * the drawn figure turns its feet along (`render/standTilt-math.ts`). `moveModBits` is
-   * the body's snapshot byte, so a winged body (R100) stands upright. Rust's `env_at`,
-   * the prediction's own; exactly `[0, 0]` where nothing pulls.
+   * the body's snapshot byte, so a winged body (R100) stands upright. **The asteroid wells
+   * only** (T22.19B): a figure stands on rock, so the black hole and a vortex do not turn
+   * it, and inside the hole's reach R91 mutes the wells, so it stands upright there too.
+   * Rust's `env_at`, the prediction's own composition; exactly `[0, 0]` where no well pulls.
    */
   standPullAt(x: number, y: number, moveModBits: number): Float32Array {
     return this.inner.stand_pull_at(x, y, moveModBits)

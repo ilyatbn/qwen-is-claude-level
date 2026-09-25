@@ -70,7 +70,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
-import { standTarget, stepTilt } from '../render/standTilt-math'
+import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
@@ -351,11 +351,16 @@ export class GameScene extends Phaser.Scene {
   private hasWings = false
   /**
    * T22.19 (R107): the local figure's drawn rotation, and each remote's — smoothed per
-   * frame by `standTilt-math.ts::stepTilt` toward the pull `Core.standPullAt` reports at
-   * the position drawn (the local's render position, a remote's interpolated one).
+   * frame by `standTilt-math.ts::trackTilt` toward the pull `Core.standPullAt` reports at
+   * the position drawn (the local's render position, a remote's interpolated one), with
+   * where it was drawn, so a relocation snaps the tilt rather than turning it (T22.19B F5).
+   * `null` / absent: not drawn yet this round — the first frame snaps.
    */
-  private localTilt = 0
-  private readonly remoteTilts = new Map<number, number>()
+  private localTrack: TiltTrack | null = null
+  private readonly remoteTilts = new Map<number, TiltTrack>()
+  private get localTilt(): number {
+    return this.localTrack?.theta ?? 0
+  }
   /** The last frame's `dt`, s — the remotes' tilt steps by it too. */
   private frameDt = 0
   /**
@@ -679,7 +684,7 @@ export class GameScene extends Phaser.Scene {
     this.hasBoots = false
     this.hasWings = false
     // T22.19: a new round's figures start upright.
-    this.localTilt = 0
+    this.localTrack = null
     this.remoteTilts.clear()
     this.frameDt = 0
     this.fuel = 0
@@ -1858,6 +1863,7 @@ export class GameScene extends Phaser.Scene {
       r.view.destroy()
       this.remotes.delete(id)
     }
+    this.remoteTilts.delete(id)
     this.scores.delete(id)
   }
 
@@ -2174,8 +2180,12 @@ export class GameScene extends Phaser.Scene {
       )
       // T22.19 (R107): feet along the pull at the drawn position; upright when dead or
       // where nothing pulls. Visual only — the aim above is sampled in screen space.
+      // T22.19B: the wells alone (the hole and a vortex do not stand anyone), and a
+      // relocation (a pad, a trip, a respawn) snaps the tilt to the new spot's.
       const pull = this.meAlive ? this.core.standPullAt(rp.x, rp.y, body.moveMods) : null
-      this.localTilt = stepTilt(this.localTilt, pull ? standTarget(pull[0]!, pull[1]!) : null, dt)
+      this.localTrack = trackTilt(this.localTrack, rp.x, rp.y, body.vx, body.vy, pull ? standTarget(pull[0]!, pull[1]!) : null, dt)
+      // T22.19B F6: the name tag, off the lobby's names — it had no caller before.
+      this.localView.setName(this.scores.get(this.me)?.name ?? '')
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         tilt: this.localTilt,
         alive: true,
@@ -2584,6 +2594,21 @@ export class GameScene extends Phaser.Scene {
       const d = Math.hypot(p.x - localPos.x, p.y - localPos.y)
       const visible = darkness <= 0.01 || d <= fov
       r.view.container.setVisible(visible && flag(p.flags, FLAG.alive))
+      // T22.19 (R107): the remote's pull at its interpolated position, its own byte.
+      // **Stepped before the visibility cull** (T22.19B F5): a remote hidden by the dark
+      // used to keep the angle it was last seen at and turn from it when it reappeared.
+      // A pull query and a lerp per remote — cheap. A relocation snaps (`trackTilt`).
+      const rpull = flag(p.flags, FLAG.alive) ? this.core.standPullAt(p.x, p.y, p.moveMods) : null
+      const rtrack = trackTilt(
+        this.remoteTilts.get(id) ?? null,
+        p.x,
+        p.y,
+        p.vx,
+        p.vy,
+        rpull ? standTarget(rpull[0]!, rpull[1]!) : null,
+        this.frameDt,
+      )
+      this.remoteTilts.set(id, rtrack)
       if (!visible) continue
       const k = C()
       this.flareBodies.push({
@@ -2596,12 +2621,11 @@ export class GameScene extends Phaser.Scene {
         drawX: p.x,
         drawY: p.y,
       })
-      // T22.19 (R107): the remote's pull at its interpolated position, its own byte.
-      const rpull = flag(p.flags, FLAG.alive) ? this.core.standPullAt(p.x, p.y, p.moveMods) : null
-      const rtilt = stepTilt(this.remoteTilts.get(id) ?? 0, rpull ? standTarget(rpull[0]!, rpull[1]!) : null, this.frameDt)
-      this.remoteTilts.set(id, rtilt)
+      // T22.19B F6: the name tag. A child of the container, so it hides with the body
+      // above (the dark's cull, a dead remote) — the same visibility rule.
+      r.view.setName(this.scores.get(id)?.name ?? '')
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
-        tilt: rtilt,
+        tilt: rtrack.theta,
         alive: flag(p.flags, FLAG.alive),
         grounded: flag(p.flags, FLAG.grounded),
         jetpack: flag(p.flags, FLAG.jetpack),
@@ -3242,15 +3266,27 @@ export class GameScene extends Phaser.Scene {
        * photograph — the same instant upright, to compare the drawn figure against.
        * The next unfrozen frame draws the real tilt again.
        */
-      poseLocalTilt(tilt: number) {
-        self.localView?.poseTilt(tilt)
+      poseLocalTilt(tilt: number, aim?: number) {
+        self.localView?.poseTilt(tilt, aim)
         return self.localView?.tilt ?? null
       },
       /** e2e only (T22.19): `poseLocalTilt` for remote `id`. */
-      poseRemoteTilt(id: number, tilt: number) {
+      poseRemoteTilt(id: number, tilt: number, aim?: number) {
         const r = self.remotes.get(id)
-        r?.view.poseTilt(tilt)
+        r?.view.poseTilt(tilt, aim)
         return r?.view.tilt ?? null
+      },
+      /**
+       * e2e only (T22.19B F6, §C2): hide every name tag, for the label check's control
+       * frame — the same instant with the tags gone. Freeze first. Returns how many tags
+       * it changed, read back off the views.
+       */
+      setNamesVisible(on: boolean) {
+        let n = 0
+        for (const v of [self.localView, ...[...self.remotes.values()].map((r) => r.view)]) {
+          if (v && v.setNameVisible(on) === on) n++
+        }
+        return n
       },
       debugBlackHole(dist?: number, warn?: boolean) {
         self.observed.lastBlackHole = null
@@ -3837,7 +3873,18 @@ export class GameScene extends Phaser.Scene {
               const rp = self.predictor?.renderPos
               return b && rp ? Array.from(self.core.standPullAt(rp.x, rp.y, b.moveMods)) : null
             })(),
-            remotes: [...self.remotes].map(([id, r]) => ({ id, tilt: self.remoteTilts.get(id) ?? 0, drawn: r.view.tilt, at: r.view.drawnAt })),
+            feet: self.localView?.drawnFeet ?? null,
+            aim: self.localView?.drawnAim ?? null,
+            name: self.localView?.nameTag ?? null,
+            remotes: [...self.remotes].map(([id, r]) => ({
+              id,
+              tilt: self.remoteTilts.get(id)?.theta ?? 0,
+              drawn: r.view.tilt,
+              at: r.view.drawnAt,
+              feet: r.view.drawnFeet,
+              aim: r.view.drawnAim,
+              name: r.view.nameTag,
+            })),
             lastPlace: self.observed.lastPlace,
           },
           blackHole: {

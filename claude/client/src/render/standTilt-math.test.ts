@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  STAND_SNAP_PX,
   STAND_TURN_RATE,
   STAND_UPRIGHT_RATE,
   feetOffset,
   standTarget,
   stepTilt,
   toLocal,
+  trackTilt,
   uprightLocal,
   wrapAngle,
 } from './standTilt-math'
@@ -58,16 +60,40 @@ describe('standTilt-math (T22.19, R107)', () => {
     expect(wrapAngle(3 * Math.PI)).toBeCloseTo(Math.PI, 9)
   })
 
-  it('pivots on the body centre, keeps the tag upright above it, and leaves screen directions alone', () => {
+  it('pivots where the box meets the rock, keeps the tag upright above it, and leaves screen directions alone', () => {
+    // The fixture's box is `C()`-free on purpose (pure math); the scene passes PLAYER_W/H.
+    const w = 16
     const h = 28
+    // T22.19B F3: the feet stand on the box's own edge. Upright and feet-up are the
+    // T22.19 spots exactly (half a height below / above the centre)…
+    expect(feetOffset(0, w, h).x).toBeCloseTo(0, 9)
+    expect(feetOffset(0, w, h).y).toBeCloseTo(h / 2, 9)
+    expect(feetOffset(Math.PI, w, h).y).toBeCloseTo(-h / 2, 9)
+    // …and a quarter turn puts them half a *width* out, on the flank — not half a height,
+    // which sank them (h − w)/2 into the rock (the T22.19 pivot, the plant this rules out).
+    const side = feetOffset(Math.PI / 2, w, h)
+    expect(side.x).toBeCloseTo(-w / 2, 9)
+    expect(side.y).toBeCloseTo(0, 9)
+    expect(feetOffset(-Math.PI / 2, w, h).x).toBeCloseTo(w / 2, 9)
+    for (let k = 0; k < 64; k++) {
+      const t = -Math.PI + (k / 64) * 2 * Math.PI
+      const feet = feetOffset(t, w, h)
+      // On the box's outline, along the figure's down.
+      const onEdge = Math.max(Math.abs(feet.x) / (w / 2), Math.abs(feet.y) / (h / 2))
+      expect(onEdge).toBeCloseTo(1, 9)
+      const down = rot(t, 0, 1)
+      expect(feet.x * down.y - feet.y * down.x).toBeCloseTo(0, 9)
+      expect(feet.x * down.x + feet.y * down.y).toBeGreaterThan(0)
+      // Continuous: a small turn moves the feet a little.
+      const next = feetOffset(t + 1e-3, w, h)
+      expect(Math.hypot(next.x - feet.x, next.y - feet.y)).toBeLessThan(0.1)
+    }
     for (const t of [0, 0.7, Math.PI / 2, Math.PI, -2.1]) {
-      const feet = feetOffset(t, h)
-      // The feet are half a body along the figure's down from the centre.
-      expect(Math.hypot(feet.x, feet.y)).toBeCloseTo(h / 2, 9)
+      const feet = feetOffset(t, w, h)
       // A local point placed by `uprightLocal`, carried through the container's
       // transform (origin at the feet, rotated θ), lands at the screen offset asked.
       const want = { x: 0, y: -h / 2 - 6 }
-      const local = uprightLocal(t, h, want.x, want.y)
+      const local = uprightLocal(t, feet, want.x, want.y)
       const r = rot(t, local.x, local.y)
       expect(feet.x + r.x).toBeCloseTo(want.x, 9)
       expect(feet.y + r.y).toBeCloseTo(want.y, 9)
@@ -83,5 +109,32 @@ describe('standTilt-math (T22.19, R107)', () => {
       expect(back.x).toBeCloseTo(0, 9)
       expect(back.y).toBeCloseTo(-1, 9)
     }
+  })
+
+  it('snaps on first sight and on a relocation, and turns otherwise (T22.19B F5)', () => {
+    const dt = 1 / 60
+    // First sight (a new remote, one back in the sampled set, a new round): already standing.
+    const first = trackTilt(null, 100, 100, 0, 0, Math.PI, dt)
+    expect(Math.abs(first.theta)).toBeCloseTo(Math.PI, 9)
+    expect(trackTilt(null, 100, 100, 0, 0, null, dt).theta).toBe(0)
+    // Travel, however fast, turns: a body carried by its velocity is not relocated.
+    const fast = trackTilt({ theta: 0, x: 0, y: 0 }, 900 * dt + 3, 0, 900, 0, Math.PI, dt)
+    expect(fast.theta).toBeCloseTo(stepTilt(0, Math.PI, dt), 9)
+    // Control for the snap: the same target a step away turns (not snapped)…
+    const near = trackTilt({ theta: 0, x: 0, y: 0 }, STAND_SNAP_PX - 1, 0, 0, 0, Math.PI, dt)
+    expect(near.theta).toBeCloseTo(stepTilt(0, Math.PI, dt), 9)
+    expect(Math.abs(near.theta)).toBeLessThan(Math.PI / 2)
+    // …and a pad, a vortex trip, a respawn — past `STAND_SNAP_PX` with no velocity to
+    // carry it — lands already standing on the new rock, or upright in open space.
+    const trip = trackTilt({ theta: 0, x: 0, y: 0 }, STAND_SNAP_PX + 1, 0, 0, 0, Math.PI, dt)
+    expect(Math.abs(trip.theta)).toBeCloseTo(Math.PI, 9)
+    const out = trackTilt({ theta: Math.PI, x: 0, y: 0 }, 0, 400, 0, 0, null, dt)
+    expect(out.theta).toBe(0)
+    // Hidden frames still step (the scene calls it for every body): a remote culled for
+    // a second has turned all the way by the time it shows.
+    let t: ReturnType<typeof trackTilt> = { theta: 0, x: 0, y: 0 }
+    for (let i = 0; i < 60; i++) t = trackTilt(t, 0, 0, 0, 0, Math.PI, dt)
+    expect(Math.abs(t.theta)).toBeGreaterThan(0.99 * Math.PI)
+    expect(t.x).toBe(0)
   })
 })

@@ -7170,3 +7170,11 @@ the upright pose turned 180° (0.77/0.73 vs 0.21), top/free-float upright (1.00)
 Plants red. Note: no scene calls `setName`, so name tags are empty everywhere (pre-existing).
 
 **2026-09-25 — docs/77 owner round 2 (coordinator's delegate).** docs/77 §H3/H4/H7/H9/H10/H11/H16/H17/H19/H20/H21 amended for R101–R108 (T22.15–T22.19, T22.18B) and a new §H22 indexes the round with R107; DOCS-77-OWED 28–38 marked landed; ARCHITECTURE-SURVEY §1–§4 (well band, map_init 27 B, core_destroyed, standPullAt, REPLAY_VERSION 31) refreshed.
+
+## T22.19B — what the standing review found (F1–F6)
+The figure now tilts toward asteroid wells only (`stand_pull_at` = env_at with no vortices, hole present-not-pulling:
+R91 mutes wells in the hole's reach, so a rock there stands upright too). Pivot at the feet contact point on the box
+(`feetOffset(θ, w, h)`); `trackTilt` snaps on first sight and on >64 px jumps, remotes stepped before the dark cull.
+Names finally drawn (`setName` from `scores`, every frame). `stand-on-asteroid`: facing-true references (underside 1.00
+vs away 0.70), side arm (0.99), a frozen in-between ease frame (0.98), sink-into-flank vs top/underside, name tags on
+WebGL + Canvas with controls. Plants A, B, F3, F6 red. "bo" reads poorly over the sun (tag style unchanged).
