@@ -4986,11 +4986,14 @@ mod tests {
             let a = core.field_accel_at(p.x, p.y);
             Vec2::new(a[0], a[1])
         };
+        // T22.18: probed inward from the vortex, a share of *its* reach — at R105/R106's
+        // sizes (128 against 512) shares of the hole's reach mostly lay beyond the
+        // vortex's pull, and the premise below failed.
         for d in [0.3f32, 0.5, 0.7, 0.9] {
-            let at = hole + Vec2::new(d * BLACK_HOLE_REACH, 0.0);
+            let at = v - Vec2::new(d * VORTEX_REACH, 0.0);
             assert!(
-                (at - v).len() < VORTEX_REACH,
-                "premise: the vortex reaches {at:?}"
+                (at - v).len() < VORTEX_REACH && (at - hole).len() < BLACK_HOLE_REACH,
+                "premise: the vortex and the hole both reach {at:?}"
             );
             let server = env_at(
                 &w.map,
@@ -5002,7 +5005,7 @@ mod tests {
                 at,
             )
             .accel;
-            assert_eq!(told(at), server, "at {d} of the reach");
+            assert_eq!(told(at), server, "at {d} of the vortex's reach");
             assert_eq!(
                 server,
                 Attractor::black_hole(hole).pull_at(at),
@@ -5161,7 +5164,10 @@ mod tests {
             core.set_black_hole(true, hole.x, hole.y, 0);
             w.add_player(1, 0, String::new());
             let start = w
-                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.97)
+                // T22.18 (R106): 0.865 of the doubled reach — `black-hole.mjs`'s
+                // `BELL_PLACE`, re-derived there; 0.97 of 512 is pulled too weakly
+                // to move (0.65 px apart six ticks after the bell, the control).
+                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.865)
                 .expect("a clear side");
             core.add_player(1, start.x, start.y);
             let _ = w.drain_events();
