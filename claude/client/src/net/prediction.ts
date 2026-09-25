@@ -643,9 +643,11 @@ export class Predictor {
    * there is nothing to mark — and comparing with the current prediction, a lead
    * ahead, made a *moving* body look unexplained and hid the next correction, a
    * genuine misprediction included. Before its snapshot, the arrival is compared
-   * with the prediction **at that tick** (the seq that ran on it, `lastTick + seq −
-   * ack` as `bellErrorPx` keys it), so a move the core predicted itself (a vortex
-   * trip) marks nothing either; the current prediction only when there is none.
+   * with the prediction **at that tick** (the seq that ran on it, `seqClock.ts::seqAtTick`
+   * of the last snapshot), so an arrival where the prediction already had the body
+   * at that tick moved nothing and marks nothing; the current prediction only when
+   * there is none. (T22.14C LOW-6: this said "a move the core predicted itself (a
+   * vortex trip)" — the core predicts no trip and no pad: both are the server's alone.)
    */
   relocate(x: number, y: number, tick: number): boolean {
     const s = this.state

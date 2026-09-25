@@ -510,12 +510,13 @@ describe('relocate', () => {
   })
 
   /**
-   * T22.12E F1: the event arrives before its snapshot, and the prediction **made**
-   * the move (a vortex trip the core predicted): at the event's tick it is already
-   * there, so nothing is the relocation's, and a genuine error after it counts. The
-   * current prediction, eight inputs on, is what the old branch compared.
+   * T22.12E F1: the event arrives before its snapshot, and it puts the body where the
+   * prediction already had it **at the event's tick** — it moved nothing, so nothing is
+   * the relocation's, and a genuine error after it counts. The current prediction,
+   * eight inputs on, is what the old branch compared. (T22.14C LOW-6: this was named
+   * for "a vortex trip the core predicted"; the core predicts no trip.)
    */
-  it('a relocation the prediction already made at its tick marks nothing', () => {
+  it('an arrival where the prediction already was at its tick marks nothing', () => {
     const wrong = C().RECONCILE_EPSILON_PX * 10
     const p = new Predictor(core, 0)
     const at = new Map<number, PlayerState>()
