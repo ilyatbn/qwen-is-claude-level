@@ -191,6 +191,16 @@ impl SpaceGeometry {
             && self.distance_to_rim(x, y) > self.thickness * 0.5 + SPACE_VOID_GRACE
     }
 
+    /// Past the rim's **outer edge** — outside the rock, on the void's side, whether
+    /// or not the grace band has run out (T22.18, R105). Only a hole puts a body here
+    /// (the rim is born closed), so it is where `vortex::captor`'s outside arm takes
+    /// whoever went through one: the band `SPACE_VOID_GRACE` wide between this line
+    /// and [`SpaceGeometry::in_the_void`] is crossed in no fewer than two ticks, and
+    /// `World::step_vortices` runs before the void does.
+    pub fn past_outer_edge(&self, x: f32, y: f32) -> bool {
+        self.signed_distance(x, y) > self.thickness * 0.5
+    }
+
     /// Is **pixel** `(x, y)` part of the rim's rock as stamped — is its centre
     /// within half a thickness of the centreline? `stamp_rim` fills exactly these
     /// pixels. Judged at the pixel's centre (`+ 0.5`), so the band is `thickness`

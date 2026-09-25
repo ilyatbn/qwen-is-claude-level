@@ -7,12 +7,23 @@
  * dead) and the bright accretion ring hugs it — **the only line the rule has**
  * (R90, T22.12C: outside it every thrust escapes; the faint "capture" ring that
  * promised a second line the physics did not keep is gone). The glow fades out to
- * `BLACK_HOLE_REACH`, where the pull ends. All radii are the core's constants.
+ * [`BLACK_HOLE_GLOW_HORIZONS`] horizons — decoration, not the reach (T22.18, below).
+ * The rule's radii are the core's constants.
  *
  * **The telegraph** (R93): for `BLACK_HOLE_TELEGRAPH` seconds before it opens, a
  * solid ring in `BLACK_HOLE_WARN_COLOR` at the horizon where it will open, and a
- * thin ring closing in from the reach onto it as the moment comes.
+ * thin ring closing in from the glow's edge onto it as the moment comes.
  */
+
+/**
+ * How far the lensing glow reaches, in horizons. Drawing only. **Four — the reach it
+ * was drawn to until R106** (T22.18): the pull now ends at eight horizons (512 px), and
+ * a glow sized off it filled a 1280×720 view at the match zoom with an orange tint whose
+ * flat-path steps read as rings across the whole screen (`black-hole`'s control point
+ * had nowhere in view to stand). The glow was never a line of the rule — the ring at
+ * the horizon is (R90) — so it keeps the size it had. *Reverse it by:* this constant.
+ */
+export const BLACK_HOLE_GLOW_HORIZONS = 4
 
 /**
  * The accretion ring's colour, drawn opaque on both paths — so a check can ask for
@@ -58,8 +69,10 @@ export interface BlackHoleRadii {
   horizon: number
   /** The centre line of the accretion ring. */
   ring: number
-  /** Where the pull and the glow end. */
+  /** Where the pull ends (the core's `BLACK_HOLE_REACH`). Not drawn since T22.18. */
   reach: number
+  /** Where the decorative glow ends: [`BLACK_HOLE_GLOW_HORIZONS`] horizons. */
+  glow: number
 }
 
 /** The radii the drawing is sized from, all the core's. */
@@ -68,6 +81,7 @@ export function blackHoleRadii(k: { BLACK_HOLE_HORIZON_R: number; BLACK_HOLE_REA
     horizon: k.BLACK_HOLE_HORIZON_R,
     ring: k.BLACK_HOLE_HORIZON_R + BLACK_HOLE_RING_GAP + BLACK_HOLE_RING_W / 2,
     reach: k.BLACK_HOLE_REACH,
+    glow: k.BLACK_HOLE_HORIZON_R * BLACK_HOLE_GLOW_HORIZONS,
   }
 }
 
@@ -84,7 +98,7 @@ export function warnProgress(since: number, opensAt: number, nowMs: number): num
 
 /** The closing ring's radius at telegraph progress `u`: the reach at 0, the horizon at 1. */
 export function warnClosingRadius(r: BlackHoleRadii, u: number): number {
-  return r.reach - (r.reach - r.horizon) * u
+  return r.glow - (r.glow - r.horizon) * u
 }
 
 /**

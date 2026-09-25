@@ -65,15 +65,21 @@ const RING_TOLERANCE = 12
  */
 const RING_COLOUR_SHARE = 0.8
 /**
- * R98: the largest per-channel change the layer may make at, and `EDGE_IN` world px
+ * R98: the largest per-channel change the layer may make at, and `EDGE_IN_SHARE` of the swirl's span
  * inside, the swirl's outer radius — read off `vortex.fx.radii.outer`, what drew the
  * frame (T22.14A L sized it off the capture ring; it was `VORTEX_REACH / 2`) — no edge
  * there reads as a line.
  * The old hard-edged halo alone made ~25 in blue (0.16 × 0x a0, additive).
  */
 const EDGE_MAX = 12
-/** World px inside the swirl's outer radius of the second edge probe. */
-const EDGE_IN = 6
+/**
+ * How far inside the swirl's outer radius the second edge probe sits, as a share of the
+ * swirl's span (outer − capture). *T22.18: was 6 world px* — 0.047 of the 127 px span the
+ * swirl had; R105 made the span 32, where 6 px is 0.19 of it and deep in the fade (the
+ * arms read 25 there, a line nobody would see at 1.2 px of screen). The same share of
+ * the span is the same claim at any size.
+ */
+const EDGE_IN_SHARE = 0.05
 /**
  * Of the edge probes, the share that must be in view. Lower than the ring's: at 1280×720
  * the outer radius runs off the top and bottom sixths (measured 12 and 16 of 48 in view,
@@ -131,7 +137,7 @@ async function coverage(page, k, v, label, wantShader) {
       const a = ((i + 0.5) / RING_PROBES) * Math.PI * 2
       for (const [list, r] of [
         [edge, outer],
-        [edge, outer - EDGE_IN],
+        [edge, outer - EDGE_IN_SHARE * (outer - k.VORTEX_CAPTURE_R)],
         [mid, (outer + k.VORTEX_CAPTURE_R) / 2],
       ]) {
         const s = await toScreen(page, v.x + Math.cos(a) * r, v.y + Math.sin(a) * r)

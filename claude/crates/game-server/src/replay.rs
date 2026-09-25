@@ -329,7 +329,14 @@ pub const HEADER_BYTES: usize = 46;
 /// measured from the rock's round body (refinement B) — a v28 space recording
 /// diverges on the first tick a player stands in a band that moved, or the first
 /// carve that reaches a core. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 29;
+///
+/// Bumped to 30 by T22.18 (R105, R106, R108): the vortex's capture and pull radii are a
+/// quarter of what they were and a body past the rim's outer edge is taken by the
+/// nearest vortex, the black hole pulls to twice the distance, the sealed suit drains
+/// at half the rate, and a destroyed core's battery may float where a body can reach —
+/// a v29 space recording diverges on the first tick a sealed suit drains. No new tag,
+/// no layout change.
+pub const REPLAY_VERSION: u16 = 30;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

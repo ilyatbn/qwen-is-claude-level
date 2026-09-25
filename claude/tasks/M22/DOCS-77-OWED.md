@@ -171,3 +171,32 @@ points 1–5 in §H13, 4/19/20/26 in §H16, 6/18/25 in §H15, 7–8/11/12/16 in 
     vortex arrival (and a dev placement) resets the prediction's jump buffer, jetpack (fuel kept) and airborne ticks,
     now and in the history from the arrival's seq, as the server's arrival does.
 27. `constants_json` gains `MAP_GENERATOR_MAX` (the last byte `MapGenerator::from_u8` names; `map_init`'s bound).
+
+## Owner round 2 — for a §H22 (T22.15–T22.18; collected by T22.18, one list)
+Open — not yet in `docs/77`. Each names its source; §-numbers are `docs/77-amendments-v9.md`'s.
+28. **§H4 "the rim is an ellipse"** (and its 29.75–30 px, the 128 px x-inset): superseded by R104 — a square-cornered
+    rectangular band `SPACE_RIM_INSET` (= `SKY_MARGIN`, 96) in from all four edges, exactly 32 px; Chebyshev outside
+    (T22.17). Asteroids draw +0–20 % mass, radius × √(1 + m), up to 70 (R103).
+29. **§H4 "Asteroids"** (T22.16): add the R102 core, `SPACE_CORE_FRAC` × r, destroyed at ≥ `SPACE_CORE_DESTROYED_FRAC`
+    of its pixels air; `MapMeta::asteroids` gains `core_intact`; "The asteroid table is hashed" + `core_intact`.
+30. **§H10 "Asteroid wells"** (T22.15/16): `SPACE_WELL_REACH_MAX`'s reach is gone (R101) — a step: full strength out to
+    `SPACE_ASTEROID_CORE_FRAC·r + PLAYER_H/2 + WELL_SURFACE_BAND` from the centre, zero beyond; no field between rocks.
+31. **§H11 "It eats one asteroid"** (T22.16): not a core destruction — no battery. New line: `core_destroyed {tick,x,y}`
+    (Everyone, join catch-up, seq-keyed like §H16's attractors); the well is off for the round, the core crumbles, one
+    battery pack floats **at the centre if a body can get within `PICKUP_RADIUS` of it, else at the body-reachable point
+    nearest it** (T22.18, `cores::battery_site`).
+32. **§H9 (R105, T22.18):** `VORTEX_CAPTURE_R` = `SPACE_RIM_THICKNESS` (32; was 127), `VORTEX_REACH` = 4 × = 128 (was
+    508); drawn ring 32, swirl 64. Replace "It takes everyone inside `VORTEX_CAPTURE_R`" with: inside it, **or anyone past
+    the rim's outer edge — taken by the nearest vortex, live or spent** (R16 restated: a hole never kills). The same-hole
+    merge stays at `VORTEX_CAPTURE_R`; the trip destination stays `VORTEX_REACH / 2` (now 64) clear.
+33. **§H11 (R106, T22.18):** `BLACK_HOLE_REACH` = 8 × horizon = 512 (was 256); `BLACK_HOLE_ACCEL_MAX` = 810 / 0.875 ≈ 925.7
+    (was 1080); pull outside the horizon still ≤ 810 = 0.9 × DOWN. R91 mutes the wells over the larger reach. The horizon
+    stays 64 — the largest *base* radius (not the largest rock, 70). The drawn glow ends at `BLACK_HOLE_GLOW_HORIZONS` (4)
+    horizons, not at the reach (client drawing only), and the telegraph's closing ring starts there.
+34. **§H7 (R108, T22.18):** `RADIATION_SHIELD_COST` = 0.5 × `RADIATION_DPS` (was equal): one energy holds off two damage;
+    a full suit 200 s, a pack 100 s. Thruster fuel unchanged.
+35. **§H19:** `REPLAY_VERSION` 27 (T22.17), 28 (T22.15), 29 (T22.16), **30 (T22.18)**.
+36. **§H20:** add `SPACE_RIM_INSET`, `SPACE_ASTEROID_MASS_MAX` 0.2 (T22.17), `WELL_SURFACE_BAND` = `PLAYER_H` (T22.15),
+    `SPACE_CORE_FRAC` 0.3, `SPACE_CORE_DESTROYED_FRAC` 0.2 (T22.16); strike `SPACE_WELL_REACH_MAX`; change the rows
+    `VORTEX_CAPTURE_R … | 127, 1800, 4 × capture` → `32 (= SPACE_RIM_THICKNESS), 1800, 4 × capture`;
+    `BLACK_HOLE_… | 64, 0.9, 810, 256, 1080` → `64, 0.9, 810, 512, ≈925.7`; `RADIATION_… | 1, 1, 1 s` → `1, 0.5, 1 s`.

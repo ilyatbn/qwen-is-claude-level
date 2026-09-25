@@ -213,6 +213,10 @@ export class VortexFx {
     // at its **outer** end — never brighter anywhere along it than the fade allows, so
     // they thin out rather than stop on a circle (the samples are far apart out there:
     // the inner end's fade left a visible stub at the edge, measured 51 in green).
+    // *T22.18: and at its outer end **plus half the line's width*** — the stroke's
+    // outermost pixels sit that far past the polyline, and with R105's swirl a quarter
+    // the size (fading over 21 px, not 83) a 9 px stroke read the fade 4.5 px early and
+    // left 55 per channel at the edge probes.
     for (let k = 0; k < VORTEX_ARMS; k++) {
       spiralArm(v.x, v.y, inner, r.outer, armPhase(k, t), this.arm)
       for (const [w, color, alpha] of [
@@ -222,7 +226,7 @@ export class VortexFx {
         for (let i = 0; i + 3 < this.arm.length; i += 2) {
           const x1 = this.arm[i + 2]!
           const y1 = this.arm[i + 3]!
-          const s = swirlFade(Math.hypot(x1 - v.x, y1 - v.y), r.capture, r.outer)
+          const s = swirlFade(Math.hypot(x1 - v.x, y1 - v.y) + w / 2, r.capture, r.outer)
           if (s <= 0) break
           this.glow.lineStyle(w, color, alpha * s * fade)
           this.glow.lineBetween(this.arm[i]!, this.arm[i + 1]!, x1, y1)

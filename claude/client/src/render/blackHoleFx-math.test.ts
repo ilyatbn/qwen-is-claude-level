@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core } from '../core'
 import {
+  BLACK_HOLE_GLOW_HORIZONS,
   BLACK_HOLE_GROW_MS,
   BLACK_HOLE_RING_COLOR,
   BLACK_HOLE_RING_GAP,
@@ -23,7 +24,7 @@ beforeAll(async () => {
 }, 60_000)
 
 describe('the black hole drawing (T22.12B)', () => {
-  it('sizes every ring off the core: the disc is the horizon, the ring hugs it, the glow ends at the reach', () => {
+  it('sizes every ring off the core: the disc is the horizon, the ring hugs it, the glow ends at its own radius inside the reach', () => {
     const k = C()
     const r = blackHoleRadii(k)
     // Not NaN: the constants reached the client (an absent key reads undefined).
@@ -32,13 +33,15 @@ describe('the black hole drawing (T22.12B)', () => {
     expect(r.reach).toBe(k.BLACK_HOLE_REACH)
     // The ring's inner edge is outside the disc, so the disc stays black to its edge.
     expect(r.ring - BLACK_HOLE_RING_W / 2).toBe(r.horizon + BLACK_HOLE_RING_GAP)
-    expect(r.horizon < r.ring && r.ring < r.reach).toBe(true)
+    expect(r.horizon < r.ring && r.ring < r.glow && r.glow <= r.reach).toBe(true)
+    // T22.18: the glow is decoration, sized off the horizon — not the reach R106 doubled.
+    expect(r.glow).toBe(k.BLACK_HOLE_HORIZON_R * BLACK_HOLE_GLOW_HORIZONS)
     // R90: one line, not two — the capture ring is gone, and so is its radius.
-    expect(Object.keys(r).sort()).toEqual(['horizon', 'reach', 'ring'])
+    expect(Object.keys(r).sort()).toEqual(['glow', 'horizon', 'reach', 'ring'])
     expect('BLACK_HOLE_CAPTURE_R' in k).toBe(false)
   })
 
-  it('telegraphs from the reach onto the horizon over the warning, and holds at the end (R93)', () => {
+  it('telegraphs from the glow edge onto the horizon over the warning, and holds at the end (R93)', () => {
     const r = blackHoleRadii(C())
     const span = C().BLACK_HOLE_TELEGRAPH * 1000
     expect(span).toBeGreaterThan(0)
@@ -49,7 +52,7 @@ describe('the black hole drawing (T22.12B)', () => {
     expect(warnProgress(500, 500 + span, 500 + 10 * span)).toBe(1)
     // A zero-length warning (a catch-up at the last instant) is complete, not NaN.
     expect(warnProgress(500, 500, 500)).toBe(1)
-    expect(warnClosingRadius(r, 0)).toBe(r.reach)
+    expect(warnClosingRadius(r, 0)).toBe(r.glow)
     expect(warnClosingRadius(r, 1)).toBe(r.horizon)
   })
 

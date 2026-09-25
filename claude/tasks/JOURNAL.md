@@ -7147,3 +7147,10 @@ off for the round, `core_destroyed{tick,x,y}`, the core crumbles (Carve) and one
 to firstSeqAfter(tick) (0.0000 px side by side). Band now from the rock's round body (0.75 r): air gap p50 38.2 → 27.0 px.
 The reviewer's hollow bounce (36.8 px @146 px/s) is gone. Core drawn ember/amber in the bake, both renderers, photographed.
 REPLAY_VERSION 29. Split A `8218aaf` / B. docs/77 lines listed in the task file.
+
+## T22.18 — smaller vortices, farther black hole, slower drain (R105, R106, R108)
+Vortex capture = rim thickness 32 (was 127), reach 128, drawn 32/64; R16 kept by an outside arm: past the rim's outer edge
+the nearest vortex takes you (84 of 180 hole flights needed it). Black hole reach 512, ACCEL_MAX 925.7, horizon kept 64
+(base radius); glow kept at 4 horizons (drawing). Escape flights on Large maps (Small cannot hold the 548 px clearing).
+Shield cost 0.5: radiation deaths 0.25 → 0.12 a player a round. A destroyed core's battery goes where a body can reach
+(flood over body centres); SMG tunnels → 54–57 px out, shaft → centre. REPLAY_VERSION 30. docs/77 list: DOCS-77-OWED 28–36.

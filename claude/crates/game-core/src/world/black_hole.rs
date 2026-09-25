@@ -391,7 +391,11 @@ mod tests {
     use crate::world::attractors::{env_at, Attractor};
 
     fn world(gravity: GravityMode, seed: u64, round: f32) -> World {
-        let mut w = World::with_gravity(seed, MapScale::Small, 0, DEFAULT_MAP_GENERATOR, gravity);
+        world_on(gravity, seed, round, MapScale::Small)
+    }
+
+    fn world_on(gravity: GravityMode, seed: u64, round: f32, scale: MapScale) -> World {
+        let mut w = World::with_gravity(seed, scale, 0, DEFAULT_MAP_GENERATOR, gravity);
         w.set_round_seconds(round);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "ana".into());
@@ -629,13 +633,53 @@ mod tests {
     }
 
     fn hole_world(seed: u64) -> (World, Vec2) {
-        let mut w = world(GravityMode::Space, seed, 600.0);
+        hole_world_on(seed, MapScale::Small)
+    }
+
+    fn hole_world_on(seed: u64, scale: MapScale) -> (World, Vec2) {
+        let mut w = world_on(GravityMode::Space, seed, 600.0, scale);
         let geo = w.map.space_geometry().expect("space");
         let hole = w
             .summon_black_hole_near(Vec2::new(geo.cx, geo.cy), w.round_time)
             .expect("summoned");
         w.drain_events();
         (w, hole)
+    }
+
+    /// **The escape flights fly on Large maps** (T22.18). They clear a disc of
+    /// `REACH + 8 + PLAYER_H` about the hole so the claim is about the field, and a
+    /// disc that cuts the rim lets a flight out into the void — a claim about the rim.
+    /// At R106's reach (512) that disc is 548 px: taller than a Small arena's
+    /// half-height (the rim centreline is 400 px from the middle), so **no** Small map
+    /// qualifies, and on Medium only a hole within ~90 px of the middle row does. Large
+    /// (912 px) keeps nearly every nearest-the-centre hole clear of the rim.
+    const ESCAPE_SCALE: MapScale = MapScale::Large;
+
+    /// The first 13 seeds whose escape clearing stays off the rim, and those skipped
+    /// on the way (printed by the callers) — never fewer than 13, or the claim thins.
+    fn escape_seeds() -> (Vec<u64>, Vec<u64>) {
+        use crate::constants::{BLACK_HOLE_REACH, PLAYER_H};
+        let clearing = BLACK_HOLE_REACH + 8.0 + PLAYER_H;
+        let mut skipped = Vec::new();
+        let seeds: Vec<u64> = (0..64u64)
+            .filter(|&seed| {
+                let (w, hole) = hole_world_on(seed, ESCAPE_SCALE);
+                let geo = w.map.space_geometry().expect("space");
+                let off = geo.distance_to_rim(hole.x, hole.y) - geo.thickness * 0.5 > clearing;
+                if !off {
+                    skipped.push(seed);
+                }
+                off
+            })
+            .take(13)
+            .collect();
+        assert_eq!(
+            seeds.len(),
+            13,
+            "only {} maps keep the clearing off the rim",
+            seeds.len()
+        );
+        (seeds, skipped)
     }
 
     /// How long a flight keeps thrusting once past the reach (T22.12D F4): the wells
@@ -744,36 +788,17 @@ mod tests {
         // T22.17: **13 maps whose cleared disc stays off the rim**, the first 13 of the
         // seeds that have one. The clearing below is `REACH + 8 + PLAYER_H` about the
         // hole; where the rim is nearer than that it cuts the rim, and a flight out
-        // through the cut dies in the void — a claim about the rim, not the field. The
-        // square rim (R104) sits 80 px higher at the bottom than the ellipse did, and
-        // seed 1's hole (the rock nearest the centre, 203 px above the rim) was the
-        // first such map. Skipped maps are counted and printed.
+        // through the cut dies in the void — a claim about the rim, not the field.
+        // Skipped maps are counted and printed. *T22.18: on `ESCAPE_SCALE` maps* — at
+        // R106's reach no Small map qualifies (see the constant).
         let clearing = BLACK_HOLE_REACH + 8.0 + PLAYER_H;
-        let mut skipped = Vec::new();
-        let seeds: Vec<u64> = (0..64u64)
-            .filter(|&seed| {
-                let (w, hole) = hole_world(seed);
-                let geo = w.map.space_geometry().expect("space");
-                let off = geo.distance_to_rim(hole.x, hole.y) - geo.thickness * 0.5 > clearing;
-                if !off {
-                    skipped.push(seed);
-                }
-                off
-            })
-            .take(13)
-            .collect();
-        assert_eq!(
-            seeds.len(),
-            13,
-            "only {} maps keep the clearing off the rim",
-            seeds.len()
-        );
+        let (seeds, skipped) = escape_seeds();
         eprintln!("escape: maps {seeds:?}; skipped (clearing reaches the rim) {skipped:?}");
         for seed in seeds {
             for k in 0..SIDES {
                 let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
                 for with_vortex in [false, true] {
-                    let (mut w, hole) = hole_world(seed);
+                    let (mut w, hole) = hole_world_on(seed, ESCAPE_SCALE);
                     // Through `Map::carve_circle` (the coarse grid collision reads is
                     // kept with the mask), with its pending breaches drained: this
                     // arm is about the hole and the wells, and the vortex a breach
@@ -892,10 +917,15 @@ mod tests {
         const SIDES: usize = 16;
         const SECS: f32 = 6.0;
         let (mut flights, mut trapped, mut winged) = (0, Vec::new(), 0);
-        for seed in 0..13u64 {
+        // T22.18: the same 13 rim-clear maps as the thrusters' flights (at R106's reach
+        // a Small map's clearing always cut the rim, and a flight through the cut died
+        // in the void short of the reach).
+        let (seeds, skipped) = escape_seeds();
+        eprintln!("wings: maps {seeds:?}; skipped {skipped:?}");
+        for seed in seeds {
             for k in 0..SIDES {
                 let angle = k as f32 * std::f32::consts::TAU / SIDES as f32 + 0.1;
-                let (mut w, hole) = hole_world(seed);
+                let (mut w, hole) = hole_world_on(seed, ESCAPE_SCALE);
                 let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
                 let _ = w
                     .map
@@ -1410,6 +1440,72 @@ mod tests {
             "joined {:.1} px from where a telegraphed hole will open",
             (at - joiner).len()
         );
+    }
+
+    /// **R106's cost, measured** (T22.18): at a reach of eight horizons (512), is
+    /// there still somewhere to be put down? The worst case on every scale — the hole
+    /// on the rock nearest the arena's centre — over twelve maps: the share of the
+    /// open-space grid (the spawn picker's pool) whose body centre is outside the reach,
+    /// now and at the old reach (256), printed; and **twenty draws of the shared
+    /// picker with the hole's clearance** (`Map::random_body_site_where`, the respawn's
+    /// and the trip's path) all land outside it — none falls back to "the clearest
+    /// site", which would be inside.
+    #[test]
+    fn a_doubled_reach_still_leaves_room_to_be_put_down_on_every_scale() {
+        use crate::map::gen::space::open_space_grid;
+        use crate::player::state::surface_to_centre;
+        let centre_of =
+            |p: crate::math::Point| surface_to_centre(Vec2::new(p.x as f32, p.y as f32));
+        for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
+            let (mut now, mut before) = (Vec::new(), Vec::new());
+            for seed in 0..12u64 {
+                let (w, hole) = hole_world_on(seed, scale);
+                let geo = w.map.space_geometry().expect("space");
+                let grid = open_space_grid(&w.map.mask, &geo, &w.map.meta.asteroids);
+                let share = |reach: f32| {
+                    grid.iter()
+                        .filter(|&&p| (centre_of(p) - hole).len() >= reach)
+                        .count() as f32
+                        / grid.len() as f32
+                };
+                now.push(share(BLACK_HOLE_REACH));
+                before.push(share(BLACK_HOLE_REACH / 2.0));
+                let mut rng = substream(seed, "t2218");
+                for draw in 0..20 {
+                    let site = w
+                        .map
+                        .random_body_site_where(&mut rng, |p| clearance(Some(hole), centre_of(p)))
+                        .expect("a site");
+                    assert!(
+                        clearance(Some(hole), centre_of(site)) >= 0.0,
+                        "{scale:?} seed {seed} draw {draw}: put down {:.0} px from the hole, \
+                         inside its reach",
+                        (centre_of(site) - hole).len()
+                    );
+                }
+            }
+            let stat = |v: &[f32]| {
+                let min = v.iter().copied().fold(f32::INFINITY, f32::min);
+                (min, v.iter().sum::<f32>() / v.len() as f32)
+            };
+            let ((nmin, nmean), (bmin, bmean)) = (stat(&now), stat(&before));
+            eprintln!(
+                "{scale:?}: open space outside the reach — min {:.1} % mean {:.1} % \
+                 (reach {}: min {:.1} % mean {:.1} %)",
+                100.0 * nmin,
+                100.0 * nmean,
+                BLACK_HOLE_REACH / 2.0,
+                100.0 * bmin,
+                100.0 * bmean
+            );
+            // Measured at T22.18: min 45.7 / 74.5 / 86.6 % (S/M/L). A quarter is the
+            // floor under which "somewhere to be put down" starts to mean a corner.
+            assert!(
+                nmin >= 0.25,
+                "{scale:?}: only {:.1} % of a map's open space is outside the reach",
+                100.0 * nmin
+            );
+        }
     }
 
     /// The respawn and the vortex's destination never offer the hole: a dead

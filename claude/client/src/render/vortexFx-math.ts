@@ -12,7 +12,9 @@
  * `VORTEX_REACH / 2`, the half-reach R97 retired, which is the same number today and
  * the wrong reason. (Before `R98` it was drawn as "where thrust stops winning", with a
  * hard-edged halo at `VORTEX_REACH / 2`.) The capture radius is the core's constant;
- * the numbers below are only how it looks.
+ * the numbers below are only how it looks. **Since R105 (T22.18) that constant is the
+ * rim's thickness, 32 px**, so the ring is drawn at 32 and the swirl fades out by 64 —
+ * a quarter of the 127 / 254 drawn before; nothing in this file changed for it.
  */
 
 /** Spiral arms per vortex. Drawing only. */

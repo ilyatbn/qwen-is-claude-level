@@ -842,14 +842,23 @@ pub const MAX_ACTIVE_VORTICES: usize = 3;
 /// A player whose centre comes within this of a vortex is taken, px — and a breach
 /// this close to a live vortex is the same hole, not a new one.
 ///
-/// **Basis (R16: capture must exceed the rim thickness plus the band):** the widest
-/// single carve (`METEOR_CARVE_R`, the hole's half-width across the rim) plus the
-/// whole rim thickness plus the void band. A body leaving through any part of a
-/// one-carve hole is inside this disc from the rim's inner edge until it is past
-/// the band: `sqrt(50² + (16 + 45)²)` = 79 px at the far corner, against 127. A
-/// hole widened by more carves is still covered, because a carve that lands
-/// further than this from every vortex makes its own (`World::open_vortex`).
-pub const VORTEX_CAPTURE_R: f32 = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + SPACE_VOID_GRACE;
+/// **T22.18 (`M22-OWNER-ROUND-2` R105 — the owner: *"the teleports created in the
+/// edge of the map when destroyed are way too big. they should be much smaller"*):
+/// the rim's thickness, 32 px — a quarter of the 127 it was.** Derived from the hole
+/// it guards, not from the widest carve: a vortex sits on the rim's centreline
+/// (`SpaceGeometry::onto_rim`), so a disc one thickness across spans the hole's whole
+/// depth and reaches **half a thickness into the arena** — a body at the hole's mouth
+/// (its centre `PLAYER_H / 2` inside the inner edge, `16 + 14 = 30` px from the
+/// centreline) is taken. `vortex::tests::the_capture_disc_spans_the_hole_and_its_mouth`
+/// pins that inequality.
+///
+/// **R16's guarantee no longer rests on this radius** (it was `METEOR_CARVE_R` + the
+/// rim + the void band = 127, sized so the disc covered every way out of a one-carve
+/// hole): a body **past the rim's outer edge** is taken by the nearest vortex
+/// whatever the distance (`vortex::captor`'s outside arm, R105) — only a hole gets a
+/// body there, and `SPACE_VOID_GRACE` guarantees two samples before the void. So a
+/// hole in the rim still never kills, and the disc can be the size of the hole.
+pub const VORTEX_CAPTURE_R: f32 = SPACE_RIM_THICKNESS as f32;
 
 /// A vortex's pull at its centre, px/s² — **twice the weakest thrust**
 /// (`JETPACK_THRUST_DOWN`), so it sucks. It falls off linearly to
@@ -859,13 +868,18 @@ pub const VORTEX_CAPTURE_R: f32 = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + 
 /// with the wells and capped with them at [`SPACE_WELL_ACCEL_MAX`]
 /// (`attractors::capped_at`), so outside [`VORTEX_CAPTURE_R`] thrust always wins;
 /// this number now shapes how far out the cap binds (the vortex alone reaches the
-/// cap at `(1 − 675/1800) × REACH` ≈ 318 px), not where escape ends.
+/// cap at `(1 − 675/1800) × REACH` = 80 px since R105 — 318 at the old sizes), not
+/// where escape ends. **Unchanged by R105**: the owner asked for smaller, not weaker.
 pub const VORTEX_ACCEL_MAX: f32 = 2.0 * JETPACK_THRUST_DOWN;
 
-/// How far a vortex pulls, centre to cutoff, px. **Four capture radii**. *Was: "so
-/// the no-escape radius (half the reach) is twice the capture radius" — since R97
-/// (T22.03I) there is no no-escape band outside the capture radius* (see
-/// [`VORTEX_ACCEL_MAX`]); the swirl drawn at half the reach no longer marks one.
+/// How far a vortex pulls, centre to cutoff, px. **Four capture radii** — 128 since
+/// R105 (T22.18), a quarter of the 508 it was, so the pull is felt about a hole, not
+/// across a screen. *Was: "so the no-escape radius (half the reach) is twice the
+/// capture radius" — since R97 (T22.03I) there is no no-escape band outside the
+/// capture radius* (see [`VORTEX_ACCEL_MAX`]); the swirl, drawn to two capture radii
+/// (`vortexFx-math.ts::VORTEX_SWIRL_OUTER`), marks none. Its half is R86's trip
+/// clearance (`vortex::clearance`, 64 px) and the bots' live keep-out is the whole
+/// of it (`vortex::pull_clearance`).
 pub const VORTEX_REACH: f32 = 4.0 * VORTEX_CAPTURE_R;
 
 /// Most breaches a map holds for the world to drain in one tick. The world drains
@@ -903,10 +917,17 @@ pub const BLACK_HOLE_LATEST: f32 = 10.0;
 pub const BLACK_HOLE_TELEGRAPH: f32 = 2.0;
 
 /// The event horizon, centre to a body's centre, px: inside it you are dead —
-/// **a state change, not a force** (T22.12). The size of the largest asteroid, so
-/// the hole it leaves where a rock was reads as having swallowed any rock.
-/// **It is the only line the rule draws** (R90): outside it every thrust escapes,
-/// inside it you are dead — the ring on screen is the whole rule.
+/// **a state change, not a force** (T22.12). **It is the only line the rule draws**
+/// (R90): outside it every thrust escapes, inside it you are dead — the ring on
+/// screen is the whole rule.
+///
+/// **The largest *base* radius, 64 — not the largest rock** (T22.18's basis,
+/// corrected): since R103 (T22.17) a rock grows to `grown_radius(64, 0.2)` = 70, so
+/// the eaten rock's crater (`arrive_black_hole` carves `r + 2`) can reach 8 px past
+/// the ring. **Kept at 64 on purpose**: R106 rules *"the horizon and the kill stay"*
+/// (the owner asked for a farther pull, not a bigger kill), the ring drawn at the
+/// horizon is the rule and the crater is only terrain, and a body touching the grown
+/// rock (centre ≥ 70 + `PLAYER_H / 2`) was outside the ring either way.
 pub const BLACK_HOLE_HORIZON_R: f32 = SPACE_ASTEROID_R_MAX as f32;
 
 /// The pull at the horizon as a share of the **weakest** thrust (R90). Under 1, so
@@ -924,16 +945,29 @@ pub const BLACK_HOLE_ESCAPE_MARGIN: f32 = 0.9;
 /// of it outward, above this.
 pub const BLACK_HOLE_EDGE_PULL: f32 = JETPACK_THRUST_DOWN * BLACK_HOLE_ESCAPE_MARGIN;
 
-/// How far the hole pulls, centre to cutoff, px: four horizons (R90), 256 at
-/// `SPACE_ASTEROID_R_MAX` 64. **Within it the asteroid wells do not pull — only the
-/// hole does** (R91, `attractors::env_at`): neighbouring rocks summed to 745 px/s²
-/// at the horizon and trapped 20 of 208 flights that the hole alone lets go.
-pub const BLACK_HOLE_REACH: f32 = 4.0 * BLACK_HOLE_HORIZON_R;
+/// How far the hole pulls, centre to cutoff, px: **eight horizons, 512** since
+/// T22.18 (`M22-OWNER-ROUND-2` R106 — the owner: *"black hole gravity pull should be
+/// larger"*; four horizons, 256, under R90). A bigger reach means the pull is felt
+/// sooner, not that it traps: R90's guarantee is the pull **at the horizon**, which
+/// [`BLACK_HOLE_ACCEL_MAX`] holds at [`BLACK_HOLE_EDGE_PULL`] whatever the reach.
+/// **Within it the asteroid wells do not pull — only the hole does** (R91,
+/// `attractors::env_at`): neighbouring rocks summed to 745 px/s² at the horizon and
+/// trapped 20 of 208 flights that the hole alone lets go. Doubling the reach
+/// quadruples the area R91 mutes — in the last minute most wells on a Small map
+/// (768 px tall inside the rim) fall inside it; that is the ruling's cost, stated.
+/// Respawns, trips and joins are held outside it (`black_hole::clearance`); what
+/// that leaves — with the hole on the most central rock, 45.7 / 74.5 / 86.6 % of the
+/// open space at worst on Small / Medium / Large (81.4 / 92.7 / 96.2 % at 256) — is
+/// `black_hole::tests::a_doubled_reach_still_leaves_room_to_be_put_down_on_every_scale`.
+pub const BLACK_HOLE_REACH: f32 = 8.0 * BLACK_HOLE_HORIZON_R;
 
 /// The pull at the centre, px/s²: whatever makes the linear falloff (the law every
 /// attractor shares, R47) equal [`BLACK_HOLE_EDGE_PULL`] **at the horizon** —
-/// `EDGE_PULL / (1 − HORIZON_R / REACH)` = 810 / 0.75 = 1080. Nobody alive is ever
-/// nearer the centre than the horizon, so the number past it is never felt.
+/// `EDGE_PULL / (1 − HORIZON_R / REACH)` = 810 / 0.875 ≈ 925.7 since R106 (1080 at
+/// four horizons). The law is linear and falls outward, so **everywhere outside the
+/// horizon the pull is ≤ 810 = 0.9 × DOWN** — R90's margin, at any reach. Nobody
+/// alive is ever nearer the centre than the horizon, so the number past it is never
+/// felt.
 pub const BLACK_HOLE_ACCEL_MAX: f32 =
     BLACK_HOLE_EDGE_PULL / (1.0 - BLACK_HOLE_HORIZON_R / BLACK_HOLE_REACH);
 
@@ -2112,12 +2146,12 @@ pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
 
 // --- T22.09A: radiation and the suit (`M22-RULINGS` R6, R24, R25) ---
 //
-// **The exchange rate is the design** (R24): one energy buys one damage
-// avoided, and `BATTERY_MAX` equals `BASE_HEALTH`, so the suit battery is a
-// second health bar that radiation eats first. A full suit is `BATTERY_MAX /
-// RADIATION_SHIELD_COST` = 100 s of grace, a pack `BATTERY_PACK_AMOUNT /
-// RADIATION_SHIELD_COST` = 50 s more, and at zero the suit fails and radiation
-// starts on health at the same rate. **A starting point with a stated basis,
+// **The exchange rate is the design** (R24): since R108 (T22.18) one energy buys
+// two damage avoided (it was one), and `BATTERY_MAX` equals `BASE_HEALTH`, so the
+// suit battery is a second health bar radiation eats at half the rate. A full suit
+// is `BATTERY_MAX / RADIATION_SHIELD_COST` = 200 s of grace, a pack
+// `BATTERY_PACK_AMOUNT / RADIATION_SHIELD_COST` = 100 s more, and at zero the suit
+// fails and radiation starts on health at `RADIATION_DPS`. **A starting point with a stated basis,
 // not a measurement** — `tests/balance.rs::space_radiation_report` is the
 // 8-seed run R24 owes, and its numbers are in the journal for T22.09A.
 
@@ -2126,11 +2160,15 @@ pub const BATTERY_PACK_AMOUNT: f32 = 50.0;
 pub const RADIATION_DPS: f32 = 1.0;
 /// Battery per second a sealed suit spends keeping radiation out (R24).
 ///
-/// **Equal to `RADIATION_DPS` on purpose**: one energy for one damage is the
-/// sentence a player learns by dying once. It is radiation's cost, not the
-/// shield's — T20.08 deleted the per-second shield drain and R24 rules that
-/// it stays deleted; a generator outside space still costs nothing a second.
-pub const RADIATION_SHIELD_COST: f32 = 1.0;
+/// **Half of `RADIATION_DPS` since T22.18** (`M22-OWNER-ROUND-2` R108 — the owner:
+/// *"drain energy 50% slower"*, read as the suit's EN bar; thruster fuel is
+/// unchanged). *Was equal to it (R24: "one energy for one damage")*; now one energy
+/// holds off two damage, a full suit is 200 s of grace and a pack 100 s more. It is
+/// still radiation's cost, not the shield's — T20.08 deleted the per-second shield
+/// drain and R24 rules that it stays deleted; a generator outside space still costs
+/// nothing a second. The before/after of `space_radiation_report` is under R108 in
+/// `tasks/M22/M22-OWNER-ROUND-2.md`.
+pub const RADIATION_SHIELD_COST: f32 = 0.5 * RADIATION_DPS;
 /// Radiation is logged once per this many seconds, never once a tick (R25).
 ///
 /// At `SIM_HZ` one entry per tick per player is 360 `Damage` events a second

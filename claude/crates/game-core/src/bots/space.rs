@@ -437,13 +437,11 @@ mod tests {
     const SEEDS: [u64; 8] = [1, 7, 42, 99, 4242, 12345, 31337, 8675309];
 
     fn space_world(seed: u64) -> World {
-        let mut w = World::with_gravity(
-            seed,
-            MapScale::Small,
-            0,
-            DEFAULT_MAP_GENERATOR,
-            GravityMode::Space,
-        );
+        space_world_on(seed, MapScale::Small)
+    }
+
+    fn space_world_on(seed: u64, scale: MapScale) -> World {
+        let mut w = World::with_gravity(seed, scale, 0, DEFAULT_MAP_GENERATOR, GravityMode::Space);
         w.set_phase(RoundPhase::Playing);
         w.add_player(0, 0, "bot".into());
         w
@@ -596,6 +594,12 @@ mod tests {
     /// inside the reach (outside the horizon, where every thrust escapes, R90), sent
     /// toward the hole: it leaves and lives, on eight maps × eight sides. Control: the
     /// same bodies pressing nothing die in it — the pull is real at that spot.
+    ///
+    /// *T22.18: on Large maps.* At R106's reach (512) 0.8 of it is 410 px — past a
+    /// Small arena's rim above and below a central hole (the centreline is 400 px from
+    /// the middle), so those starts sat in the void and died before any steering, and
+    /// "out of the reach" upward or downward was outside the rim. The escape flights in
+    /// `black_hole.rs` moved to Large for the same reason.
     #[test]
     fn a_flying_bot_leaves_the_black_holes_reach() {
         let (mut escaped, mut died_idle, mut runs) = (0, 0, 0);
@@ -603,7 +607,7 @@ mod tests {
         for seed in SEEDS {
             for steering in [true, false] {
                 for k in 0..8 {
-                    let mut w = space_world(seed);
+                    let mut w = space_world_on(seed, MapScale::Large);
                     let geo = w.map.space_geometry().expect("space");
                     let Some(hole) = w.summon_black_hole_near(Vec2::new(geo.cx, geo.cy), 0.0)
                     else {

@@ -78,8 +78,15 @@ const PULL_BUDGET_S = 10
  * the horizon at 1.9 s — 0.3 s after the bell (the probe's latency only shortens the
  * lead). The placement `game-wasm`'s `the_bell_seq_stops_the_pull_on_the_servers_ended_tick`
  * uses (2.22 px off there without the bell seq, 0.000 with it).
+ *
+ * **T22.18 (R106): 0.865, re-derived for the doubled reach.** Under the linear law the
+ * distance inside the reach grows as `x0 · cosh(t · √(ACCEL_MAX / REACH))`; at 256 /
+ * 1080 that rate is 2.05 /s and 0.97 did the above, but at 512 / 925.7 it is 1.35 /s and
+ * a body from 0.97 × reach had moved 52 px at the bell (red: the control wants a quarter
+ * of the way in). From 0.865 × reach (443 px) the body reaches the horizon at 1.9 s
+ * again, has moved ~230 px by 1.6 s, and is pulled ~540 px/s² there.
  */
-const BELL_PLACE = 0.97
+const BELL_PLACE = 0.865
 const BELL_LEAD_S = 1.6
 /**
  * Arm 5b hears the server this late (`__game.netDelay`): on localhost the page hears the
@@ -175,7 +182,7 @@ async function coverage(page, h, label, wantShader) {
     }
     let ctrl = null
     for (const a of [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, (3 * Math.PI) / 4]) {
-      const r = fx.radii.reach + 60
+      const r = fx.radii.glow + 60
       const s = await toScreen(page, h.x + Math.cos(a) * r, h.y + Math.sin(a) * r)
       if (inView(s) && !(await underDom(s))) {
         ctrl = s
@@ -256,7 +263,7 @@ async function telegraph(page, w) {
     }
     let ctrl = null
     for (const a of [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, (3 * Math.PI) / 4]) {
-      const r = fx.radii.reach + 60
+      const r = fx.radii.glow + 60
       const s = await toScreen(page, w.x + Math.cos(a) * r, w.y + Math.sin(a) * r)
       if (inView(s) && !(await underDom(s))) {
         ctrl = s

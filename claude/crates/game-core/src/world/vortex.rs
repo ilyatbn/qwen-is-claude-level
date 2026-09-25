@@ -44,8 +44,10 @@ pub enum Opened {
 
 /// A breach at `at`. **Many holes, at most three vortices** (R9): a breach within
 /// `VORTEX_CAPTURE_R` of a live vortex is that vortex's hole, and anything further
-/// is a new one — which is also what keeps every part of a widened hole inside some
-/// vortex's capture disc (`VORTEX_CAPTURE_R`'s basis).
+/// is a new one. *Was: "which is also what keeps every part of a widened hole inside
+/// some vortex's capture disc"* — since R105 (T22.18) the disc is the hole's depth,
+/// not its width, and what keeps a widened hole from killing is [`captor`]'s outside
+/// arm.
 pub fn open(vortices: &mut Vec<Vortex>, seq: &mut u32, at: Vec2) -> Opened {
     if vortices
         .iter()
@@ -80,7 +82,15 @@ pub fn retire(spent: &mut Vec<Vortex>, old: Vortex) -> bool {
 }
 
 /// The vortex that catches a body centred at `pos`, if any: the first within
-/// `VORTEX_CAPTURE_R`, the pulling ones in opening order and then the spent ones.
+/// `VORTEX_CAPTURE_R`, the pulling ones in opening order and then the spent ones —
+/// **or, when the body is `past_rim` (past the rim's outer edge,
+/// `SpaceGeometry::past_outer_edge`), the nearest vortex, live or spent, at any
+/// distance** (T22.18, `M22-OWNER-ROUND-2` R105: R16's guarantee restated). The disc
+/// is the size of the hole's depth now, not of every way out of it: a body leaving
+/// through the flank of a wide hole, or through a hole widened by a carve that
+/// reported no new breach (R87: the box was already open), misses the disc — and is
+/// taken past the outer edge instead of dying in the void. Only a hole puts a body
+/// there, and every hole has a vortex; with none at all, the void takes them.
 /// **Everyone** — wings included (R9, point 1). Wings refuse pads and gun
 /// platforms because those are things you *choose to use*; a vortex is a thing
 /// that happens to you. `World::fire_pads` carries the other half of that sentence.
@@ -88,11 +98,15 @@ pub fn retire(spent: &mut Vec<Vortex>, old: Vortex) -> bool {
 /// **`spent` catches too** (`M22-RULINGS` R88): a vortex the cap displaced stops
 /// pulling, but its hole is still open — a hole never heals (R9, point 3) — and a
 /// hole in the rim never kills. Only the *pull* is capped at three.
-pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2) -> Option<u32> {
-    vortices
-        .iter()
-        .chain(spent)
+pub fn captor(vortices: &[Vortex], spent: &[Vortex], pos: Vec2, past_rim: bool) -> Option<u32> {
+    let all = || vortices.iter().chain(spent);
+    all()
         .find(|v| capture_clearance(v, pos) <= 0.0)
+        .or_else(|| {
+            past_rim
+                .then(|| all().min_by(|a, b| (a.pos - pos).len().total_cmp(&(b.pos - pos).len())))
+                .flatten()
+        })
         .map(|v| v.id)
 }
 
@@ -252,13 +266,13 @@ mod tests {
                 pos: Vec2::new(10.0, 0.0),
             },
         ];
-        assert_eq!(captor(&vs, &[], Vec2::new(5.0, 0.0)), Some(7));
+        assert_eq!(captor(&vs, &[], Vec2::new(5.0, 0.0), false), Some(7));
         assert_eq!(
-            captor(&vs, &[], Vec2::new(0.0, VORTEX_CAPTURE_R - 0.5)),
+            captor(&vs, &[], Vec2::new(0.0, VORTEX_CAPTURE_R - 0.5), false),
             Some(7)
         );
         assert_eq!(
-            captor(&vs, &[], Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0)),
+            captor(&vs, &[], Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0), false),
             None
         );
         // R88: a spent vortex catches, after every pulling one.
@@ -267,10 +281,10 @@ mod tests {
             pos: Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0),
         }];
         assert_eq!(
-            captor(&vs, &spent, Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0)),
+            captor(&vs, &spent, Vec2::new(0.0, -VORTEX_CAPTURE_R - 12.0), false),
             Some(3)
         );
-        assert_eq!(captor(&vs, &spent, Vec2::new(5.0, 0.0)), Some(7));
+        assert_eq!(captor(&vs, &spent, Vec2::new(5.0, 0.0), false), Some(7));
         let (c, n) = centres(&vs);
         assert_eq!(&c[..n], &[Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)]);
     }
@@ -437,6 +451,225 @@ mod world_tests {
         }
     }
 
+    /// **R105's size, from the hole it guards** (T22.18). The constants: the disc
+    /// reaches a body at the hole's mouth — its centre `PLAYER_H / 2` inside the rim's
+    /// inner edge, straight in from the vortex on the centreline — and it is a quarter
+    /// of what it was (`METEOR_CARVE_R` + the rim + the void band, 127: the owner's
+    /// "much smaller", pinned against the old basis rather than to itself). In a world:
+    /// a body at rest at the mouth is taken on the next tick; the control, one body
+    /// height further in, is not — the capture is a radius about the hole.
+    #[test]
+    fn the_capture_disc_spans_the_hole_and_its_mouth() {
+        use crate::constants::{
+            PLAYER_H, SPACE_RIM_THICKNESS, SPACE_VOID_GRACE, VORTEX_CAPTURE_R, VORTEX_REACH,
+        };
+        let mouth = SPACE_RIM_THICKNESS as f32 / 2.0 + PLAYER_H / 2.0;
+        assert!(
+            VORTEX_CAPTURE_R >= mouth,
+            "the disc ({VORTEX_CAPTURE_R}) does not reach a body at the hole's mouth ({mouth})"
+        );
+        let old = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + SPACE_VOID_GRACE;
+        assert!(
+            4.0 * VORTEX_CAPTURE_R <= old + 1.0 && 4.0 * VORTEX_REACH <= 4.0 * old + 4.0,
+            "R105: capture {VORTEX_CAPTURE_R} / reach {VORTEX_REACH} are not a quarter of \
+             {old} / {}",
+            4.0 * old
+        );
+        for (d, taken) in [(mouth, true), (mouth + PLAYER_H, false)] {
+            let mut w = space_world(4242);
+            let hole = breach_top(&mut w);
+            let _ = w.drain_events();
+            w.players[0].body = Body::new(hole + Vec2::new(0.0, d));
+            step(&mut w);
+            let got = w
+                .drain_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. }));
+            assert_eq!(
+                got, taken,
+                "a body at rest {d} px in from the hole: taken {got}"
+            );
+        }
+    }
+
+    /// **R97 at R105's sizes: from one pixel outside the capture ring, every thrust
+    /// leaves** (T22.18). Through `World::step`, from rest on a full tank, a body on
+    /// nine bearings into the arena round a top breach holds the buttons that point
+    /// away from the vortex (`black_hole::tests::away`'s rule) for two seconds: it is
+    /// never taken and ends past the reach. The control is the same bodies pressing
+    /// nothing: taken — the pull is real there, and the ring is where it wins.
+    #[test]
+    fn from_just_outside_the_capture_ring_every_thrust_leaves() {
+        use crate::constants::{JETPACK_MAX_FUEL, VORTEX_CAPTURE_R, VORTEX_REACH};
+        use crate::player::input::{button, Input};
+        let away = |out: Vec2| {
+            let h = if out.x > 0.0 {
+                button::RIGHT
+            } else {
+                button::LEFT
+            };
+            let v = if out.y < 0.0 {
+                button::UP
+            } else {
+                button::DOWN
+            };
+            if out.x.abs() < out.y.abs() * 0.3 {
+                v
+            } else if out.y.abs() < out.x.abs() * 0.3 {
+                h
+            } else {
+                h | v
+            }
+        };
+        let (mut flights, mut failed, mut idle_taken) = (0, Vec::new(), 0);
+        for seed in [4242u64, 0, 7] {
+            for k in 1..=9 {
+                let a = (k as f32 * 18.0).to_radians();
+                for thrust in [true, false] {
+                    // `breach_top`'s carve, stepped with seq-0 inputs throughout
+                    // ("numbered by the world", no jitter-buffer lead, T22.10G): a
+                    // numbered stream here idled the first two ticks of thrust, and
+                    // one pixel outside the ring two idle ticks are a capture.
+                    let mut w = space_world(seed);
+                    let geo = w.map.space_geometry().expect("space");
+                    let (tx, ty) = (geo.cx.round() as i32, (geo.cy - geo.ry).round() as i32);
+                    w.players[0].body = Body::new(Vec2::new(geo.cx, geo.cy));
+                    let _ = w.map.carve_circle(tx, ty, METEOR_CARVE_R as i32);
+                    w.queue_input(0, Input::new(0, 0, 0));
+                    w.step(SIM_DT);
+                    let v = w.vortices[0].pos;
+                    let at = v + Vec2::new(a.cos(), a.sin()) * (VORTEX_CAPTURE_R + 1.0);
+                    if crate::physics::collide::aabb_overlaps_solid(&w.map, Body::new(at).aabb()) {
+                        continue;
+                    }
+                    let _ = w.drain_events();
+                    w.players[0].body = Body::new(at);
+                    w.players[0].jetpack.fuel = JETPACK_MAX_FUEL;
+                    let mut taken = false;
+                    for _ in 0..(2.0 / SIM_DT) as u32 {
+                        let pos = w.players[0].body.pos;
+                        let b = if thrust { away(pos - v) } else { 0 };
+                        w.queue_input(0, Input::new(0, b, 0));
+                        w.step(SIM_DT);
+                        taken |= w
+                            .drain_events()
+                            .iter()
+                            .any(|e| matches!(e, GameEvent::VortexTrip { id: 0, .. }));
+                        if taken || (thrust && (w.players[0].body.pos - v).len() > VORTEX_REACH) {
+                            break;
+                        }
+                    }
+                    let d = (w.players[0].body.pos - v).len();
+                    if thrust {
+                        flights += 1;
+                        if taken || d <= VORTEX_REACH {
+                            failed.push((seed, k, taken, d));
+                        }
+                    } else {
+                        idle_taken += usize::from(taken);
+                    }
+                }
+            }
+        }
+        assert!(flights >= 20, "premise: only {flights} starts fitted");
+        assert!(
+            failed.is_empty(),
+            "{} of {flights} thrusting away from one px outside the ring did not leave \
+             (seed, bearing, taken, px): {failed:?}",
+            failed.len()
+        );
+        assert_eq!(
+            idle_taken, flights,
+            "control: only {idle_taken} of {flights} idle bodies there were taken"
+        );
+    }
+
+    /// **R16 restated at R105's sizes: out through any part of a hole is a trip,
+    /// never the void** (T22.18). The capture disc is now the hole's depth, not its
+    /// width, so a body leaving through the flank of a meteor-wide hole passes beside
+    /// it; `captor`'s outside arm takes it past the rim's outer edge. Every lateral
+    /// offset a body fits through (every 2 px) of a top breach, driven straight out at
+    /// `SPACE_MAX_SPEED`, on three maps — and through the far half of a hole
+    /// **widened by a second meteor carve 80 px along** (whatever vortices that left).
+    /// Presence: some were taken
+    /// outside the disc, so the arm is what took them (the vortex-less control is
+    /// `you_cannot_leave_through_the_hole_and_without_the_vortex_the_void_takes_you`).
+    #[test]
+    fn a_body_out_through_any_part_of_a_hole_is_taken_and_never_the_void() {
+        use crate::constants::{PLAYER_W, SPACE_RIM_THICKNESS, VORTEX_CAPTURE_R};
+        let half_band = SPACE_RIM_THICKNESS as f32 / 2.0;
+        // Where the hole is open across the whole band, less half a body.
+        let open =
+            (METEOR_CARVE_R * METEOR_CARVE_R - half_band * half_band).sqrt() - PLAYER_W / 2.0;
+        let (mut flights, mut outside, mut died) = (0, 0, Vec::new());
+        for seed in [4242u64, 0, 7] {
+            for widened in [false, true] {
+                let (lo, hi) = if widened {
+                    (80.0, 80.0 + open)
+                } else {
+                    (-open, open)
+                };
+                let mut x = lo.ceil();
+                while x <= hi {
+                    let mut w = space_world(seed);
+                    let hole = breach_top(&mut w);
+                    if widened {
+                        let _ = w.map.carve_circle(
+                            (hole.x + 80.0).round() as i32,
+                            hole.y.round() as i32,
+                            METEOR_CARVE_R as i32,
+                        );
+                        step(&mut w);
+                    }
+                    let vs: Vec<Vec2> = w.vortices.iter().map(|v| v.pos).collect();
+                    let _ = w.drain_events();
+                    let vel = Vec2::new(0.0, -SPACE_MAX_SPEED);
+                    w.players[0].body = Body::new(hole + Vec2::new(x, 60.0));
+                    let mut result = None;
+                    for _ in 0..30 {
+                        let before = w.players[0].body.pos;
+                        w.players[0].body.vel = vel;
+                        step(&mut w);
+                        for e in w.drain_events() {
+                            match e {
+                                GameEvent::VortexTrip { id: 0, .. } => {
+                                    let at = before + vel * SIM_DT;
+                                    result =
+                                        Some(vs.iter().all(|&v| (at - v).len() > VORTEX_CAPTURE_R));
+                                }
+                                GameEvent::Death { victim: 0, .. } => {
+                                    died.push((seed, widened, x));
+                                    result = Some(false);
+                                }
+                                _ => {}
+                            }
+                        }
+                        if result.is_some() {
+                            break;
+                        }
+                    }
+                    flights += 1;
+                    match result {
+                        Some(o) => outside += usize::from(o),
+                        None => died.push((seed, widened, x)),
+                    }
+                    x += 2.0;
+                }
+            }
+        }
+        assert!(
+            died.is_empty(),
+            "{} of {flights} bodies out through a hole were not taken (seed, widened, x): \
+             {died:?}",
+            died.len()
+        );
+        assert!(
+            outside > 0,
+            "presence: all {flights} were taken inside the disc — nothing here needs the arm"
+        );
+        eprintln!("hole flights: {flights}, {outside} taken past the rim outside the disc");
+    }
+
     /// Breach the top, left and right arcs, one step each, so three vortices pull.
     fn three_vortices(w: &mut World) {
         let geo = w.map.space_geometry().expect("space");
@@ -482,19 +715,32 @@ mod world_tests {
             "control: the fourth"
         );
         assert_eq!(w.spent_vortices.len(), 1, "control: the top one displaced");
-        // Just wide enough to cut the rim; far enough along it that its probe box
-        // misses the top hole, near enough to be inside that hole's capture radius.
+        // Just wide enough to cut the rim, inside the top hole's capture radius.
+        // *T22.18 (R105): this was a new breach, "far enough along that its probe box
+        // misses the top hole, near enough to be inside that hole's capture radius".*
+        // The probe box's pad is a rim thickness + 2 (34 px) and the capture radius is
+        // now a rim thickness (32), so no carve inside the radius has a box that
+        // misses the hole: R87 sees the rim already open and nothing opens — which is
+        // this test's claim (the hole is spent once) reached a stronger way. The same
+        // carve four radii along the rim, where the hole is out of its box, is the
+        // control that it would breach.
         let narrow = (SPACE_RIM_THICKNESS / 2 + 2) as i32;
         let along = (VORTEX_CAPTURE_R - 12.0).round();
         let again = geo.onto_rim(top.x + along, top.y);
         assert!(
             (Vec2::new(again.0 as f32, again.1 as f32) - top).len() <= VORTEX_CAPTURE_R,
-            "control: the re-breach is not at the top hole"
+            "premise: the re-breach is at the top hole"
         );
         assert_eq!(
             breach(&mut w, again, narrow),
+            0,
+            "a carve inside a displaced hole's capture radius opened a vortex"
+        );
+        let apart = geo.onto_rim(top.x + 4.0 * VORTEX_CAPTURE_R, top.y);
+        assert_eq!(
+            breach(&mut w, apart, narrow),
             1,
-            "control: the re-breach opened nothing"
+            "control: the same carve clear of the hole opened nothing"
         );
         for t in [PI / 4.0, 3.0 * PI / 4.0, 5.0 * PI / 4.0] {
             assert_eq!(
@@ -693,14 +939,16 @@ mod world_tests {
         );
 
         // Through the world's own step, not `env_at` by hand: a player at rest
-        // 1.5 capture radii inward of a hole, for a quarter second, against the
+        // two capture radii inward of a hole, for a quarter second, against the
         // same world with that hole's vortex removed. Spent: no difference.
-        // Pulling (the control): a difference.
+        // Pulling (the control): a difference. *T22.18: was 1.5 radii* — at R105's
+        // sizes the capped pull carries a body from 1.5 radii into the capture in
+        // under the quarter second, and a taken body is at rest both ways.
         let drift = |forget: &dyn Fn(&mut World), hole: Vec2| {
             let mut w = four();
             forget(&mut w);
-            let inward = (Vec2::new(geo.cx, geo.cy) - hole).normalized();
-            w.players[0].body = Body::new(hole + inward * 1.5 * VORTEX_CAPTURE_R);
+            let (nx, ny) = geo.inward_normal(hole.x, hole.y);
+            w.players[0].body = Body::new(hole + Vec2::new(nx, ny) * 2.0 * VORTEX_CAPTURE_R);
             for _ in 0..15 {
                 step(&mut w);
             }
@@ -862,17 +1110,28 @@ mod world_tests {
     fn a_winged_player_is_not_pulled_by_a_vortex_or_the_wells_and_is_still_taken_inside() {
         use crate::constants::VORTEX_CAPTURE_R;
         use crate::items::registry::UNICORN_WINGS;
-        let d = 1.5 * VORTEX_CAPTURE_R;
         // *T22.16: the first seed from 4242 with such a point* — the wells' band now
         // starts at the rock's round body (refinement B), and seed 4242's top breach
-        // has no rock band 1.5 capture radii off it any more.
-        let (seed, dir, hole) = (4242..4242 + 64u64)
+        // has no rock band 1.5 capture radii off it any more. *T22.18: and the
+        // distance is searched too* — at R105's sizes 1.5 capture radii is 48 px off
+        // the rim's centreline, nearer the rim than any rock's band comes; so the
+        // nearest multiple (1.5, 2, … 3.5 radii, all inside the reach) where a well
+        // reaches and the sum with the vortex still points at the hole (so the
+        // unwinged control is drawn in, not held on the rock).
+        let (seed, d, dir, hole) = (4242..4242 + 64u64)
             .find_map(|seed| {
                 let mut w = space_world(seed);
                 let hole = breach_top(&mut w);
-                probe(&w, hole, d, |wells, _| wells.len() > 1.0).map(|dir| (seed, dir, hole))
+                (3..=7).find_map(|half_radii| {
+                    let d = 0.5 * half_radii as f32 * VORTEX_CAPTURE_R;
+                    probe(&w, hole, d, |wells, with| {
+                        wells.len() > 1.0 && with.len() > 1.0 && with.y < -0.5 * with.len()
+                    })
+                    .map(|dir| (seed, d, dir, hole))
+                })
             })
             .expect("a point beside the vortex that a well reaches too");
+        eprintln!("winged: seed {seed}, {d} px off the hole");
         let run = |winged: bool, vortex: bool| -> (bool, f32) {
             let mut w = space_world(seed);
             assert_eq!(breach_top(&mut w), hole);

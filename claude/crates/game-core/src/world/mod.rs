@@ -3999,7 +3999,14 @@ impl World {
             if !p.alive {
                 continue;
             }
-            let Some(vid) = vortex::captor(&self.vortices, &self.spent_vortices, p.body.pos) else {
+            // R105 (T22.18): past the rim's outer edge the nearest hole takes you.
+            let past_rim = self
+                .map
+                .space_geometry()
+                .is_some_and(|g| g.past_outer_edge(p.body.pos.x, p.body.pos.y));
+            let Some(vid) =
+                vortex::captor(&self.vortices, &self.spent_vortices, p.body.pos, past_rim)
+            else {
                 continue;
             };
             let (pulling, spent) = (&self.vortices, &self.spent_vortices);
@@ -13141,12 +13148,23 @@ mod radiation_tests {
             BATTERY_MAX,
             "bo's suit was not issued full"
         );
+        let ana0 = hp(&w, ANA);
         run(&mut w, SECONDS as f32);
         let drained = BATTERY_MAX - battery(&w, BO);
         let want = RADIATION_SHIELD_COST * SECONDS as f32;
         assert!(
             (drained - want).abs() < 1e-2,
             "sealed for {SECONDS} s spent {drained}, not {want}"
+        );
+        // R108 (T22.18, the owner: "drain energy 50% slower"), against a measured
+        // basis rather than the constant: over the same seconds the sealed suit spends
+        // half what the same radiation takes off an unsealed body — within one log
+        // interval's damage (it lands once a `RADIATION_LOG_INTERVAL`).
+        let hurt = ana0 - hp(&w, ANA);
+        assert!(
+            hurt > 0.0 && (drained - 0.5 * hurt).abs() <= RADIATION_DPS * RADIATION_LOG_INTERVAL,
+            "R108: sealed {SECONDS} s spent {drained} energy while radiation took {hurt} health \
+             unsealed — not half"
         );
         assert_eq!(
             battery(&w, ANA),

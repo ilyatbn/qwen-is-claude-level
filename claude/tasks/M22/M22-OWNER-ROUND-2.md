@@ -47,6 +47,12 @@ Asked after M22 closed, verbatim:
   prediction uses (`field_accel_at`), no second copy.
 - **R108 — energy drains 50 % slower.** Read as the suit's **EN** bar: `RADIATION_SHIELD_COST` halves (1.0 → 0.5 /s).
   Thruster fuel (JET) is unchanged. Re-run the radiation balance report and write the new numbers here.
+  **Measured (T22.18, `gate-t2218-reports-{before,after}.txt`, release, same seeds, before `6d8c7df` → after):**
+  `space_radiation_report` (8 seeds × 6 bots × 230 s): radiation deaths **0.25 → 0.12** a player a round; other deaths
+  4.38 → 4.02; packs spawned 5.46 → 5.40, picked 4.56 → 4.67; unsealed 8.9 → 8.4 % of alive time.
+  `space_bots_report` (`BOTS_SEEDS=24`, natural arm; the after also carries R105/R106): radiation **0.29 → 0.12** a bot
+  a round, hole 0.01 → 0.01, void 0 → 0, kills 4.21 → 4.49, trips 0.24 → 0.07, packs 4.86 → 5.48; unsealed
+  13.7 → 7.7 % of alive time.
 
 ## Tasks
 - T22.15 — the field: short-range wells (R101) — `T22.15-short-range-wells.md`

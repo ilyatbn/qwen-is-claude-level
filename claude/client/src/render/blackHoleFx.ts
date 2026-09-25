@@ -84,7 +84,7 @@ export interface BlackHoleFxState {
 
 /**
  * The shader path. `resolution` and `time` are Phaser's own uniforms; the quad is
- * `2 × reach` square, centred on the hole, so `p` below is world px from the centre.
+ * `2 × glow` square, centred on the hole, so `p` below is world px from the centre.
  */
 function blackHoleFragment(): string {
   return /* glsl */ `
@@ -99,7 +99,7 @@ uniform float time;
 uniform float horizon;
 uniform float ring;
 uniform float ringW;
-uniform float reach;
+uniform float glow;
 uniform float spin;
 uniform float grow;
 uniform vec3 ringCol;
@@ -120,7 +120,7 @@ void main() {
   // it is drawn at the scaled radius r, and multiplied by step(0.001, grow).
   vec2 p0 = vec2(fragCoord.x, resolution.y - fragCoord.y) - resolution * 0.5;
   float r0 = length(p0);
-  if (r0 > reach) { gl_FragColor = vec4(0.0); return; }
+  if (r0 > glow) { gl_FragColor = vec4(0.0); return; }
   vec2 p = p0 / max(grow, 0.001);
   float r = length(p);
   float a = atan(p.y, p.x);
@@ -133,9 +133,9 @@ void main() {
     + noise(vec2(cos(2.0 * ang), sin(2.0 * ang)) * 3.0 - vec2(time * 0.3, r * 0.04)));
   float hot = band * (0.35 + 0.65 * swirl) * step(horizon, r);
   vec3 hotCol = mix(vec3(0.85, 0.25, 0.05), vec3(1.0, 0.9, 0.6), swirl * band);
-  // Lensing halo, fading to nothing at the reach; brighter toward the horizon.
-  float halo = pow(1.0 - smoothstep(horizon, reach, r), 3.0) * 0.35;
-  float deco = step(0.001, grow) * step(r, reach);
+  // Lensing halo, fading to nothing at the glow's edge; brighter toward the horizon.
+  float halo = pow(1.0 - smoothstep(horizon, glow, r), 3.0) * 0.35;
+  float deco = step(0.001, grow) * step(r, glow);
   vec3 col = (hotCol * hot + vec3(1.0, 0.55, 0.25) * halo) * deco;
   float alpha = clamp(hot + halo, 0.0, 1.0) * deco;
   // The accretion ring: solid across ringW — the probe band. Full size (r0).
@@ -272,11 +272,12 @@ export class BlackHoleFx {
 
   private paintFlat(h: BlackHoleDraw, grow: number, r: BlackHoleRadii, t: number): void {
     const s = grow
-    // The lensing halo, in rings of falling light out to the reach.
+    // The lensing halo, in rings of falling light out to the glow's edge (T22.18: not
+    // the reach, which R106 doubled — `BLACK_HOLE_GLOW_HORIZONS`).
     for (let i = 0; i < 6; i++) {
       const u = i / 6
       this.glow.fillStyle(0xff7a30, 0.05 * (1 - u))
-      this.glow.fillCircle(h.x, h.y, (r.horizon + (r.reach - r.horizon) * (1 - u)) * s)
+      this.glow.fillCircle(h.x, h.y, (r.horizon + (r.glow - r.horizon) * (1 - u)) * s)
     }
     // Accretion streaks: short hot arcs turning round the ring.
     for (let k = 0; k < BLACK_HOLE_STREAKS; k++) {
@@ -306,13 +307,13 @@ export class BlackHoleFx {
         horizon: { type: '1f', value: r.horizon },
         ring: { type: '1f', value: r.ring },
         ringW: { type: '1f', value: BLACK_HOLE_RING_W },
-        reach: { type: '1f', value: r.reach },
+        glow: { type: '1f', value: r.glow },
         spin: { type: '1f', value: BLACK_HOLE_SPIN },
         grow: { type: '1f', value: grow },
         ringCol: { type: '3f', value: { x: rr / 255, y: rg / 255, z: rb / 255 } },
       })
       this.quad = this.scene.add
-        .shader(base, 0, 0, r.reach * 2, r.reach * 2)
+        .shader(base, 0, 0, r.glow * 2, r.glow * 2)
         .setOrigin(0.5, 0.5)
         .setDepth(DEPTH.particles)
     }
