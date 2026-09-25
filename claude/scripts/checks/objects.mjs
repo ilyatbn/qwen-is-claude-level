@@ -38,7 +38,8 @@
  *    `client/src/render/chunkBake.ts:173` — the live binding site the bake
  *    actually runs, not `docs/12` §2's description of it.
  * 5. **The budget — moved to `perf.mjs` (R37, T22.00C)**, where the serial,
- *    wall-clock checks live. What follows is its history. A single rebake under `CHUNK_REBAKE_MS`, read from
+ *    wall-clock checks live — and, since `perf` is parked, on to its own gated check,
+ *    `chunk-rebake.mjs` (M22 close-out). What follows is its history. A single rebake under `CHUNK_REBAKE_MS`, read from
  *    `TerrainRenderer.stats.lastBakeMs` — the renderer's own instrument, not a
  *    stopwatch this check starts. Gated on the **median** of 40 samples and
  *    reported with the max: §6's ceilings are generous on purpose, "so a 50x
@@ -282,7 +283,7 @@ try {
     }
   }
 
-  // --- 5. the rebake budget: moved to `perf.mjs` (R37, T22.00C) ------------
+  // --- 5. the rebake budget: moved to `perf.mjs` (R37, T22.00C), now `chunk-rebake.mjs` ---
   // A wall-clock median under `--jobs` walked into the max's old range (4.20 ms in a
   // `--changed` run, 0.80 alone minutes later) and decided a gate on load; `perf` is
   // the serial check that exists for budgets. Not `flaky: true` here: that would have

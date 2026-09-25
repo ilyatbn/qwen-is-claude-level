@@ -1201,6 +1201,13 @@ leaves `objects`' eight pixel assertions gating on every run.
 
 **Reverse it by:** one assertion, back in `objects.mjs`.
 
+**AMENDED 2026-09-25 (M22 close-out).** `perf` is `flaky: true`, so once the budget moved there **nothing gated it** —
+the move traded a load flake for no coverage. It is now its own check, `scripts/checks/chunk-rebake.mjs`
+(`serial: true`, not parked), the same instrument, 40 samples and median bound: green alone at 1.40 ms median / 1.90
+max (`gate-closeout-chunk-rebake.txt`); a 6 ms busy-wait planted in `terrain.ts`'s bake loop reds it at 7.10 ms
+(`gate-closeout-chunk-rebake-plant.txt`). If it reds under load it goes to `flaky-test.md` with its numbers, not back
+into a parked check.
+
 ## R38 — Projectiles fly perfectly straight in space, and that is kept
 
 *`T22.03` flagged it as a real balance change no ruling names. It is.*

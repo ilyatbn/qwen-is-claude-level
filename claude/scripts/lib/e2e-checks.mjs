@@ -188,6 +188,9 @@ export const CHECKS = [
   // full gate, still under the decaying load of the parallel phase; 59.9 and 59.5
   // fps alone on an idle box. `serial` does not wait for the load to fall.
   { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true, flaky: true },
+  // R37's single-chunk rebake budget: moved into `perf` by T22.00C, where the flaky flag
+  // meant nothing gated it; its own serial check since the M22 close-out.
+  { name: 'chunk-rebake', file: 'scripts/checks/chunk-rebake.mjs', url: '?sandbox=1&seed=4242', serial: true },
   // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
