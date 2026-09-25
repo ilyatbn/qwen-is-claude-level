@@ -638,6 +638,40 @@ pub const SPACE_ASTEROID_TRIES: u32 = 40;
 /// from.
 pub const SPACE_ASTEROID_CORE_FRAC: f32 = 0.75;
 
+/// **An asteroid's core** (T22.16, `M22-OWNER-ROUND-2` R102 — the owner: *"make like
+/// a round core at the center"*): a disc of this fraction of the bounding radius,
+/// at the rock's centre — 7 px on the smallest rock, 21 on the largest (radius
+/// `round(SPACE_CORE_FRAC · r)`, `world::cores::core_radius`). Drawn distinctly;
+/// destructible like rock; destroyed at [`SPACE_CORE_DESTROYED_FRAC`], and then the
+/// rock's well is off for the round and one battery pack floats where it was.
+///
+/// **Not [`SPACE_ASTEROID_CORE_FRAC`]**, the generator's round *body* (0.75 r), which
+/// the lumps are stamped onto and which the well's reach is measured from
+/// (`attractors::well_contact`, refinement B): a core that large would be most of the
+/// rock, and the threshold refinement A needs would fall to ~5 % of it — one pistol
+/// crater anywhere in the body. Small keeps the core *at the centre*: you dig to it.
+/// *Reverse it by:* this constant (and re-derive the threshold below).
+pub const SPACE_CORE_FRAC: f32 = 0.3;
+
+/// **When a core counts as destroyed**: at least this fraction of its disc's pixels
+/// are air (T22.16, R102 "≥ a named fraction carved").
+///
+/// **Basis — refinement A, and the arithmetic is the whole reason for the number.**
+/// A rock's well is full strength everywhere inside its reach (R101's step), so a
+/// body in a hollowed-out centre was swung through it and back with nothing to damp
+/// it (±20 px at ~54 px/s for seconds, the review of T22.15). A body can only cross
+/// the centre if its box — `PLAYER_W` × `PLAYER_H`, 16 × 28, all air — can hold the
+/// centre pixel, and such a box covers at least the core pixels in a 16 × 28 box with
+/// the centre at its corner: a quarter of the disc while the core radius `c` ≤
+/// `PLAYER_W`, and at the largest core (c = 21) 310 of 1373 px. The minimum over every
+/// rock radius 24..70 and every pixel placement is **22.58 %**
+/// (`cores::tests::a_body_that_can_hold_the_centre_has_already_destroyed_the_core`
+/// brute-forces it). 0.2 is under that, so **a cavity a body fits in can never hold
+/// the centre while the well is on** — by the time it could, the core is gone.
+/// *Reverse it by:* this constant (the test above fails if it is raised past the
+/// minimum).
+pub const SPACE_CORE_DESTROYED_FRAC: f32 = 0.2;
+
 /// Lumps stamped on an asteroid's core, and their radii as a fraction of the
 /// bounding radius. Enough to break the silhouette; not so many that the union
 /// fills the bounding disc back out to a circle.
@@ -728,6 +762,11 @@ pub const SPACE_WELL_ACCEL_MAX: f32 = JETPACK_THRUST_DOWN * SPACE_WELL_ESCAPE_MA
 /// pixels around each 'asteroid' and its fine to sometimes have no gravity at all
 /// and just float in space."*
 ///
+/// *T22.16 (refinement B): the band now starts at the rock's round body,
+/// `SPACE_ASTEROID_CORE_FRAC · r`, not at the bounding circle `r` —
+/// `attractors::well_contact` has the inequality that keeps a body on the outermost
+/// lump inside it. Read `r` below as that body radius.*
+///
 /// **Measured from the body, not from the centre.** `s = |p − c| − r − PLAYER_H / 2`
 /// is the gap between a body's near edge and the rock's bounding circle (`r`, the
 /// grown radius, which bounds every lump): at `s < WELL_SURFACE_BAND` — anywhere a
@@ -760,8 +799,9 @@ pub const WELL_SURFACE_BAND: f32 = PLAYER_H;
 /// attractor can make you is a free fall from its cutoff to the closest a body
 /// can get — integrated, not remembered, by
 /// `world::attractors::tests::space_max_speed_carries_its_basis`, which asserts
-/// this clamp sits above 1.5x the fastest of them (the deepest well, **247.8
-/// px/s** since R101 — it was 695.8 when a well reached a climb budget out; a
+/// this clamp sits above 1.5x the fastest of them (the deepest well, **194.4
+/// px/s** since T22.16 measures the band from the rock's round body — 247.8 at
+/// R101, 695.8 when a well reached a climb budget out; a
 /// vortex capped with the wells; the hole down to its horizon), and checks the
 /// two bounds R10 names: above the 367.7 px/s a diagonal jetpack burn already
 /// reaches (below it, the clamp re-introduces the *"controls fighting you"*

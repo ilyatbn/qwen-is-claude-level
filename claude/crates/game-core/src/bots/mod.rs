@@ -854,6 +854,82 @@ mod tests {
         );
     }
 
+    /// **T22.16 (R102): a destroyed core's battery is an ordinary pack to a bot.** On a
+    /// real space map the largest rock's core is carved out and a world step destroys
+    /// it; a bot with a flat suit floating just clear of that rock, armed, shops for the
+    /// battery that dropped at the core's centre — through the pack-seeking it already
+    /// had (sight, line, keep-outs, `would_take`), nothing new. The control: the same bot
+    /// with a full suit does not.
+    #[test]
+    fn a_bot_whose_suit_runs_flat_goes_for_a_destroyed_cores_battery() {
+        use crate::items::registry::BATTERY_PACK;
+        let goal = |battery: f32| {
+            let mut w = World::with_gravity(
+                SEED,
+                MapScale::Small,
+                0,
+                crate::constants::DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            w.set_round_seconds(600.0);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "p1".into());
+            w.add_player(2, 0, "p2".into());
+            let a = *w
+                .map
+                .meta
+                .asteroids
+                .iter()
+                .max_by_key(|a| a.r)
+                .expect("rocks");
+            let _ = w
+                .map
+                .carve_circle(a.x, a.y, crate::world::cores::core_radius(&a));
+            let _ = w.drain_events();
+            w.step(SIM_DT);
+            let pack = w
+                .drain_events()
+                .iter()
+                .find_map(|e| match e {
+                    crate::world::GameEvent::ItemSpawn {
+                        world_item_id,
+                        item_id,
+                        ..
+                    } if *item_id == BATTERY_PACK => Some(*world_item_id),
+                    _ => None,
+                })
+                .expect("the destroyed core dropped no battery");
+            give(&mut w, 1, PISTOL, 1);
+            if let Some(p) = w.player_mut(1) {
+                p.body = crate::physics::body::Body::new(Vec2::new(
+                    a.x as f32,
+                    a.y as f32 - a.r as f32 - PLAYER_H,
+                ));
+                p.battery = battery;
+            }
+            // An enemy in sight, so shopping is a choice over a fight (the premise of
+            // the flat-suit errand), as in the fixture above.
+            if let Some(p) = w.player_mut(2) {
+                p.body = crate::physics::body::Body::new(Vec2::new(
+                    a.x as f32 + 100.0,
+                    a.y as f32 - a.r as f32 - PLAYER_H,
+                ));
+            }
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            b.think(&w, 0.0, SIM_DT);
+            (b.goal, pack)
+        };
+        let low = BATTERY_MAX * crate::constants::BOT_SUIT_SHOP_BELOW * 0.6;
+        let (g, pack) = goal(low);
+        assert_eq!(
+            g,
+            Goal::Item(pack),
+            "a flat suit ignored the core's battery"
+        );
+        let (g, _) = goal(BATTERY_MAX);
+        assert_eq!(g, Goal::Enemy(2), "control: a full suit should fight");
+    }
+
     /// §E10: an item behind a wall is not a target.
     #[test]
     fn an_item_behind_solid_rock_is_not_a_target() {

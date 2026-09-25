@@ -323,7 +323,13 @@ pub const HEADER_BYTES: usize = 46;
 /// rock and not at all beyond (it reached up to a climb budget, falling off), so a
 /// v27 space recording diverges on the first tick of any space round — a player at a
 /// spawn was pulled then and is not now. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 28;
+///
+/// Bumped to 29 by T22.16 (R102, asteroid cores): the state hash covers each rock's
+/// `core_intact`, a carved core crumbles and drops a battery, and a well's band is
+/// measured from the rock's round body (refinement B) — a v28 space recording
+/// diverges on the first tick a player stands in a band that moved, or the first
+/// carve that reaches a core. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 29;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

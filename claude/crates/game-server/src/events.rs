@@ -75,6 +75,8 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         // T22.12: the hole is in the world for everyone — and so is its warning (R93).
         | GameEvent::BlackHole { .. }
         | GameEvent::BlackHoleWarn { .. }
+        // T22.16: a rock's well switching off is in the world for everyone.
+        | GameEvent::CoreDestroyed { .. }
         | GameEvent::VortexClose { .. }
         | GameEvent::VortexTrip { .. }
         // T22.12D F3: a dev placement, seen by everyone as any relocation is.
@@ -126,6 +128,7 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::VortexOpen { .. } => "vortex_open",
         GameEvent::BlackHole { .. } => "black_hole",
         GameEvent::BlackHoleWarn { .. } => "black_hole_warn",
+        GameEvent::CoreDestroyed { .. } => "core_destroyed",
         GameEvent::VortexClose { .. } => "vortex_close",
         GameEvent::VortexTrip { .. } => "vortex_trip",
         GameEvent::Relocate { .. } => "relocate",
@@ -386,6 +389,7 @@ pub fn payload_with_votes(
         }
         GameEvent::VortexClose { id, .. } => json!({"tick": tick, "id": id}),
         GameEvent::BlackHole { x, y, .. } => json!({"tick": tick, "x": x, "y": y}),
+        GameEvent::CoreDestroyed { x, y, .. } => json!({"tick": tick, "x": x, "y": y}),
         GameEvent::BlackHoleWarn {
             x, y, arrives_in, ..
         } => json!({"tick": tick, "x": x, "y": y, "arrives_in": arrives_in}),

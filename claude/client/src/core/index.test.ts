@@ -340,10 +340,11 @@ describe('Core', () => {
       expect(core.setGravity(rocks ? mode : 'standard')).toBe(true)
       core.generate(4242n, MapScale.Small)
       expect(core.setGravity(mode)).toBe(true)
-      // On a map with rocks, one body height over the first rock's bounding radius:
-      // inside its band (R101, T22.15 — (500, 40) is open space, with no field).
+      // On a map with rocks, just clear of the first rock's outermost lump: inside its
+      // band (R101, T22.15 — (500, 40) is open space, with no field; T22.16 measures
+      // the band from the rock's round body, so a body height past `r` is out of it).
       const a = core.meta.asteroids[0]
-      const [x0, y0start] = rocks && a ? [a.x, a.y - a.r - C().PLAYER_H] : [500, 40]
+      const [x0, y0start] = rocks && a ? [a.x, a.y - a.r - C().PLAYER_H / 2 - 1] : [500, 40]
       core.addPlayer(11, x0, y0start)
       const y0 = core.playerState(11)!.y
       for (let seq = 0; seq < 20; seq++) core.applyInput(11, seq, 0, 0, C().SIM_DT)
@@ -414,7 +415,8 @@ describe('Core', () => {
     // body plus `WELL_SURFACE_BAND` past the radius; it was two body heights out,
     // which is now open space with no field at all).
     const deepest = rocks.reduce((best, a) => (a.level > best.level ? a : best), rocks[0]!)
-    const start = { x: deepest.x + deepest.r + C().PLAYER_H, y: deepest.y }
+    // T22.16: just clear of the outermost lump — the band starts at the round body now.
+    const start = { x: deepest.x + deepest.r + C().PLAYER_H / 2 + 1, y: deepest.y }
     const field = core.fieldAccelAt(start.x, start.y)
     const mag = Math.hypot(field[0]!, field[1]!)
     expect(mag).toBeGreaterThan(0)
@@ -452,7 +454,8 @@ describe('Core', () => {
 
     // And put them back, which is what `applyMapInit` does.
     core.setAsteroids(rocks)
-    expect(core.meta.asteroids).toEqual(rocks)
+    // The wire's four fields (T22.16's `core_intact` readback is not on it).
+    expect(core.meta.asteroids.map(({ x, y, r, level }) => ({ x, y, r, level }))).toEqual(rocks)
     const moved = drift()
     // The rock is at most a body height away now (R101), so the body lands on it
     // after less than that; half a body width is still a move no rounding makes.

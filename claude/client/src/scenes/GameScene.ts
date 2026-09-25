@@ -739,6 +739,8 @@ export class GameScene extends Phaser.Scene {
     this.mirror?.clearVortices()
     // T22.12: nor last round's black hole.
     this.mirror?.clearBlackHole()
+    // T22.16: nor last round's dead cores — a new map's rocks all pull.
+    this.mirror?.clearCores()
     this.bellEndsTick = null
     this.bellSeq = null
     this.endedAtTick = null
@@ -919,6 +921,7 @@ export class GameScene extends Phaser.Scene {
         // the old ones before the new round's first predicted tick.
         this.mirror.clearVortices()
         this.mirror.clearBlackHole()
+        this.mirror.clearCores()
         this.roundTime = 0
         this.serverRoundTime = 0
         this.serverClock.reset()
@@ -1069,7 +1072,11 @@ export class GameScene extends Phaser.Scene {
       // T22.12: the black hole — the mirror tells the core, which chains its pull
       // after the vortices; unsubscribed, a client rubber-bands near it. And its
       // telegraph (T22.12C, R93), which only draws.
-      'black_hole', 'black_hole_warn']) {
+      'black_hole', 'black_hole_warn',
+      // T22.16: a rock's core destroyed — the mirror tells the core, which stops
+      // summing that well from the server's seq; unsubscribed, a client keeps
+      // predicting a well the server switched off.
+      'core_destroyed']) {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())

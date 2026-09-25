@@ -68,6 +68,14 @@ pub struct Asteroid {
     /// *pull*, so a digest that skipped it would let the whole level assignment
     /// change with every golden row still green.
     pub level: u8,
+    /// **Its core is still there** (T22.16, R102): `true` from the generator, set
+    /// `false` for the rest of the round by `World::step_cores` when the core is
+    /// destroyed — and then this rock has no well (`attractors::asteroid_attractors`
+    /// skips it). The server's flag, hashed in `World::state_hash`; not in the golden
+    /// digest (always `true` at generation) nor in `map_init` (the `core_destroyed`
+    /// event carries it). The mirror sets it per replayed seq
+    /// (`GameCore::apply_input`), so a seq stepped before the destruction still pulls.
+    pub core_intact: bool,
 }
 
 /// An indestructible standing spot (`docs/72-amendments-v4.md` §C5).

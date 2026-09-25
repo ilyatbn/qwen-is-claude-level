@@ -863,15 +863,18 @@ mod world_tests {
         use crate::constants::VORTEX_CAPTURE_R;
         use crate::items::registry::UNICORN_WINGS;
         let d = 1.5 * VORTEX_CAPTURE_R;
-        let (dir, hole) = {
-            let mut w = space_world(4242);
-            let hole = breach_top(&mut w);
-            let dir = probe(&w, hole, d, |wells, _| wells.len() > 1.0)
-                .expect("a point beside the vortex that a well reaches too");
-            (dir, hole)
-        };
+        // *T22.16: the first seed from 4242 with such a point* — the wells' band now
+        // starts at the rock's round body (refinement B), and seed 4242's top breach
+        // has no rock band 1.5 capture radii off it any more.
+        let (seed, dir, hole) = (4242..4242 + 64u64)
+            .find_map(|seed| {
+                let mut w = space_world(seed);
+                let hole = breach_top(&mut w);
+                probe(&w, hole, d, |wells, _| wells.len() > 1.0).map(|dir| (seed, dir, hole))
+            })
+            .expect("a point beside the vortex that a well reaches too");
         let run = |winged: bool, vortex: bool| -> (bool, f32) {
-            let mut w = space_world(4242);
+            let mut w = space_world(seed);
             assert_eq!(breach_top(&mut w), hole);
             if !vortex {
                 w.vortices.clear();
@@ -917,7 +920,7 @@ mod world_tests {
             "control: the same body unwinged drifted only {drift:.2} px on the wells"
         );
         // The mouth is a radius: winged, inside it, taken on the next tick.
-        let mut w = space_world(4242);
+        let mut w = space_world(seed);
         breach_top(&mut w);
         crate::world::give(&mut w, 0, UNICORN_WINGS, 1);
         w.players[0].body = Body::new(hole + dir * (0.9 * VORTEX_CAPTURE_R));

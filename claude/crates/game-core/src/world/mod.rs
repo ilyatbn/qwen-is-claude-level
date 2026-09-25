@@ -12,6 +12,7 @@ pub mod animals;
 pub mod attractors;
 pub mod birds;
 pub mod black_hole;
+pub mod cores;
 pub mod cycle;
 pub mod mount;
 pub mod teleport;
@@ -395,6 +396,16 @@ pub enum GameEvent {
         x: f32,
         y: f32,
     },
+    /// T22.16 (R102): the core of the asteroid centred at `(x, y)` was destroyed on
+    /// `tick` — that rock's well is off from the next tick for the rest of the round
+    /// (`World::step_cores`). Everyone: the client stops predicting the well from the
+    /// first seq stepped after `tick` (`WorldMirror.pushCores`). The battery it leaves
+    /// is an ordinary `ItemSpawn`; the crumbling an ordinary `Carve`.
+    CoreDestroyed {
+        tick: u32,
+        x: i32,
+        y: i32,
+    },
     /// T22.12C, R93: the black hole will open at `(x, y)` in `arrives_in` seconds —
     /// the telegraph, `BLACK_HOLE_TELEGRAPH` before the arrival. Everyone. An event
     /// rather than a client derivation because the arrival time is the server's roll.
@@ -534,6 +545,7 @@ impl GameEvent {
             | GameEvent::VortexOpen { tick, .. }
             | GameEvent::BlackHole { tick, .. }
             | GameEvent::BlackHoleWarn { tick, .. }
+            | GameEvent::CoreDestroyed { tick, .. }
             | GameEvent::VortexClose { tick, .. }
             | GameEvent::VortexTrip { tick, .. }
             | GameEvent::Relocate { tick, .. }
@@ -1802,6 +1814,12 @@ impl World {
             self.step_black_hole(now);
         }
 
+        // 8b0''. asteroid cores (T22.16, R102): **after every carve of the tick** —
+        // weapons (4), weather (5), mines (5b), the hole (8b0') — so a core carved
+        // this tick is judged this tick and its well is off from the next
+        // `apply_inputs`. Every phase: the mask is the truth whenever it was carved.
+        self.step_cores(now);
+
         // 8b. the void (§C15). **Before the deaths**, because it works by putting
         // a body's health at zero and letting `resolve_deaths` do everything a
         // death does — the drop, the score, the event, the respawn timer.
@@ -3036,7 +3054,7 @@ impl World {
                 BirdKind::Normal => crate::items::registry::MEDKIT,
                 BirdKind::Metal => crate::items::registry::BATTERY_PACK,
             };
-            self.drop_wildlife_loot(item_id, kill.at, now);
+            self.drop_wildlife_loot(item_id, kill.at, Self::wildlife_drop_vel(), now);
         }
     }
 
@@ -3061,8 +3079,13 @@ impl World {
                 AnimalKind::Spider => crate::items::registry::MEDKIT,
                 AnimalKind::Beetle => crate::items::registry::BATTERY_PACK,
             };
-            self.drop_wildlife_loot(item_id, kill.at, now);
+            self.drop_wildlife_loot(item_id, kill.at, Self::wildlife_drop_vel(), now);
         }
+    }
+
+    /// A bird's or an animal's drop: tossed down at `BIRD_DROP_VELOCITY`.
+    fn wildlife_drop_vel() -> Vec2 {
+        Vec2::new(0.0, crate::constants::BIRD_DROP_VELOCITY)
     }
 
     /// Put one item on the ground where a bird or an animal died.
@@ -3075,7 +3098,11 @@ impl World {
     /// beside this one would be the place that guard gets dropped, and the
     /// symptom — one silently missing drop at a cap nobody reaches in a test —
     /// is the kind nothing catches.
-    fn drop_wildlife_loot(&mut self, item_id: ItemId, at: Vec2, now: f32) {
+    ///
+    /// T22.16: **and where an asteroid's core was** (`step_cores`) — the one drop, so
+    /// the one guard; `vel` is the only thing that differs (a core's battery floats
+    /// where it is put, R14).
+    fn drop_wildlife_loot(&mut self, item_id: ItemId, at: Vec2, vel: Vec2, now: f32) {
         let tick = self.tick;
         if let Some(evicted) = self.items.make_room() {
             self.events.push(GameEvent::ItemDespawn {
@@ -3083,14 +3110,9 @@ impl World {
                 world_item_id: evicted,
             });
         }
-        let id = self.items.spawn(
-            item_id,
-            1,
-            at,
-            Vec2::new(0.0, crate::constants::BIRD_DROP_VELOCITY),
-            SpawnSource::Periodic,
-            now,
-        );
+        let id = self
+            .items
+            .spawn(item_id, 1, at, vel, SpawnSource::Periodic, now);
         self.events.push(GameEvent::ItemSpawn {
             tick,
             world_item_id: id,
@@ -5042,6 +5064,9 @@ impl World {
             h.update(&a.y.to_le_bytes());
             h.update(&a.r.to_le_bytes());
             h.update(&[a.level]);
+            // T22.16: a destroyed core switches the well off — a pull the two sides
+            // could disagree about, so the hash says which tick.
+            h.update(&[a.core_intact as u8]);
         }
         h.update(&self.tick.to_le_bytes());
         h.update(&self.round_time.to_le_bytes());

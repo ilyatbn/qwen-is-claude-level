@@ -191,6 +191,13 @@ export class WorldMirror {
   blackHole: BlackHoleView | null = null
   /** T22.12C R93: the telegraph, until the hole arrives. */
   blackHoleWarn: BlackHoleWarnView | null = null
+  /**
+   * T22.16 (R102): every asteroid core destroyed this round, as `core_destroyed`
+   * announced it (the rock's centre and the server tick), in arrival order. Held here
+   * for the vortices' reason — a resync must not drop it, a new round must
+   * (`clearCores`) — and told to the core on every snapshot (`pushCores`).
+   */
+  readonly deadCores: { x: number; y: number; tick: number | null }[] = []
   /** The rocks `map_init` shipped, so the one the hole ate can be dropped by centre. */
   private asteroids: MapInit['asteroids'] = []
   /**
@@ -225,6 +232,8 @@ export class WorldMirror {
     this.core.setVortices([])
     // T22.12: nor the last match's black hole.
     this.core.setBlackHole(null)
+    // T22.16: nor its dead cores.
+    this.core.setDeadCores([])
   }
 
   /** The vortices that pull, in opening order — what the core sums. */
@@ -268,6 +277,30 @@ export class WorldMirror {
     this.anchor = a
     this.pushVortices()
     if (this.blackHole) this.pushBlackHole()
+    if (this.deadCores.length > 0) this.pushCores()
+  }
+
+  /**
+   * T22.16 (R102): tell the core which wells are gone — each from the first seq the
+   * server stepped after the core's tick (`firstSeqAfter`, T22.14C LOW-4's rule), so a
+   * replay of a seq stepped before the destruction still pulls. Without an anchor (or a
+   * tick), off for every seq, as the other attractors switch at once then.
+   */
+  pushCores(): void {
+    const a = this.anchor
+    this.core.setDeadCores(
+      this.deadCores.map((c) => ({
+        x: c.x,
+        y: c.y,
+        fromSeq: a && c.tick !== null ? firstSeqAfter(c.tick, a) : 0,
+      })),
+    )
+  }
+
+  /** A new round: every rock has its core again. */
+  clearCores(): void {
+    this.deadCores.length = 0
+    this.core.setDeadCores([])
   }
 
   /**
@@ -343,6 +376,8 @@ export class WorldMirror {
     // sent before still has it, and `pushBlackHole` drops it again by centre.
     this.asteroids = m.asteroids
     if (this.blackHole) this.pushBlackHole()
+    // T22.16: `set_asteroids` re-installs every rock intact; the dead stay dead.
+    if (this.deadCores.length > 0) this.pushCores()
     // A resync restarts the carve stream: the mask we just loaded already
     // contains every carve the server has applied, so anything buffered is
     // either already baked in or about to be re-sent.
@@ -476,6 +511,16 @@ export class WorldMirror {
         if (!this.blackHole) this.blackHole = { x: n(p['x']), y: n(p['y']), arrivedAt: now, tick: tickOf(p) }
         this.blackHoleWarn = null
         this.pushBlackHole()
+        break
+      }
+      case 'core_destroyed': {
+        // By centre, so the join catch-up re-announcing one is not a second.
+        const x = n(p['x'])
+        const y = n(p['y'])
+        if (!this.deadCores.some((c) => c.x === x && c.y === y)) {
+          this.deadCores.push({ x, y, tick: tickOf(p) })
+        }
+        this.pushCores()
         break
       }
       case 'black_hole_warn': {

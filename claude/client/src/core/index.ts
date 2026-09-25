@@ -148,6 +148,11 @@ export interface Asteroid {
   r: number
   /** Gravity level, 1..`SPACE_LEVEL_MAX`. Monotone in `r`, with jitter. */
   level: number
+  /**
+   * T22.16 (R102): its core is still there, so it has a well. As of the last seq this
+   * core stepped (`GameCore::sync_cores`) — a readback, not what the client acts on.
+   */
+  core_intact: boolean
 }
 
 export interface InventoryView {
@@ -937,6 +942,23 @@ export class Core {
       new Uint32Array(list.map((v) => v.fromSeq ?? 0)),
       new Uint32Array(list.map((v) => v.untilSeq ?? U32_MAX)),
     )
+  }
+
+  /**
+   * T22.16 (R102): the asteroids whose core the server destroyed (`core_destroyed`),
+   * by centre, each from the first input seq the server stepped without its well
+   * (absent: every seq). `apply_input` stops summing that rock's well from there —
+   * until told, a client predicts a well the server switched off: a rubber-band.
+   * `WorldMirror.pushCores` is the one production caller.
+   */
+  setDeadCores(list: readonly { x: number; y: number; fromSeq?: number }[]): void {
+    this.inner.set_dead_cores(
+      new Int32Array(list.map((c) => c.x)),
+      new Int32Array(list.map((c) => c.y)),
+      new Uint32Array(list.map((c) => c.fromSeq ?? 0)),
+    )
+    // `meta.asteroids[].core_intact` is the readback, and `meta` is cached.
+    this.invalidate()
   }
 
   /**

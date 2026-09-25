@@ -293,8 +293,10 @@ describe('mask agreement', () => {
     const wire = server.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
     expect(wire.length).toBeGreaterThan(0)
     const deepest = wire.reduce((best, a) => (a.level > best.level ? a : best), wire[0]!)
-    // One body height off the bounding radius: inside the band (R101, T22.15).
-    const probe = { x: deepest.x + deepest.r + C().PLAYER_H, y: deepest.y }
+    // Just clear of the outermost lump — inside the band (R101, T22.15; T22.16 measures
+    // the band from the rock's round body, so one body height off `r` is past it on
+    // the big rocks).
+    const probe = { x: deepest.x + deepest.r + C().PLAYER_H / 2 + 1, y: deepest.y }
     const pull = (c: Core) => {
       const f = c.fieldAccelAt(probe.x, probe.y)
       return Math.hypot(f[0]!, f[1]!)
@@ -308,7 +310,8 @@ describe('mask agreement', () => {
     expect(pull(core)).toBe(0)
 
     initMirror(core, 0, undefined, undefined, wire)
-    expect(core.meta.asteroids).toEqual(wire)
+    // The wire's four fields (T22.16's `core_intact` is not on it).
+    expect(core.meta.asteroids.map(({ x, y, r, level }) => ({ x, y, r, level }))).toEqual(wire)
     expect(pull(core)).toBeCloseTo(pull(server), 3)
 
     // **The control that the line reads the wire rather than remembering.** The
@@ -807,3 +810,82 @@ describe('the black hole (T22.12)', () => {
   })
 })
 
+
+/**
+ * T22.16 (R102): a destroyed core reaches the core **as the well `apply_input` stops
+ * summing**, from the first seq the server stepped without it — anchored at ack 100 on
+ * tick 500, a core destroyed on tick 503 last pulls seq 103 and first stops at 104. It
+ * survives a resync (`map_init` re-installs every rock intact) and a catch-up
+ * re-announcing it, and a new round clears it. Asserted on a stepped body (its
+ * velocity after one tick from rest, where space has no other force) and on the
+ * core's field readback; the controls are the seqs before the switch and the cleared
+ * round, where the same body is pulled.
+ */
+describe('asteroid cores (T22.16)', () => {
+  it('stops the well from the seq after its tick, survives a resync, and a new round clears it', () => {
+    expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    core.setPhase('playing')
+    core.setBell(null)
+    const wire = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
+    const mirror = initMirror(core, 0, undefined, undefined, wire)
+    // Just clear of the rock's highest possible lump (its bounding radius plus half a
+    // body), straight above it: inside its band, in air.
+    const rock = wire.find((a) => core.fieldAccelAt(a.x, a.y - a.r - C().PLAYER_H / 2 - 1)[1]! > 0)
+    expect(rock).toBeDefined()
+    const probe = { x: rock!.x, y: rock!.y - rock!.r - C().PLAYER_H / 2 - 1 }
+    const fy = () => core.fieldAccelAt(probe.x, probe.y)[1]!
+    const pulledAt = (seq: number): boolean => {
+      core.removePlayer(0)
+      core.addPlayer(0, probe.x, probe.y)
+      core.applyInput(0, seq, 0, 0, C().SIM_DT)
+      return core.playerState(0)!.vy !== 0
+    }
+    expect(pulledAt(103)).toBe(true)
+
+    mirror.anchorSeqs({ ack: 100, tick: 500 })
+    mirror.applyEvent('core_destroyed', { x: rock!.x, y: rock!.y, tick: 503 }, 0)
+    expect(pulledAt(103)).toBe(true)
+    expect(pulledAt(104)).toBe(false)
+    expect(fy()).toBe(0)
+    // A catch-up re-announcing it is not a second.
+    mirror.applyEvent('core_destroyed', { x: rock!.x, y: rock!.y, tick: 600 }, 0)
+    expect(mirror.deadCores.length).toBe(1)
+    expect(pulledAt(104)).toBe(false)
+
+    // A resync: `map_init` carries every rock intact; the dead one stays dead.
+    initMirrorAgain(mirror, wire)
+    expect(pulledAt(104)).toBe(false)
+    expect(pulledAt(103)).toBe(true)
+
+    // A new round: every rock pulls again.
+    mirror.clearCores()
+    expect(pulledAt(104)).toBe(true)
+    expect(fy()).toBeGreaterThan(0)
+    core.removePlayer(0)
+    core.setGravity('standard')
+  })
+})
+
+/** `applyMapInit` again on an existing mirror, as a resync does. */
+function initMirrorAgain(
+  mirror: WorldMirror,
+  asteroids: { x: number; y: number; r: number; level: number }[],
+): void {
+  mirror.applyMapInit({
+    width: core.width,
+    height: core.height,
+    seed: 4242n,
+    scale: 0,
+    theme: 0,
+    generator: GENERATOR_BYTE[core.meta.generator],
+    wind: 0,
+    carveSeq: 0,
+    spawnPoints: [],
+    pads: core.meta.teleport_pads.map((p) => ({ x: p.pos.x, y: p.pos.y })),
+    platforms: core.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
+    decorations: [],
+    objects: [],
+    asteroids,
+    rle: core.maskRle(),
+  })
+}

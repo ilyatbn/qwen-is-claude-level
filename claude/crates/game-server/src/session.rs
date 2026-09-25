@@ -1779,6 +1779,26 @@ fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_j
             .iter()
             .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w))),
     );
+    // T22.16 (R102): every destroyed core, as `core_destroyed` announced it — the
+    // client's `set_dead_cores` stops predicting those wells; told nothing, a joiner
+    // would rubber-band in each one. At this tick: a joiner has stepped no seq before it.
+    let cores: Vec<game_core::world::GameEvent> = w
+        .map
+        .meta
+        .asteroids
+        .iter()
+        .filter(|a| !a.core_intact)
+        .map(|a| game_core::world::GameEvent::CoreDestroyed {
+            tick,
+            x: a.x,
+            y: a.y,
+        })
+        .collect();
+    out.extend(
+        cores
+            .iter()
+            .map(|e| (crate::events::name_of(e), crate::events::payload_of(e, w))),
+    );
     // T22.12C (R93): a telegraph in progress, as `black_hole_warn` announced it.
     // Built by `World::black_hole_warn_event`, the live telegraph's own (T22.12D F7).
     if let Some(e) = w.black_hole_warn_event() {

@@ -414,6 +414,7 @@ fn place_asteroids_drawn(
                 y: y.round() as i32,
                 r,
                 level,
+                core_intact: true,
             },
             m,
         ));
@@ -1446,6 +1447,7 @@ mod tests {
             y: geo.cy as i32,
             r,
             level: 1,
+            core_intact: true,
         };
         let mut rng = substream(4242, "control");
         stamp_asteroid(&mut o.mask, &intruder, &mut rng);
@@ -1638,6 +1640,7 @@ mod tests {
             y: (geo.cy + geo.ry * fy) as i32,
             r: 32,
             level: 3,
+            core_intact: true,
         };
 
         // Control 1: two rocks near the rim, within reach of it and each other.

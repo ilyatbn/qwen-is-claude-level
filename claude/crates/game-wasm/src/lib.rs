@@ -169,6 +169,13 @@ pub struct GameCore {
     /// while the server pulls: the rubber-band this field exists to prevent.
     /// T22.14C LOW-4: from the first seq the server stepped with it there.
     black_hole: Option<(Vec2, SeqSpan)>,
+    /// T22.16 (R102): the asteroids whose core the server destroyed — by centre, from
+    /// `core_destroyed` — each **from the first seq the server stepped without its
+    /// well** (`seqClock.ts::firstSeqAfter` of the event's tick). Filled by
+    /// [`GameCore::set_dead_cores`]; [`GameCore::sync_cores`] turns it into each rock's
+    /// `core_intact` for the seq being stepped. Empty on a client told nothing, which
+    /// keeps predicting a well the server switched off: the rubber-band this prevents.
+    dead_cores: Vec<(i32, i32, SeqSpan)>,
     /// T22.12C F5: the first input seq the server steps after the bell (set by
     /// [`GameCore::set_bell`] each snapshot, from the round clock through
     /// `seqClock.ts::firstSeqAfter`). From it on the prediction is the server's
@@ -224,6 +231,7 @@ impl GameCore {
             gravity: GravityMode::Standard,
             vortices: Vec::new(),
             black_hole: None,
+            dead_cores: Vec::new(),
             bell_seq: None,
         }
     }
@@ -554,8 +562,42 @@ impl GameCore {
                 y: ys[i],
                 r: rs[i],
                 level: levels[i],
+                core_intact: true,
             })
             .collect();
+        // A resync re-installs the rocks; a core already dead stays dead.
+        self.sync_cores(None);
+    }
+
+    /// T22.16 (R102): the asteroids whose core is destroyed — centres, with the first
+    /// input seq the server stepped without that rock's well (`0` when not known: off
+    /// for every seq). Parallel arrays for `set_asteroids`' reason. `WorldMirror.pushCores`
+    /// is the one production caller, on the event and on every snapshot's anchor.
+    pub fn set_dead_cores(&mut self, xs: &[i32], ys: &[i32], froms: &[u32]) {
+        let n = xs.len().min(ys.len()).min(froms.len());
+        self.dead_cores = (0..n)
+            .map(|i| {
+                let span = SeqSpan {
+                    from: froms[i],
+                    until: u32::MAX,
+                };
+                (xs[i], ys[i], span)
+            })
+            .collect();
+        self.sync_cores(None);
+    }
+
+    /// Each rock's `core_intact` **as the server had it when it stepped `seq`**
+    /// (`None`: now) — the one derivation of the flag `env_at` reads, so the wells a
+    /// replay sums are the wells the server summed for that seq (T22.14C LOW-4's rule,
+    /// for the cores).
+    fn sync_cores(&mut self, seq: Option<u32>) {
+        let dead = &self.dead_cores;
+        for a in self.map.meta.asteroids.iter_mut() {
+            a.core_intact = !dead
+                .iter()
+                .any(|&(x, y, span)| x == a.x && y == a.y && span.holds(seq));
+        }
     }
 
     /// T22.17 (R104): is `(x, y)` inside the space arena? `SpaceGeometry::inside`,
@@ -781,6 +823,9 @@ impl GameCore {
     /// must be identical on both sides.** Health became non-exempt the moment it
     /// fed `speed_multiplier()` inside `apply_input`.
     pub fn apply_input(&mut self, id: u8, seq: u32, buttons: u8, aim: u16, dt: f32) {
+        // T22.16: the wells the server summed for **this** seq — a core destroyed
+        // after it still pulls in a replay of it.
+        self.sync_cores(Some(seq));
         let map = &self.map;
         // Copied out before the `&mut` borrow of the player, for the reason
         // `World::apply_inputs` copies it: it is the world's setting, not the
@@ -4037,13 +4082,23 @@ mod tests {
             .max_by_key(|a| a.level)
             .expect("checked non-empty by the caller");
         let reach = game_core::world::attractors::well_reach(&rock);
-        let mut d = rock.r as f32 + PLAYER_H;
-        while d < reach {
+        // T22.16: from the band's outer edge inward — the band now starts at the rock's
+        // round body, so there is less of it; the outermost fitting start leaves the
+        // longest fall.
+        let mut d = reach - 1.0;
+        while d > 0.0 {
             let p = Point::new(rock.x + d as i32, rock.y);
-            if w.map.body_fits_at(p) {
-                return (rock, Vec2::new(p.x as f32, p.y as f32));
+            // T22.16: a body *centred* here is in air — not `body_fits_at`, the spawn
+            // rule, which also keeps a body height clear of every rock's `r` and so
+            // finds nothing inside a big rock's band any more.
+            let at = Vec2::new(p.x as f32, p.y as f32);
+            if !game_core::physics::collide::aabb_overlaps_solid(
+                &w.map,
+                game_core::math::Aabb::from_center_size(at, PLAYER_W, PLAYER_H),
+            ) {
+                return (rock, at);
             }
-            d += 2.0;
+            d -= 2.0;
         }
         panic!(
             "no open-space start inside level-{} rock ({}, {})'s reach of {reach:.0} px",
@@ -4686,6 +4741,132 @@ mod tests {
         eprintln!(
             "a vortex heard {HEARD_AFTER} ticks late, corrected from {BACK} before it: \
              {when_heard:.3} px switched on when heard, {by_seq:.4} px by seq"
+        );
+    }
+
+    /// **T22.16 (R102): a core destroyed, and heard late, switches its well off at the
+    /// server's seq.** A body floats mid-band above a rock, falling onto it under the
+    /// well; on tick `T` the rock's core is carved away (both masks, as the carve stream
+    /// would), the server's `step_cores` switches the well off after that tick's inputs
+    /// and says `core_destroyed`; the client hears it `HEARD_AFTER` ticks later and
+    /// corrects from a snapshot `BACK` ticks before `T`. Told the dead core from the
+    /// first seq stepped after `T` (`WorldMirror.pushCores`' `firstSeqAfter`), the replay
+    /// lands where the server is. The control: the well switched off when heard, for
+    /// every replayed seq — `BACK + 1` seqs of pull missing.
+    #[test]
+    fn a_core_destroyed_and_heard_late_switches_the_well_off_at_the_servers_seq() {
+        use game_core::constants::SNAPSHOT_QUANTUM;
+        use game_core::world::attractors::well_reach;
+        use game_core::world::cores::core_radius;
+        use game_core::world::GameEvent;
+        const HEARD_AFTER: u32 = 6;
+        const BACK: u32 = 4;
+        const IDLE: u32 = 10;
+        /// How far inside the band the body starts, px: mid-band, so it is still
+        /// falling when the core goes.
+        const INTO_BAND: f32 = 10.0;
+        let (probe_w, _) = space_world_and_mirror(true);
+        let rock = *probe_w
+            .map
+            .meta
+            .asteroids
+            .iter()
+            .filter(|a| {
+                let at = Vec2::new(a.x as f32, a.y as f32 - well_reach(a) + INTO_BAND);
+                !game_core::physics::collide::aabb_overlaps_solid(
+                    &probe_w.map,
+                    game_core::math::Aabb::from_center_size(at, PLAYER_W + 2.0, PLAYER_H + 2.0),
+                )
+            })
+            // The weakest well: the slowest fall, so the body is still in the air
+            // `IDLE + HEARD_AFTER` ticks in.
+            .min_by_key(|a| a.level)
+            .expect("a rock with air above its band");
+        let centre = Vec2::new(rock.x as f32, rock.y as f32);
+        let start = centre - Vec2::new(0.0, well_reach(&rock) - INTO_BAND);
+        let c = core_radius(&rock);
+        let run = |by_seq: bool| -> (f32, f32) {
+            let (mut w, mut core) = space_world_and_mirror(true);
+            w.add_player(1, 0, String::new());
+            w.player_mut(1).expect("seated").body = Body::new(start);
+            core.add_player(1, start.x, start.y);
+            let mut snaps: Vec<(u32, u32, game_core::player::state::PlayerState)> = Vec::new();
+            let (mut seq, mut destroyed) = (1000u32, None::<u32>);
+            for i in 0.. {
+                if i == IDLE {
+                    let _ = w.map.carve_circle(rock.x, rock.y, c);
+                    core.carve(rock.x, rock.y, c);
+                }
+                seq += 1;
+                w.queue_input(1, Input::new(seq, 0, 0));
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if let GameEvent::CoreDestroyed { tick, x, y } = e {
+                        assert_eq!((x, y), (rock.x, rock.y), "another rock's core went");
+                        destroyed = Some(tick);
+                    }
+                }
+                if let Some(ack) = w.last_simulated_seq(1).filter(|&a| a > 0) {
+                    snaps.push((w.tick, ack, w.player(1).expect("seated").clone()));
+                }
+                if destroyed.is_some_and(|t| w.tick >= t + HEARD_AFTER) {
+                    break;
+                }
+                assert!(i < IDLE + 60, "the carved core was never destroyed");
+            }
+            let dead_tick = destroyed.expect("destroyed");
+            let &(now_tick, now_ack, ref now) = snaps.last().expect("snapshots");
+            let from = if by_seq {
+                now_ack + dead_tick - now_tick + 1
+            } else {
+                0
+            };
+            core.set_dead_cores(&[rock.x], &[rock.y], &[from]);
+            let (_, back_ack, back) = snaps
+                .iter()
+                .find(|(t, _, _)| *t == dead_tick - BACK)
+                .expect("a snapshot before the destruction");
+            assert!(
+                !back.body.grounded && !now.body.grounded,
+                "premise: the body is still in the air"
+            );
+            core.correct_player_state(
+                1,
+                *back_ack,
+                Some(0),
+                back.body.pos.x,
+                back.body.pos.y,
+                back.body.vel.x,
+                back.body.vel.y,
+                back.body.grounded,
+                back.jetpack.fuel,
+                back.health,
+                back.alive,
+                back.move_mod_bits(),
+            );
+            for s in back_ack + 1..=now_ack {
+                core.apply_input(1, s, 0, 0, SIM_DT);
+            }
+            let c = core.player_state(1);
+            let off = (Vec2::new(c[0], c[1]) - now.body.pos).len();
+            let fell = (now.body.pos - start).len();
+            (off, fell)
+        };
+        let (by_seq, fell) = run(true);
+        let (when_heard, _) = run(false);
+        assert!(
+            by_seq <= SNAPSHOT_QUANTUM,
+            "told the dead core from the seq after its tick, the replay still left the \
+             server by {by_seq:.4} px"
+        );
+        assert!(
+            when_heard > SNAPSHOT_QUANTUM,
+            "control: switched off when heard, the replay is only {when_heard:.4} px off — \
+             this test cannot see the seq (the body fell {fell:.1} px)"
+        );
+        eprintln!(
+            "a core destroyed, heard {HEARD_AFTER} ticks late, corrected from {BACK} before: \
+             {when_heard:.3} px switched off when heard, {by_seq:.4} px by seq"
         );
     }
 

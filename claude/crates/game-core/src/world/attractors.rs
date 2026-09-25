@@ -202,16 +202,26 @@ pub fn well_strength(level: u8) -> f32 {
     SPACE_WELL_ACCEL_MAX * table_level(level) / SPACE_LEVEL_MAX as f32
 }
 
-/// The farthest a body touching an asteroid can be from its centre, px: the rock's
-/// bounding radius plus half a body — a body resting on the rock's highest point.
-/// Every point a body touching the rock can occupy (on a lump, in a valley between
-/// lumps, in a crater carved into the core) is inside it.
+/// Where an asteroid's band starts, centre distance, px: **the rock's round body**
+/// (`SPACE_ASTEROID_CORE_FRAC · r`, the generator's core disc the lumps are stamped
+/// on) plus half a body — a body resting on that disc.
 ///
-/// **Measured from the bounding circle `r`, not from the carved surface**: `r`
-/// bounds every lump, it is on the wire and hashed (R36), and a carved rock's
-/// surface is T22.16's concern (its core). Carving never *adds* reach.
+/// *T22.16, refinement B (the owner's "a few pixels"): was the bounding circle `r`
+/// plus half a body*, so over a rock's lumpless side — most of its silhouette — the
+/// band began up to a quarter of `r` of air out and reached one `WELL_SURFACE_BAND`
+/// past that: 38 px of air at the median (`well_air_gap_report`). Measured from the
+/// body the band sits on the rock itself.
+///
+/// **The body a band still has to reach**: one standing on the outermost lump, at up
+/// to `r`, touching it anywhere along its box — `r + ½·hypot(PLAYER_W, PLAYER_H)`
+/// from the centre. `f·r + PLAYER_H/2 + WELL_SURFACE_BAND` exceeds it while
+/// `(1 − f)·r < WELL_SURFACE_BAND + PLAYER_H/2 − ½·hypot(…)` = 25.9 px: at f = 0.75
+/// every rock up to r = 103 (the largest is 70, 8.4 px spare) —
+/// `tests::the_band_still_reaches_a_body_on_the_outermost_lump`. **Not the R102 core**
+/// (`SPACE_CORE_FRAC`, 0.3 r): from it the inequality fails at every r from 37 up, and
+/// a body on a big rock's lump would feel nothing. Carving never *adds* reach.
 pub fn well_contact(a: &Asteroid) -> f32 {
-    a.r as f32 + PLAYER_H / 2.0
+    crate::constants::SPACE_ASTEROID_CORE_FRAC * a.r as f32 + PLAYER_H / 2.0
 }
 
 /// **Where an asteroid's pull stops**, centre distance, px — one
@@ -257,13 +267,23 @@ impl Attractor {
     }
 }
 
-/// Every asteroid on this map as an attractor, in the map's own order.
+/// Every asteroid on this map **whose core is intact** as an attractor, in the map's
+/// own order.
 ///
 /// The order is `place_asteroids`' order, which both sides receive — the server
 /// generates it and `codec.rs::encode_map_init` writes it as a sequence. That is
 /// what makes [`field_at`]'s sum reproducible across the wire.
+///
+/// T22.16 (R102): a rock whose core is destroyed has no well for the rest of the
+/// round — skipped here, the one reader, so every sum on both sides drops it together
+/// (`Asteroid::core_intact`; the server sets it in `World::step_cores`, the mirror per
+/// seq in `GameCore::sync_cores`).
 pub fn asteroid_attractors(map: &Map) -> impl Iterator<Item = Attractor> + '_ {
-    map.meta.asteroids.iter().map(Attractor::asteroid)
+    map.meta
+        .asteroids
+        .iter()
+        .filter(|a| a.core_intact)
+        .map(Attractor::asteroid)
 }
 
 /// The summed field at `pos`, px/s².
@@ -474,7 +494,13 @@ mod tests {
     }
 
     fn rock(x: i32, y: i32, r: i32, level: u8) -> Asteroid {
-        Asteroid { x, y, r, level }
+        Asteroid {
+            x,
+            y,
+            r,
+            level,
+            core_intact: true,
+        }
     }
 
     /// A map with **rocks in its meta and nothing in its mask**.
@@ -868,6 +894,77 @@ mod tests {
         }
     }
 
+    /// **Refinement B's inequality (T22.16): the band, measured from the rock's round
+    /// body, still reaches a body standing on the outermost lump** — for every radius
+    /// the generator makes. The farthest a body touching the rock can be is a lump at
+    /// the bounding radius `r` touched by the box's far corner:
+    /// `r + ½·hypot(PLAYER_W, PLAYER_H)`. Asserted with the spare printed; the control
+    /// is the R102 core used instead (`SPACE_CORE_FRAC`): the same inequality fails on
+    /// the big rocks — which is why the reach is not measured from it.
+    ///
+    /// And on the stamped rocks themselves: every generated rock of three seeds, every
+    /// 5°, a body slid in along the bearing until it touches rock is pulled there.
+    #[test]
+    fn the_band_still_reaches_a_body_on_the_outermost_lump() {
+        use crate::constants::{PLAYER_W, SPACE_CORE_FRAC};
+        let corner = 0.5 * PLAYER_W.hypot(PLAYER_H);
+        let mut spare = f32::MAX;
+        let mut core_fails = 0;
+        for r in SPACE_ASTEROID_R_MIN..=r_grown_max() {
+            let a = rock(0, 0, r, 1);
+            let farthest = r as f32 + corner;
+            assert!(
+                well_reach(&a) > farthest,
+                "r {r}: the band ends at {:.1} px and a body on the outermost lump reaches \
+                 {farthest:.1}",
+                well_reach(&a)
+            );
+            spare = spare.min(well_reach(&a) - farthest);
+            let from_core = SPACE_CORE_FRAC * r as f32 + PLAYER_H / 2.0 + WELL_SURFACE_BAND;
+            core_fails += usize::from(from_core <= farthest);
+        }
+        eprintln!("least spare past the outermost lump: {spare:.2} px");
+        assert!(
+            core_fails > 0,
+            "control: measured from the R102 core every rock still reaches — the choice of \
+             radius is not what this test sees"
+        );
+        for seed in [POCKET_SEED, 7919, 15838] {
+            let w = pocket_world_seed(seed);
+            for a in &w.map.meta.asteroids {
+                let c = Vec2::new(a.x as f32, a.y as f32);
+                for k in 0..72 {
+                    let t = k as f32 * std::f32::consts::TAU / 72.0;
+                    let u = Vec2::new(t.cos(), t.sin());
+                    let fits = |p: Vec2| {
+                        !crate::physics::collide::aabb_overlaps_solid(
+                            &w.map,
+                            crate::math::Aabb::from_center_size(p, PLAYER_W, PLAYER_H),
+                        )
+                    };
+                    let start = c + u * (a.r as f32 + corner + 1.0);
+                    if !fits(start) {
+                        continue;
+                    }
+                    // Slide in until the next quarter pixel would touch.
+                    let rest = (1..)
+                        .map(|i| start - u * (i as f32 * 0.25))
+                        .take_while(|&p| fits(p))
+                        .last()
+                        .unwrap_or(start);
+                    assert!(
+                        Attractor::asteroid(a).pull_at(rest) != Vec2::ZERO,
+                        "seed {seed} rock ({}, {}) r {}: a body resting at {rest:?} on bearing \
+                         {k}×5° feels no pull",
+                        a.x,
+                        a.y,
+                        a.r
+                    );
+                }
+            }
+        }
+    }
+
     /// A level the wire should never carry is clamped into the table rather than
     /// trusted, so the escape ceiling is a claim about every `u8`.
     #[test]
@@ -1053,9 +1150,11 @@ mod tests {
         );
     }
 
-    /// The deepest single-well dive after R101: a level-5 rock of the largest grown
-    /// radius, from one band out down to `d_min` — measured by the test below.
-    const WELL_DIVE: f32 = 247.8;
+    /// The deepest single-well dive: a level-5 rock, from its reach down to `d_min` —
+    /// measured by the test below. *T22.16: 194.4, exactly one band at 675 px/s²
+    /// (`√(2·675·28)`) — the reach now starts at `d_min` itself (refinement B); 247.8 at
+    /// R101, when it started at `r + PLAYER_H / 2`.*
+    const WELL_DIVE: f32 = 194.4;
 
     /// [`SPACE_MAX_SPEED`] against the measurement its doc comment claims, the way
     /// `capacity.rs::max_rooms_carries_its_basis` pins the claim in its constant's
@@ -2035,5 +2134,167 @@ mod tests {
         );
         w.set_phase(crate::world::RoundPhase::Playing);
         w
+    }
+
+    // ---- T22.16: refinement B — the air gap, before and after --------------
+
+    /// **Refinement B's measurement** (T22.16): how much air a body at the band's
+    /// outer edge floats in before it touches its rock. For every rock of the report
+    /// seeds, along 72 bearings: a body centre just inside `well_reach` on that bearing
+    /// (skipped where it does not fit, is outside the rim, or feels no pull), then
+    /// walked straight in toward the centre in quarter pixels until its box touches
+    /// rock — the distance walked is the gap. Twice: the rocks as generated, and each
+    /// carved by three craters of `0.4 r` centred on its bounding circle (the lumps
+    /// blown off, the core untouched — it is `0.3 r` and the craters reach `0.6 r`).
+    /// A report: it prints, it asserts nothing. Run at the commit before and after.
+    #[test]
+    #[ignore = "report: T22.16's air gap before/after, seconds in release"]
+    fn well_air_gap_report() {
+        let q = |v: &mut Vec<f32>, f: f32| -> f32 {
+            v.sort_by(f32::total_cmp);
+            v[((v.len() - 1) as f32 * f).round() as usize]
+        };
+        for carved in [false, true] {
+            let (mut gaps, mut none) = (Vec::new(), 0usize);
+            for seed in report_seeds() {
+                let mut w = pocket_world_seed(seed);
+                let rocks = w.map.meta.asteroids.clone();
+                if carved {
+                    for a in &rocks {
+                        for k in 0..3 {
+                            let t = k as f32 * std::f32::consts::TAU / 3.0;
+                            let (cx, cy) = (
+                                a.x + (a.r as f32 * t.cos()).round() as i32,
+                                a.y + (a.r as f32 * t.sin()).round() as i32,
+                            );
+                            let _ = w
+                                .map
+                                .carve_circle(cx, cy, (0.4 * a.r as f32).round() as i32);
+                        }
+                    }
+                }
+                let geo = w.map.space_geometry().expect("space");
+                let fits = |w: &World, p: Vec2| {
+                    !crate::physics::collide::aabb_overlaps_solid(
+                        &w.map,
+                        crate::math::Aabb::from_center_size(
+                            p,
+                            crate::constants::PLAYER_W,
+                            PLAYER_H,
+                        ),
+                    )
+                };
+                for a in &rocks {
+                    let centre = Vec2::new(a.x as f32, a.y as f32);
+                    let reach = well_reach(a);
+                    for b in 0..72 {
+                        let t = b as f32 * std::f32::consts::TAU / 72.0;
+                        let u = Vec2::new(t.cos(), t.sin());
+                        let edge = centre + u * (reach - 0.01);
+                        if !geo.inside(edge.x, edge.y)
+                            || !fits(&w, edge)
+                            || Attractor::asteroid(a).pull_at(edge) == Vec2::ZERO
+                            || !asteroid_attractors(&w.map).any(|x| x.pos == centre)
+                        {
+                            continue;
+                        }
+                        let hit = (1..=1600)
+                            .map(|k| k as f32 * 0.25)
+                            .find(|&d| !fits(&w, edge - u * d));
+                        match hit {
+                            Some(d) => gaps.push(d - 0.25),
+                            None => none += 1,
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "air gap (carved={carved}): {} band-edge points, gap to rock along the pull \
+                 p10 {:.1} p50 {:.1} p90 {:.1} max {:.1} px; no rock within 400 px {none}",
+                gaps.len(),
+                q(&mut gaps, 0.1),
+                q(&mut gaps, 0.5),
+                q(&mut gaps, 0.9),
+                q(&mut gaps, 1.0),
+            );
+        }
+    }
+
+    // ---- T22.16: refinement A — a hollowed centre --------------------------
+
+    /// The hollow the review of T22.15 carved: radius 32 at a rock's centre, room for
+    /// a body to sit anywhere 20 px off it.
+    const HOLLOW_R: i32 = 32;
+
+    /// **Refinement A (T22.16): a body in a carved centre feels no pull or settles —
+    /// it never bounces for seconds.** The reviewer's scenario at `8e6f59a`: a rock's
+    /// centre hollowed out, a body at rest 20 px off it, and the well (full strength
+    /// everywhere inside its reach, R101's step) swung it through the centre and back,
+    /// ±20 px at ~54 px/s for as long as anyone watched — undamped. Three offsets
+    /// (across, up, diagonal), the largest rock of the pocket seed, 10 s of real
+    /// `World::step`; over the last 5 s the body may not move more than a pixel.
+    ///
+    /// Red at `8e6f59a`; green because a body-sized cavity that holds the centre has
+    /// carved more than `SPACE_CORE_DESTROYED_FRAC` of the core (`cores.rs` proves the
+    /// arithmetic), so the well is off before the first bounce.
+    #[test]
+    fn a_body_in_a_carved_centre_feels_nothing_or_settles() {
+        let ticks = (10.0 / SIM_DT).round() as usize;
+        let tail = (5.0 / SIM_DT).round() as usize;
+        for off in [
+            Vec2::new(20.0, 0.0),
+            Vec2::new(0.0, 12.0),
+            Vec2::new(12.0, 10.0),
+        ] {
+            let mut w = pocket_world_seed(POCKET_SEED);
+            w.set_round_seconds(600.0);
+            w.add_player(0, 0, String::new());
+            let a = *w
+                .map
+                .meta
+                .asteroids
+                .iter()
+                .max_by_key(|a| a.r)
+                .expect("rocks");
+            let _ = w.map.carve_circle(a.x, a.y, HOLLOW_R);
+            let centre = Vec2::new(a.x as f32, a.y as f32);
+            let start = centre + off;
+            assert!(
+                !crate::physics::collide::aabb_overlaps_solid(
+                    &w.map,
+                    crate::math::Aabb::from_center_size(
+                        start,
+                        crate::constants::PLAYER_W,
+                        PLAYER_H
+                    ),
+                ),
+                "premise: the body fits in the hollow at {off:?}"
+            );
+            let path = drive(&mut w, start, ticks as u32, |_, _| 0);
+            let last = &path[ticks - tail..];
+            let (lo, hi) = last.iter().fold(
+                (Vec2::new(f32::MAX, f32::MAX), Vec2::new(f32::MIN, f32::MIN)),
+                |(lo, hi), (p, _)| {
+                    (
+                        Vec2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                        Vec2::new(hi.x.max(p.x), hi.y.max(p.y)),
+                    )
+                },
+            );
+            let span = (hi - lo).len();
+            let vel = w.player(0).expect("seated").body.vel;
+            assert!(
+                span <= 1.0,
+                "offset {off:?} in a hollowed centre (rock r {} level {}): the body still \
+                 swings {span:.1} px over the last 5 s (x {:.1}..{:.1}, y {:.1}..{:.1}), \
+                 vel {vel:?}",
+                a.r,
+                a.level,
+                lo.x,
+                hi.x,
+                lo.y,
+                hi.y
+            );
+        }
     }
 }

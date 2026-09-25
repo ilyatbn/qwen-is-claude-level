@@ -282,6 +282,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
                 y: i16::from_le_bytes([asteroid_bytes[o + 2], asteroid_bytes[o + 3]]) as i32,
                 r: u16::from_le_bytes([asteroid_bytes[o + 4], asteroid_bytes[o + 5]]) as i32,
                 level: asteroid_bytes[o + 6],
+                // T22.16: not on this wire — `core_destroyed` carries a dead core.
+                core_intact: true,
             }
         })
         .collect();
