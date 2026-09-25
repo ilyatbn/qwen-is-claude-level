@@ -1,0 +1,110 @@
+{
+  "about": "T23.02: look-compare thresholds, each a maximum distance. Measured, not picked: threshold = midpoint of the floor (F1 rendered twice) and the smallest must-fail control. Regenerate with the recipe below; scripts/lib/look-compare.test.mjs re-measures every number here from the PNGs and fails if one drifts.",
+  "measured": "2026-09-25, mockup-src harness, three 0.170.0, headless Chromium swiftshader (render.mjs), 1280x720",
+  "floor": "F1 re-rendered is byte-identical to reference/F1-night-combat.png (cmp), so every floor is exactly 0. The look-lab floor (the lab on two back-ends, T23.01) is not measured yet and will raise these floors; metrics it pushes past their smallest control are dropped then.",
+  "reference": "reference/F1-night-combat.png",
+  "regions": "reference/controls/regions-F1.png (red: 1 sky, 2 terrain, 3 cave = carved; from world.js buildMask(ARENA_E)). Actor boxes (id 4) come from the scene description, T23.01.",
+  "controls": {
+    "F0": "reference/F0-today-same-scene.png",
+    "exposure+10": "reference/controls/F1-exposure-up10.png (P.exposure x 1.1)",
+    "exposure-10": "reference/controls/F1-exposure-down10.png (P.exposure x 0.9)",
+    "bloom-off": "reference/controls/F1-bloom-off.png (P.bloom strength 0)",
+    "rim-off": "reference/controls/F1-rim-off.png (f_kit.js::lit without its two rim passes; the cool fill and ink passes stay)",
+    "fog-off": "reference/controls/F1-fog-off.png (P.fogBack = P.fogFront = null)",
+    "F2": "reference/F2-volcanic-night.png (F2 is F1's scene with F2's palette; a re-render is byte-identical)"
+  },
+  "recipe": "scratch copy of mockup-src with the .js under src/, a src/scene.html import-mapping three and three/addons/ to node_modules, F1's P exported from a copy of variant_F1.js, one variant_K*.js per knob calling combatF({...P, knob}), rim-off via a window.__noRim guard around lit()'s two rim passes; then node render.mjs <variants> under nice.",
+  "flip": "not computed: python3 -c \"import flip_evaluator\" fails on this box",
+  "metrics": {
+    "dssim": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.004832571871724145,
+      "threshold": 0.002416,
+      "F0": 0.8234319245411659
+    },
+    "deltaE": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.1765177655277497,
+      "threshold": 0.08826,
+      "F0": 47.1035399275717
+    },
+    "lumaW1": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.000977244906955108,
+      "threshold": 0.0004886,
+      "F0": 0.49121292961968344
+    },
+    "p95": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 1,
+      "threshold": 0.5,
+      "F0": 90
+    },
+    "paletteDE": {
+      "floor": 0,
+      "smallestControl": "exposure+10",
+      "smallest": 1.6300283163923859,
+      "threshold": 0.815,
+      "F0": 24.138078294605997
+    },
+    "satW1": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.000540805392795192,
+      "threshold": 0.0002704,
+      "F0": 0.23873267279730906
+    },
+    "edgeDensity": {
+      "floor": 0,
+      "smallestControl": "fog-off",
+      "smallest": 0.001695720594068903,
+      "threshold": 0.0008479,
+      "F0": 0.036780572011455924
+    },
+    "deltaE_sky": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.22771381262922896,
+      "threshold": 0.1139,
+      "F0": 50.38818287572723
+    },
+    "deltaE_terrain": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0.10687357826405268,
+      "threshold": 0.05344,
+      "F0": 42.666524994657074
+    },
+    "deltaE_cave": {
+      "floor": 0,
+      "smallestControl": "fog-off",
+      "smallest": 0.02416578866947334,
+      "threshold": 0.01208,
+      "F0": 42.80352836269096
+    }
+  },
+  "dropped": {
+    "p5": {
+      "floor": 0,
+      "smallestControl": "exposure+10",
+      "smallest": 0,
+      "reason": "exposure+10 does not move it off the floor"
+    },
+    "p50": {
+      "floor": 0,
+      "smallestControl": "rim-off",
+      "smallest": 0,
+      "reason": "rim-off does not move it off the floor"
+    },
+    "bloomFrac": {
+      "floor": 0,
+      "smallestControl": "fog-off",
+      "smallest": 0,
+      "reason": "fog-off does not move it off the floor"
+    }
+  }
+}

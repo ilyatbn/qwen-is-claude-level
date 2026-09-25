@@ -7157,3 +7157,13 @@ Bench (release, niced, load ~6): full S/M/L 139/344/587 ms; r=60 crater 2.0–2.
 margin; relief is ~70 % of full). Research guessed 0.1 s / 1–3 ms. **back ≠ mockup**: here = round-start solid ∧ air now (every
 in-play carve); generator caves are not back (the client has no pre-carve landform; BackdropMask's heuristic is off). Coordinator.
 No production caller yet (T23.07). golden.rs untouched; `cargo test -p game-wasm` 55 ok, `-p game-core golden` 2 ok.
+
+## T23.02 — look-compare, the part independent of T23.01 (partial)
+`scripts/lib/look-compare.mjs` (distances: 1−SSIM on ½-scale luma, ΔE2000 overall + sky/terrain/cave, luma W1, p5/p50/p95, 8-colour
+palette ΔE, saturation W1, edge density, bloom fraction; FLIP not installed → "not computed"). Controls rendered niced from a scratch
+mockup harness into `reference/controls/`. **Floor is exactly 0**: F1 re-rendered is byte-identical to the reference (so is F2).
+Threshold = floor/smallest-control midpoint. Smallest control: rim-off for 7 of 10 retained, fog-off for edges + cave ΔE, exposure+10 for palette:
+dssim .00483→.00242, ΔE .177→.0883, lumaW1 .00098→.00049, p95 1→0.5, palette 1.63→.815, sat .00054→.00027, edge .0017→.00085,
+sky .228→.114, terrain .107→.0534, cave .0242→.0121. **Dropped**: p5 (no knob moves it), p50 (rim-off 0), bloomFrac (fog-off 0).
+Left for after T23.01: actor boxes, the lab's own floor (will loosen all of these). palette ΔE is k-means-noisy (rim-off > exposure).
+Not in check.sh (Touch-only); `node --test scripts/lib/look-compare.test.mjs` 7/7; plants dssim=0 / p95×0.1 / Sobel 40 go red.
