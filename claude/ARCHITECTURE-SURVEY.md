@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D, T22.10F (R89), T22.10G and T22.14C (the final M22 audit's netcode findings, 2026-09-25).** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D, T22.10F (R89), T22.10G and T22.14C (the final M22 audit's netcode findings, 2026-09-25); staleness pass at the M22 close-out against T22.14A–E.** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -15,8 +15,8 @@ different story (see § 1).
 - `crates/game-wasm/src/lib.rs::GameCore`: a `Map`, `Vec<LocalPlayer>` (body, jump, jetpack, prev_input, PlayerState),
   `Projectiles`, a weather struct, phase, gravity, the vortices and black hole **each with the input seqs it pulls
   for** (`SeqSpan`, T22.14C LOW-4), the bell's seq, and per local player a **history of the movement state after
-  each applied seq** (`PREDICTION_HISTORY_TICKS`, T22.14C HIGH-1). **No `World`.** 57 `pub fn` in the
-  `#[wasm_bindgen] impl GameCore` block (T22.14C count).
+  each applied seq** (`PREDICTION_HISTORY_TICKS`, T22.14C HIGH-1). **No `World`.** 58 `pub fn` across the two
+  `#[wasm_bindgen] impl GameCore` blocks (close-out count; 57 at T22.14C — `relocate_player` is T22.14D's).
 - `World::step` appears in one wasm export, `AttractCore::step` — "Frozen, and dormant since T18.01", no caller, a
   hand-copy of `room.rs::drive_bots`. Otherwise only `#[cfg(test)]`.
 - **GameScene (networked match)** calls (via GameScene.ts, `net/prediction.ts`, `net/worldMirror.ts`, `render/flareFx.ts`):
@@ -27,7 +27,8 @@ different story (see § 1).
     `addPlayer`/`removePlayer` (local), `setPhase`, `acceptsInput` (the `Predictor`'s results-screen switch,
     T22.10E), `setGravity`, `setVortices` (from `WorldMirror.pushVortices`, with seq spans since T22.14C),
     `setBlackHole` (T22.12, from seq since T22.14C), `setBell(seq | null)` (T22.12C; `clear_bell` behind `null`)
-  - terrain mirror: `loadMask` (map_init), `carve`, `carveCapsule` (seq-ordered events), `setTeleportPads`,
+  - terrain mirror: `setMapGenerator` (map_init's generator byte, T22.14A B3 — installed before `loadMask`, and the
+    one answer to "is this a space map?"), `loadMask` (map_init), `carve`, `carveCapsule` (seq-ordered events), `setTeleportPads`,
     `setGunPlatforms`, `setAsteroids`, `maskHash` (vs `mask_checksum`), `solidAt`, `takeDirtyChunks`/`maskView`
   - derived pure functions: `flarePoints`/`flareLit`/`flareTouches` (server seed + `ServerClock`), `lavaVents`,
     `itemRegistryJson`, `constants_json`, `quantize_angle`, `ambient_rain`
@@ -88,7 +89,9 @@ different story (see § 1).
 - Terrain: never diffs. `carve`/`carve_capsule` carry a shared `seq`; `worldMirror.ts::applyCarve` buffers in order; a
   gap > `CARVE_GAP_TIMEOUT_MS` (2000) → `resync_map` (full `map_init`). `mask_checksum` every
   `MASK_CHECKSUM_INTERVAL` 5 s; mismatch → resync. `map_init` (`encode_map_init_at`, magic `0x4D415031`): RLE mask +
-  pads, platforms, asteroids, objects, carve_seq (buried slots deliberately omitted).
+  the generator byte after `theme` (T22.14A B3; an unknown byte refused by both decoders, bound `MAP_GENERATOR_MAX` in
+  `constants_json` since T22.14D), carve_seq, spawns, pads, platforms, decorations, objects, asteroids (buried slots
+  deliberately omitted). Full layout: `docs/77` §H4.
 - Mid-match joins are refused (§E4); the effect catch-up (T22.08D) is dormant.
 
 ## 3. Prediction and reconciliation
@@ -105,8 +108,9 @@ different story (see § 1).
   by up to one frame (it used to lead it).
 - `reconcile`: drop acked inputs; **since T22.10D the gate compares the prediction *at the acked input* with the
   server's state there** (position ≤ `RECONCILE_EPSILON_PX` 2.0, and velocity error × one snapshot interval ≤ the
-  same), with move_mods, alive and health unchanged → do nothing; else `setPlayerState` (pos, vel, grounded, fuel,
-  health, alive, move_mods) and replay pending. (Before, it compared the *post-pending* prediction, so it almost never
+  same), with move_mods, alive and health unchanged → do nothing; else `correctPlayerState` (since T22.14C; the acked seq's
+  movement state restored, then pos, vel, grounded, fuel, health, alive, move_mods — `setPlayerState` before) and
+  replay pending. (Before, it compared the *post-pending* prediction, so it almost never
   held while moving.) The render hard-snaps on how far the correction moved the body (`lastJumpPx` > `SNAP_PX`), not
   on that error. `PredictorStats.lastJumpPx`/`lastAckErrorPx` (T22.10B) are the honest rubber-band measures;
   `maxEasedJumpPx`/`maxAckErrorPx` (T22.10D) exclude relocations and are printed per client by `harness.mjs` at close;
@@ -200,4 +204,4 @@ game-wasm 5 853 [4 628] — 113 390 total [100 577]. client/src TS 47 926 (32 84
 `map/meta.rs` 2 957, `session.rs` 2 298, `SandboxScene.ts` 1 726, `codec.rs` 1 672 (TS twin `codec.ts` 472,
 hand-written both sides); `bots/` 5 281 over its files since T22.14B's split (`bots/mod.rs` 1 313).
 Tests: Rust `^\s*#\[test\]` 1674 (+26 `#[ignore`), vitest 1110 (79 files, one run), browser checks 89 entries in
-`scripts/lib/e2e-checks.mjs` [87].
+`scripts/lib/e2e-checks.mjs` [87] — **90 at the close-out** (`chunk-rebake`; `vitest` 1113 at T22.14D), 14 of them `flaky: true`.
