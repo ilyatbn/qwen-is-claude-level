@@ -187,6 +187,8 @@ export class SkinsScene extends Phaser.Scene {
       iframes: false,
       space: false,
       thrust: null,
+      // T22.19: the picker shows the figure upright.
+      tilt: 0,
     })
     // `setState` positions the container in world space; the preview is not in
     // the world, so put it back where the layout wants it.

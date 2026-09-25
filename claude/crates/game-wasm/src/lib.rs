@@ -742,18 +742,38 @@ impl GameCore {
     /// what makes the check's control frame (`set_asteroids` with an empty list)
     /// assert the *effect* rather than the ask.
     pub fn field_accel_at(&self, x: f32, y: f32) -> Box<[f32]> {
-        let (vortices, n, hole) = self.attractors_at(None);
         // The field an unwinged body feels (R100: a winged one feels only the hole's).
-        let env = game_core::world::attractors::env_at(
+        let a = self.field_for(x, y, false);
+        Box::new([a.x, a.y])
+    }
+
+    /// **The pull a body at `(x, y)` stands against** (T22.19, R107), px/s², `[ax, ay]`
+    /// — what `render/standTilt-math.ts` turns the drawn figure's feet along. `move_mod_bits`
+    /// is the body's snapshot byte (`PlayerState::move_mod_bits`): a winged body feels no
+    /// field (R100) and so stands upright. **The same `env_at` the prediction steps
+    /// with**, with this core's live attractors, and `flying` derived by the functions the
+    /// mirror uses for its own player (`set_move_mod_bits` → `move_mods`), so the drawing
+    /// has no second spelling of either. Exactly `[0, 0]` off a space map and in open space.
+    pub fn stand_pull_at(&self, x: f32, y: f32, move_mod_bits: u8) -> Box<[f32]> {
+        let mut st = game_core::player::state::PlayerState::new(0, Vec2::new(x, y), 0);
+        st.set_move_mod_bits(move_mod_bits);
+        let a = self.field_for(x, y, st.move_mods().flying);
+        Box::new([a.x, a.y])
+    }
+
+    /// `env_at` at `(x, y)` with every attractor this core holds now.
+    fn field_for(&self, x: f32, y: f32, flying: bool) -> Vec2 {
+        let (vortices, n, hole) = self.attractors_at(None);
+        game_core::world::attractors::env_at(
             &self.map,
             self.gravity,
-            false,
+            flying,
             &vortices[..n],
             hole,
             game_core::world::black_hole::pulls(self.phase),
             Vec2::new(x, y),
-        );
-        Box::new([env.accel.x, env.accel.y])
+        )
+        .accel
     }
 
     // ---- terrain access -------------------------------------------------
@@ -4099,6 +4119,46 @@ mod tests {
             install_asteroids(&mut core, &parts.asteroids);
         }
         (w, core)
+    }
+
+    /// **T22.19 (R107): the pull a figure stands against.** Over a rock's top it points
+    /// down (the figure stays upright), under its bottom it points up (feet-up), and a
+    /// winged body there feels nothing (R100 — it stays upright); in open space and on a
+    /// standard map it is exactly zero. `move_mod_bits` is read through the mirror's own
+    /// `set_move_mod_bits` → `move_mods`.
+    #[test]
+    fn the_stand_pull_points_at_the_rock_and_passes_wings_by() {
+        use game_core::player::state::MOVE_MOD_WINGS;
+        use game_core::world::attractors::well_reach;
+        let (_, core) = space_world_and_mirror(true);
+        let a = *core.map.meta.asteroids.first().expect("rocks");
+        let c = Vec2::new(a.x as f32, a.y as f32);
+        let top = c - Vec2::new(0.0, well_reach(&a, c - Vec2::new(0.0, 1.0)) - 2.0);
+        let bottom = c + Vec2::new(0.0, well_reach(&a, c + Vec2::new(0.0, 1.0)) - 2.0);
+        let over = core.stand_pull_at(top.x, top.y, 0);
+        let under = core.stand_pull_at(bottom.x, bottom.y, 0);
+        assert!(
+            over[1] > 0.0 && over[0].abs() < 1e-3,
+            "over the top: {over:?}"
+        );
+        assert!(
+            under[1] < 0.0 && under[0].abs() < 1e-3,
+            "under the bottom: {under:?}"
+        );
+        assert_eq!(
+            &core.stand_pull_at(bottom.x, bottom.y, MOVE_MOD_WINGS)[..],
+            &[0.0, 0.0]
+        );
+        // The same numbers as the prediction's field for an unwinged body.
+        assert_eq!(&under[..], &core.field_accel_at(bottom.x, bottom.y)[..]);
+        let far = c + Vec2::new(0.0, well_reach(&a, c + Vec2::new(0.0, 1.0)) + 1.0);
+        assert_eq!(&core.stand_pull_at(far.x, far.y, 0)[..], &[0.0, 0.0]);
+        let mut standard = GameCore::new();
+        standard.generate(4242, 0, 0);
+        assert_eq!(
+            &standard.stand_pull_at(bottom.x, bottom.y, 0)[..],
+            &[0.0, 0.0]
+        );
     }
 
     /// **T22.18B F1: the mirror's band follows the lumps exactly as the server's.**

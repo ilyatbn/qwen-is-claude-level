@@ -775,12 +775,13 @@ export async function drawnFrames(page, n, budget = FRAME_BUDGET_MS) {
  * A browser at the menu, as a player arrives. `seed: false` arrives with **no
  * name stored** — the state `lobby`'s T20.02 prompt exists for.
  */
-export async function openAtMenu({ browser, viteUrl }, name, { seed = true } = {}) {
+export async function openAtMenu({ browser, viteUrl }, name, { seed = true, query = '' } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } })
   const page = await ctx.newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}`)
+  // `query` (T22.19): extra URL parameters, e.g. `renderer=canvas` for one player of a match.
+  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}${query ? `&${query}` : ''}`)
   await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
   const NAME_KEY = clientKey('NAME_KEY')
   if (seed) await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])
@@ -828,10 +829,10 @@ export const soloSpace = (stack, name) => soloMatch(stack, name, 'Space')
  * each with `id` set to its seat. The guest's panel is fed by `lobby_state` alone, so
  * its gravity reading is the wire's word.
  */
-export async function privateMatch(stack, [hostName, guestName], gravity) {
+export async function privateMatch(stack, [hostName, guestName], gravity, { guestQuery = '' } = {}) {
   const host = await openAtMenu(stack, hostName)
   const code = await hostPrivate(host.page)
-  const guest = await openAtMenu(stack, guestName)
+  const guest = await openAtMenu(stack, guestName, { query: guestQuery })
   await guest.page.evaluate(() => document.querySelector('#private')?.click())
   await guest.page.evaluate(() => document.querySelector('#join')?.click())
   await guest.page.evaluate((c) => {

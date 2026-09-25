@@ -378,6 +378,12 @@ export const CHECKS = [
   // death (feed + overlay), no escape from inside the capture radius, the disc and ring
   // painted in both paths against a hidden frame, frozen at the bell. Standalone.
   { name: 'black-hole', file: 'scripts/checks/black-hole.mjs', standalone: true },
+  // T22.19 (R107): a body in a rock's band is drawn with its feet along the pull — feet-up
+  // under a rock (the figure matches itself posed upright turned 180°, against the
+  // actors-hidden frame), upright on top and easing back in free space (the controls),
+  // the aim still screen-space. Two humans on a DEV_PROBE server: the host's own body on
+  // WebGL, the guest's view of it (a remote) on Canvas. Standalone.
+  { name: 'stand-on-asteroid', file: 'scripts/checks/stand-on-asteroid.mjs', standalone: true },
   // T20.10: ground animals, counted at both ends and then photographed.
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.

@@ -18,6 +18,7 @@ import { MOVE_MOD } from '../net/codec'
 import { WorldView } from '../render/worldView'
 import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
+import { standTarget, stepTilt } from '../render/standTilt-math'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
@@ -144,6 +145,8 @@ export class SandboxScene extends Phaser.Scene {
   private seq = 0
   /** Fixed-step accumulator: the sim must advance at SIM_HZ, not at frame rate. */
   private acc = 0
+  /** T22.19 (R107): the sandbox player's drawn rotation, smoothed per frame. */
+  private tilt = 0
   private simTime = 0
 
   private readout!: HTMLPreElement
@@ -1221,6 +1224,8 @@ export class SandboxScene extends Phaser.Scene {
             boots: false,
             space: false,
             thrust: null,
+            // T22.19: a line-up of skins, posed upright.
+            tilt: 0,
           })
           return v
         })
@@ -1437,7 +1442,13 @@ export class SandboxScene extends Phaser.Scene {
       const aim = dequantizeAngle(
         this.localInput.sample(this.seq, { x: body.x, y: body.y }, this.cameras.main).aim,
       )
+      // T22.19 (R107): the same pull and smoothing as the match, at the body's centre
+      // (where `apply_input` reads the field). Drawn about the sprite's centre, which the
+      // sandbox has always hung half a body above the body (see `asteroid-gravity.mjs`).
+      const pull = this.core.standPullAt(body.x, body.y, body.moveMods)
+      this.tilt = stepTilt(this.tilt, standTarget(pull[0]!, pull[1]!), dt)
       this.player.setState(body.x, body.y - C().PLAYER_H / 2, body.vx, body.vy, aim, {
+        tilt: this.tilt,
         alive: true,
         grounded: body.grounded,
         jetpack: body.moveState === 2,

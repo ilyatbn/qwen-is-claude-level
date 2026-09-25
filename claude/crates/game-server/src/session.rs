@@ -1094,6 +1094,46 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     },
                 );
             }
+            // e2e only (T22.19): put the asker's body centre at `{x, y}` at rest —
+            // `World::dev_relocate`, announced as a relocation, so the prediction takes it
+            // as a move. Answers `{x, y}` or null. Dev-only for `debug_effects`' reason.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on(
+                    "debug_place",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                return;
+                            };
+                            let at = p
+                                .get("x")
+                                .and_then(|v| v.as_f64())
+                                .zip(p.get("y").and_then(|v| v.as_f64()))
+                                .map(|(x, y)| game_core::math::Vec2::new(x as f32, y as f32));
+                            let reply = match at {
+                                Some(at) => room
+                                    .inspect(move |w| {
+                                        w.dev_relocate(id, at)
+                                            .map(|p| serde_json::json!({"x": p.x, "y": p.y}))
+                                    })
+                                    .await
+                                    .flatten(),
+                                None => None,
+                            };
+                            emit(
+                                &socket,
+                                "debug_place",
+                                &reply.unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    },
+                );
+            }
             {
                 let ctx = ctx.clone();
                 socket.on(

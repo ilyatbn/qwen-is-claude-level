@@ -70,6 +70,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
+import { standTarget, stepTilt } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
@@ -232,6 +233,8 @@ function freshObserved() {
     lastBreach: null as unknown,
     /** e2e only (`DEV_PROBE=1`, T22.12B): the server's answer to the last `debug_black_hole`. */
     lastBlackHole: null as unknown,
+    /** e2e only (`DEV_PROBE=1`, T22.19): the server's answer to the last `debug_place`. */
+    lastPlace: null as unknown,
   }
 }
 
@@ -346,6 +349,15 @@ export class GameScene extends Phaser.Scene {
   private hasBoots = false
   /** T21.34. Off `MOVE_MOD.wings` in the snapshot — see where it is set. */
   private hasWings = false
+  /**
+   * T22.19 (R107): the local figure's drawn rotation, and each remote's — smoothed per
+   * frame by `standTilt-math.ts::stepTilt` toward the pull `Core.standPullAt` reports at
+   * the position drawn (the local's render position, a remote's interpolated one).
+   */
+  private localTilt = 0
+  private readonly remoteTilts = new Map<number, number>()
+  /** The last frame's `dt`, s — the remotes' tilt steps by it too. */
+  private frameDt = 0
   /**
    * T22.04: the match's gravity spelling, off `lobby_state` — the same value the
    * mirror is handed there. Drawn with, and nothing else: the plume shows only in
@@ -666,6 +678,10 @@ export class GameScene extends Phaser.Scene {
     this.hasFlashlight = false
     this.hasBoots = false
     this.hasWings = false
+    // T22.19: a new round's figures start upright.
+    this.localTilt = 0
+    this.remoteTilts.clear()
+    this.frameDt = 0
     this.fuel = 0
     this.fuelShown = 0
     this.teleportCharge = 0
@@ -1250,6 +1266,9 @@ export class GameScene extends Phaser.Scene {
     })
     this.conn.on('debug_black_hole', (raw) => {
       this.observed.lastBlackHole = raw
+    })
+    this.conn.on('debug_place', (raw) => {
+      this.observed.lastPlace = raw
     })
     this.conn.on('respawn', (raw) => {
       this.observed.respawns++
@@ -2145,6 +2164,7 @@ export class GameScene extends Phaser.Scene {
 
     this.predictor.updateRender(dt)
     this.roundTime += dt
+    this.frameDt = dt
 
     const body = this.core.playerState(this.me)
     const rp = this.predictor.renderPos
@@ -2152,7 +2172,12 @@ export class GameScene extends Phaser.Scene {
       const aim = dequantizeAngle(
         this.localInput.sample(this.seq, { x: body.x, y: body.y }, this.cameras.main).aim,
       )
+      // T22.19 (R107): feet along the pull at the drawn position; upright when dead or
+      // where nothing pulls. Visual only — the aim above is sampled in screen space.
+      const pull = this.meAlive ? this.core.standPullAt(rp.x, rp.y, body.moveMods) : null
+      this.localTilt = stepTilt(this.localTilt, pull ? standTarget(pull[0]!, pull[1]!) : null, dt)
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
+        tilt: this.localTilt,
         alive: true,
         grounded: body.grounded,
         // `&& meAlive` for T22.04: `alive` above is a literal, and the mirror
@@ -2571,7 +2596,12 @@ export class GameScene extends Phaser.Scene {
         drawX: p.x,
         drawY: p.y,
       })
+      // T22.19 (R107): the remote's pull at its interpolated position, its own byte.
+      const rpull = flag(p.flags, FLAG.alive) ? this.core.standPullAt(p.x, p.y, p.moveMods) : null
+      const rtilt = stepTilt(this.remoteTilts.get(id) ?? 0, rpull ? standTarget(rpull[0]!, rpull[1]!) : null, this.frameDt)
+      this.remoteTilts.set(id, rtilt)
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
+        tilt: rtilt,
         alive: flag(p.flags, FLAG.alive),
         grounded: flag(p.flags, FLAG.grounded),
         jetpack: flag(p.flags, FLAG.jetpack),
@@ -2589,6 +2619,7 @@ export class GameScene extends Phaser.Scene {
       if (!sampled.has(id)) {
         r.view.destroy()
         this.remotes.delete(id)
+        this.remoteTilts.delete(id)
       }
     }
   }
@@ -3197,6 +3228,30 @@ export class GameScene extends Phaser.Scene {
       netDelay(ms: number) {
         self.conn.setInboundDelay(ms)
       },
+      /**
+       * e2e only (`DEV_PROBE=1`, T22.19): put this player's body centre at `(x, y)` at
+       * rest — `World::dev_relocate`, announced as a relocation like a pad's. The
+       * answer lands in `debug().stand.lastPlace`.
+       */
+      debugPlace(x: number, y: number) {
+        self.observed.lastPlace = null
+        self.conn.sendRaw('debug_place', { x, y })
+      },
+      /**
+       * e2e only (T22.19, §C2): redraw the local figure at `tilt` (radians) for a frozen
+       * photograph — the same instant upright, to compare the drawn figure against.
+       * The next unfrozen frame draws the real tilt again.
+       */
+      poseLocalTilt(tilt: number) {
+        self.localView?.poseTilt(tilt)
+        return self.localView?.tilt ?? null
+      },
+      /** e2e only (T22.19): `poseLocalTilt` for remote `id`. */
+      poseRemoteTilt(id: number, tilt: number) {
+        const r = self.remotes.get(id)
+        r?.view.poseTilt(tilt)
+        return r?.view.tilt ?? null
+      },
       debugBlackHole(dist?: number, warn?: boolean) {
         self.observed.lastBlackHole = null
         self.conn.sendRaw('debug_black_hole', {
@@ -3771,6 +3826,20 @@ export class GameScene extends Phaser.Scene {
           // rubber-band a vortex the client was not told about produces.
           // T22.12B: the hole the core pulls toward, what the layer drew, the server's
           // last probe answer, and the rocks the core still sums.
+          // T22.19 (R107): the tilt the scene stepped, the tilt the view drew, and the
+          // pull it was stepped toward — for the local body and each remote.
+          stand: {
+            tilt: self.localTilt,
+            drawn: self.localView?.tilt ?? null,
+            at: self.localView?.drawnAt ?? null,
+            pull: (() => {
+              const b = self.core.playerState(self.me)
+              const rp = self.predictor?.renderPos
+              return b && rp ? Array.from(self.core.standPullAt(rp.x, rp.y, b.moveMods)) : null
+            })(),
+            remotes: [...self.remotes].map(([id, r]) => ({ id, tilt: self.remoteTilts.get(id) ?? 0, drawn: r.view.tilt, at: r.view.drawnAt })),
+            lastPlace: self.observed.lastPlace,
+          },
           blackHole: {
             hole: self.mirror.blackHole ? { ...self.mirror.blackHole } : null,
             warn: self.mirror.blackHoleWarn ? { ...self.mirror.blackHoleWarn } : null,

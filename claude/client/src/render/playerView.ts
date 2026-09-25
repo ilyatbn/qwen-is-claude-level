@@ -46,6 +46,7 @@ import { bakeTintedAtlas } from './canvasTint'
 import { hasWebGL } from './shaders'
 import { ThrusterPlume } from './thrusterPlume'
 import { plumeOn } from './thrusterPlume-math'
+import { feetOffset, toLocal, uprightLocal } from './standTilt-math'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -89,6 +90,16 @@ export interface PlayerFlags {
    * plume off velocity again.
    */
   thrust: { x: number; y: number } | null
+  /**
+   * T22.19 (R107): the figure's rotation, radians — 0 upright, π feet-up — the scene's
+   * smoothed `standTilt-math.ts::stepTilt` of the pull the body stands against. **Visual
+   * only**: the body turns about its centre and so do its boots, wings, hat and bubble;
+   * the **weapon and the plume ride with it but point in screen space** (the aim and
+   * the thrust are the controls' directions, R107: controls stay screen-relative); the
+   * **name tag stays upright** above the body. Required, for `space`'s reason: a scene
+   * that forgot it would compile and never turn anyone.
+   */
+  tilt: number
 }
 
 /** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
@@ -176,6 +187,10 @@ export class PlayerView {
   /** The drawn body's centre, in container units — where the plume's nozzle is measured from. */
   private readonly bodyCentreY: number
   private readonly nameLabel: Phaser.GameObjects.Text
+  /** T22.19: the last `setState`, so an e2e pose can redraw the same instant at another tilt. */
+  private last: Parameters<PlayerView['setState']> | null = null
+  /** T22.19: the rotation the last `setState` drew. */
+  private drawnTilt = 0
   private readonly skinId: number
   /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
   private readonly hatId: number
@@ -357,7 +372,18 @@ export class PlayerView {
     flags: PlayerFlags,
   ): void {
     const c = C()
-    this.container.setPosition(x, y + c.PLAYER_H / 2)
+    this.last = [x, y, vx, vy, aim, flags]
+    // T22.19 (R107): turned about the body's centre, so the feet sit half a body along
+    // the pull from it; upright this is the old `(x, y + PLAYER_H / 2)` exactly.
+    const tilt = flags.tilt
+    this.drawnTilt = tilt
+    const feet = feetOffset(tilt, c.PLAYER_H)
+    this.container.setPosition(x + feet.x, y + feet.y)
+    this.container.setRotation(tilt)
+    // The tag stays upright, above the body's centre on screen (`-PLAYER_H - 6` from
+    // the feet when upright — the constructor's spot).
+    const tag = uprightLocal(tilt, c.PLAYER_H, 0, -c.PLAYER_H / 2 - 6)
+    this.nameLabel.setPosition(tag.x, tag.y).setRotation(-tilt)
 
     const inputs: AnimInputs = {
       alive: flags.alive,
@@ -379,7 +405,11 @@ export class PlayerView {
       this.body.anims.msPerFrame = ms
     }
 
-    const left = facingLeft(aim)
+    // T22.19: facing and the weapon are judged in the figure's own frame, so the weapon
+    // points at the aim on screen (`aim − tilt` inside a container turned by `tilt`) and
+    // a feet-up figure faces the way it aims.
+    const localAim = aim - tilt
+    const left = facingLeft(localAim)
     this.body.setFlipX(left)
     // **The accessories flip with the head** (T20.12). The cap's brim and the
     // crown's points are asymmetric on purpose — that asymmetry is what makes a
@@ -391,7 +421,7 @@ export class PlayerView {
     // The weapon rotates to the aim angle and is flipped **vertically** when
     // pointing left, not horizontally — the standard trick for a side-view aimed
     // weapon, otherwise it hangs upside down (`docs/50-sprites-skins.md` §4).
-    this.weapon.setRotation(aim)
+    this.weapon.setRotation(localAim)
     this.weapon.setScale(1, left ? -1 : 1)
 
     this.shieldBubble.setVisible(flags.shield)
@@ -403,11 +433,15 @@ export class PlayerView {
     this.wings?.setFlipX(left)
     // T22.04. Toggled, never rebuilt — against the thrust when the scene knows it
     // (the local player, T22.04C), else off velocity, so it turns with the body.
+    // T22.19: the thrust and the travel are screen directions; carried into the turned
+    // frame so the plume still points against them on screen.
+    const thrust = flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null
+    const vel = toLocal(tilt, vx, vy)
     this.plume.update(
       plumeOn(flags.alive, flags.jetpack, flags.space),
-      flags.thrust,
-      vx,
-      vy,
+      thrust,
+      vel.x,
+      vel.y,
       0,
       this.bodyCentreY,
       c.PLAYER_W / 2,
@@ -454,6 +488,26 @@ export class PlayerView {
 
   get state(): AnimState {
     return this.animState
+  }
+
+  /** T22.19: the rotation the last frame drew, radians (0 upright, π feet-up). */
+  get tilt(): number {
+    return this.drawnTilt
+  }
+
+  /** T22.19: the body centre the last frame drew about (world px) — the rotation's pivot. */
+  get drawnAt(): { x: number; y: number } | null {
+    return this.last ? { x: this.last[0], y: this.last[1] } : null
+  }
+
+  /**
+   * T22.19, e2e only (§C2): redraw the last `setState` at another tilt — the same
+   * instant, for a frozen photograph to compare the drawn figure against itself upright.
+   */
+  poseTilt(tilt: number): void {
+    if (!this.last) return
+    const [x, y, vx, vy, aim, flags] = this.last
+    this.setState(x, y, vx, vy, aim, { ...flags, tilt })
   }
 
   /** T22.04: what the plume drew last frame, for a check to count at both ends. */

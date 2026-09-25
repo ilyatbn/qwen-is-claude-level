@@ -1031,6 +1031,16 @@ export class Core {
   }
 
   /**
+   * T22.19 (R107): the pull a body at `(x, y)` stands against, px/s², `[ax, ay]` — what
+   * the drawn figure turns its feet along (`render/standTilt-math.ts`). `moveModBits` is
+   * the body's snapshot byte, so a winged body (R100) stands upright. Rust's `env_at`,
+   * the prediction's own; exactly `[0, 0]` where nothing pulls.
+   */
+  standPullAt(x: number, y: number, moveModBits: number): Float32Array {
+    return this.inner.stand_pull_at(x, y, moveModBits)
+  }
+
+  /**
    * Mount or unmount a player (T21.11B). Sandbox control.
    *
    * Goes through the wire's own decode path in Rust, so it exercises the code a

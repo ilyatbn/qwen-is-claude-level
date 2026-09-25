@@ -7161,3 +7161,10 @@ stamped from it, on the wire, hashed; REPLAY_VERSION 31): a level-1 hop from a l
 Air gap intact p50/p90 27.0/32.2 → 27.2/32.8. Mirror == server bit-exact on 72 bearings. R106 pinned against R90's 4
 horizons; Small-map escape arm: 0/208 thrusting die, 208/208 idle do. Faint reach ring drawn at 512 on both paths +
 minimap circle (pixel-asserted). Stale blackHoleFx comments fixed. One integration flake noted in flaky-test.md.
+
+## T22.19 — standing on asteroids (R107)
+A pulled body's figure turns its feet along the pull (Rust's `stand_pull_at` = env_at, wings → none), smoothed (turn 12/s,
+upright 5/s), about the body centre; weapon/plume ride along but point in screen space; tag counter-rotated upright.
+Local + remote, WebGL + Canvas. `stand-on-asteroid` (two humans, DEV_PROBE `debug_place`): feet-up under a rock matches
+the upright pose turned 180° (0.77/0.73 vs 0.21), top/free-float upright (1.00), eases in 47 frames, aim screen-space.
+Plants red. Note: no scene calls `setName`, so name tags are empty everywhere (pre-existing).
