@@ -1528,7 +1528,9 @@ const _: () = assert!(8192.0 / SNAPSHOT_QUANTUM < i32::MAX as f32);
 pub const SNAPSHOT_HEADER_BYTES: usize = 10;
 /// Trailing, per recipient: `last_input_seq` `u32` (the ack), then the buttons the
 /// server **stepped** at it `u8` (T22.14D F1: a stand-in's, when the seq was one —
-/// the correction's previous input; `World::last_stepped_buttons`).
+/// the correction's previous input; `World::last_stepped_buttons`). Precisely, the
+/// baseline the server's next step reads edges against: in `Ended` the neutral ticks
+/// run under the frozen ack with no buttons, so it reads 0 there.
 pub const SNAPSHOT_FOOTER_BYTES: usize = 5;
 /// The longest frame a client steps, seconds: a tab that stalled for ten seconds
 /// is not simulated ten seconds forward in one frame. **The client's
