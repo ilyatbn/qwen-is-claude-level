@@ -7086,3 +7086,11 @@ M1: `space::approach` closes to a keep-out's edge (freezes 2159 → 551 ticks; s
 use `space::escape`/`approach` (red off). M2/M3: void bound on a 128-seed pool (plant 0.547 red), run bounds as counts.
 Bots ask the world's predicates; tunables in constants.rs; mod.rs split walk/arms/explore — hashes 16/16 identical.
 Filed: respawns beside a vortex (most trips left), wings vs the capped pull (ruling), winged moving-stuck, flown-in trips.
+
+## T22.14C — the final audit's netcode (builder, 2026-09-25)
+HIGH-1: a correction restores the acked seq's jump/jetpack/prev_input/airborne (per-seq history in GameCore); dead
+players' input streams advance, respawn resets (a pending-window jump was 43.5 px off; JUMP through respawn jumped).
+MED-2 one `past_bell(seq)` (walk across the bell 16.28 px → 0; thrusters-match's bell arm re-keyed to the bell's seq).
+MED-3 exact f32 round time (header 10 B), monotonic clock, countdown ≤ RESPAWN_DELAY. LOW-4/5 `seqClock.ts`, attractors
+switch by seq (7.07 px → 0). R100: wings feel no field — the hole's pull too (26/208 winged died with it, 0 without).
+Placements share the trip's clearance (respawn trips 15 → 0). Shower banner "CLEARING". REPLAY_VERSION 26. Survey updated.

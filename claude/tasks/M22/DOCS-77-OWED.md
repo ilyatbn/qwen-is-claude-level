@@ -126,3 +126,37 @@ that surface mid-milestone are collected here so they are not lost. Each names i
     decoration swells in (`BLACK_HOLE_GROW_MS`). The vortex swirl is sized off the capture ring (drawing only), not
     `VORTEX_REACH / 2`.
 17. `REPLAY_VERSION` 25 (H1, H2, H3, R99; no layout change).
+
+## The final audit's netcode (T22.14C; R100 is the coordinator's ruling, recorded in its "As ruled")
+18. **docs/40 §3 snapshot header:** `round_time` is the server's `f32`, exact (it was a `u16` of deciseconds,
+    truncated); `SNAPSHOT_HEADER_BYTES` 8 → 10, so 182 B at 6 players. A death countdown never reads more than
+    `RESPAWN_DELAY`, and the client's round clock is never stepped back by a late snapshot (a restart, or a local
+    lead past `MAX_FRAME_DT`, is adopted whole).
+19. **docs/42 §2 (amends point 4's last sentence):** a correction restores the mirror's movement state **at the acked
+    seq** — previous input, jump buffer, jetpack state, airborne ticks — before it installs the snapshot, so the replay
+    steps from where the server's step did (`GameCore::correct_player_state`; `PREDICTION_HISTORY_TICKS` = 2 × `SIM_HZ`
+    seqs kept, client-only; an older ack falls back to the current state). The mirror advances a dead player's input
+    stream as the server does (the seq and `prev_input`, the body still), and `alive` false → true resets jump,
+    jetpack and airborne ticks as `PlayerState::respawn` does. Position/velocity-visible state is still the only thing
+    that *triggers* a correction.
+20. **docs/42 (the bell and the attractors, amends point 8's last sentence):** one seq ↔ tick rule on the client —
+    seq `ack` ran on tick `snap_tick`, one a tick, so something the server did on tick `t` first changes seq
+    `ack + t − snap_tick + 1`. From the bell's seq (`t` = `ends_tick`) the prediction steps as the server's `Ended`:
+    **no buttons and no hole pull** (one rule; the buttons used to wait for `ended` to be heard). A vortex pulls for
+    the seqs from its `vortex_open` tick's to its `vortex_close` tick's, and the black hole from its arrival tick's,
+    re-derived on every snapshot while the phase takes input (in `Ended`, at once). `MAX_FRAME_TICKS` and
+    `METEOR_DURATION` join `constants_json`.
+21. **R100, for the space section (amends points 8, 10, 11):** a winged player (wings, not mounted — the flying
+    regime) in space feels **no field**: not the asteroid wells, not a vortex's pull, and — the builder's measured
+    reading of "decide whether the hole's outer pull applies" — **not the black hole's pull either**: with it, 26 of
+    208 winged flights from one pixel outside the horizon died (wings' horizontal control is below the hole's
+    810 px/s² there), which breaks R90's "outside the horizon every escape works"; without it, 0. A vortex still takes
+    a winged player inside its capture radius, and the horizon still kills. One `env_at` on both sides.
+22. **Placements (amends point 12):** a respawn and a mid-round join keep the clearance a vortex trip's destination
+    keeps — clear of the hole's reach from the telegraph on, **and of every vortex's `VORTEX_REACH / 2`, live or
+    spent** (the ruling asked for the capture radius at least; the trip's margin is stricter and was already one of
+    the three placements' rule).
+23. **The HUD banner:** anchored on the activation (`effect_phase`), where `Active` lasts `effect_start`'s `duration` —
+    before, it ended `EFFECT_TELEGRAPH` early. A meteor shower's banner counts its dropping window
+    (`METEOR_DURATION`), then reads `CLEARING` until the effect ends.
+24. `REPLAY_VERSION` 26 (R100, the placement clearance; no layout change).

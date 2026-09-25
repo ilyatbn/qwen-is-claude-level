@@ -1,6 +1,6 @@
 # Architecture survey — how the netcode is actually built
 
-**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D, T22.10F (R89) and T22.10G.** Written so the next session reads this
+**Taken 2026-09-24 on `claude_builds` (after T22.08D, `9d915ba`), read-only; netcode lines updated after T22.10B (`26996f5`), T22.10D, T22.10F (R89), T22.10G and T22.14C (the final M22 audit's netcode findings, 2026-09-25).** Written so the next session reads this
 instead of re-surveying. Symbols, not line numbers. **Counts and sizes are measurements at that date — re-run the
 command before repeating one** (CLAUDE.md: a status line is only valid when taken). The opinion that uses these facts
 is `design_thoughts_opus55.md`; this file is facts only.
@@ -13,11 +13,18 @@ different story (see § 1).
 
 ## 1. What the client's WASM runs
 - `crates/game-wasm/src/lib.rs::GameCore`: a `Map`, `Vec<LocalPlayer>` (body, jump, jetpack, prev_input, PlayerState),
-  `Projectiles`, a weather struct, phase, gravity. **No `World`.** 49 `pub fn` in `impl GameCore`.
+  `Projectiles`, a weather struct, phase, gravity, the vortices and black hole **each with the input seqs it pulls
+  for** (`SeqSpan`, T22.14C LOW-4), the bell's seq, and per local player a **history of the movement state after
+  each applied seq** (`PREDICTION_HISTORY_TICKS`, T22.14C HIGH-1). **No `World`.** 57 `pub fn` in the
+  `#[wasm_bindgen] impl GameCore` block (T22.14C count).
 - `World::step` appears in one wasm export, `AttractCore::step` — "Frozen, and dormant since T18.01", no caller, a
   hand-copy of `room.rs::drive_bots`. Otherwise only `#[cfg(test)]`.
 - **GameScene (networked match)** calls (via GameScene.ts, `net/prediction.ts`, `net/worldMirror.ts`, `render/flareFx.ts`):
-  - prediction: `applyInput`, `setPlayerState` (Predictor), `playerState`, `addPlayer`/`removePlayer` (local), `setPhase`, `setGravity`, `setVortices` (from `WorldMirror.vortices`, T22.10B)
+  - prediction: `applyInput`, `correctPlayerState` (a reconcile's correction: the acked seq's movement state
+    restored, then the snapshot; T22.14C), `setPlayerState` (relocation, results-screen re-anchor), `playerState`,
+    `addPlayer`/`removePlayer` (local), `setPhase`, `acceptsInput` (the `Predictor`'s results-screen switch,
+    T22.10E), `setGravity`, `setVortices` (from `WorldMirror.pushVortices`, with seq spans since T22.14C),
+    `setBlackHole` (T22.12, from seq since T22.14C), `setBell(seq | null)` (T22.12C; `clear_bell` behind `null`)
   - terrain mirror: `loadMask` (map_init), `carve`, `carveCapsule` (seq-ordered events), `setTeleportPads`,
     `setGunPlatforms`, `setAsteroids`, `maskHash` (vs `mask_checksum`), `solidAt`, `takeDirtyChunks`/`maskView`
   - derived pure functions: `flarePoints`/`flareLit`/`flareTouches` (server seed + `ServerClock`), `lavaVents`,
@@ -32,19 +39,20 @@ different story (see § 1).
   **`GameCore::combat_step` / `weather_step` are a separate mini-simulation**, not `World::step`; their comments list
   rules copied from `World::detonate`, `splash_poison`, `step_placed`, and record past forks (toxic rain, flames and
   bullets once all detonated as bazookas in the sandbox).
-- GameScene.ts 3594 lines, SandboxScene.ts 1690, both `extends Phaser.Scene`, no shared base; 186 of Sandbox's 821
+- GameScene.ts 3893 lines, SandboxScene.ts 1726 (T22.14C; 3594 / 1690 at the survey), both `extends Phaser.Scene`, no shared base; 186 of Sandbox's 821
   unique non-trivial lines appear verbatim in GameScene. **38 of 87 browser checks load `?sandbox=1`.**
 
 ## 2. Server loop and wire
 - `SIM_HZ` 60, `SNAPSHOT_HZ` 20 (snapshot every 3 ticks), `MAX_PLAYERS` 6.
 - Transport: `game-server` is axum + socketioxide; client `socket.io-client` default `io()` — TCP, reliable, ordered,
   no volatile emits. Snapshots and input batches are **base64 strings**; everything else JSON events.
-- Snapshot `codec.rs::encode_snapshot`: **full every time, no delta**. 8-byte header (tick u32, round_time deciseconds
-  u16, darkness u8, count u8) + 28 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as **`i32` counts of `SNAPSHOT_QUANTUM` = 1/8 px (px/s), rounded**
+- Snapshot `codec.rs::encode_snapshot`: **full every time, no delta**. 10-byte header (`SNAPSHOT_HEADER_BYTES`: tick
+  u32, round_time **`f32`, the server's own, exact** since T22.14C MED-3 — it was deciseconds truncated to a u16, so
+  a death countdown read "5.1s" on a 5 s respawn; darkness u8, count u8) + 28 B/player (`SNAPSHOT_PLAYER_BYTES`: id; pos/vel as **`i32` counts of `SNAPSHOT_QUANTUM` = 1/8 px (px/s), rounded**
   since T22.10H — before, `i16` whole px truncated; aim
   u16; health u8 truncated; flags; fuel; selected item; vision; battery; heals/batteries; teleport charge; move_mods)
   + 4-byte footer (per-recipient ack: since T22.10F the last *simulated* seq, real input or stand-in,
-  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 180 B at 6 players before base64 (T22.10H; was 132).
+  `World::last_simulated_seq` in `Room::last_seqs`; T22.10B made it the last consumed, before that the last received). 182 B at 6 players before base64 (T22.14C; 180 at T22.10H, 132 before it).
   Health stays the truncated u8 on purpose: `speed_multiplier` reads `health.floor()` (T22.10H).
 - Inputs: `decode_input_batch`, 1..=`INPUT_REDUNDANCY` (3) × {seq u32, aim u16, buttons u8}. `fire`, `use_item`,
   `select_slot` are separate events. **Every in-match verb runs synchronously in arrival order** — `input` since
@@ -68,8 +76,10 @@ different story (see § 1).
   the ack) is logged `game::net` info on leave — `GAME_LOG=warn,game::net=info` makes `harness.mjs` print it. Stood-in
   share after T22.10G: 23–28 % on `thrusters-match` (a ~4-tick frame against a 2-tick lead), 1–19 % in the other networked checks.
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
-  (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
-  effects, hazards, phase, round).
+  (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, `black_hole`/`black_hole_warn`
+  (T22.12, both in the join catch-up), the dev-only `relocate` (T22.12D F3), projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
+  effects, hazards, phase, round). Every attractor event carries its `tick`, which the mirror keys the pull's
+  switch-over to (T22.14C LOW-4).
 - Terrain: never diffs. `carve`/`carve_capsule` carry a shared `seq`; `worldMirror.ts::applyCarve` buffers in order; a
   gap > `CARVE_GAP_TIMEOUT_MS` (2000) → `resync_map` (full `map_init`). `mask_checksum` every
   `MASK_CHECKSUM_INTERVAL` 5 s; mismatch → resync. `map_init` (`encode_map_init_at`, magic `0x4D415031`): RLE mask +
@@ -100,20 +110,47 @@ different story (see § 1).
   results-screen re-anchor past the catch-up cap, and since T22.10G an ack-0 correction with inputs pending and an ack
   that ran more seqs than server ticks (a trim). `stats.worstJump` (T22.10G) holds the worst counted jump's context
   (ack/tick step, pending, ack error, speed) and `harness.mjs` prints it. The fixed step's first frame elapses 0. `Predictor.relocate` + `RemoteInterpolator.cut` via `GameScene.onRelocated`
-  handle pad `teleport` and `vortex_trip`. Render eases at
+  handle pad `teleport`, `vortex_trip` and the dev `relocate` (T22.12D F3) — **measured at the event's tick**
+  (T22.12E F1): a snapshot at or past it already carried the move; before it, the arrival is compared with the
+  prediction at that tick's seq (`seqClock.ts::seqAtTick`), and a short move is marked as the event's. The core
+  predicts no relocation (no pad, no trip). Render eases at
   `RENDER_SMOOTH_PER_SEC` 12, hard snap > `SNAP_PX` 64. Server position/velocity arrive rounded to 1/8 px (T22.10H;
   worst `lastAckErrorPx` per client, 2 runs: `radiation-match` 2.12–2.61 → 1.40–2.24 px, `breach-vortex` 2.02–2.25 →
-  2.08–2.23 (not the wire's: its pull arm 1.00–1.09 → 0.10–0.13), `black-hole`'s pull arm 1.26 → 0.19); `JumpState` and `prev_input` are not on the wire.
+  2.08–2.23 (not the wire's: its pull arm 1.00–1.09 → 0.10–0.13), `black-hole`'s pull arm 1.26 → 0.19); `JumpState` and `prev_input` are not on the wire. **Since T22.14C (HIGH-1) a
+  correction restores them — with the jetpack state and `airborne_ticks` — from the mirror's copy at the acked seq**
+  (`GameCore::correct_player_state`): before, the replay's first input compared its edges against the *newest* pushed
+  input, so a jump pressed inside the pending window and still held lost its edge on every correction (43.5 px in
+  the vitest). A dead player's input stream advances in the mirror as on the server (`prev_input`), and `alive`
+  false → true resets jump, jetpack and airborne ticks as `PlayerState::respawn` does (a JUMP held through a respawn
+  was a phantom jump).
 - Remotes: `interpolation.ts::RemoteInterpolator`, `INTERP_DELAY_MS` 100, `MAX_EXTRAPOLATION_MS` 250, keyed on local
   arrival time.
 - **Four clocks in GameScene:** `ClockSync` (EWMA, debug HUD only), `render/weather-math.ts::ServerClock` (monotonic,
-  slews; flare), `roundTime` (extrapolated `+= dt`), `serverRoundTime` (last snapshot).
+  slews; flare), `roundTime` (extrapolated `+= dt`; since T22.14C never stepped back by a late snapshot —
+  `seqClock.ts::roundClockOnSnapshot`, a restart or a lead past `MAX_FRAME_DT` adopted whole), `serverRoundTime`
+  (last snapshot, exact since T22.14C). The death countdown is clamped to `RESPAWN_DELAY`.
 - Every movement modifier `apply_input` reads must reach the client as a wire bit + a `GameCore` setter, or the
   predictor rubber-bands (see § 6).
-- **The bell (T22.12C F5):** `GameCore::set_bell` (from the last `Playing` `round_state`'s tick and time left and
-  each snapshot's tick/ack, via `black_hole::bell_seq`) stops the prediction's black-hole pull at the first seq the
-  server steps in `Ended` — a body in the pull took a ~2.2 px bell correction without it. It relies on `Playing`
-  ending on the tick nearest its deadline (`phase_time_left() <= SIM_DT / 2`).
+- **The seq ↔ tick mapping has one spelling, `client/src/net/seqClock.ts`** (T22.14C LOW-5): a snapshot says seq
+  `ack` ran on tick `snap_tick`, one seq a tick (R89), so `seqAtTick(t) = ack + t − snap_tick`; something the server
+  did on tick `t` (after that tick's `apply_inputs`) first changes seq `firstSeqAfter(t) = seqAtTick(t + 1)`. Its
+  readers: the bell, `Predictor.enterNeutral`/`predictionAt`, and the attractors' switch-over. `MAX_FRAME_TICKS` is
+  exported through `constants_json` (it was re-derived twice in TS).
+- **The bell (T22.12C F5, T22.12D, T22.14C):** from the last `Playing` `round_state`'s integer **`ends_tick`**:
+  bell seq = `firstSeqAfter(ends_tick)` = `ack + ends_tick − snap_tick + 1`, re-derived on every snapshot and
+  handed to `GameCore::set_bell` before the reconcile replays. **One `past_bell(seq)`** (T22.14C MED-2) zeroes the
+  buttons and stops the hole's pull from that seq on — it was two copies (the pull by seq, the buttons by the heard
+  phase), so a walk held across the bell was predicted walking until `ended` was heard (16.28 px at 6 ticks late in
+  the Rust side-by-side). `black_hole::bell_seq` is gone; `game-core`'s
+  `the_bell_predicted_at_round_start_is_the_servers` states the rule against the server for every round length.
+- **The attractors switch on the right seq** (T22.14C LOW-4): `vortex_open`/`vortex_close`/`black_hole` carry
+  `tick`; `WorldMirror.anchorSeqs` (every snapshot, while the phase takes input) hands the core each vortex's
+  `firstSeqAfter(open)..firstSeqAfter(close)` and the hole's `firstSeqAfter(arrival)`, so a replay of a seq the
+  server stepped before the event is stepped without it (a vortex heard 6 ticks late, corrected from 4 before it:
+  7.07 px → 0 in the Rust side-by-side). In `Ended` (no anchor) an event switches at once, as before.
+- **R100 (T22.14C):** `attractors::env_at` takes `MoveMods::flying`: a winged body in space feels no field (wells,
+  vortex pull, hole pull); capture radii and the horizon are radii and still apply. Both sides pass the same
+  derivation (the mirror's from the move-mod byte).
 
 ## 4. Determinism
 - `docs/01-architecture.md` "Determinism, and how far it needs to go": cross-platform float determinism **not required,
@@ -124,7 +161,7 @@ different story (see § 1).
 - **No test compares wasm vs native output**; game-wasm tests run natively. `golden.rs` is native only.
 - game-core: `f32` 1820 lines, `f64` 61; 50 transcendental calls (map gen, `effects/flare.rs` 6, `world/mod.rs` 5);
   no `libm` dependency (wasm32 gets Rust's libm port, native gets glibc — they can differ in the last bit).
-- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 19 (T22.10G). The
+- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 26 (T22.14C; 19 at T22.10G). The
   header does not record the weather mode.
 
 ## 5. Authority and exposure
@@ -147,8 +184,11 @@ other than the server; TCP stall stepped it back 213 ms); T9.02 ("every addition
 `AttractCore::step` (unexercised hand-copy of `drive_bots`).
 
 ## 7. Scale
-Rust: game-core 70 464 lines (tests/ 7 577), game-server 25 485, game-wasm 4 628 (~2 550 tests) — 100 577 total.
-client/src TS 44 286 (30 525 non-test). Largest: `world/mod.rs` 13 178, `game-wasm/lib.rs` 4 628, `constants.rs` 4 124,
-`room.rs` 3 759, `GameScene.ts` 3 594, `bots/mod.rs` 2 936, `map/meta.rs` 2 927, `session.rs` 2 152,
-`SandboxScene.ts` 1 690, `codec.rs` 1 497 (TS twin `codec.ts` 434, hand-written both sides).
-Tests: Rust `#[test]` 1559 (+25 ignored), vitest ~981 calls, browser checks 87 (38 sandbox, 14 flaky/disabled).
+**Re-measured at T22.14C (2026-09-25)** — `find … -name '*.rs' | xargs cat | wc -l` and the like; the first survey's
+numbers in brackets. Rust: game-core 79 522 lines (src 70 651, tests/ 8 871) [70 464], game-server 28 015 [25 485],
+game-wasm 5 853 [4 628] — 113 390 total [100 577]. client/src TS 47 926 (32 847 non-test) [44 286 / 30 525]. Largest:
+`world/mod.rs` 14 426, `game-wasm/lib.rs` 5 853, `constants.rs` 4 483, `room.rs` 4 072, `GameScene.ts` 3 893,
+`map/meta.rs` 2 957, `session.rs` 2 298, `SandboxScene.ts` 1 726, `codec.rs` 1 672 (TS twin `codec.ts` 472,
+hand-written both sides); `bots/` 5 281 over its files since T22.14B's split (`bots/mod.rs` 1 313).
+Tests: Rust `^\s*#\[test\]` 1674 (+26 `#[ignore`), vitest 1110 (79 files, one run), browser checks 89 entries in
+`scripts/lib/e2e-checks.mjs` [87].
