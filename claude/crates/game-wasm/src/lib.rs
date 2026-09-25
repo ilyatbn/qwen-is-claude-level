@@ -40,6 +40,9 @@ use game_core::weapons::explode::{
 use game_core::weapons::projectile::{ProjectileOutcome, Projectiles};
 use wasm_bindgen::prelude::*;
 
+/// T23.05: render-only terrain fields (R4). Its `GameCore` exports live in the module.
+mod render_fields;
+
 /// One locally-simulated player: the body plus the two bits of movement state
 /// `apply_input` needs.
 struct LocalPlayer {
@@ -128,6 +131,8 @@ impl LocalPlayer {
 
 #[wasm_bindgen]
 pub struct GameCore {
+    /// T23.05: the M23 terrain shader's field buffer (`render_fields.rs`). Render-only.
+    render_fields: render_fields::RenderFields,
     map: Map,
     players: Vec<LocalPlayer>,
     projectiles: Projectiles,
@@ -222,6 +227,7 @@ impl GameCore {
         // no file, line or message.
         console_error_panic_hook::set_once();
         GameCore {
+            render_fields: render_fields::RenderFields::default(),
             map: generate(1, MapScale::Small),
             players: Vec::new(),
             projectiles: Projectiles::new(),
