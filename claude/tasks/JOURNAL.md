@@ -7078,3 +7078,11 @@ vortices 96→0 over 8 showers; golden gains a space block. B3 `MapMeta::generat
 B4 darkness keys on it. L hole disc/ring full size at arrival (pixel arm); swirl sized off the capture ring — the whole
 reach measured off-screen, needs a ruling if wanted. `REPLAY_VERSION` 25. `thrusters` braking race red once at --jobs 4
 (known, T22.00H), green alone.
+
+## T22.14B — the final audit's bots (builder, 2026-09-25)
+M5: spent vortices were ~8 % of trips; the rest were bots hovering at the half-reach keep-out, where a live vortex already
+pulls the cap, until dry (69/125). Keep-out is now the whole pull (+ spent mouths): trips 1.12 → 0.27 (8 seeds), bound 0.45.
+M1: `space::approach` closes to a keep-out's edge (freezes 2159 → 551 ticks; seed 79190 15 → 0). M4: winged bots in space
+use `space::escape`/`approach` (red off). M2/M3: void bound on a 128-seed pool (plant 0.547 red), run bounds as counts.
+Bots ask the world's predicates; tunables in constants.rs; mod.rs split walk/arms/explore — hashes 16/16 identical.
+Filed: respawns beside a vortex (most trips left), wings vs the capped pull (ruling), winged moving-stuck, flown-in trips.
