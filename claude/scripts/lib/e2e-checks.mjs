@@ -77,6 +77,16 @@ export const CHECKS = [
     file: 'scripts/checks/asteroid-gravity.mjs',
     url: '?sandbox=1&seed=4242&gravity=space',
   },
+  // T22.16 (R102): each asteroid's core drawn at its centre, distinct from the rock
+  // (a warm heart against a grey body patch, the control region), and gone with its
+  // pixels when carved (the control frame). Both render paths, like the thrusters.
+  { name: 'asteroid-cores', file: 'scripts/checks/asteroid-cores.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  {
+    name: 'asteroid-cores-canvas',
+    file: 'scripts/checks/asteroid-cores.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
+    serial: true,
+  },
   // T22.04: the thruster burst on the side opposite travel, photographed against its
   // own control frame on both sides of the body, every render path. Space-only, so
   // `?gravity=space` (R22). The Canvas twin is `serial` like the other Canvas checks.

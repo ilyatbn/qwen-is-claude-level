@@ -635,3 +635,55 @@ export class MaskSnapshot implements MaskSource {
     return this.bytes
   }
 }
+
+/**
+ * T22.16 (R102): an asteroid's core, world px — `Core.coreDiscs`' triple.
+ */
+export interface CoreDisc {
+  x: number
+  y: number
+  r: number
+}
+
+/**
+ * The core's two colours: a deep ember rim and a bright heart, so the core reads as
+ * a round, lit thing inside the grey rock (the owner: *"make like a round core at the
+ * center"*). Drawn into the rock layer before the live-mask punch, so a carved core
+ * loses its colour exactly where it lost its pixels.
+ */
+export const CORE_RIM = '#c2410c'
+export const CORE_HEART = '#fbbf24'
+/** The heart's radius as a fraction of the core's. */
+export const CORE_HEART_FRAC = 0.55
+
+/** `Core.coreDiscs`' flat `[x, y, r, …]` as discs. */
+export function parseCoreDiscs(flat: ArrayLike<number>): CoreDisc[] {
+  const out: CoreDisc[] = []
+  for (let i = 0; i + 2 < flat.length; i += 3) out.push({ x: flat[i]!, y: flat[i + 1]!, r: flat[i + 2]! })
+  return out
+}
+
+/**
+ * The discs that touch chunk `(chunkX, chunkY)`, in **chunk-local** px, centred on the
+ * pixel centre of the core's centre pixel (`+ 0.5`). **Drawn at `r − 0.5`**: the core's
+ * raster (and the crumble's carve) is every pixel whose centre is within `r`, and a
+ * canvas arc anti-aliases half a pixel past its radius — drawn at `r` it tinted the
+ * ring of rock just outside the raster, which survived the crumble as a thin ember
+ * outline round the hole (seen in the first photographs, T22.16).
+ */
+export function coresInChunk(
+  discs: readonly CoreDisc[],
+  chunkX: number,
+  chunkY: number,
+  size: number,
+): CoreDisc[] {
+  const x0 = chunkX * size
+  const y0 = chunkY * size
+  const out: CoreDisc[] = []
+  for (const d of discs) {
+    const reach = d.r + 1
+    if (d.x + reach < x0 || d.x - reach >= x0 + size || d.y + reach < y0 || d.y - reach >= y0 + size) continue
+    out.push({ x: d.x - x0 + 0.5, y: d.y - y0 + 0.5, r: Math.max(0, d.r - 0.5) })
+  }
+  return out
+}

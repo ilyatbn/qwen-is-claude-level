@@ -7140,3 +7140,10 @@ drift over 5 s p50 554 px → 0; idle on a rock top 62 % → 100 %; a hop lands 
 Step over taper: return speed 87 vs 61 px/s on level 1 against a ~70 px/s minimal hop. REPLAY_VERSION 28. Fixtures that
 sat in "open space inside a well" rewritten (R96 pocket now built); bots not retuned (kills 3.1→4.0, trips 0.06→0.29).
 breach-vortex red once (2.53 px), green twice (0.07) on the same map — recorded. rooms.rs AlreadyClosed once (R40 row).
+
+## T22.16 — asteroid cores (R102, refinements A and B)
+Core = 0.3 r disc; destroyed at ≥20 % air (a body box holding the centre carves ≥22.58 %, brute-forced), then the well is
+off for the round, `core_destroyed{tick,x,y}`, the core crumbles (Carve) and one battery floats at the centre. Mirror keys it
+to firstSeqAfter(tick) (0.0000 px side by side). Band now from the rock's round body (0.75 r): air gap p50 38.2 → 27.0 px.
+The reviewer's hollow bounce (36.8 px @146 px/s) is gone. Core drawn ember/amber in the bake, both renderers, photographed.
+REPLAY_VERSION 29. Split A `8218aaf` / B. docs/77 lines listed in the task file.

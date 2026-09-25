@@ -15,7 +15,18 @@
 
 import type { Core } from '../core'
 import { C } from '../core'
-import { BackdropMask, backdropBits, edgeBits, stencilBits, tileOffset } from './chunkBake-math'
+import {
+  BackdropMask,
+  CORE_HEART,
+  CORE_HEART_FRAC,
+  CORE_RIM,
+  backdropBits,
+  coresInChunk,
+  edgeBits,
+  stencilBits,
+  tileOffset,
+  type CoreDisc,
+} from './chunkBake-math'
 import { drawObjects, type ObjectArt, type ObjectIndex } from './objects'
 
 export {
@@ -118,6 +129,33 @@ export interface BakeLayers {
   objects?: ObjectIndex | null
   /** Resolves an object frame to art, or null with no atlas (`docs/50` §8). */
   objectArt?: ObjectArt | null
+  /** T22.16 (R102): the asteroids' core discs, world px (`Core.coreDiscs`). */
+  cores?: readonly CoreDisc[] | null
+}
+
+/**
+ * T22.16 (R102): paint each core touching this chunk — the ember rim, then the bright
+ * heart — into the rock layer. Called **before** the live-mask punch, the objects'
+ * way (§D1): a carved core loses its colour exactly where it lost its pixels, and a
+ * crumbled one shows none.
+ */
+function drawCores(
+  ctx: CanvasRenderingContext2D,
+  discs: readonly CoreDisc[],
+  chunkX: number,
+  chunkY: number,
+  size: number,
+): void {
+  for (const d of coresInChunk(discs, chunkX, chunkY, size)) {
+    ctx.fillStyle = CORE_RIM
+    ctx.beginPath()
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = CORE_HEART
+    ctx.beginPath()
+    ctx.arc(d.x, d.y, d.r * CORE_HEART_FRAC, 0, Math.PI * 2)
+    ctx.fill()
+  }
 }
 
 export function bakeChunk(
@@ -169,6 +207,9 @@ export function bakeChunk(
   drawTiled(body, fillImage, chunkX, chunkY, size)
   if (layers.objects && layers.objectArt) {
     drawObjects(body, layers.objects, layers.objectArt, chunkX, chunkY, size)
+  }
+  if (layers.cores && layers.cores.length > 0) {
+    drawCores(body, layers.cores, chunkX, chunkY, size)
   }
   body.globalCompositeOperation = 'destination-in'
   body.drawImage(scratch.stencilCanvas, 0, 0)

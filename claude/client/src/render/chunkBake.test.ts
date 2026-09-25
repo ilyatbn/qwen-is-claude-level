@@ -2,6 +2,7 @@ import { beforeAll, describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core } from '../core'
+import * as CoreEnums from '../core'
 import {
   BackdropMask,
   CLEAR,
@@ -11,6 +12,8 @@ import {
   solidIn,
   stencilBits,
   tileOffset,
+  coresInChunk,
+  parseCoreDiscs,
   type MaskSource,
 } from './chunkBake-math'
 
@@ -574,5 +577,49 @@ describe('the no-art path (`docs/50` §8)', () => {
     const index = new ObjectIndex([obj()], OBJ_CHUNK, 4, 4)
     const r = recordingCtx()
     expect(drawObjects(r.ctx, index, art, 0, 0, OBJ_CHUNK)).toBe(1)
+  })
+})
+
+/**
+ * T22.16 (R102): the cores the bake paints. `Core.coreDiscs` on a real space map is one
+ * disc per asteroid, centred on it, inside the rock (its centre pixel solid, its radius
+ * under the rock's); `coresInChunk` hands a chunk exactly the discs that touch it — one
+ * straddling a seam to both sides, none to a chunk it misses (the control).
+ */
+describe('asteroid cores in the bake (T22.16)', () => {
+  let space: Core
+  beforeAll(async () => {
+    const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
+    space = await Core.init(readFileSync(fileURLToPath(url)))
+  }, 120_000)
+
+  it('one disc per rock, at its centre, inside the rock', () => {
+    const { MapScale, MapGenerator } = CoreEnums
+    expect(space.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
+    const rocks = space.meta.asteroids
+    const discs = parseCoreDiscs(space.coreDiscs())
+    expect(rocks.length).toBeGreaterThan(0)
+    expect(discs.length).toBe(rocks.length)
+    discs.forEach((d, i) => {
+      expect([d.x, d.y]).toEqual([rocks[i]!.x, rocks[i]!.y])
+      expect(d.r).toBeGreaterThan(0)
+      expect(d.r).toBeLessThan(rocks[i]!.r)
+      expect(space.solidAt(d.x, d.y)).toBe(true)
+    })
+    space.setGravity('standard')
+  })
+
+  it('hands a chunk exactly the discs that touch it', () => {
+    const size = C().CHUNK_SIZE
+    const seam = { x: size, y: 100, r: 10 }
+    const inside = { x: 50, y: 50, r: 10 }
+    const far = { x: 3 * size + 50, y: 50, r: 10 }
+    const left = coresInChunk([seam, inside, far], 0, 0, size)
+    const right = coresInChunk([seam, inside, far], 1, 0, size)
+    expect(left.map((d) => d.x)).toEqual([size + 0.5, 50.5])
+    expect(right.map((d) => d.x)).toEqual([0.5])
+    expect(coresInChunk([seam, inside, far], 2, 0, size)).toEqual([])
+    // Half a pixel inside the raster, so the arc's anti-aliasing stays on core pixels.
+    expect(left[0]!.r).toBe(seam.r - 0.5)
   })
 })

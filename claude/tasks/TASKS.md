@@ -637,7 +637,7 @@ instead of your health.
 
 - [x] [T22.17](M22/T22.17-bigger-asteroids-square-rim.md) — Bigger asteroids (+0–20 % mass) and a square rim — R103, R104 — first: the map shape everything else reads
 - [x] [T22.15](M22/T22.15-short-range-wells.md) — Short-range wells: gravity only a few pixels around each asteroid, free float between — R101
-- [ ] [T22.16](M22/T22.16-asteroid-cores.md) — Asteroid cores: destroy the core, the gravity goes and a battery spawns — R102
+- [x] [T22.16](M22/T22.16-asteroid-cores.md) — Asteroid cores: destroy the core, the gravity goes and a battery spawns — R102
 - [ ] [T22.18](M22/T22.18-vortex-black-hole-drain.md) — Smaller vortices, a black hole that pulls from farther, suit energy drains 50 % slower — R105, R106, R108
 - [ ] [T22.19](M22/T22.19-standing-on-asteroids.md) — Characters rotate to stand on the asteroid pulling them, upright in free space — R107
 

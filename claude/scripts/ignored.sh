@@ -105,6 +105,10 @@ MANIFEST=(
   # with a pull, drift at the spawns, standing/hopping/jumping on every rock top.
   # Prints; asserts nothing (the guards are the tests beside it in attractors.rs).
   "short_range_wells_report|game-core src/world/attractors.rs|report"
+  # T22.16: refinement B's air gap — how much air a body at a well's band edge floats
+  # in before it touches its rock, intact and with the lumps blown off, 9 seeds.
+  # Prints; asserts nothing (the band's guard is the inequality test beside it).
+  "well_air_gap_report|game-core src/world/attractors.rs|report"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
   # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.

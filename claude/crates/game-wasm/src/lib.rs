@@ -600,6 +600,20 @@ impl GameCore {
         }
     }
 
+    /// T22.16 (R102): every asteroid's **core disc**, as `[x, y, radius, …]` in the
+    /// map's order — `world::cores::core_radius`, so the disc the terrain bake paints
+    /// in the core's colour is the pixel set the server judges destroyed. All of them,
+    /// intact or not: a destroyed core has crumbled (carved), so there is no rock left
+    /// under its disc to paint, and the bake punches the colour to the live mask.
+    pub fn core_discs(&self) -> Vec<i32> {
+        self.map
+            .meta
+            .asteroids
+            .iter()
+            .flat_map(|a| [a.x, a.y, game_core::world::cores::core_radius(a)])
+            .collect()
+    }
+
     /// T22.17 (R104): is `(x, y)` inside the space arena? `SpaceGeometry::inside`,
     /// the one rim predicate, or `false` off a space map — so a browser check that
     /// asks *"inside the rim?"* (`breach-vortex.mjs`) carries no copy of the rim's

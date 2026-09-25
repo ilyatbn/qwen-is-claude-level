@@ -911,6 +911,14 @@ export class Core {
     return this.inner.space_inside(x, y)
   }
 
+  /**
+   * T22.16 (R102): each asteroid's core disc, `[x, y, radius, …]`, radius from Rust
+   * (`cores::core_radius`) — what the terrain bake paints in the core's colour.
+   */
+  coreDiscs(): Int32Array {
+    return this.inner.core_discs()
+  }
+
   setAsteroids(rocks: readonly { x: number; y: number; r: number; level: number }[]): void {
     const xs = new Int32Array(rocks.map((a) => a.x))
     const ys = new Int32Array(rocks.map((a) => a.y))
