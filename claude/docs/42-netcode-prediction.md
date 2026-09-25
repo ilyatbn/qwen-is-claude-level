@@ -34,7 +34,9 @@ client.
 ## 2. Reconciliation
 
 Each snapshot carries `last_input_seq`: the highest input sequence the server had
-processed when it built that snapshot.
+~~processed~~ **simulated, real or stood-in (`docs/77` §H13)** when it built that snapshot.
+**The gate and the replay below are superseded by `docs/77` §H16** (compared at the acked seq;
+the acked seq's movement state restored first).
 
 ```
 on snapshot:

@@ -73,8 +73,8 @@ the previous accepted input for that player (`20-player-movement.md` §7), which
 why a lost packet is recoverable and why the format is stateless.
 
 The server accepts a given `seq` once and ignores duplicates and any `seq` lower
-than the last accepted. At most `MAX_INPUT_QUEUE` (8) inputs per player per tick are
-processed; the rest are dropped and logged at `debug` on `game::net`.
+than the last accepted. At most `MAX_INPUT_QUEUE` ~~(8)~~ **(15, `docs/77` §H13)** inputs per player per tick are
+~~processed~~ **accepted — and each player is stepped exactly once a tick, `docs/77` §H13**; the rest are dropped and logged at `debug` on `game::net`.
 
 ### `use_item` (JSON)
 ```json
@@ -143,10 +143,10 @@ Buried item slots are **not** included — see `32-item-spawning.md` §5.
 
 ```
 u32  tick
-u16  round_time_ds      round time in deciseconds
+~~u16  round_time_ds      round time in deciseconds~~   f32 round_time — docs/77 §H15
 u8   darkness           quantised: darkness * 255
 u8   player_count
-repeat player_count times:            // 14 bytes each, SNAPSHOT_PLAYER_BYTES
+repeat player_count times:            // ~~14~~ 28 bytes each, SNAPSHOT_PLAYER_BYTES — docs/77 §H15
   u8   player_id
   i16  x
   i16  y
@@ -155,13 +155,14 @@ repeat player_count times:            // 14 bytes each, SNAPSHOT_PLAYER_BYTES
   u16  aim
   u8   health           0..=150, clamped to u8
   u8   flags            bit 0 alive, 1 grounded, 2 jetpack_active,
-                        3 shield_active, 4 flashlight_on, 5 iframes, 6-7 reserved
+                        3 shield_active, 4 flashlight_on, 5 iframes, ~~6-7 reserved~~ (7 irradiated — docs/77 §H7)
   u8   jetpack_fuel     fuel / JETPACK_MAX_FUEL * 255
   u8   selected_item    ItemId low byte, 255 = none
-u32  last_input_seq     the last input this client sent that the server processed
+u32  last_input_seq     the last input this client sent that the server ~~processed~~ simulated (docs/77 §H13)
+                        + u8 stepped_buttons — docs/77 §H15
 ```
 
-Six players: `9 + 6*14 + 4 = 97 bytes` per snapshot, 20 times a second — under
+Six players: ~~`9 + 6*14 + 4 = 97 bytes`~~ **`10 + 6*28 + 5 = 183` bytes (`docs/77` §H15)** per snapshot, 20 times a second — under
 2 KB/s down per client. The velocity fields exist so the client can extrapolate
 smoothly during a dropped snapshot.
 
@@ -249,7 +250,7 @@ turns that into a single unambiguous log line.
 
 - Every binary codec round-trips: `decode(encode(x)) == x`, with property tests over
   random inputs.
-- Snapshot size is exactly `9 + n*14 + 4` bytes for `n` players.
+- Snapshot size is exactly ~~`9 + n*14 + 4`~~ **`10 + n*28 + 5` (`docs/77` §H15)** bytes for `n` players.
 - RLE round-trips for: an empty mask, a full mask, a generated map at each scale, and
   a mask of alternating single pixels (the pathological case — assert it does not
   exceed a stated size bound).

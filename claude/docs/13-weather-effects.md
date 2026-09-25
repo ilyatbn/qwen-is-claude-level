@@ -138,8 +138,10 @@ camera so it feels like weather rather than a filter.
 ## 7. Authority and replication
 
 Effects are simulated **only** on the server. Hazard spawns are broadcast as
-events with explicit positions. Clients do not roll their own hazard positions —
-if they did, a divergence would mean one player standing in lava they cannot see.
+events with explicit positions. ~~Clients do not roll their own hazard positions —
+if they did, a divergence would mean one player standing in lava they cannot see.~~
+**Withdrawn by `docs/77` §H6: lava and the solar flare are drawn from positions the client
+derives from the effect's seed through the server's own function.**
 
 The `seed` in `effect_start` exists purely so clients can randomise *cosmetic*
 details (particle jitter, sprite variants) consistently across all viewers.

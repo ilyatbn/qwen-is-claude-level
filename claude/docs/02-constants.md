@@ -249,8 +249,8 @@ accelerations are **px/s²**, angles are **radians** unless stated.
 | `INPUT_REDUNDANCY` | 3 | resend the last N inputs each packet |
 | `RECONCILE_EPSILON_PX` | 2.0 | position error above which the client re-simulates |
 | `MASK_CHECKSUM_INTERVAL` | 5.0 | seconds between server mask hashes |
-| `SNAPSHOT_PLAYER_BYTES` | 14 | see `40-net-protocol.md` |
-| `MAX_INPUT_QUEUE` | 8 | per player per tick; excess is dropped and logged |
+| `SNAPSHOT_PLAYER_BYTES` | ~~14~~ **28** | see `40-net-protocol.md`; the whole snapshot layout is `77-amendments-v9.md` §H15 |
+| `MAX_INPUT_QUEUE` | ~~8~~ **`MAX_FRAME_TICKS` (15)** | per player per tick; excess is dropped and logged — the room's flood guard only, `77-amendments-v9.md` §H13 |
 
 ## Rendering
 

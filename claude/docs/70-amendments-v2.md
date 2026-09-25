@@ -1058,7 +1058,7 @@ M3.
 **This corrects `40-net-protocol.md` §2.**
 
 The world applied *every* queued input for a player in one tick, each with a full
-`dt`. `MAX_INPUT_QUEUE` (8) bounds how many are accepted, so a client that simply
+`dt`. `MAX_INPUT_QUEUE` ~~(8)~~ **(15 — `docs/77` §H13, which also replaces this section's backlog with one simulated step per player per tick)** bounds how many are accepted, so a client that simply
 sends more packets — with increasing sequence numbers, which is all the validation
 checks — moves several times faster. Measured over 60 ticks on a medium map:
 

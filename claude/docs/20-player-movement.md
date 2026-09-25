@@ -232,4 +232,5 @@ wall, a 45° ramp, a 1-px spike):
 - Crouching (a shorter AABB), for squeezing into tunnels.
 - Wall sliding and wall jumps.
 - Knockback interacting with the jetpack (currently knockback just adds velocity).
-- Fall damage — deliberately absent in v1 so the jetpack stays forgiving.
+- ~~Fall damage — deliberately absent in v1 so the jetpack stays forgiving.~~ **Built: `docs/76` §G1;
+  off in space, `docs/77` §H3.**
