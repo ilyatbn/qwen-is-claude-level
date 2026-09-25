@@ -31,7 +31,9 @@ const RC = rustConstants()
 const TELEGRAPH_S = RC.get('EFFECT_TELEGRAPH')
 const ACTIVE_S = {
   toxic: RC.get('TOXIC_DURATION'),
-  meteor: RC.get('METEOR_DURATION'),
+  // T22.14A H3: a shower's `Active` covers its fall — it drops for `METEOR_DURATION`
+  // and stays active `METEOR_FALL_TIME` more (`effects/scheduler.rs::METEOR_ACTIVE`).
+  meteor: RC.get('METEOR_DURATION') + RC.get('METEOR_FALL_TIME'),
   lava: RC.get('LAVA_JET_DURATION') + RC.get('LAVA_BURN_DURATION'),
   fog: RC.get('FOG_DURATION'),
 }

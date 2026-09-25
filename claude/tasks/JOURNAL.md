@@ -7069,3 +7069,12 @@ The 91/101 px "trip drift" is the body moving on after the trip, read ten frames
 41–49 at `--jobs 4`, 101 in the gate. Now read off the recording's last sample (the first frame that heard the trip):
 ≤ 0.8 px; bound unchanged; no-snap plant red at 867 px. Rubber-band 2.12 px: 0/8 runs, worst 0.13 px — not parked.
 Found, not fixed: `thrusters` braking arm red once at `--jobs 4` (freezes a round trip after its predicate; see task).
+
+## T22.14A — the final audit's hazards (builder, 2026-09-25)
+H1 vortices muted inside the hole's reach (117/208 flights dragged in at HEAD). H2 placements clear a *telegraphed* hole
+(`black_hole_site`). H3 weather refused in `Ended`; shower `Active` = 10 + 16 s fall (standard golden −1 row; HUD shower
+countdown now 26 s — flagged). R99 space meteors start inside the rim at the rocks, despawn at the rim: rim carves 313→0,
+vortices 96→0 over 8 showers; golden gains a space block. B3 `MapMeta::generator` (map_init byte) is "is this space?";
+B4 darkness keys on it. L hole disc/ring full size at arrival (pixel arm); swirl sized off the capture ring — the whole
+reach measured off-screen, needs a ruling if wanted. `REPLAY_VERSION` 25. `thrusters` braking race red once at --jobs 4
+(known, T22.00H), green alone.
