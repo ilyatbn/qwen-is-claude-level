@@ -31,16 +31,23 @@ describe('the seq ↔ tick mapping (T22.14C LOW-5)', () => {
 })
 
 describe('the round clock on a snapshot (T22.14C MED-3)', () => {
+  // One frame's worth of lead is jitter; the fixture's frame ceiling.
+  const lead = 0.25
+
   it('never steps back for a late snapshot', () => {
     // The frames ran the clock to 10.05; a snapshot of 10.0 arrives late.
-    expect(roundClockOnSnapshot(10.05, 10.0, 9.95)).toBe(10.05)
+    expect(roundClockOnSnapshot(10.05, 10.0, 9.95, lead)).toBe(10.05)
   })
 
   it('takes the server’s time when it is ahead', () => {
-    expect(roundClockOnSnapshot(10.0, 10.1, 10.05)).toBe(10.1)
+    expect(roundClockOnSnapshot(10.0, 10.1, 10.05, lead)).toBe(10.1)
   })
 
   it('adopts a restart whole, backwards included', () => {
-    expect(roundClockOnSnapshot(300.2, 0.05, 300.1)).toBe(0.05)
+    expect(roundClockOnSnapshot(300.2, 0.05, 300.1, lead)).toBe(0.05)
+  })
+
+  it('does not keep a clock that ran more than a frame fast', () => {
+    expect(roundClockOnSnapshot(11.0, 10.0, 9.95, lead)).toBe(10.0)
   })
 })

@@ -541,9 +541,10 @@ const SERVER_CLOCK_SLEW = 0.5
  * The server's tick clock, seconds, **smoothed, monotonic and at full precision**
  * (T22.08D F2, T22.08E F1).
  *
- * Sampled from each snapshot's **tick** — a `u32`, exact, where the snapshot's round
- * time is truncated to 0.1 s — plus half the round trip, against the local arrival
- * time. The estimate is an offset from the local clock.
+ * Sampled from each snapshot's **tick** — a `u32`, exact (the snapshot's round time
+ * was truncated to 0.1 s until T22.14C, and is a round clock, not the tick clock) —
+ * plus half the round trip, against the local arrival time. The estimate is an offset
+ * from the local clock.
  *
  * **Delay only ever makes a sample late**, so the sample that says the server is
  * furthest along is the least wrong: the target is the **largest** offset seen in the

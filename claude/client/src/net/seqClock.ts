@@ -53,9 +53,11 @@ export function firstSeqAfter(tick: number, a: SeqAnchor): number {
  * clock back every such snapshot (the death countdown and the flare ribbon both read
  * it). The largest of the two is also the least-delayed estimate, `ServerClock`'s
  * rule. A **restart** (the server's clock below the last one it sent) is adopted
- * whole.
+ * whole, and so is a local clock more than `maxLead` ahead (`MAX_FRAME_DT`: more
+ * than one frame's worth is not arrival jitter but a clock that ran fast, and
+ * keeping the larger would keep it fast for the rest of the round).
  */
-export function roundClockOnSnapshot(local: number, server: number, lastServer: number): number {
-  if (server < lastServer) return server
+export function roundClockOnSnapshot(local: number, server: number, lastServer: number, maxLead: number): number {
+  if (server < lastServer || local - server > maxLead) return server
   return Math.max(local, server)
 }

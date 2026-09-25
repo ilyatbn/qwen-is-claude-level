@@ -138,7 +138,7 @@ function snapshotFixture(
   const v = new DataView(b)
   let at = 0
   v.setUint32(at, 1234, true); at += 4
-  v.setUint16(at, 306, true); at += 2   // 30.6 s
+  v.setFloat32(at, 30.61667, true); at += 4   // 30.61667 s: exact, not deciseconds (T22.14C MED-3)
   v.setUint8(at++, 209)                 // full night: 0.82 * 255
   v.setUint8(at++, n)
   for (let i = 0; i < n; i++) {
@@ -305,7 +305,7 @@ describe('snapshot', () => {
   it('decodes every field', () => {
     const s = decodeSnapshot(snapshotFixture(3))
     expect(s.tick).toBe(1234)
-    expect(s.roundTime).toBeCloseTo(30.6, 5)
+    expect(s.roundTime).toBe(Math.fround(30.61667))
     expect(s.darkness).toBeCloseTo(209 / 255, 5)
     expect(s.lastInputSeq).toBe(9999)
     expect(s.players).toHaveLength(3)
@@ -415,7 +415,8 @@ describe('snapshot', () => {
   it('rejects a length that disagrees with player_count', () => {
     expect(() => decodeSnapshot(snapshotFixture(3, 5))).toThrow(/trailing/)
     const b = snapshotFixture(3)
-    new DataView(b).setUint8(7, 200)
+    // The count is the header's last byte (derived: it moved when the round time grew).
+    new DataView(b).setUint8(C().SNAPSHOT_HEADER_BYTES - 1, 200)
     expect(() => decodeSnapshot(b)).toThrow()
   })
 

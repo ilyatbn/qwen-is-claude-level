@@ -351,8 +351,10 @@ pub fn encode_snapshot(world: &World, _for_player: PlayerId, last_input_seq: u32
     );
 
     b.extend_from_slice(&world.tick.to_le_bytes());
-    let ds = (world.round_time * 10.0).clamp(0.0, u16::MAX as f32) as u16;
-    b.extend_from_slice(&ds.to_le_bytes());
+    // T22.14C MED-3: the round clock exactly — the server's `f32`, which `respawn_at`
+    // and the effects' clocks are read against. It was deciseconds truncated to a
+    // `u16`: a client's death countdown read up to 0.1 s over `RESPAWN_DELAY`.
+    b.extend_from_slice(&world.round_time.to_le_bytes());
     b.push((world.darkness() * 255.0).clamp(0.0, 255.0) as u8);
     b.push(players.len().min(255) as u8);
 
@@ -515,7 +517,7 @@ pub struct SnapshotPlayer {
 pub fn decode_snapshot(b: &[u8]) -> Result<SnapshotView, CodecError> {
     let mut r = Reader::new(b);
     let tick = r.u32()?;
-    let round_time = r.u16()? as f32 / 10.0;
+    let round_time = f32::from_bits(r.u32()?);
     let darkness = r.u8()?;
     let n = r.u8()? as usize;
 
@@ -1117,7 +1119,15 @@ mod tests {
         assert_eq!(s.tick, w.tick);
         assert_eq!(s.players.len(), 3);
         assert_eq!(s.last_input_seq, 99);
-        assert!((s.round_time - w.round_time).abs() < 0.1);
+        // T22.14C MED-3: exact — the server's own `f32`, which `respawn_at` and every
+        // effect's clock are computed from. It was deciseconds, truncated: 10 ticks is
+        // 0.1667 s and read 0.1, so a death countdown taken against it read up to 0.1 s
+        // over `RESPAWN_DELAY`.
+        assert!(
+            w.round_time * 10.0 != (w.round_time * 10.0).floor(),
+            "premise: not on a decisecond"
+        );
+        assert_eq!(s.round_time, w.round_time);
 
         let p1 = s.players.iter().find(|p| p.id == 1).expect("player 1");
         assert_eq!(p1.health, 137);
@@ -1465,7 +1475,8 @@ mod tests {
     fn a_player_count_disagreeing_with_the_length_is_rejected() {
         let w = world_with(3);
         let mut b = encode_snapshot(&w, 0, 0);
-        b[7] = 200; // the count byte: claim 200 players
+        // The count byte, the header's last (derived: T22.14C MED-3 moved it).
+        b[game_core::constants::SNAPSHOT_HEADER_BYTES - 1] = 200; // claim 200 players
         assert!(decode_snapshot(&b).is_err());
     }
 

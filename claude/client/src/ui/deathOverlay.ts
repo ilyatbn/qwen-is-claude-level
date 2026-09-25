@@ -13,6 +13,7 @@
 // private copy; a security function with three implementations is a divergence
 // waiting to become a vulnerability rather than a wrong number.
 import { escapeHtml } from './results-math'
+import { C } from '../core'
 import {
   causeText,
   countdownText,
@@ -47,7 +48,7 @@ export class DeathOverlay {
       return
     }
     this.up = true
-    const left = secondsLeft(this.info, roundTime)
+    const left = secondsLeft(this.info, roundTime, C().RESPAWN_DELAY)
     const el = this.ensure()
     el.querySelector('.death-cause')!.textContent = causeText(this.info, nameOf)
     el.querySelector('.death-count')!.textContent = countdownText(left)

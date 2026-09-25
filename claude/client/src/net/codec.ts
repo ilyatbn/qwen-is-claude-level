@@ -324,7 +324,8 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
 export function decodeSnapshot(buf: ArrayBuffer): Snapshot {
   const r = new Reader(new DataView(buf))
   const tick = r.u32()
-  const roundTime = r.u16() / 10
+  // T22.14C MED-3: the server's own `f32` round time, exact (it was deciseconds).
+  const roundTime = r.f32()
   const darkness = r.u8() / 255
   const n = r.u8()
 

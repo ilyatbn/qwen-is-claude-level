@@ -72,7 +72,7 @@ import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
-import { firstSeqAfter } from '../net/seqClock'
+import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SkyLayer } from '../render/sky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
@@ -433,8 +433,8 @@ export class GameScene extends Phaser.Scene {
   private readonly flareClock = new FlareClock()
   /**
    * T22.08D F2: the server's tick clock, smoothed — what the flare is drawn at. Sampled
-   * off every snapshot's exact tick, never its 0.1 s round time, so the ribbon only
-   * ever moves forward.
+   * off every snapshot's exact tick (its round time was truncated to 0.1 s until
+   * T22.14C), so the ribbon only ever moves forward.
    */
   private readonly serverClock = new ServerClock()
   /** The crosshair mark's world position, last frame — `debug().crosshair`. */
@@ -1134,8 +1134,8 @@ export class GameScene extends Phaser.Scene {
           // T22.08B: the flare's ribbon is measured from the tick it was
           // installed on, which is this event's tick — and T22.08D F2: on the
           // **tick clock**, `tick × SIM_DT`, the one `serverClock` estimates. Not
-          // `evAt`: that is built on the snapshot's round time, which the codec
-          // truncates to 0.1 s.
+          // `evAt`: that is built on the snapshot's round time (truncated to 0.1 s
+          // until T22.14C MED-3; a round clock, not the tick clock, either way).
           this.flareClock.start(id, rec.kind, String(p['seed'] ?? '0'), evTick * C().SIM_DT)
         } else if (ev === 'effect_phase') {
           this.topHud?.setEffectPhase(id, String(p['phase'] ?? 'active') as EffectPhase)
@@ -1653,7 +1653,10 @@ export class GameScene extends Phaser.Scene {
     if (this.lastServerTick > 0 && lag > this.observed.maxTickLag) this.observed.maxTickLag = lag
     this.lastServerTick = s.tick
     this.debugHud?.noteSnapshot(now, s.tick)
-    this.roundTime = s.roundTime
+    // T22.14C MED-3: exact on the wire now, and never stepped back by a late snapshot —
+    // the extrapolated clock was reset to every snapshot's (truncated) time, so it
+    // jumped back up to a tenth of a second and the death countdown read over the delay.
+    this.roundTime = roundClockOnSnapshot(this.roundTime, s.roundTime, this.serverRoundTime, C().MAX_FRAME_DT)
     this.serverRoundTime = s.roundTime
     // The overlay's visibility follows the **server's** alive flag rather than
     // the countdown reaching zero, so a respawn that lands early or late is
@@ -2087,11 +2090,10 @@ export class GameScene extends Phaser.Scene {
     // no volatile emits), so a packet is never dropped, only late; what the
     // packets must do is carry *every* input of the frame, in order.
     //
-    // Not while the results screen is up. The server freezes the simulation in
-    // `Ended` (`docs/41` §3) but keeps accepting input, so a client that carries
-    // on sending queues a burst that is applied the moment the next round starts
-    // — you would spawn already walking, holding a direction you pressed while
-    // reading a scoreboard.
+    // Not while the results screen is up: the server drops every input in `Ended`
+    // and steps a neutral tick (T21.30, `World::apply_inputs`), so there is nothing
+    // it would use. (T22.14C LOW-7: this said the server kept accepting input there
+    // and queued a burst for the next round — false since T21.30.)
     //
     // **Every input this frame is sent, in packets of at most `INPUT_REDUNDANCY`**
     // (T22.10B; `codec.ts::inputPackets` since T22.10D, so it has a test) — the

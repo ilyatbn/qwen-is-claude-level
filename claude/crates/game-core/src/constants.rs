@@ -1523,8 +1523,9 @@ pub const SNAPSHOT_PLAYER_BYTES: usize = 28;
 pub const SNAPSHOT_QUANTUM: f32 = 1.0 / 8.0;
 const _: () = assert!(MAP_LARGE_W as f32 / SNAPSHOT_QUANTUM > i16::MAX as f32);
 const _: () = assert!(8192.0 / SNAPSHOT_QUANTUM < i32::MAX as f32);
-/// Header bytes before the player array: tick, round_time_ds, darkness, count.
-pub const SNAPSHOT_HEADER_BYTES: usize = 8;
+/// Header bytes before the player array: tick `u32`, round time `f32` (T22.14C
+/// MED-3: exact; it was a `u16` of truncated deciseconds), darkness `u8`, count `u8`.
+pub const SNAPSHOT_HEADER_BYTES: usize = 10;
 /// Trailing `last_input_seq`.
 pub const SNAPSHOT_FOOTER_BYTES: usize = 4;
 /// The longest frame a client steps, seconds: a tab that stalled for ten seconds

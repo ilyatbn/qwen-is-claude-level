@@ -20,9 +20,15 @@ export interface DeathInfo {
  *
  * `roundTime` comes from the snapshot header, so this recomputes against the
  * authority every time a snapshot lands rather than counting down locally.
+ *
+ * **Never more than `delay`** (`RESPAWN_DELAY`, T22.14C MED-3): the server set
+ * `respawn_at` to the death's round time plus the delay, and the page's clock can
+ * only be behind that moment — a `death` event is heard before its own tick's
+ * snapshot, and the snapshot's clock was deciseconds truncated — so anything over
+ * the delay is the clock's lag, not time left ("5.1s" on a 5 s respawn).
  */
-export function secondsLeft(info: DeathInfo, roundTime: number): number {
-  return Math.max(0, info.respawnAt - roundTime)
+export function secondsLeft(info: DeathInfo, roundTime: number, delay: number): number {
+  return Math.min(delay, Math.max(0, info.respawnAt - roundTime))
 }
 
 /** What the countdown shows. One decimal: whole seconds feel frozen. */

@@ -7,6 +7,9 @@ import {
   type DeathInfo,
 } from './deathOverlay-math'
 
+/** The fixture's respawn delay: `respawnAt` 30 is a death at 25. */
+const DELAY = 5
+
 const info = (over: Partial<DeathInfo> = {}): DeathInfo => ({
   victim: 1,
   attacker: 2,
@@ -18,9 +21,9 @@ const info = (over: Partial<DeathInfo> = {}): DeathInfo => ({
 describe('the countdown is the server\'s', () => {
   it('counts down against round time, not against arrival', () => {
     const d = info({ respawnAt: 30 })
-    expect(secondsLeft(d, 25)).toBeCloseTo(5)
-    expect(secondsLeft(d, 28.5)).toBeCloseTo(1.5)
-    expect(secondsLeft(d, 30)).toBe(0)
+    expect(secondsLeft(d, 25, DELAY)).toBeCloseTo(5)
+    expect(secondsLeft(d, 28.5, DELAY)).toBeCloseTo(1.5)
+    expect(secondsLeft(d, 30, DELAY)).toBe(0)
   })
 
   /**
@@ -32,12 +35,29 @@ describe('the countdown is the server\'s', () => {
   it('is unaffected by when the event arrived', () => {
     const d = info({ respawnAt: 30 })
     // Two clients, one 300 ms behind the other, agree on what is left.
-    expect(secondsLeft(d, 26.0)).toBeCloseTo(secondsLeft(d, 26.0))
-    expect(secondsLeft(d, 26.3) + 0.3).toBeCloseTo(secondsLeft(d, 26.0))
+    expect(secondsLeft(d, 26.0, DELAY)).toBeCloseTo(secondsLeft(d, 26.0, DELAY))
+    expect(secondsLeft(d, 26.3, DELAY) + 0.3).toBeCloseTo(secondsLeft(d, 26.0, DELAY))
+  })
+
+  /**
+   * T22.14C MED-3: the countdown read "5.1s" on a 5 s respawn — the snapshot's round
+   * time was deciseconds truncated, so the clock it was read against sat up to 0.1 s
+   * behind the server's `respawn_at − RESPAWN_DELAY`, and a death heard before its own
+   * tick's snapshot lags that too. What is left can never exceed the delay itself.
+   */
+  it('never reads more than the respawn delay, however far behind the clock is', () => {
+    const delay = DELAY
+    const d = info({ respawnAt: 30 })
+    // The death's own tick is 25; the clock the page holds is behind it.
+    for (const behind of [0.04, 0.09, 0.3]) {
+      expect(secondsLeft(d, 25 - behind, delay)).toBeLessThanOrEqual(delay)
+      expect(countdownText(secondsLeft(d, 25 - behind, delay))).toBe('5.0s')
+    }
+    expect(secondsLeft(d, 27, delay)).toBeCloseTo(3)
   })
 
   it('never goes negative, however late a snapshot is', () => {
-    expect(secondsLeft(info({ respawnAt: 10 }), 999)).toBe(0)
+    expect(secondsLeft(info({ respawnAt: 10 }), 999, DELAY)).toBe(0)
   })
 
   it('shows a decimal, because whole seconds read as frozen', () => {
