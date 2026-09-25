@@ -63,3 +63,5 @@ Asked after M22 closed, verbatim:
 
 Order: T22.17 first (the map shape everything else reads), then T22.15, T22.16, T22.18, T22.19. Each gets a harsh
 review; one batch gate at the end; `docs/77` gains a §H22 for this round.
+**Done 2026-09-25:** `docs/77` §H22 indexes R101–R108 (R107 written there); each ruling is also in the section it
+changes (§H4, §H7, §H9, §H10, §H11, §H19, §H20). `DOCS-77-OWED.md` points 28–38 are marked landed.

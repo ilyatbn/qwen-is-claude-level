@@ -29,7 +29,10 @@ different story (see § 1).
     `setBlackHole` (T22.12, from seq since T22.14C), `setBell(seq | null)` (T22.12C; `clear_bell` behind `null`)
   - terrain mirror: `setMapGenerator` (map_init's generator byte, T22.14A B3 — installed before `loadMask`, and the
     one answer to "is this a space map?"), `loadMask` (map_init), `carve`, `carveCapsule` (seq-ordered events), `setTeleportPads`,
-    `setGunPlatforms`, `setAsteroids`, `maskHash` (vs `mask_checksum`), `solidAt`, `takeDirtyChunks`/`maskView`
+    `setGunPlatforms`, `setAsteroids` (with each rock's lumps, T22.18B), `setDeadCores` (from `core_destroyed`, keyed
+    to its seq, T22.16), `maskHash` (vs `mask_checksum`), `solidAt`, `takeDirtyChunks`/`maskView`
+  - drawing: `standPullAt` (T22.19, R107 — `env_at` read back for the figure's tilt; GameScene local + remotes and
+    SandboxScene; nothing in prediction or input reads it)
   - derived pure functions: `flarePoints`/`flareLit`/`flareTouches` (server seed + `ServerClock`), `lavaVents`,
     `itemRegistryJson`, `constants_json`, `quantize_angle`, `ambient_rain`
   - debug: `maskHash()`, `countSolid()` on `window.__game`
@@ -83,15 +86,16 @@ different story (see § 1).
   share after T22.10G: 23–28 % on `thrusters-match` (a ~4-tick frame against a 2-tick lead), 1–19 % in the other networked checks.
 - Events: `events.rs::scope_of` — `Only(owner)`: Inventory; `Pair(victim, attacker)`: Damage; `Everyone`: all else
   (carves, explosions, `vortex_open`/`vortex_close`/`vortex_trip`, `teleport`, `black_hole`/`black_hole_warn`
-  (T22.12, both in the join catch-up), the dev-only `relocate` (T22.12D F3), projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
+  (T22.12, both in the join catch-up), `core_destroyed` (T22.16, R102; one per dead core in the join catch-up), the
+  dev-only `relocate` (T22.12D F3), projectile spawn/move/despawn at `SNAPSHOT_HZ`, hitscan, items, birds, animals, deaths,
   effects, hazards, phase, round). Every attractor event carries its `tick`, which the mirror keys the pull's
   switch-over to (T22.14C LOW-4).
 - Terrain: never diffs. `carve`/`carve_capsule` carry a shared `seq`; `worldMirror.ts::applyCarve` buffers in order; a
   gap > `CARVE_GAP_TIMEOUT_MS` (2000) → `resync_map` (full `map_init`). `mask_checksum` every
   `MASK_CHECKSUM_INTERVAL` 5 s; mismatch → resync. `map_init` (`encode_map_init_at`, magic `0x4D415031`): RLE mask +
   the generator byte after `theme` (T22.14A B3; an unknown byte refused by both decoders, bound `MAP_GENERATOR_MAX` in
-  `constants_json` since T22.14D), carve_seq, spawns, pads, platforms, decorations, objects, asteroids (buried slots
-  deliberately omitted). Full layout: `docs/77` §H4.
+  `constants_json` since T22.14D), carve_seq, spawns, pads, platforms, decorations, objects, asteroids (27 bytes each since T22.18B: x, y, r, level
+  + 4 lump slots; `core_intact` is not on it — `core_destroyed` is; buried slots deliberately omitted). Full layout: `docs/77` §H4.
 - Mid-match joins are refused (§E4); the effect catch-up (T22.08D) is dormant.
 
 ## 3. Prediction and reconciliation
@@ -164,9 +168,12 @@ different story (see § 1).
 - **R100 (T22.14C):** `attractors::env_at` takes `MoveMods::flying`: a winged body in space feels no field (wells,
   vortex pull, hole pull); capture radii and the horizon are radii and still apply. Both sides pass the same
   derivation (the mirror's from the move-mod byte).
-- **R101 (T22.15):** an asteroid well pulls at its level's full strength only out to one `WELL_SURFACE_BAND`
-  (`PLAYER_H`) of air past its rock's bounding radius (`attractors::well_reach`) and exactly zero beyond; open space
-  between rocks has no field (measured: 8.3 % of open arena pulled, 99.8 % before). Same `env_at` on both sides.
+- **R101 (T22.15; the band's start T22.16, T22.18B):** an asteroid well pulls at its level's full strength only
+  within one `WELL_SURFACE_BAND` (`PLAYER_H`) of air past a body resting on the rock — on the body's bearing, from
+  the rock's generated outline (`Asteroid::outline_radius`, body + lumps, never the carved mask) + `PLAYER_H/2`
+  (`attractors::well_contact`/`well_reach`) — and exactly zero beyond; open space between rocks has no field
+  (measured: 8.3 % of open arena pulled, 99.8 % before). A destroyed core's well is off (`asteroid_attractors`
+  filters `core_intact`; the mirror via `set_dead_cores`). Same `env_at` on both sides.
 
 ## 4. Determinism
 - `docs/01-architecture.md` "Determinism, and how far it needs to go": cross-platform float determinism **not required,
@@ -177,7 +184,7 @@ different story (see § 1).
 - **No test compares wasm vs native output**; game-wasm tests run natively. `golden.rs` is native only.
 - game-core: `f32` 1820 lines, `f64` 61; 50 transcendental calls (map gen, `effects/flare.rs` 6, `world/mod.rs` 5);
   no `libm` dependency (wasm32 gets Rust's libm port, native gets glibc — they can differ in the last bit).
-- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 28 (T22.15; 27 at T22.17, 26 at T22.14C, 19 at T22.10G). The
+- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 31 (T22.18B; 30 T22.18, 29 T22.16, 28 T22.15, 27 T22.17, 26 T22.14C, 19 T22.10G). The
   header does not record the weather mode.
 
 ## 5. Authority and exposure
