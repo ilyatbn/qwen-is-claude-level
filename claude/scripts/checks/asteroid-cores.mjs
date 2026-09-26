@@ -14,6 +14,10 @@
  *  - **control region** — a patch of the same rock's body outside the core, on a
  *    bearing whose whole patch is solid rock (read off the core's mask).
  *
+ * *T22.21 (R112):* between the two, the core takes its hits short of the last — carves
+ * it refuses — and after each the heart must read dimmer than before, the control
+ * region unmoved (`asteroid-cores-hit{1,2}` photographs).
+ *
  * The **intact frame** must show the subject distinctly coloured from the control
  * region (colour distance), and *warmer* (red over blue, by a margin over the rock's
  * own) — the core, not a lighting gradient. The **control frame** is the same rock,
@@ -40,6 +44,12 @@ const DISTINCT_MIN = 60
 const WARM_MIN = 60
 /** How far the control region may move between the two frames (mean colour). */
 const UNCHANGED_MAX = 6
+/**
+ * T22.21 (R112): how much dimmer (mean of r, g, b) the core's heart must read after
+ * each hit than before it. The bake mixes the heart toward the rim by a third of
+ * `CORE_DIM_TOWARD_RIM` a hit: ~20 of luminance at full light.
+ */
+const DIM_MIN = 8
 /** Rendered frames to let a pin, a placement or a rebake reach the screen. */
 const SETTLE_FRAMES = 20
 
@@ -75,7 +85,9 @@ export default async function ({ page, shot, log }) {
   const pick = await page.evaluate(
     ([halfW, halfH, bodyH]) => {
       const core = window.__game.core
-      const rocks = core.meta.asteroids
+      // T22.21 (R113): an iron rock has no core, so the discs are the ordinary rocks'
+      // — `[x, y, r, hits]` each since R112.
+      const rocks = core.meta.asteroids.filter((a) => !a.iron)
       const flat = Array.from(core.coreDiscs())
       const solidBox = (x, y, half) => {
         for (let dy = -half; dy <= half; dy++) {
@@ -87,8 +99,8 @@ export default async function ({ page, shot, log }) {
       }
       const out = []
       rocks.forEach((a, i) => {
-        const c = flat[i * 3 + 2]
-        if (flat[i * 3] !== a.x || flat[i * 3 + 1] !== a.y) return
+        const c = flat[i * 4 + 2]
+        if (flat[i * 4] !== a.x || flat[i * 4 + 1] !== a.y) return
         // The camera can centre on it (the rig clamps to the map).
         if (a.x < halfW || a.x > core.width - halfW || a.y < halfH || a.y > core.height - halfH) return
         // A patch well inside the heart (the heart is 0.55 of the core).
@@ -108,7 +120,7 @@ export default async function ({ page, shot, log }) {
         }
       })
       out.sort((p, q) => q.c - p.c)
-      return { rocks: rocks.length, discs: flat.length / 3, best: out[0] ?? null }
+      return { rocks: rocks.length, discs: flat.length / 4, best: out[0] ?? null }
     },
     [k.VIEWPORT_W / 2 / k.CAMERA_ZOOM, k.VIEWPORT_H / 2 / k.CAMERA_ZOOM, k.PLAYER_H],
   )
@@ -168,8 +180,36 @@ export default async function ({ page, shot, log }) {
     )
   }
 
-  // The control frame: the core carved away on the client's core — what the server's
-  // crumble carve does — and the rebake reaching the screen.
+  // T22.21 (R112): **the glow dims per hit.** Each hit short of the last is a carve at
+  // the centre that the locked core refuses — no pixel moves — and the heart must
+  // read darker than the frame before it by `DIM_MIN`, with the control region still.
+  const lum = (s) => (s.r + s.g + s.b) / 3
+  let before = subjectA
+  for (let hit = 1; hit < k.CORE_HITS; hit++) {
+    await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, rock.c])
+    await frames(SETTLE_FRAMES)
+    const s = await samplePatch(page, p.subject)
+    const ctl = await samplePatch(page, p.control)
+    await shot(`asteroid-cores-hit${hit}${tag}`)
+    log(`hit ${hit}: core ${fmt(s)} (luminance ${lum(s).toFixed(0)}), rock body ${fmt(ctl)}`)
+    if (lum(before) - lum(s) < DIM_MIN) {
+      throw new Error(
+        `hit ${hit} of ${k.CORE_HITS}: the core's heart ${fmt(s)} is not dimmer than ${fmt(before)} ` +
+          `by ${DIM_MIN} — the glow does not show the hits`,
+      )
+    }
+    if (warmth(s) - warmth(controlA) < WARM_MIN / 2) {
+      throw new Error(`hit ${hit}: the core ${fmt(s)} is gone before its last hit`)
+    }
+    if (colourDelta(ctl, controlA) > UNCHANGED_MAX) {
+      throw new Error(`hit ${hit}: the control region moved (${fmt(controlA)} → ${fmt(ctl)})`)
+    }
+    before = s
+  }
+
+  // The control frame: the last hit — the core breaks and its pixels go with it (the
+  // unlocked core is not hardened, so the core-sized carve takes it whole), and the
+  // rebake reaching the screen.
   await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, rock.c])
   await frames(SETTLE_FRAMES)
   const p2 = await patches()

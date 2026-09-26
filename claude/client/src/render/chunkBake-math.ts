@@ -637,12 +637,14 @@ export class MaskSnapshot implements MaskSource {
 }
 
 /**
- * T22.16 (R102): an asteroid's core, world px — `Core.coreDiscs`' triple.
+ * T22.16 (R102): an asteroid's core, world px — `Core.coreDiscs`' quadruple. `hits`
+ * (T22.21, R112) is how many carves have struck it, `0..CORE_HITS`; absent is 0.
  */
 export interface CoreDisc {
   x: number
   y: number
   r: number
+  hits?: number
 }
 
 /**
@@ -656,9 +658,53 @@ export const CORE_HEART = '#fbbf24'
 /** The heart's radius as a fraction of the core's. */
 export const CORE_HEART_FRAC = 0.55
 
-/** `Core.coreDiscs`' flat `[x, y, r, …]` as discs. */
+/**
+ * T22.21 (R112): **the core's glow dims per hit.** The heart's colour after `hits` of
+ * `coreHits` hits: `CORE_HEART` mixed toward `CORE_RIM` by `hits / coreHits` of
+ * `CORE_DIM_TOWARD_RIM` — so the last hit before it breaks shows a heart most of the
+ * way to the ember rim, and an unstruck core is exactly T22.16's.
+ */
+export const CORE_DIM_TOWARD_RIM = 0.85
+
+export function coreHeartColour(hits: number, coreHits: number): string {
+  const t = coreHits > 0 ? Math.min(1, Math.max(0, hits / coreHits)) * CORE_DIM_TOWARD_RIM : 0
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+  const [a, b] = [rgb(CORE_HEART), rgb(CORE_RIM)]
+  const mix = a.map((v, i) => Math.round(v + (b[i]! - v) * t))
+  return `#${mix.map((v) => v.toString(16).padStart(2, '0')).join('')}`
+}
+
+/** `Core.coreDiscs`' flat `[x, y, r, hits, …]` as discs. */
 export function parseCoreDiscs(flat: ArrayLike<number>): CoreDisc[] {
   const out: CoreDisc[] = []
+  for (let i = 0; i + 3 < flat.length; i += 4) {
+    out.push({ x: flat[i]!, y: flat[i + 1]!, r: flat[i + 2]!, hits: flat[i + 3]! })
+  }
+  return out
+}
+
+/**
+ * T22.21 (R113): an iron asteroid, world px — `Core.ironDiscs`' triple: its bounding
+ * radius plus the carve guard's margin, so the disc covers the whole rock and nothing
+ * else. What is solid inside it is iron.
+ */
+export interface IronDisc {
+  x: number
+  y: number
+  r: number
+}
+
+/**
+ * The iron palette: a dark blue-grey laid over the rock texture at `IRON_TINT_ALPHA`,
+ * so the grain still shows but the rock reads as a different, darker, metallic
+ * substance (the owner: *"different darker color (lets say made of iron)"*).
+ */
+export const IRON_TINT = '#1c2230'
+export const IRON_TINT_ALPHA = 0.72
+
+/** `Core.ironDiscs`' flat `[x, y, r, …]` as discs. */
+export function parseIronDiscs(flat: ArrayLike<number>): IronDisc[] {
+  const out: IronDisc[] = []
   for (let i = 0; i + 2 < flat.length; i += 3) out.push({ x: flat[i]!, y: flat[i + 1]!, r: flat[i + 2]! })
   return out
 }
@@ -683,7 +729,7 @@ export function coresInChunk(
   for (const d of discs) {
     const reach = d.r + 1
     if (d.x + reach < x0 || d.x - reach >= x0 + size || d.y + reach < y0 || d.y - reach >= y0 + size) continue
-    out.push({ x: d.x - x0 + 0.5, y: d.y - y0 + 0.5, r: Math.max(0, d.r - 0.5) })
+    out.push({ x: d.x - x0 + 0.5, y: d.y - y0 + 0.5, r: Math.max(0, d.r - 0.5), hits: d.hits ?? 0 })
   }
   return out
 }

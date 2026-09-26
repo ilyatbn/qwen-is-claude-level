@@ -14,6 +14,10 @@ import {
   tileOffset,
   coresInChunk,
   parseCoreDiscs,
+  parseIronDiscs,
+  coreHeartColour,
+  CORE_HEART,
+  CORE_RIM,
   type MaskSource,
 } from './chunkBake-math'
 
@@ -596,7 +600,8 @@ describe('asteroid cores in the bake (T22.16)', () => {
   it('one disc per rock, at its centre, inside the rock', () => {
     const { MapScale, MapGenerator } = CoreEnums
     expect(space.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
-    const rocks = space.meta.asteroids
+    // T22.21 (R113): an iron rock has no core, so only the ordinary rocks have discs.
+    const rocks = space.meta.asteroids.filter((a) => !a.iron)
     const discs = parseCoreDiscs(space.coreDiscs())
     expect(rocks.length).toBeGreaterThan(0)
     expect(discs.length).toBe(rocks.length)
@@ -604,9 +609,33 @@ describe('asteroid cores in the bake (T22.16)', () => {
       expect([d.x, d.y]).toEqual([rocks[i]!.x, rocks[i]!.y])
       expect(d.r).toBeGreaterThan(0)
       expect(d.r).toBeLessThan(rocks[i]!.r)
+      expect(d.hits).toBe(0)
       expect(space.solidAt(d.x, d.y)).toBe(true)
     })
+    // T22.21 (R113): the iron discs — the iron rocks, each covering its rock.
+    const iron = space.meta.asteroids.filter((a) => a.iron)
+    const irons = parseIronDiscs(space.ironDiscs())
+    expect(iron.length).toBe(2)
+    expect(irons.map((d) => [d.x, d.y])).toEqual(iron.map((a) => [a.x, a.y]))
+    irons.forEach((d, i) => {
+      expect(d.r).toBeGreaterThan(iron[i]!.r)
+      expect(space.solidAt(d.x, d.y)).toBe(true)
+    })
+    // A hit reaches the disc list (R112): the core's hit count rides with it.
+    const r0 = rocks[0]!
+    space.carve(r0.x, r0.y, 2 * (discs[0]!.r + 2))
+    expect(parseCoreDiscs(space.coreDiscs())[0]!.hits).toBe(1)
     space.setGravity('standard')
+  })
+
+  it('dims a core’s heart toward its rim with each hit (T22.21)', () => {
+    const n = C().CORE_HITS
+    expect(n).toBe(3)
+    expect(coreHeartColour(0, n)).toBe(CORE_HEART)
+    const lum = (hex: string) => [1, 3, 5].reduce((t, i) => t + parseInt(hex.slice(i, i + 2), 16), 0)
+    const seq = Array.from({ length: n }, (_, k) => lum(coreHeartColour(k, n)))
+    for (let k = 1; k < n; k++) expect(seq[k]!).toBeLessThan(seq[k - 1]!)
+    expect(lum(coreHeartColour(n - 1, n))).toBeGreaterThan(lum(CORE_RIM))
   })
 
   it('hands a chunk exactly the discs that touch it', () => {

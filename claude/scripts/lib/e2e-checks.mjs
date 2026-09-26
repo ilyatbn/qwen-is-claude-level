@@ -87,6 +87,15 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
     serial: true,
   },
+  // T22.21 (R113): an iron asteroid drawn darker than ordinary rock (two frames lit
+  // alike, open space the control) and darker on the minimap. Both render paths.
+  { name: 'iron-asteroids', file: 'scripts/checks/iron-asteroids.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
+  {
+    name: 'iron-asteroids-canvas',
+    file: 'scripts/checks/iron-asteroids.mjs',
+    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
+    serial: true,
+  },
   // T22.04: the thruster burst on the side opposite travel, photographed against its
   // own control frame on both sides of the body, every render path. Space-only, so
   // `?gravity=space` (R22). The Canvas twin is `serial` like the other Canvas checks.

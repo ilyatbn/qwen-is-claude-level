@@ -17,8 +17,11 @@ import type { Core } from '../core'
 import { C } from '../core'
 import {
   BackdropMask,
-  CORE_HEART,
   CORE_HEART_FRAC,
+  coreHeartColour,
+  IRON_TINT,
+  IRON_TINT_ALPHA,
+  type IronDisc,
   CORE_RIM,
   backdropBits,
   coresInChunk,
@@ -131,6 +134,34 @@ export interface BakeLayers {
   objectArt?: ObjectArt | null
   /** T22.16 (R102): the asteroids' core discs, world px (`Core.coreDiscs`). */
   cores?: readonly CoreDisc[] | null
+  /** T22.21 (R113): the iron asteroids, world px (`Core.ironDiscs`). */
+  irons?: readonly IronDisc[] | null
+}
+
+/**
+ * T22.21 (R113): tint each iron asteroid touching this chunk into the rock layer — its
+ * whole disc, before the live-mask punch, so what is solid there reads as iron and
+ * the air around it stays air. Iron is never carved, so the disc is its silhouette.
+ */
+function drawIron(
+  ctx: CanvasRenderingContext2D,
+  discs: readonly IronDisc[],
+  chunkX: number,
+  chunkY: number,
+  size: number,
+): void {
+  const x0 = chunkX * size
+  const y0 = chunkY * size
+  ctx.save()
+  ctx.globalAlpha = IRON_TINT_ALPHA
+  ctx.fillStyle = IRON_TINT
+  for (const d of discs) {
+    if (d.x + d.r < x0 || d.x - d.r >= x0 + size || d.y + d.r < y0 || d.y - d.r >= y0 + size) continue
+    ctx.beginPath()
+    ctx.arc(d.x - x0 + 0.5, d.y - y0 + 0.5, d.r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
 }
 
 /**
@@ -151,7 +182,8 @@ function drawCores(
     ctx.beginPath()
     ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = CORE_HEART
+    // T22.21 (R112): the heart dims toward the rim with every hit it has taken.
+    ctx.fillStyle = coreHeartColour(d.hits ?? 0, C().CORE_HITS)
     ctx.beginPath()
     ctx.arc(d.x, d.y, d.r * CORE_HEART_FRAC, 0, Math.PI * 2)
     ctx.fill()
@@ -207,6 +239,9 @@ export function bakeChunk(
   drawTiled(body, fillImage, chunkX, chunkY, size)
   if (layers.objects && layers.objectArt) {
     drawObjects(body, layers.objects, layers.objectArt, chunkX, chunkY, size)
+  }
+  if (layers.irons && layers.irons.length > 0) {
+    drawIron(body, layers.irons, chunkX, chunkY, size)
   }
   if (layers.cores && layers.cores.length > 0) {
     drawCores(body, layers.cores, chunkX, chunkY, size)

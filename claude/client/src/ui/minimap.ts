@@ -29,6 +29,12 @@ import {
 import { BLACK_HOLE_RING_COLOR } from '../render/blackHoleFx-math'
 
 /**
+ * T22.21 (R113): an iron cell on the minimap — dark blue-grey, well apart from the
+ * rock's `(122, 104, 78)` and the open sky's `(32, 46, 68)`.
+ */
+export const MINIMAP_IRON: readonly [number, number, number] = [70, 78, 96]
+
+/**
  * T22.12C R93: the black hole's minimap marker — a black dot in a ring of the hole's
  * own accretion colour, this many px across. Drawing only.
  */
@@ -160,11 +166,23 @@ export class Minimap {
     const { w, h, mapW, mapH } = this.geo
     const sx = mapW / w
     const sy = mapH / h
+    // T22.21 (R113): iron rock is its own cell kind (2), drawn darker — the core's
+    // discs, so the minimap and the terrain bake agree on what is iron.
+    const iron = this.core.ironDiscs()
+    const isIron = (x: number, y: number): boolean => {
+      for (let i = 0; i + 2 < iron.length; i += 3) {
+        const dx = x - iron[i]!
+        const dy = y - iron[i + 1]!
+        if (dx * dx + dy * dy <= iron[i + 2]! * iron[i + 2]!) return true
+      }
+      return false
+    }
     for (let cy = 0; cy < h; cy++) {
       const wy = Math.min(mapH - 1, Math.floor((cy + 0.5) * sy))
       for (let cx = 0; cx < w; cx++) {
         const wx = Math.min(mapW - 1, Math.floor((cx + 0.5) * sx))
-        this.terrain[cy * w + cx] = this.core.solidAt(wx, wy) ? 1 : 0
+        const solid = this.core.solidAt(wx, wy)
+        this.terrain[cy * w + cx] = !solid ? 0 : isIron(wx, wy) ? 2 : 1
       }
     }
   }
@@ -188,6 +206,11 @@ export class Minimap {
         d[o] = 8
         d[o + 1] = 10
         d[o + 2] = 18
+      } else if (this.terrain[i] === 2) {
+        // T22.21 (R113): iron, a dark blue-grey against the rock's warm brown.
+        d[o] = MINIMAP_IRON[0]
+        d[o + 1] = MINIMAP_IRON[1]
+        d[o + 2] = MINIMAP_IRON[2]
       } else if (solid) {
         d[o] = 122
         d[o + 1] = 104

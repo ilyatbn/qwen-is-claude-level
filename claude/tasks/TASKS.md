@@ -645,7 +645,7 @@ instead of your health.
 
 - [x] [T22.20](M22/T22.20-gentler-space-thrusters.md) — Gentler space thrusters (owner, 2026-09-26: *"too much inertia"*) — `SPACE_THRUST_SCALE` 0.5 and a re-derived top speed; every escape guarantee re-derived from the scaled thrust — R109
 
-- [ ] [T22.21](M22/T22.21-sturdier-asteroids.md) — Sturdier, bigger asteroids, a core that takes 3 hits, meteors that don't target rocks, and two indestructible iron asteroids (owner, 2026-09-26: *"2 minutes in, the map was mostly empty"*) — R110–R113
+- [x] [T22.21](M22/T22.21-sturdier-asteroids.md) — Sturdier, bigger asteroids, a core that takes 3 hits, meteors that don't target rocks, and two indestructible iron asteroids (owner, 2026-09-26: *"2 minutes in, the map was mostly empty"*) — R110–R113
 
 **M22 closed 2026-09-25.** 67 of 77 rows ticked; the 10 open are follow-ups filed for later (T22.00D, T22.00E, three from T22.03I/H, two from T22.14B, two from T22.00C) and T22.07, superseded by M23's `R9`. The last M22 work commit is `ae749b2` (T22.14E); after it come the close-out commits — [`docs/77`](../docs/77-amendments-v9.md), the rulings index, these rows, the handoff, and `chunk-rebake` (R37's rebake budget, gated again). The last green batch gate is `39d2069` (T22.10G). **BATCH GATE: green at `a3c5dea` (2026-09-25, 1224 s) — browser 73/73, vitest 1113/1113, Rust 1720 passed / 0 failed / 26 ignored** — the coordinator runs the full `./scripts/check.sh` on the close-out HEAD and fills this in. What is left for the owner is in [HANDOFF-M22.md](HANDOFF-M22.md)'s *Owner decisions*.
 

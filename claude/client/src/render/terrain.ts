@@ -16,7 +16,7 @@
 import type { Core } from '../core'
 import { C } from '../core'
 import { BackdropMask, BakeScratch, bakeChunk, type BakeLayers } from './chunkBake'
-import { parseCoreDiscs } from './chunkBake-math'
+import { parseCoreDiscs, parseIronDiscs } from './chunkBake-math'
 import { ObjectIndex, type ObjectArt } from './objects'
 import type { MapObject } from '../net/codec'
 
@@ -256,6 +256,8 @@ export class TerrainRenderer {
       // T22.16 (R102): the rocks' cores, read off the core at bake time — the list
       // `map_init` installed (or the sandbox generated), empty off a space map.
       cores: parseCoreDiscs(this.core.coreDiscs()),
+      // T22.21 (R113): the iron rocks, the same way.
+      irons: parseIronDiscs(this.core.ironDiscs()),
     }
   }
 

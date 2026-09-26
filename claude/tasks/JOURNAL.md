@@ -7224,3 +7224,11 @@ bound already red at HEAD (4/6/4/4). REPLAY 32; `BELL_PLACE` 0.73. `--changed --
 — the < 0.5 s / < 100 px target is unreachable by this lever at scale 0.5 (needs top < 273, under the 367.7 diagonal floor);
 flagged. New `stopping_from_the_space_top_speed_is_short` (literal basis; plant 1350 → red). Five fixtures that leaned on
 1350 fixed at cause (details in T22.20's R109b section). Bots unchanged (kills 3.3); `--changed --fast` green, 6/6 browser.
+
+## T22.21 — sturdier, bigger asteroids, 3-hit cores, open-space meteors, iron (builder, 2026-09-26)
+Owner's metric (ordinary rock left at 2 min): Small 23.4 → **76.4 %**, Medium 49.3 → **88.8 %**; meteors were the carver
+(67 % of Small by 2 min). Rocks 30..80 (12/32/62), hardness per pixel r×0.5 in the carve guard, `CORE_HITS` 3 counted in
+the carve (mirror via stream + 2 wire bytes), meteors aim at open space, 2 iron rocks (seated first; jitter now per
+candidate) never carved/eaten, drawn dark on bake + minimap, core glow dims per hit. `black_hole` event now precedes its
+carve. REPLAY 34, space goldens moved. `--changed --fast` green (1759 Rust, 1144 vitest); 26/27 browser (parked
+`thrusters-match` red on its death-arm precondition). Flags: iron = 56 % of Small's rock; batteries 4.5 → 1.5, rad deaths up.
