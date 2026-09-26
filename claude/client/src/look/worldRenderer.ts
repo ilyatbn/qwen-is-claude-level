@@ -68,7 +68,9 @@ function testLayer(): Mesh<PlaneGeometry, ShaderMaterial> {
 
 export class WorldRenderer implements SceneRenderer {
   readonly backend = 'three' as const
-  readonly stats: RenderStats = { frames: 0, view: null, scene: null }
+  readonly stats: RenderStats & { skipped: number } = { frames: 0, view: null, scene: null, skipped: 0 }
+  /** Set by anything that changes the picture other than the view: a scene, a marker. */
+  private dirty = true
   readonly canvas: HTMLCanvasElement
 
   private readonly renderer: WebGLRenderer
@@ -122,7 +124,8 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /** Match Phaser's box (Scale.FIT moves and resizes it) and the device pixel ratio — once each, here. */
-  private syncBox(): void {
+  /** Returns whether the box, the pixel ratio or the tier changed (so the frame must redraw). */
+  private syncBox(): boolean {
     const p = this.phaserCanvas
     const w = p.clientWidth || p.width
     const h = p.clientHeight || p.height
@@ -132,7 +135,7 @@ export class WorldRenderer implements SceneRenderer {
     const top = `${p.offsetTop}px`
     if (s.left !== left) s.left = left
     if (s.top !== top) s.top = top
-    if (w === this.css.w && h === this.css.h && dpr === this.css.dpr) return
+    if (w === this.css.w && h === this.css.h && dpr === this.css.dpr) return false
     this.css = { w, h, dpr }
     s.width = `${w}px`
     s.height = `${h}px`
@@ -144,6 +147,7 @@ export class WorldRenderer implements SceneRenderer {
     this.renderer.setSize(w, h, false)
     this.composer.setPixelRatio(dpr * TIER_SCALE[this.tier])
     this.composer.setSize(w, h)
+    return true
   }
 
   private buildComposer(): EffectComposer {
@@ -162,10 +166,12 @@ export class WorldRenderer implements SceneRenderer {
     this.composer = this.buildComposer()
     this.css = { w: 0, h: 0, dpr: 0 }
     this.syncBox()
+    this.dirty = true
   }
 
   setScene(desc: SceneDescription): void {
     this.desc = desc
+    this.dirty = true
     this.stats.scene = sceneCounts(desc)
     const [r, g, b] = hexLinear(desc.look.bg.skyBottom)
     ;(this.sky.material.uniforms['c']!.value as Vector3).set(r, g, b)
@@ -174,7 +180,17 @@ export class WorldRenderer implements SceneRenderer {
 
   render(view: ViewRect): void {
     if (!this.desc) return
-    this.syncBox()
+    const resized = this.syncBox()
+    // Nothing this renderer draws moves on its own yet, so an unchanged view, scene and box is
+    // an unchanged picture: the canvas keeps showing the last one. Measured on the checks'
+    // SwiftShader in a match: drawing every frame cost 60 → 51 fps and turned `birds` red
+    // (1/5 green; 3/3 with the renderer off). **Animated layers (T23.04's stars) remove this.**
+    const v = this.stats.view
+    if (!this.dirty && !resized && v && v.x === view.x && v.y === view.y && v.w === view.w && v.h === view.h) {
+      this.stats.skipped++
+      return
+    }
+    this.dirty = false
     const o = orthoFromView(view, this.desc.world.h)
     this.camera.left = o.left
     this.camera.right = o.right
@@ -186,6 +202,11 @@ export class WorldRenderer implements SceneRenderer {
     this.stats.view = { ...view }
   }
 
+  /** Redraw on the next frame even if nothing changed. */
+  invalidate(): void {
+    this.dirty = true
+  }
+
   /** Dev: a flat magenta quad anchored in the world at mask px `x, y` (top-left), `w × h`. */
   addMarker(x: number, y: number, w: number, h: number): void {
     const m = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: new Color(1, 0, 1) }))
@@ -193,6 +214,7 @@ export class WorldRenderer implements SceneRenderer {
     m.position.set(c.x, c.y, 0)
     this.markers.push(m)
     this.scene3.add(m)
+    this.dirty = true
   }
 
   /** `display`: Phaser's box in device px; `buffer`: this canvas's drawing buffer; `target`: the post chain's. */

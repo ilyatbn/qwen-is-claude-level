@@ -32,6 +32,8 @@ export interface WorldHandle {
 export interface ProbeSample {
   /** Phaser's frame counter at the readback. */
   frame: number
+  /** Whether the world renderer drew this frame (it skips unchanged ones). */
+  drew: boolean
   /** Marker centre, CSS px from the canvas's left edge along the row; `null` if not on it. */
   phaserX: number | null
   threeX: number | null
@@ -126,6 +128,10 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       const game = scene.game
       const pgl = (game.renderer as { gl?: WebGLRenderingContext }).gl ?? null
       const samples: ProbeSample[] = []
+      // Draw the first probed frame for certain, so there is a reading to carry over skipped ones.
+      three?.invalidate()
+      let lastFrames = stats?.frames ?? 0
+      let lastThree: [number | null, number | null] = [null, null]
       /** The marker's centre in one canvas, CSS px, from a row and a column read in this frame. */
       const locate = (gl: WebGLRenderingContext, el: HTMLCanvasElement): [number | null, number | null] => {
         const cw = el.clientWidth || gl.drawingBufferWidth
@@ -141,9 +147,14 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       return new Promise((resolve) => {
         const onPost = (): void => {
           const [phaserX, phaserY] = pgl ? locate(pgl, game.canvas) : [null, null]
-          const [threeX, threeY] = three ? locate(three.gl, three.canvas) : [null, null]
+          // A frame the renderer skipped (nothing changed, `WorldRenderer.render`) still shows its
+          // last drawn picture, but the undrawn buffer reads back blank: reuse that frame's reading.
+          const drew = (stats?.frames ?? 0) !== lastFrames
+          lastFrames = stats?.frames ?? 0
+          if (three && drew) lastThree = locate(three.gl, three.canvas)
+          const [threeX, threeY] = three ? lastThree : [null, null]
           const v = stats?.view ?? null
-          samples.push({ frame: game.loop.frame, phaserX, threeX, phaserY, threeY, viewX: v?.x ?? null, viewY: v?.y ?? null })
+          samples.push({ frame: game.loop.frame, drew, phaserX, threeX, phaserY, threeY, viewX: v?.x ?? null, viewY: v?.y ?? null })
           if (samples.length >= n) {
             game.events.off('postrender', onPost)
             resolve(samples)

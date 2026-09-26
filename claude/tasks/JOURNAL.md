@@ -7304,3 +7304,7 @@ Mapped suite on caaa3b8+split: 77/81 — fog-shader, thrusters, solar-flare gree
 renderer forced off**. Cause measured: halving only the post target cost SwiftShader 60 → 47 fps (sandbox). Low tier now renders the
 whole world canvas at half resolution (mockup `makeRenderer({scale: 2})`): 58.5–59 fps, birds green (1 shot). `world-canvas` tier
 assertion now display/buffer/target; pan worst 0.5 px; trail plant still red (33.5 / 100.5 px).
+Then: 76/81 on dc556cb — birds still red 4/5 with the renderer on, 3/3 off. Match fps measured 50.7 on / 60.3 off (SwiftShader).
+`WorldRenderer.render` now skips a frame whose view, scene, box and tier are unchanged (the canvas keeps the last picture): match 60.3/60.3,
+birds 3/3 green. `__world.probe` carries a skipped frame's reading over (forcing a draw at probe start). Trail plant still red (31.5/100.5).
+**Animated layers (T23.04's stars) end the skip — the SwiftShader cost comes back then; T23.23's perf owns it.**
