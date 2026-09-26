@@ -356,7 +356,11 @@ pub const HEADER_BYTES: usize = 46;
 /// its third hit, and meteors aim at open space — a v33 space recording is played on a
 /// different arena and diverges at the first tick anything touches it. The state hash
 /// covers each rock's `iron` and `core_hits`. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 34;
+///
+/// Bumped to 35 by T22.22 (R109c): in space an axis of thrust against the body's
+/// travel pushes at `SPACE_BRAKE_SCALE` until that axis stops — a v34 space recording
+/// that ever counter-thrusts diverges on that tick. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 35;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

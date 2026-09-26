@@ -11,9 +11,10 @@
 use crate::constants::{
     GravityMode, JETPACK_DRAIN, JETPACK_GRAVITY_SCALE, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL,
     JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY,
-    JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ, SPACE_JUMP_FUEL,
-    SPACE_THRUST_SCALE,
+    JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ, SPACE_BRAKE_SCALE,
+    SPACE_JUMP_FUEL, SPACE_THRUST_SCALE,
 };
+use crate::math::Vec2;
 use crate::physics::body::Body;
 use crate::player::input::{button, Input};
 
@@ -164,7 +165,14 @@ pub fn thrust_scale(gravity: GravityMode) -> f32 {
 /// caller because this is the one author of the push: `apply_thrust` (so
 /// `apply_input`, server and mirror), `space::engaging` and the plume's
 /// `thrust_at` all read it.
-pub fn thrust_delta(input: &Input, gravity: GravityMode, dt: f32) -> (f32, f32) {
+///
+/// **T22.22 (`M22-RULINGS` R109c): in space the push that brakes is strong** —
+/// `vel` is the body's velocity before the push, and each axis goes through
+/// [`brake_axis`]. Off space `vel` is not read, so standard and low gravity are
+/// still bit-identical. The sign of each axis never changes (`brake_axis` only
+/// rescales a push in its own direction), so `space::engaging`'s sign test and the
+/// plume's direction per axis read the same as before.
+pub fn thrust_delta(input: &Input, gravity: GravityMode, vel: Vec2, dt: f32) -> (f32, f32) {
     let scale = thrust_scale(gravity);
     let mut thrust_x = 0.0;
     let mut thrust_y = 0.0;
@@ -182,7 +190,43 @@ pub fn thrust_delta(input: &Input, gravity: GravityMode, dt: f32) -> (f32, f32) 
         thrust_x += JETPACK_THRUST_SIDE * scale * dt;
     }
 
-    (thrust_x, thrust_y)
+    if gravity == GravityMode::Space {
+        (brake_axis(thrust_x, vel.x), brake_axis(thrust_y, vel.y))
+    } else {
+        (thrust_x, thrust_y)
+    }
+}
+
+/// One axis of space thrust, `push` (this tick's velocity change at
+/// [`SPACE_THRUST_SCALE`]), against that axis's velocity `v` — R109c, T22.22.
+///
+/// **Per axis, as the clamp in [`apply_thrust`] is**, and for the reason given
+/// there: the buttons are axes, and a projection onto the velocity would turn a
+/// LEFT press while drifting diagonally into a push with a vertical part nobody
+/// asked for. The "component of thrust that opposes the velocity" is therefore
+/// the axis whose push and velocity have opposite signs.
+///
+/// That axis pushes at [`SPACE_BRAKE_SCALE`] **only until `v` reaches zero**; the
+/// rest of the tick's push is at the gentle share again. So:
+///  - it never accelerates — the boosted part only ever removes speed;
+///  - it cannot overshoot, so tapping against the travel cannot be used to reverse
+///    at double rate;
+///  - it is continuous in `v`: at `v = 0` (or the same sign) it is `push` exactly,
+///    and at a tiny opposing `v` it is `push` plus at most `|v|`'s worth. That is
+///    the dead-band the ruling asked for, in its exact form — no threshold for a
+///    rounding error to chatter across, and no division (the ratio of two
+///    constants is the only quotient).
+pub fn brake_axis(push: f32, v: f32) -> f32 {
+    if push * v >= 0.0 {
+        return push;
+    }
+    let boosted = push * (SPACE_BRAKE_SCALE / SPACE_THRUST_SCALE);
+    if boosted.abs() <= v.abs() {
+        boosted
+    } else {
+        // Brake to zero, then the unspent part of the tick at the gentle share.
+        -v + (boosted + v) * (SPACE_THRUST_SCALE / SPACE_BRAKE_SCALE)
+    }
 }
 
 /// Apply directional thrust for one tick. Only called when `state.active`.
@@ -193,7 +237,7 @@ pub fn thrust_delta(input: &Input, gravity: GravityMode, dt: f32) -> (f32, f32) 
 /// limit — a rocket jump at 800 px/s — is left alone, so engaging the jetpack
 /// mid-flight never brakes you. Thrust from rest still tops out at the limit.
 pub fn apply_thrust(body: &mut Body, input: &Input, gravity: GravityMode, dt: f32) {
-    let (thrust_x, thrust_y) = thrust_delta(input, gravity, dt);
+    let (thrust_x, thrust_y) = thrust_delta(input, gravity, body.vel, dt);
 
     let (before_x, before_y) = (body.vel.x, body.vel.y);
     body.vel.x += thrust_x;
@@ -672,5 +716,91 @@ mod tests {
             gravity_scale(&s, false, GravityMode::Standard),
             JETPACK_GRAVITY_SCALE
         );
+    }
+
+    /// **R109c (T22.22): the brake only takes speed away.** Per axis, over a sweep of
+    /// velocities through zero both ways and every push, `brake_axis`:
+    ///  - leaves a push with (or from zero) the travel exactly as it was — the
+    ///    control that says the boost is not everywhere;
+    ///  - pushes at `SPACE_BRAKE_SCALE` while the push cannot reach zero — the
+    ///    presence;
+    ///  - once the push can reach zero, reaches it and reverses only by the rest of
+    ///    the tick at the gentle share (`|v + out| ≤ |strong + v| / ratio`) — never
+    ///    overshooting at the strong rate, never gaining more than the braked `|v|`;
+    ///  - is continuous at zero: a velocity a hair against the push changes the push by
+    ///    no more than the hair.
+    ///
+    /// Off space the velocity is not read at all: standard gravity's `thrust_delta` is
+    /// the same for every velocity.
+    #[test]
+    fn the_brake_is_strong_until_zero_and_gentle_after() {
+        use crate::constants::{SPACE_BRAKE_SCALE, SPACE_THRUST_SCALE};
+        use crate::player::input::Input;
+        let ratio = SPACE_BRAKE_SCALE / SPACE_THRUST_SCALE;
+        assert!(
+            ratio > 1.0,
+            "the brake is not stronger than the push — nothing to test"
+        );
+        let pushes = [
+            JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE * SIM_DT,
+            JETPACK_THRUST_UP * SPACE_THRUST_SCALE * SIM_DT,
+            JETPACK_THRUST_DOWN * SPACE_THRUST_SCALE * SIM_DT,
+        ];
+        let mut boosted_seen = 0;
+        for &p in &pushes {
+            for push in [p, -p] {
+                for i in -400..=400 {
+                    let v = i as f32 * 0.5;
+                    let out = brake_axis(push, v);
+                    assert_eq!(
+                        out.signum(),
+                        push.signum(),
+                        "push {push} at v {v} flipped: {out}"
+                    );
+                    if push * v >= 0.0 {
+                        assert_eq!(out, push, "push {push} with the travel {v} was changed");
+                        continue;
+                    }
+                    let strong = push * ratio;
+                    if strong.abs() <= v.abs() {
+                        assert_eq!(
+                            out, strong,
+                            "push {push} against {v} not at the brake's rate"
+                        );
+                        boosted_seen += 1;
+                    } else {
+                        // Crossed zero: what is left is the gentle share of the rest.
+                        let after = v + out;
+                        assert!(
+                            after * push >= 0.0,
+                            "push {push} against {v} did not reach zero: {after}"
+                        );
+                        assert!(
+                            after.abs() <= (strong + v).abs() / ratio + 1e-4,
+                            "push {push} against {v} overshot at the brake's rate: {after}"
+                        );
+                        assert!(
+                            (out - push).abs() <= v.abs() + 1e-4,
+                            "push {push} against {v} gained more than the velocity it braked"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            boosted_seen > 100,
+            "the sweep never braked at the strong rate"
+        );
+        let input = Input::new(0, UP | RIGHT, 0);
+        let rest = thrust_delta(&input, GravityMode::Standard, Vec2::ZERO, SIM_DT);
+        for v in [Vec2::new(-400.0, 400.0), Vec2::new(400.0, -400.0)] {
+            assert_eq!(thrust_delta(&input, GravityMode::Standard, v, SIM_DT), rest);
+            assert_eq!(thrust_delta(&input, GravityMode::Low, v, SIM_DT).0, {
+                thrust_delta(&input, GravityMode::Low, Vec2::ZERO, SIM_DT).0
+            });
+        }
+        // And in space the same input against the travel is the brake's push.
+        let (x, _) = thrust_delta(&input, GravityMode::Space, Vec2::new(-400.0, 0.0), SIM_DT);
+        assert_eq!(x, JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE * SIM_DT * ratio);
     }
 }

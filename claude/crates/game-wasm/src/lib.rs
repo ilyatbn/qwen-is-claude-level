@@ -1267,8 +1267,19 @@ impl GameCore {
         if !p.jet.active {
             return Box::new([0.0, 0.0]);
         }
-        let (x, y) = game_core::player::jetpack::thrust_delta(&p.prev_input, self.gravity, 1.0);
-        Box::new([x, y])
+        // T22.22 (R109c): the push depends on the velocity it brakes, so it is asked
+        // for one tick at `SIM_DT` and returned as a rate. The velocity is the body's
+        // after that tick, not before it (the mirror keeps no copy): while braking
+        // the axis still opposes until it crosses zero, so the plume's direction per
+        // axis is the applied push's — only the tick an axis crosses zero reads the
+        // gentle share for the braked one.
+        let (x, y) = game_core::player::jetpack::thrust_delta(
+            &p.prev_input,
+            self.gravity,
+            p.body.vel,
+            SIM_DT,
+        );
+        Box::new([x / SIM_DT, y / SIM_DT])
     }
 
     /// Put charge in a player's battery. Sandbox only, like `give` (T20.08).
@@ -2849,20 +2860,13 @@ mod tests {
         );
     }
 
-    /// **T22.20 (`M22-RULINGS` R109): the server and the mirror push with the same
-    /// halved thrust, side by side.** A body at rest in open air on a real space map —
-    /// no rock's field, clear three bodies every way — holds UP + RIGHT for ten ticks
-    /// on `World::step` (the server) and on `GameCore::apply_input` (the mirror, set
-    /// through the real snapshot codec). Both land on the **same** velocity, bit for
-    /// bit, and it is the scaled push `(SIDE, −UP) × SPACE_THRUST_SCALE × 10 ticks` —
-    /// not the unscaled one, which is the control that says the scale reached both.
-    #[test]
-    fn the_server_and_the_mirror_thrust_at_the_same_halved_rate() {
-        use game_core::constants::{
-            JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H, SPACE_THRUST_SCALE,
-        };
-        use game_core::player::input::button;
-        const TICKS: u32 = 10;
+    /// The open-air fixture both thrust side-by-sides stand on (T22.20, T22.22): a
+    /// space world and its mirror, one player seated where three bodies are clear
+    /// every way and no rock pulls — along `vel`'s path for `PATH_S` s either way,
+    /// too — moving at `vel`, told to the mirror through the real snapshot codec.
+    fn open_air_side_by_side(vel: Vec2) -> (game_core::world::World, GameCore) {
+        use game_core::constants::PLAYER_H;
+        const PATH_S: f32 = 0.4;
         let (mut w, mut core) = space_world_and_mirror(true);
         let clear = |x: f32, y: f32| {
             let pad = 3.0 * PLAYER_H;
@@ -2880,18 +2884,23 @@ mod tests {
                 (1..40).map(move |j| Vec2::new(mw * i as f32 / 40.0, mh * j as f32 / 40.0))
             })
             .find(|&p| {
-                clear(p.x, p.y)
-                    && game_core::world::attractors::field_at(
-                        game_core::world::attractors::asteroid_attractors(&w.map),
-                        p,
-                    ) == Vec2::ZERO
+                // The body's path at `vel` for `PATH_S` seconds, both ways, is clear
+                // and field-free too (a moving fixture must not meet a rock).
+                (-4..=4).all(|k| {
+                    let q = p + vel * (PATH_S * k as f32 / 4.0);
+                    clear(q.x, q.y)
+                        && game_core::world::attractors::field_at(
+                            game_core::world::attractors::asteroid_attractors(&w.map),
+                            q,
+                        ) == Vec2::ZERO
+                })
             })
             .expect("field-free open air on the space map");
         w.add_player(1, 0, String::new());
         {
             let p = w.player_mut(1).expect("seated");
             p.body.pos = start;
-            p.body.vel = Vec2::ZERO;
+            p.body.vel = vel;
             p.body.grounded = false;
         }
         let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
@@ -2915,6 +2924,22 @@ mod tests {
             wire.flags & 1 != 0,
             wire.move_mods,
         );
+        (w, core)
+    }
+
+    /// **T22.20 (`M22-RULINGS` R109): the server and the mirror push with the same
+    /// halved thrust, side by side.** A body at rest in open air on a real space map —
+    /// no rock's field, clear three bodies every way — holds UP + RIGHT for ten ticks
+    /// on `World::step` (the server) and on `GameCore::apply_input` (the mirror, set
+    /// through the real snapshot codec). Both land on the **same** velocity, bit for
+    /// bit, and it is the scaled push `(SIDE, −UP) × SPACE_THRUST_SCALE × 10 ticks` —
+    /// not the unscaled one, which is the control that says the scale reached both.
+    #[test]
+    fn the_server_and_the_mirror_thrust_at_the_same_halved_rate() {
+        use game_core::constants::{JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SPACE_THRUST_SCALE};
+        use game_core::player::input::button;
+        const TICKS: u32 = 10;
+        let (mut w, mut core) = open_air_side_by_side(Vec2::ZERO);
         let held = button::UP | button::RIGHT;
         let mut seq = 1000u32;
         for _ in 0..TICKS {
@@ -2948,6 +2973,70 @@ mod tests {
         );
     }
 
+    /// **T22.22 (`M22-RULINGS` R109c): the server and the mirror brake alike, and
+    /// strongly.** The open-air fixture moving right at `SPACE_MAX_SPEED` holds LEFT on
+    /// `World::step` and on `GameCore::apply_input`. After `BRAKE` ticks (still moving
+    /// right) both velocities are bit-equal and are the push at `SPACE_BRAKE_SCALE` —
+    /// the control is the gentle push, which it must not be. Then `MORE` ticks carry the
+    /// body through zero: still bit-equal, now moving left at exactly what the gentle
+    /// push makes of the time left after stopping — the boost stops at zero (a tick's
+    /// overshoot at the strong rate is 4 px/s off it).
+    #[test]
+    fn the_server_and_the_mirror_brake_at_the_same_strong_rate() {
+        use game_core::constants::{
+            JETPACK_THRUST_SIDE, SPACE_BRAKE_SCALE, SPACE_MAX_SPEED, SPACE_THRUST_SCALE,
+        };
+        use game_core::player::input::button;
+        const BRAKE: u32 = 20;
+        const MORE: u32 = 10;
+        let (mut w, mut core) = open_air_side_by_side(Vec2::new(SPACE_MAX_SPEED, 0.0));
+        let mut seq = 1000u32;
+        let mut run = |w: &mut game_core::world::World, core: &mut GameCore, n: u32| {
+            for _ in 0..n {
+                seq += 1;
+                w.queue_input(1, Input::new(seq, button::LEFT, 0));
+                w.step(SIM_DT);
+                core.apply_input(1, seq, button::LEFT, 0, SIM_DT);
+            }
+            let mut spare = 0;
+            while w.last_simulated_seq(1) != Some(seq) {
+                w.step(SIM_DT);
+                spare += 1;
+                assert!(spare < 30, "the server never simulated seq {seq}");
+            }
+            let server = w.player(1).expect("seated").body.vel;
+            let c = core.player_state(1);
+            assert_eq!(
+                server,
+                Vec2::new(c[2], c[3]),
+                "the server and the mirror brake apart"
+            );
+            server
+        };
+        let v = run(&mut w, &mut core, BRAKE);
+        let t = BRAKE as f32 * SIM_DT;
+        let strong = SPACE_MAX_SPEED - JETPACK_THRUST_SIDE * SPACE_BRAKE_SCALE * t;
+        let gentle = SPACE_MAX_SPEED - JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE * t;
+        assert!(strong > 0.0, "the fixture meant to be still braking");
+        assert!(
+            (v.x - strong).abs() < 0.05 && v.y == 0.0,
+            "{BRAKE} ticks of LEFT from {SPACE_MAX_SPEED} reached {v:?}, not the brake's {strong}"
+        );
+        assert!(
+            (v.x - gentle).abs() > 1.0,
+            "control: {v:?} is the gentle push's {gentle}"
+        );
+        let v = run(&mut w, &mut core, MORE);
+        let t = (BRAKE + MORE) as f32 * SIM_DT;
+        // Braked to zero at the strong rate, then the rest of the time at the gentle.
+        let to_zero = SPACE_MAX_SPEED / (JETPACK_THRUST_SIDE * SPACE_BRAKE_SCALE);
+        let exact = -(t - to_zero) * JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE;
+        assert!(
+            v.x < 0.0 && (v.x - exact).abs() < 0.5,
+            "through zero: {v:?} — braking to zero and reversing gently is {exact}"
+        );
+    }
+
     /// T22.04C: **`thrust_at` is the thrust of the input the mirror stepped with**,
     /// so a braking body reports the push, not its travel: a player drifting right who
     /// holds LEFT is still moving right and reports `(-JETPACK_THRUST_SIDE, 0)` — as
@@ -2957,7 +3046,7 @@ mod tests {
     #[test]
     fn thrust_at_is_the_stepped_inputs_thrust_not_the_velocity() {
         use game_core::constants::{
-            JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H, SPACE_THRUST_SCALE,
+            JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H, SPACE_BRAKE_SCALE, SPACE_THRUST_SCALE,
         };
         use game_core::player::input::button;
         let mut core = GameCore::new();
@@ -2990,18 +3079,20 @@ mod tests {
         }
         let vx = core.player_state(1)[2];
         assert!(vx > 0.0 && vx < 200.0, "not braking: vx {vx}");
-        assert_eq!(
-            &*core.thrust_at(1),
-            &[-JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE, 0.0],
-            "braking (vx {vx}) reported the travel, not the push"
+        // T22.22 (R109c): braking pushes at `SPACE_BRAKE_SCALE`, and the plume reports it.
+        let t = core.thrust_at(1);
+        assert!(
+            (t[0] + JETPACK_THRUST_SIDE * SPACE_BRAKE_SCALE).abs() < 0.05 && t[1] == 0.0,
+            "braking (vx {vx}) reported {t:?}, not the brake's push"
         );
         step(&mut core, button::UP | button::RIGHT);
-        assert_eq!(
-            &*core.thrust_at(1),
-            &[
-                JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE,
-                -JETPACK_THRUST_UP * SPACE_THRUST_SCALE
-            ]
+        // With the travel (vx > 0) and from vy 0: the gentle push on both axes. A rate
+        // now (a tick's push / SIM_DT, T22.22), so equal to within f32 rounding.
+        let t = core.thrust_at(1);
+        assert!(
+            (t[0] - JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE).abs() < 0.05
+                && (t[1] + JETPACK_THRUST_UP * SPACE_THRUST_SCALE).abs() < 0.05,
+            "UP + RIGHT reported {t:?}"
         );
         for _ in 0..3 {
             step(&mut core, 0);

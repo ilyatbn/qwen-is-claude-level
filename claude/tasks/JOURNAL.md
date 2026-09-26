@@ -7232,3 +7232,12 @@ the carve (mirror via stream + 2 wire bytes), meteors aim at open space, 2 iron 
 candidate) never carved/eaten, drawn dark on bake + minimap, core glow dims per hit. `black_hole` event now precedes its
 carve. REPLAY 34, space goldens moved. `--changed --fast` green (1759 Rust, 1144 vitest); 26/27 browser (parked
 `thrusters-match` red on its death-arm precondition). Flags: iron = 56 % of Small's rock; batteries 4.5 → 1.5, rad deaths up.
+
+## T22.22 — strong brake in space (R109c), less iron on Small, thrusters-match re-aimed (builder, 2026-09-26)
+`jetpack::brake_axis`: per axis, a push against that axis's travel runs at `SPACE_BRAKE_SCALE` 1.0 until it stops, then
+gentle — no overshoot, continuous at 0, standard/low bit-identical. Stop from 450: side 88 px / 0.42 s, UP 42 / 0.22 met;
+**DOWN (900) 109 px / 0.50 s missed** — `SPACE_BRAKE_SCALE` 1.1 meets it (measured), coordinator's call. Round trips 2 → 3.
+Iron on Small 90..100 px (per-scale `iron_r_frac`): 55.7 → 34.3 % of rock; Medium 28.0 / Large 16.3 unchanged; 4 Small
+golden rows. Bots kills 3.05 → 3.30 (128 seeds); winged-pin bound red both with and without the brake (pre-existing).
+thrusters-match: the check's DOWN default (field is 0 in open space since R101) hit T22.21's rock — now aims by mask; the
+`&& meAlive` plant bites. REPLAY 35. Escape caps unchanged (unboosted `SPACE_THRUST_DOWN`).

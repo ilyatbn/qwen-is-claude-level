@@ -187,6 +187,10 @@ const plumeOf = async (viewer, subject) => (await dbg(viewer))?.plumes?.[subject
 const brief = (d, c) => ({
   phase: d?.phase,
   moveState: d?.player?.moveState,
+  grounded: d?.player?.grounded,
+  x: d?.player?.x?.toFixed(0),
+  y: d?.player?.y?.toFixed(0),
+  vx: d?.player?.vx?.toFixed(1),
   vy: d?.player?.vy?.toFixed(1),
   fuel: d?.player?.fuel?.toFixed(2),
   meAlive: d?.death?.meAlive,
@@ -522,19 +526,49 @@ try {
     2 * life + 10,
     'close to death',
   )
-  // **Away from the nearest rock, not DOWN.** Measured: a body spawned on a rock
-  // and thrusting into it flaps between burning and standing, and the mirror took
-  // her last live tick standing — so she died with the pack already off and the
-  // `&& meAlive` plant went green. Out in open space the pack stays lit to the
-  // end, which is the case the guard exists for. The field points at the rock
-  // (`R67`'s accessor, the server's own sum), so push the other way.
-  const key = await fay.page.evaluate(() => {
-    const g = window.__game
-    const p = g.debug().player
-    const [fx, fy] = g.core.fieldAccelAt(p.x, p.y)
-    if (Math.abs(fy) >= Math.abs(fx)) return fy > 0 ? 'w' : 's'
-    return fx > 0 ? 'a' : 'd'
-  })
+  // **Toward the most open space, measured off the mask.** Measured (T22.03-era): a
+  // body spawned on a rock and thrusting into it flaps between burning and standing,
+  // and the mirror took her last live tick standing — so she died with the pack
+  // already off and the `&& meAlive` plant went green. Out in open space the pack
+  // stays lit to the end, which is the case the guard exists for.
+  //
+  // *T22.22:* this used to push against `fieldAccelAt`, the rock's pull. Since R101
+  // (T22.15) open space has **no** field, so floating clear of every band it read
+  // `[0, 0]` and always chose DOWN: fine while nothing was below her spawn, and red
+  // 2/2 once T22.21's bigger rocks put one 80 px under it on seed 4242 (measured:
+  // `'s'` from y 1314, landed at 1394, grounded, moveState 0). R109b (the 450 cap)
+  // does not reach a burn from rest governed at `JETPACK_MAX_SPEED`. So: march the
+  // body's box out along each key's direction on the mirror's mask and take the
+  // longest clear run; the arm then requires that run to cover the burn.
+  // Twice the nominal burn: the poison's ticks and the waits put the death up to
+  // ~2 s after the press (measured 504 px at the 260 cruise in one run).
+  const need = 2 * K.get('JETPACK_MAX_SPEED') * DEATH_BURN_S
+  const aim = await fay.page.evaluate(
+    ({ w, h, limit }) => {
+      const g = window.__game
+      const p = g.debug().player
+      const dirs = { w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] }
+      const clearRun = ([dx, dy]) => {
+        for (let t = 4; t <= limit; t += 4) {
+          const cx = p.x + dx * t
+          const cy = p.y + dy * t
+          for (let i = 0; i <= 4; i++) {
+            for (let j = 0; j <= 4; j++) {
+              if (g.core.solidAt(cx - w / 2 + (w * i) / 4, cy - h / 2 + (h * j) / 4)) return t
+            }
+          }
+        }
+        return limit
+      }
+      const runs = Object.entries(dirs).map(([k, d]) => [k, clearRun(d)])
+      runs.sort((x, y) => y[1] - x[1])
+      return { key: runs[0][0], run: runs[0][1], runs: Object.fromEntries(runs) }
+    },
+    { w: K.get('PLAYER_W'), h: K.get('PLAYER_H'), limit: 2 * need },
+  )
+  const key = aim.key
+  console.log(`  fay burns '${key}' (clear runs ${JSON.stringify(aim.runs)} px, need ${need.toFixed(0)}) from ${JSON.stringify(brief(await dbg(fay), fay))}`)
+  if (aim.run < need) fail(`control: no direction from fay's spot is clear for her burn (${need} px): ${JSON.stringify(aim.runs)}`)
   if (!close) fail(`fay never came within ${threshold} health of the poison: ${JSON.stringify(brief(await dbg(fay), fay))}`)
   else {
     await fay.page.keyboard.down(key)

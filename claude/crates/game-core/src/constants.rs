@@ -141,6 +141,25 @@ pub const SPACE_THRUST_SCALE: f32 = 0.5;
 /// `player::space::tests::the_space_thrust_is_half_what_it_was` pins it as the
 /// weakest of the three scaled axes.
 pub const SPACE_THRUST_DOWN: f32 = JETPACK_THRUST_DOWN * SPACE_THRUST_SCALE;
+
+/// **The share of the `JETPACK_THRUST_*` axes the pack brakes with in space** —
+/// T22.22, `M22-RULINGS` R109c: *gentle to accelerate, strong to stop.* An axis of
+/// thrust whose sign opposes that axis of the body's velocity pushes at this share
+/// instead of [`SPACE_THRUST_SCALE`], **but only until that axis's velocity reaches
+/// zero** — the rest of the tick's push is at the gentle share (`jetpack::brake_axis`).
+/// So the boost can only ever take speed away: it cannot accelerate, cannot overshoot
+/// zero, and is continuous at zero velocity (no dead-band needed, nothing divides).
+///
+/// Stop from [`SPACE_MAX_SPEED`] by LEFT/RIGHT (`JETPACK_THRUST_SIDE` × 1.0):
+/// 450 / 1100 ≈ 0.41 s and 450² / 2200 ≈ 92 px — R109b's target (< 0.5 s,
+/// < 100 px). Measured in `space::tests::space_flight_report`.
+///
+/// **No escape guarantee reads it.** They are stated against the unboosted
+/// [`SPACE_THRUST_DOWN`], which is the push a player has when the pull is *not*
+/// already moving them the other way (a body at rest against a well gets no boost);
+/// the boost only ever adds to what they assume. *Reverse it by:* setting this to
+/// [`SPACE_THRUST_SCALE`].
+pub const SPACE_BRAKE_SCALE: f32 = 1.0;
 pub const JETPACK_MAX_SPEED: f32 = 260.0;
 pub const JETPACK_GRAVITY_SCALE: f32 = 0.35;
 pub const JETPACK_HOLD_DELAY: f32 = 0.18;
@@ -188,15 +207,17 @@ pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
 /// | manoeuvre | measured, on one tank |
 /// |---|---|
 /// | pushes off a rock | **10** |
-/// | jump-and-return round trips (jump, thrust back, land) | **2** (3 before T22.20) |
-/// | the same wearing Ironman boots | **2**, at 4.02 of the tank a trip against 2.55 |
+/// | jump-and-return round trips (jump, thrust back, land) | **3** (2 at T22.20–T22.21) |
+/// | the same wearing Ironman boots | **2**, at 2.42 of the tank a trip against 1.67 |
 ///
-/// Arresting a bare 430 px/s launch at [`SPACE_THRUST_DOWN`] costs 0.956 s of
-/// burn, and a booted 645 px/s one costs 1.433 s — so boots buy height per jump
-/// and cost range per tank (`M22-RULINGS` R41). *T22.20 (R109) halved the space
-/// thrust and kept the burn rate: the arrests doubled (0.478 / 0.717 s at 900),
-/// so a tank buys two round trips where it bought three, and the boots' price is
-/// now asserted per trip rather than as a whole one.* An earlier version of this
+/// Arresting a bare 430 px/s launch costs 0.478 s of burn at the brake's 900
+/// (`JETPACK_THRUST_DOWN` × [`SPACE_BRAKE_SCALE`]), and a booted 645 px/s one
+/// 0.717 s — so boots buy height per jump and cost range per tank (`M22-RULINGS`
+/// R41). *T22.20 (R109) halved the space thrust and kept the burn rate: the arrests
+/// doubled and a tank bought two round trips where it bought three; T22.22 (R109c)
+/// brakes at full strength, so the arrest is back to 900 and so is the three. The
+/// climb back to the rock after the arrest is at the gentle share, so a trip still
+/// costs more than before T22.20.* An earlier version of this
 /// comment said ten pushes meant *"traversing an asteroid field on legs alone is
 /// a real option"*; that was never measured, and the round-trip number is what
 /// was. The two is asserted alongside the ten.
@@ -652,6 +673,18 @@ pub const SPACE_IRON_COUNT: u32 = 2;
 /// mass draw on top: 120..160 px.
 pub const SPACE_IRON_R_MIN_FRAC: f32 = 1.5;
 pub const SPACE_IRON_R_MAX_FRAC: f32 = 2.0;
+/// **Small's iron band** (T22.22): 90..100 px against Medium's and Large's 120..160 —
+/// see `ScaleParams::iron_r_frac`. The floor is the smallest round share of 80 over
+/// the largest grown ordinary rock (88).
+pub const SPACE_IRON_R_MIN_FRAC_SMALL: f32 = 1.125;
+pub const SPACE_IRON_R_MAX_FRAC_SMALL: f32 = 1.25;
+
+/// **The most of a space map's asteroid rock that may be iron**, in stamped pixels
+/// (T22.22, the coordinator amending R113): T22.21's two 120–160 px iron rocks were
+/// **56 %** of all rock on Small, so a Small map was mostly indestructible. Held by
+/// each scale's `ScaleParams::iron_r_frac`, and asserted over seeds by
+/// `map::gen::space::tests::iron_is_a_minority_of_the_rock_and_still_the_largest`.
+pub const SPACE_IRON_SHARE_MAX: f32 = 0.35;
 
 /// **R111 (T22.21): asteroid rock is harder.** A carve in space removes the pixels of
 /// an ordinary asteroid only within its radius × this — rock, rim and anything else
@@ -3615,7 +3648,7 @@ pub enum MapScale {
 
 /// Everything the generator reads off the scale. The `v2` fields come from
 /// `docs/70-amendments-v2.md` §A2.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScaleParams {
     pub width: u32,
     pub height: u32,
@@ -3668,6 +3701,18 @@ pub struct ScaleParams {
     /// A well reaches only one band past its rock (R101), so bigger rocks cost the
     /// field-free share little and the count barely had to move.
     pub asteroid_count: u32,
+    /// `MapGenerator::Space`: the iron asteroids' radius band (R113), as multiples of
+    /// the largest ordinary base radius `SPACE_ASTEROID_R_MAX` — drawn uniformly on
+    /// it, no mass draw.
+    ///
+    /// **Per scale since T22.22** (the coordinator amending R113): two rocks of the
+    /// same size are a far larger share of a Small arena's rock than of a Large one's.
+    /// T22.21's 1.5–2× everywhere made iron **55.7 %** of Small's asteroid pixels (24
+    /// seeds; Medium 28.0 %, Large 16.3 %), against [`SPACE_IRON_SHARE_MAX`]. Medium and
+    /// Large keep the ruling's band; Small's is the largest that holds the share while
+    /// every iron rock stays bigger than the biggest ordinary one (`grown_radius(80,
+    /// 0.2)` = 88) — measured in T22.22's file.
+    pub iron_r_frac: (f32, f32),
     /// Destructible scenery stamped into the terrain at pass 6b (§D5).
     ///
     /// **Small is 12, not §D5's 18** — measured, not guessed. A small map is
@@ -3733,6 +3778,7 @@ impl MapScale {
                 arch_count: 1,
                 object_count: 9,
                 asteroid_count: 12,
+                iron_r_frac: (SPACE_IRON_R_MIN_FRAC_SMALL, SPACE_IRON_R_MAX_FRAC_SMALL),
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -3752,6 +3798,7 @@ impl MapScale {
                 arch_count: 1,
                 object_count: 28,
                 asteroid_count: 32,
+                iron_r_frac: (SPACE_IRON_R_MIN_FRAC, SPACE_IRON_R_MAX_FRAC),
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -3771,6 +3818,7 @@ impl MapScale {
                 arch_count: 2,
                 object_count: 36,
                 asteroid_count: 62,
+                iron_r_frac: (SPACE_IRON_R_MIN_FRAC, SPACE_IRON_R_MAX_FRAC),
             },
         }
     }

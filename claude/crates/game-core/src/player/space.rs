@@ -137,7 +137,7 @@ pub fn engaging(gravity: GravityMode, body: &Body, mods: MoveMods, input: &Input
     if gravity != GravityMode::Space || mods.flying || mods.mounted {
         return false;
     }
-    let (dx, dy) = jetpack::thrust_delta(input, gravity, SIM_DT);
+    let (dx, dy) = jetpack::thrust_delta(input, gravity, body.vel, SIM_DT);
     if body.grounded {
         dy < 0.0
     } else {
@@ -703,22 +703,22 @@ mod tests {
             rested.jet.fuel
         );
 
-        // **And the third literal: two jump-and-return round trips** (three
-        // before T22.20 halved the space thrust, R109).
+        // **And the third literal: three jump-and-return round trips** (three
+        // before T22.20 halved the space thrust, R109; two until T22.22's brake,
+        // R109c, put the arrest back at full strength).
         //
         // Ten *launches* is not ten *journeys*, and the doc comment used to say
         // it was — *"traversing an asteroid field on legs alone is a real
         // option"*, a sentence true of this fixture's free teleport back to the
         // rock and of nothing in the game. Driving the return leg instead:
-        // arresting a 430 px/s launch costs 0.956 s of `SPACE_THRUST_DOWN` (0.478
-        // s at the pre-T22.20 900), more than the jump itself, and the burn that
-        // arrests it is also the burn that brings you home. A tank buys **two**.
-        // R109 kept the burn rate (`JETPACK_DRAIN`): a crossing still fits a tank
-        // (`space_flight_report`), a round trip trades one of three for this.
+        // arresting a 430 px/s launch costs 0.478 s at the brake's 900
+        // (`SPACE_BRAKE_SCALE`, T22.22; 0.956 s at `SPACE_THRUST_DOWN` before it),
+        // and the burn that brings you home after it is at the gentle share. A tank
+        // buys **three**.
         assert_eq!(
             round_trips(MoveMods::NONE).0,
-            2,
-            "a tank no longer buys two jump-and-return round trips; that is \
+            3,
+            "a tank no longer buys three jump-and-return round trips; that is \
              the pacing number in SPACE_JUMP_FUEL's doc comment"
         );
     }
@@ -1279,6 +1279,7 @@ mod tests {
             jetpack::thrust_delta(
                 &Input::new(0, button::UP | button::RIGHT, 0),
                 GravityMode::Standard,
+                Vec2::new(-300.0, 300.0),
                 1.0
             ),
             (JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP),
@@ -1294,31 +1295,69 @@ mod tests {
         assert_eq!(SPACE_THRUST_DOWN, weakest);
     }
 
-    /// **R109b (T22.21): the inertia is the top speed** — stopping from the fastest a
-    /// body flies in space, against the basis that does not move with the fix: T22.20
-    /// measured **1646 px and 2.47 s** to stop from the old 1350 by counter-thrust at
-    /// the halved push (literals, for the reason `the_space_thrust_is_half_what_it_was`
-    /// spells its basis out). The ruling's target — under 0.5 s and 100 px — is not
-    /// reachable by the top speed alone at `SPACE_THRUST_SCALE` 0.5 without undercutting
-    /// the 367.7 px/s diagonal burn (the counter-thrust decelerates ~550 px/s²), so this
-    /// pins what 450 buys: under a quarter of the distance and half the time. The
-    /// control is the governed cruise, 260 px/s, which this ruling did not touch.
+    /// Stopping from `SPACE_MAX_SPEED` by counter-thrust, travelling each way in a
+    /// Medium-sized void: `[(px, s)]` for travel right (LEFT held), left (RIGHT),
+    /// down (UP) and up (DOWN). "Stopped" is the travel axis's velocity reaching
+    /// zero or past it, through `apply_input` with the arena's cap.
+    fn stops_from_top() -> [(f32, f32); 4] {
+        use crate::constants::{MAP_MEDIUM_H, MAP_MEDIUM_W, SPACE_MAX_SPEED};
+        let map = test_map(MAP_MEDIUM_W, MAP_MEDIUM_H, |_| {});
+        let mid = Vec2::new(MAP_MEDIUM_W as f32 / 2.0, MAP_MEDIUM_H as f32 / 2.0);
+        let ways = [
+            (Vec2::new(1.0, 0.0), button::LEFT),
+            (Vec2::new(-1.0, 0.0), button::RIGHT),
+            (Vec2::new(0.0, 1.0), button::UP),
+            (Vec2::new(0.0, -1.0), button::DOWN),
+        ];
+        ways.map(|(dir, brake)| {
+            let mut st = drifting(mid, dir * SPACE_MAX_SPEED);
+            let mut ticks = 0u32;
+            while st.body.vel.dot(dir) > 0.0 && ticks < 60 * 60 {
+                step_capped(&map, &mut st, brake);
+                ticks += 1;
+            }
+            ((st.body.pos - mid).dot(dir), ticks as f32 * SIM_DT)
+        })
+    }
+
+    /// **R109b's target, met by R109c (T22.22): stopping from the top speed is under
+    /// 0.5 s and 100 px** — the coordinator's numbers, as literals, against the
+    /// basis that does not move with the fix. T22.20 measured **1646 px and 2.47 s**
+    /// from the old 1350; R109b's 450 top speed took it to 180 px / 0.83 s, and the
+    /// strong brake (`SPACE_BRAKE_SCALE`) the rest of the way — **by LEFT/RIGHT**, the
+    /// side thrust. Travel down is stopped by UP (2200) and meets it with room; travel
+    /// **up** is stopped by DOWN, the weakest axis (900), and does **not**: at full
+    /// strength it needs 450 / 900 = 0.5 s and 450² / 1800 ≈ 112 px plus a tick's
+    /// travel, which this test pins as the one known miss (reported, T22.22) so that a
+    /// change that fixes or worsens it is seen. The control is the governed 260
+    /// cruise, which must stop shorter.
     ///
-    /// Falsified at the live site: `SPACE_MAX_SPEED` 450 → 1350 fails here.
+    /// Falsified at the live site: `SPACE_BRAKE_SCALE` 1.0 → `SPACE_THRUST_SCALE`
+    /// fails here, and so does `SPACE_MAX_SPEED` 450 → 1350.
     #[test]
     fn stopping_from_the_space_top_speed_is_short() {
         let f = flight();
-        let (px, s, _) = f.stop_top;
+        let [right, left, down, up] = stops_from_top();
+        for (way, (px, s)) in [("right", right), ("left", left), ("down", down)] {
+            assert!(
+                px < 100.0 && s < 0.5,
+                "stopping from SPACE_MAX_SPEED travelling {way} takes {px:.1} px in {s:.2} s \
+                 — R109b asked for under 100 px and 0.5 s"
+            );
+        }
         assert!(
-            px < 0.25 * 1646.0 && s < 0.5 * 2.47,
-            "stopping from SPACE_MAX_SPEED takes {px:.1} px in {s:.2} s — T22.20 measured \
-             1646 px / 2.47 s from 1350, and R109b asked for far less"
+            up.0 < 0.1 * 1646.0 && up.1 < 0.25 * 2.47,
+            "stopping from SPACE_MAX_SPEED travelling up (DOWN held, the weakest axis) \
+             takes {:.1} px in {:.2} s",
+            up.0,
+            up.1
         );
         assert!(
-            f.stop_cruise.0 < px && f.stop_cruise.0 > 0.0,
+            f.stop_cruise.0 < right.0 && f.stop_cruise.0 > 0.0,
             "control: stopping from the 260 cruise ({:.1} px) is not shorter than from \
-             the top speed ({px:.1}) — the instrument measured nothing",
-            f.stop_cruise.0
+             the top speed ({:.1}) — the instrument measured nothing",
+            f.stop_cruise.0,
+            right.0
         );
     }
 
@@ -1331,7 +1370,8 @@ mod tests {
         println!(
             "T22.20 flight: peak accel {:.1} px/s²; Medium crossing from rest {:.2} s, \
              from a push-off {:.2} s (top {:.0} px/s); stop from 260: {:.1} px in {:.2} s; \
-             stop from SPACE_MAX_SPEED: {:.1} px in {:.2} s, fuel left {:.2}",
+             stop from SPACE_MAX_SPEED: {:.1} px in {:.2} s, fuel left {:.2}; \
+             stop from top travelling right/left/down/up: {:?}",
             space_peak_accel(),
             f.cross_rest,
             f.cross_push,
@@ -1341,6 +1381,7 @@ mod tests {
             f.stop_top.0,
             f.stop_top.1,
             f.stop_top.2,
+            stops_from_top().map(|(px, s)| (px.round(), (s * 100.0).round() / 100.0)),
         );
     }
 }
