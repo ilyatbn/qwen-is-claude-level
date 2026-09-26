@@ -183,6 +183,33 @@ impl Rect {
     }
 }
 
+/// A call the fields cannot honour. Returned rather than silently degraded (T23.03B, F9):
+/// before, a wrong-size wall fell back to the round-start mask and a `dirty` with no
+/// snapshot did a full pass against the mask *as it is now* — both a picture that is
+/// quietly wrong (caves or craters without their wall) with nothing to report it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldsError {
+    /// The "was rock" input is not the mask's size: `(got, want)` in px.
+    WallSize(usize, usize),
+    /// `dirty` before any full pass, or after the map changed size: nothing to update.
+    /// Call a full pass (round start) first.
+    NoSnapshot,
+}
+
+impl std::fmt::Display for FieldsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldsError::WallSize(got, want) => {
+                write!(f, "render_fields: wall has {got} px, the mask {want}")
+            }
+            FieldsError::NoSnapshot => write!(
+                f,
+                "render_fields: dirty() before a full pass for this map — call render_fields_full first"
+            ),
+        }
+    }
+}
+
 /// The world field buffer and the round-start snapshot `back` is measured against.
 #[derive(Default)]
 pub struct RenderFields {
@@ -203,15 +230,21 @@ impl RenderFields {
 
     /// The whole world against an explicit "was rock" mask (R17): the round-start mask
     /// OR'd with the generator's landform (T23.05B), or a scene's own `back` ∪ solid (the
-    /// look-lab). A `wall` of the wrong size is ignored for the round-start mask.
-    pub fn full_with_wall(&mut self, mask: &impl Solid, wall: BitGrid) -> Rect {
+    /// look-lab). A `wall` of the wrong size is refused ([`FieldsError::WallSize`]) and
+    /// nothing is written.
+    pub fn full_with_wall(
+        &mut self,
+        mask: &impl Solid,
+        wall: BitGrid,
+    ) -> Result<Rect, FieldsError> {
         if wall.dims() != mask.dims() {
-            return self.full(mask);
+            let px = |(w, h): (u32, u32)| w as usize * h as usize;
+            return Err(FieldsError::WallSize(px(wall.dims()), px(mask.dims())));
         }
         let mut wall = wall;
         wall.union_with(&BitGrid::from_solid(mask));
         self.wall = Some(wall);
-        self.full_against_snapshot(mask)
+        Ok(self.full_against_snapshot(mask))
     }
 
     fn full_against_snapshot(&mut self, mask: &impl Solid) -> Rect {
@@ -229,14 +262,21 @@ impl RenderFields {
     /// [`WRITE_MARGIN`], reading it grown by [`READ_MARGIN`]. Byte-identical to
     /// [`full`](Self::full) because nothing outside `dirty + 64` can change (every
     /// channel saturates or is local by 64 px) and every px written sees all px
-    /// within 64 of it. Returns the rectangle written. Falls back to a full pass if
-    /// the map changed size or there is no snapshot yet.
-    pub fn dirty(&mut self, mask: &impl Solid, x: i32, y: i32, w: i32, h: i32) -> Rect {
+    /// within 64 of it. Returns the rectangle written, or [`FieldsError::NoSnapshot`] —
+    /// writing nothing — if there has been no full pass for a map of this size.
+    pub fn dirty(
+        &mut self,
+        mask: &impl Solid,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<Rect, FieldsError> {
         let (mw, mh) = mask.dims();
         if self.wall.as_ref().map(|p| p.dims()) != Some((mw, mh)) || (self.w, self.h) != (mw, mh) {
-            return self.full(mask);
+            return Err(FieldsError::NoSnapshot);
         }
-        self.dirty_reading(mask, (x, y, w, h), READ_MARGIN)
+        Ok(self.dirty_reading(mask, (x, y, w, h), READ_MARGIN))
     }
 
     /// The live body of [`dirty`](Self::dirty), with the read margin a parameter only
@@ -471,6 +511,14 @@ fn relief_at(x: u32, y: u32, d_in: f32) -> f32 {
 // mask is (`lib.rs` module docs: the view detaches on memory growth, re-acquire it
 // when `view.buffer !== memory.buffer`). **No production caller yet**: T23.07's
 // terrain renderer is the first (it uploads the returned rect with `texSubImage2D`).
+//
+// **For T23.07 (T23.03B, F9): rebuild the `render_fields_ptr` view after every call.**
+// A full pass `resize`s the buffer — it can move it — and any allocation in any call can
+// grow wasm memory, which detaches every `Uint8Array` over the old `memory.buffer`. A
+// view kept from round start reads a detached (zero-length) array or a stale address.
+//
+// Refusals throw in JS (`Result<_, String>`): a wrong-length wall and a dirty update
+// before a full pass are caller bugs, and a thrown error is the one a caller sees.
 
 use crate::GameCore;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -485,11 +533,12 @@ impl GameCore {
 
     /// R17: like `render_fields_full`, with an extra "was rock" mask — one byte per px,
     /// row-major, nonzero = rock (the generator's landform, T23.05B; or a look-lab scene's
-    /// `back`). OR'd with the mask as it is now. A buffer of the wrong length is ignored.
-    pub fn render_fields_full_with_wall(&mut self, wall: &[u8]) -> Vec<u32> {
+    /// `back`). OR'd with the mask as it is now. A buffer of the wrong length throws and
+    /// writes nothing.
+    pub fn render_fields_full_with_wall(&mut self, wall: &[u8]) -> Result<Vec<u32>, String> {
         let (w, h) = (self.map.mask.w, self.map.mask.h);
         if wall.len() != w as usize * h as usize {
-            return self.render_fields_full();
+            return Err(FieldsError::WallSize(wall.len(), w as usize * h as usize).to_string());
         }
         let mut g = BitGrid::new(w, h);
         for (i, &b) in wall.iter().enumerate() {
@@ -499,15 +548,24 @@ impl GameCore {
         }
         self.render_fields
             .full_with_wall(&self.map.mask, g)
-            .to_vec()
+            .map(Rect::to_vec)
+            .map_err(|e| e.to_string())
     }
 
     /// After a carve with bounds `(x, y, w, h)` (world px, may overhang the map).
-    /// Returns the rect written, `[x, y, w, h]` — upload exactly that.
-    pub fn render_fields_dirty(&mut self, x: i32, y: i32, w: i32, h: i32) -> Vec<u32> {
+    /// Returns the rect written, `[x, y, w, h]` — upload exactly that. Throws, writing
+    /// nothing, before a full pass for this map.
+    pub fn render_fields_dirty(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<Vec<u32>, String> {
         self.render_fields
             .dirty(&self.map.mask, x, y, w, h)
-            .to_vec()
+            .map(Rect::to_vec)
+            .map_err(|e| e.to_string())
     }
 
     /// Address of the RGBA8 field buffer, `width * height * 4` bytes, row-major.
@@ -726,7 +784,7 @@ mod tests {
             air.iter().all(|&i| b(&core, i) == 0),
             "no wall without the input"
         );
-        core.render_fields_full_with_wall(&wall);
+        core.render_fields_full_with_wall(&wall).unwrap();
         assert!(
             air.iter().all(|&i| b(&core, i) == 255),
             "the input's px are wall"
@@ -738,6 +796,52 @@ mod tests {
             .filter(|p| p[2] == 255)
             .count();
         assert_eq!(walled, air.len(), "and nothing else is");
+    }
+
+    /// F9: the two calls that used to degrade silently now refuse, write nothing and say
+    /// why — through `game-core` and through the WASM boundary. Control: the same calls
+    /// in the right order succeed.
+    #[test]
+    fn a_wrong_wall_and_an_early_dirty_are_refused_not_degraded() {
+        let mut core = GameCore::new();
+        let n = (core.width() * core.height()) as usize;
+        // No full pass yet: dirty is refused, and nothing was allocated or written.
+        let early = core.render_fields_dirty(10, 10, 20, 20);
+        assert!(
+            early
+                .as_ref()
+                .is_err_and(|e| e.contains("before a full pass")),
+            "{early:?}"
+        );
+        assert_eq!(
+            core.render_fields_len(),
+            0,
+            "an early dirty wrote something"
+        );
+        // A wall one byte short is refused and leaves the buffer as it was.
+        let short = core.render_fields_full_with_wall(&vec![0u8; n - 1]);
+        assert_eq!(
+            short,
+            Err(FieldsError::WallSize(n - 1, n).to_string()),
+            "short wall"
+        );
+        assert_eq!(
+            core.render_fields_len(),
+            0,
+            "a refused wall wrote something"
+        );
+        // Control: the right order and the right size both succeed.
+        assert!(core.render_fields_full_with_wall(&vec![0u8; n]).is_ok());
+        assert_eq!(core.render_fields_len(), n * 4);
+        assert!(core.render_fields_dirty(10, 10, 20, 20).is_ok());
+        // Grid level: a size-changed map is also no snapshot.
+        let mut f = RenderFields::default();
+        f.full(&BitGrid::new(64, 32));
+        assert_eq!(
+            f.dirty(&BitGrid::new(32, 32), 0, 0, 4, 4),
+            Err(FieldsError::NoSnapshot)
+        );
+        assert!(f.dirty(&BitGrid::new(64, 32), 0, 0, 4, 4).is_ok());
     }
 
     fn unrle(runs: &[u64], w: u32, h: u32) -> BitGrid {
@@ -780,7 +884,7 @@ mod tests {
         let back = unrle(&runs("back_rle"), w, h);
         // The mockup's `back` is carved landform, so it is the "was rock" input (R17).
         let mut f = RenderFields::default();
-        f.full_with_wall(&solid, back);
+        f.full_with_wall(&solid, back).unwrap();
         // Control (R17): the generated caves are wall only because the landform was fed.
         let mut round_start_only = RenderFields::default();
         round_start_only.full(&solid);
@@ -869,7 +973,9 @@ mod tests {
             let (cx, cy, r) = (p.x, p.y, 60);
             map.carve_circle(cx, cy, r);
             let t = std::time::Instant::now();
-            let wrote = f.dirty(&map.mask, cx - r, cy - r, 2 * r + 1, 2 * r + 1);
+            let wrote = f
+                .dirty(&map.mask, cx - r, cy - r, 2 * r + 1, 2 * r + 1)
+                .unwrap();
             let crater = t.elapsed().as_secs_f64() * 1e3;
             let mut fresh = RenderFields {
                 wall,
