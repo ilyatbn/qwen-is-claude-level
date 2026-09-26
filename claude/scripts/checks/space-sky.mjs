@@ -20,12 +20,13 @@
  *    the same moment is the control that they are not simply flickering.
  * 4. **Seeded.** Re-seeding the sky alone (`setSkySeed`) moves the stars and bodies; the
  *    first seed again gives the first frame back.
- * 5. **Absences, each beside its presence.** In space: the ridge band suppressed and not
- *    visible, no cloud drawn, no ambient rain even when forced, darkness 0 at the ground's
- *    night, and the frame no darker at `T0 + DT` (the ground's night) than at `T0`. Then
- *    the **same page regenerated standard**: ridge visible, clouds drawn, forced rain
- *    falling, darkness > 0 and the frame much darker at night — the same instruments,
- *    reading the other answer, so none of the absences is a renderer that draws nothing.
+ * 5. **Absences, each beside its presence.** In space: the ground's sky not drawn (T23.04:
+ *    the world renderer's `info().sky`; the ridge band, clouds and ambient rain this used to
+ *    assert absent are retired), darkness 0 at the ground's night, and the frame no darker at
+ *    `T0 + DT` (the ground's night) than at `T0`. Then the **same page regenerated standard**:
+ *    the ground sky drawn, darkness > 0 and the frame much darker at night — the same
+ *    instruments, reading the other answer, so none of the absences is a renderer that draws
+ *    nothing.
  *
  * Fog is **not** asserted here: in space it is the scheduler's to switch off at the
  * source (`R43`, `T22.08`), and a client that hid the veil while the server still
@@ -82,7 +83,7 @@ export default async function ({ page, shot, log }) {
   if (url.searchParams.get('gravity') !== 'space') throw new Error('space-sky runs at ?gravity=space')
   const seedA = url.searchParams.get('seed') ?? '4242'
   const d0 = await dbg()
-  const renderer = d0.parallax?.renderer
+  const renderer = d0.renderer
   log(`renderer: ${renderer}`)
   if (renderer === 'webgl') await g(() => window.__game.setHighQuality(true))
 
@@ -343,10 +344,7 @@ export default async function ({ page, shot, log }) {
   let found = null
   const tried = []
   for (const cand of rocks.slice(0, 16)) {
-    await g(([x, y]) => {
-      window.__game.watch(x, y)
-      window.__game.forceAmbient(1)
-    }, [cand.x, cand.y])
+    await g(([x, y]) => window.__game.watch(x, y), [cand.x, cand.y])
     // `worldView` refreshes in `preRender`: read through it only after frames are drawn.
     await frames(SETTLE_FRAMES)
     const s = await toScreen(page, cand.x, cand.y)
@@ -464,17 +462,12 @@ export default async function ({ page, shot, log }) {
   const nightMean = sNight.mean - sDay.mean
   if (Math.abs(nightMean) > 3) throw new Error(`the space frame changed brightness by ${nightMean.toFixed(1)} between the ground's day and night`)
   if (nightBare.d.darkness !== 0) throw new Error(`darkness at the ground's night in space is ${nightBare.d.darkness}, not 0`)
-  const par = b.d.parallax
-  if (!par.suppressed || par.ridgeVisible || par.cloudsDrawn !== 0) {
-    throw new Error(`the ground's sky band is up in space: ${JSON.stringify({ s: par.suppressed, ridge: par.ridgeVisible, clouds: par.cloudsDrawn })}`)
-  }
-  if (b.d.ambientAsked !== 0 || b.d.ambientDrops !== 0) {
-    throw new Error(`forced ambient rain fell in space: asked ${b.d.ambientAsked}, drops ${b.d.ambientDrops}`)
-  }
+  const groundSky = await g(() => window.__world?.info()?.sky ?? null)
+  if (groundSky !== false) throw new Error(`the ground's sky is drawn in space (world renderer sky: ${groundSky})`)
   if (b.d.caveBackdrop !== false) throw new Error(`the cave backdrop is on for a space map (R33)`)
   const refused = await g(() => window.__game.caveBackdrop(true))
   if (refused !== false) throw new Error('a space map accepted the cave backdrop toggle')
-  log(`space: darkness ${nightBare.d.darkness} at the ground's night, frame Δ ${nightMean.toFixed(2)} day→night, ridge off, 0 clouds, 0 drops forced, no cave`)
+  log(`space: darkness ${nightBare.d.darkness} at the ground's night, frame Δ ${nightMean.toFixed(2)} day→night, ground sky not drawn, no cave`)
 
   // --- 4: seeded -------------------------------------------------------------------
   await g((t) => {
@@ -512,45 +505,33 @@ export default async function ({ page, shot, log }) {
     polling: 'raf',
     timeout: 60_000,
   })
-  // The top of the map: open sky, clouds overhead, rain falling from them.
+  // The top of the map: open sky.
   const top = await g(() => ({ x: window.__game.core.width / 2, y: 200 }))
-  await g(([x, y]) => {
-    window.__game.watch(x, y)
-    window.__game.forceAmbient(1)
-    window.__game.setParallaxClock(0)
-  }, [top.x, top.y])
+  await g(([x, y]) => window.__game.watch(x, y), [top.x, top.y])
   const std = async (t) => {
     await g((tt) => window.__game.setTime(tt), t)
     await frames(SETTLE_FRAMES)
     return { d: await dbg(), p: await photo() }
   }
   const day = await std(DAY_T)
-  // Rain from a cloud to the bottom of the view is a fall, counted in frames; the
-  // drops are the proof the forced shower is not refused here.
-  await page.waitForFunction(() => window.__game.debug().ambientDrops > 0, null, { polling: 'raf', timeout: 60_000 }).catch(() => {})
-  const wet = await dbg()
+  const groundUp = await g(() => window.__world?.info()?.sky ?? null)
   const night = await std(NIGHT_T)
   await shot(`space-sky-${renderer}-standard-night`)
   const dm = await measure({ kind: 'stars', a: day.p, exclude })
   const nm = await measure({ kind: 'stars', a: night.p, exclude })
-  const pd = day.d.parallax
   const problems = []
   if (day.d.spaceSky !== null) problems.push('the space sky is up in standard gravity')
-  if (pd.suppressed || !pd.ridgeVisible) problems.push(`ridge not visible (suppressed ${pd.suppressed})`)
-  if (!(pd.cloudsDrawn > 0)) problems.push('no clouds drawn over the top of the map')
-  if (!(wet.ambientDrops > 0)) problems.push('forced ambient rain drew no drops')
+  if (groundUp !== true) problems.push(`the ground's sky is not drawn on the standard map (world renderer sky: ${groundUp})`)
   if (!(night.d.darkness > 0.5 * k.NIGHT_DARKNESS)) problems.push(`night darkness ${night.d.darkness}`)
   if (!(dm.mean - nm.mean > 15)) problems.push(`night darkened the frame by only ${(dm.mean - nm.mean).toFixed(1)}`)
   if (!(dm.stars.length < STAR_FLOOR / 4)) problems.push(`the daytime sky counts as ${dm.stars.length} star pixels — the star instrument is not discriminating`)
   if (problems.length) throw new Error(`presence controls (standard gravity) failed: ${problems.join('; ')}`)
   log(
-    `standard control: ridge up, ${pd.cloudsDrawn} clouds, ${wet.ambientDrops} drops, night darkness ${night.d.darkness.toFixed(2)}, ` +
+    `standard control: ground sky drawn, night darkness ${night.d.darkness.toFixed(2)}, ` +
       `frame darkened ${(dm.mean - nm.mean).toFixed(1)}, ${dm.stars.length} star pixels by day`,
   )
   await g(() => {
-    window.__game.forceAmbient(null)
     window.__game.watch(null)
     window.__game.setTime(null)
-    window.__game.setParallaxClock(null)
   })
 }

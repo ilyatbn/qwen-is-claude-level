@@ -9,6 +9,11 @@
  *
  * `window.__look.ready` flips after the renderer has drawn a frame of the scene. An unknown id
  * is reported by name in `__look.error` and never becomes ready — the look-lab check's control.
+ *
+ * T23.04: `&only=sky` describes the scene's sky alone — no mask, actors, fx or labels — so
+ * `look-sky` can compare the sky layer with the mockup's sky rendered alone
+ * (`reference/controls/F1-sky.png`). Hidden in the data, not in the renderer: what is left is
+ * exactly what the renderer draws of the full scene's sky.
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
@@ -64,7 +69,11 @@ export class LookScene extends Phaser.Scene {
       console.error(handle.error)
       return
     }
-    const desc = describeScene(data)
+    const full = describeScene(data)
+    const desc =
+      new URLSearchParams(location.search).get('only') === 'sky'
+        ? { ...full, masks: null, actors: [], fx: [], labels: [], hud: null }
+        : full
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)

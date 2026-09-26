@@ -290,11 +290,10 @@ export default async function ({ page, shot, log }) {
   // version of this check let the clock run and the day moved the whole frame —
   // the control arm's subject patch changed by 32.5 over a second and a half,
   // with the body provably still. `setTime` freezes `roundTime` (and with it the
-  // sky's gradient and the terrain's tint) and `setParallaxClock` freezes the
-  // band behind it.
+  // terrain's tint; the sky has no clock since T23.04, and the band `setParallaxClock`
+  // froze is retired with it).
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
 
   // Rendered frames, which is the control arm's clock. Installed here rather
@@ -626,6 +625,5 @@ export default async function ({ page, shot, log }) {
     window.__game.freeze(false)
     window.__game.watch(null)
     window.__game.setTime(null)
-    window.__game.setParallaxClock(null)
   })
 }

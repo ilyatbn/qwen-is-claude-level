@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { C, Core } from '../core'
-import { CYCLE_LENGTH, bodyPositions, darknessAt, sceneDarkness, starAlpha } from './sky-math'
+import { CYCLE_LENGTH, darknessAt, sceneDarkness } from './sky-math'
 import {
   earthPixels,
   moonPixels,
@@ -44,19 +44,16 @@ describe('spaceBodies — the motion driver, decoupled from the day', () => {
     expect(Math.abs(b.earth.fx - a.earth.fx) + Math.abs(b.earth.fy - a.earth.fy)).toBeGreaterThan(0.01)
   })
 
-  it('shows the sun and the moon together at every moment — the ground sky never does', () => {
-    // Control: the ground's `bodyPositions` has one of them null for most of the cycle.
-    let groundBoth = 0
+  it('shows the sun and the earth together at every moment', () => {
+    // (Its control, the retired ground sky's `bodyPositions` with one body down most of the
+    // cycle, went with that sky in T23.04.)
     for (let t = 0; t < CYCLE_LENGTH; t += 1) {
-      const g = bodyPositions(t / CYCLE_LENGTH, 1000, 500, 300)
-      if (g.sun && g.moon) groundBoth++
       const s = at(t)
       for (const f of [s.sun.fx, s.sun.fy, s.earth.fx, s.earth.fy]) {
         expect(f).toBeGreaterThan(0)
         expect(f).toBeLessThan(1)
       }
     }
-    expect(groundBoth).toBeLessThan(CYCLE_LENGTH / 5)
   })
 
   it('is seeded: a seed repeats itself and another seed starts elsewhere', () => {
@@ -128,9 +125,7 @@ describe('spaceStars / starAt', () => {
     }
   })
 
-  it('shines with no darkness at all — where the ground\'s stars are invisible', () => {
-    // Control: the ground sky's stars are zero at darkness 0, which is space's darkness.
-    expect(starAlpha(0.75, 0, c.NIGHT_DARKNESS)).toBe(0)
+  it('shines with no darkness at all (space\'s darkness)', () => {
     for (const s of spaceStars(4242, 50)) {
       expect(starAt(s, 12, c.SPACE_STAR_DRIFT, 0, 0, c.SPACE_STAR_PARALLAX, viewW, viewH).a).toBeGreaterThan(0.1)
     }

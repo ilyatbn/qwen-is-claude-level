@@ -77,6 +77,14 @@ export interface BgLayer {
   soft: number
   fade: [number, number, number]
   jitter: number
+  /**
+   * T23.04, the game's sky only (`skyLayout.ts::gameSky`; the mockup's scenes leave these out and
+   * draw one shape at a fixed screen place): the parallax factor, the repeat in screen px, and
+   * the key of each copy's seeded apex jitter.
+   */
+  parallax?: number
+  period?: number
+  seed?: number
 }
 
 /** F5's moons in the sky (distinct from `Moon`, the light). */
@@ -106,6 +114,8 @@ export interface Background {
   glowColor?: number
   moons?: SkyMoon[]
   layers: BgLayer[]
+  /** T23.04: the gradient, horizon glow and haze band's parallax factor (the game's sky only). */
+  parallax?: number
 }
 
 export interface Scorch {
@@ -155,7 +165,8 @@ export interface Grade {
 
 /** Everything `f_kit.js::frame` receives besides the world and the draw callbacks. */
 export interface FrameLook {
-  bg: Background
+  /** `null`: no sky is drawn — a space map (T23.04; space keeps T22.06's backdrop until T23.20). */
+  bg: Background | null
   terrain: TerrainLook & { scorch?: Scorch[] }
   lights: Light[]
   fogBack: Fog | null

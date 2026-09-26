@@ -71,10 +71,10 @@ try {
   if (d.darkness !== 0) fail(`the server sent darkness ${d.darkness} in space at round time ${d.roundTime}`)
   else if (d.drawnDarkness !== 0) fail(`the frame was drawn at darkness ${d.drawnDarkness} in space`)
   else ok(`at round time ${d.roundTime.toFixed(1)} (the ground's night): darkness byte 0, drawn 0`)
-  const par = d.sky?.parallax
-  if (!par?.suppressed || par.ridgeVisible || par.cloudsDrawn !== 0) {
-    fail(`the ground's sky band is up in a space match: ${JSON.stringify({ s: par?.suppressed, ridge: par?.ridgeVisible, clouds: par?.cloudsDrawn })}`)
-  } else ok('no ridge and no clouds in the space match')
+  // T23.04: the ground's sky is the world renderer's; the old ridge and clouds are retired.
+  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, drawn: window.__world?.info()?.sky ?? null }))
+  if (ground.sky !== false || ground.drawn !== false) fail(`the ground's sky is up in a space match: ${JSON.stringify(ground)}`)
+  else ok('no ground sky in the space match (world renderer draws none)')
 
   // The bodies move as the round's clock does — waited on as the clock, not a sleep.
   if (sky) {
@@ -113,7 +113,9 @@ try {
   if (!(d.darkness > 0) || !(d.drawnDarkness > 0)) {
     fail(`control: the standard match at round time ${d.roundTime} is not dark: byte ${d.darkness}, drawn ${d.drawnDarkness}`)
   } else ok(`control: standard at ${d.roundTime.toFixed(1)} s — darkness byte ${d.darkness.toFixed(2)}, drawn ${d.drawnDarkness.toFixed(2)}`)
-  if (d.sky?.parallax?.suppressed !== false) fail('control: the standard match has its sky band suppressed')
+  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, drawn: window.__world?.info()?.sky ?? null }))
+  if (ground.sky !== true || ground.drawn !== true) fail(`control: the standard match draws no ground sky: ${JSON.stringify(ground)}`)
+  else ok('control: the standard match draws its ground sky')
   await page.screenshot({ path: join(shotsDir, 'space-sky-match-standard-night.png') })
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`)
 } catch (e) {

@@ -174,14 +174,13 @@ const C = await a.page.evaluate('window.__game.constants()')
  * and hidden, in one frozen frame. Integer rects of one size for every body, so the
  * three reads line up pixel for pixel.
  *
- * Pads and the parallax band are still hidden: masking makes the comparison immune
+ * Pads are still hidden (the parallax band, hidden here too until T23.04, is gone): masking makes the comparison immune
  * to what is behind a body, but a pad arch *in front of* the feet would be masked in
  * as body.
  */
 async function frame(page, wx, wy, tag) {
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [wx, wy])
   await page.evaluate(() => window.__game.showPads?.(false))
-  await page.evaluate(() => window.__game.setParallaxVisible?.(false))
   await sleep(250)
   const s = await toScreen(page, wx, wy)
   if (!s.onScreen) return null
@@ -203,7 +202,6 @@ async function frame(page, wx, wy, tag) {
   await page.evaluate(() => window.__game.setActorsVisible(true))
   await page.evaluate(() => window.__game.freeze(false))
   await page.evaluate(() => window.__game.showPads?.(true))
-  await page.evaluate(() => window.__game.setParallaxVisible?.(true))
   return spriteOf(body, ground, roundTime)
 }
 

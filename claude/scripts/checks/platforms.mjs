@@ -76,7 +76,6 @@ export default async function ({ page, shot, log }) {
   // delta from 63 to 23.
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
   await page.waitForTimeout(250)
 
@@ -266,7 +265,6 @@ export default async function ({ page, shot, log }) {
   // And give the clock back, for the same reason `setTime` documents.
   await page.evaluate(() => {
     window.__game.setTime(null)
-    window.__game.setParallaxClock(null)
   })
 
   log(`${p.count} platforms generated, drawn and visible in the frame`)

@@ -22,7 +22,7 @@ import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
-import { C, Core, ambientRain, dequantizeAngle, strictConstants, type FlareQuery, type VentSpec } from '../core'
+import { C, Core, MapGenerator, dequantizeAngle, strictConstants, type FlareQuery, type VentSpec } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
 import { parseLobbyState } from '../net/lobby'
 import { WorldMirror, hex } from '../net/worldMirror'
@@ -69,14 +69,14 @@ import { Predictor } from '../net/prediction'
 import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
-import type { GameWorld } from '../look/worldRenderer'
+import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
-import { SkyLayer } from '../render/sky'
+import { SpaceSky } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { hazardKind } from '../render/ordnanceFx-math'
@@ -284,16 +284,17 @@ export class GameScene extends Phaser.Scene {
 
   private world: WorldView | null = null
   /**
-   * T23.03 (R1): three.js draws the world under this scene's transparent canvas — today one
-   * test layer; the layers Phaser draws move across task by task. Destroyed on shutdown by
+   * T23.03 (R1): three.js draws the world under this scene's transparent canvas — the sky since
+   * T23.04; the layers Phaser draws move across task by task. Destroyed on shutdown by
    * `createWorldRenderer` itself. `null` until its chunk has loaded (T23.03B, F10).
    */
   private worldRenderer: GameWorld | null = null
-  private sky!: SkyLayer
-  /** The map seed from `welcome`, for §C14's seeded skyline. */
+  /** T22.06's space backdrop, shown only on a space map (T23.04: `SkyLayer`, which owned it, is retired). */
+  private spaceSky!: SpaceSky
+  /** The map seed from `welcome` (its low 32 bits): the skies' seed, so every client of a round agrees. */
   private mapSeed = 0
-  /** T21.26: the full `u64` map seed, parsed once from `welcome` — `mapSeed` is its low half. */
-  private roundSeedBig = 0n
+  /** T23.04: `map_init` said a space map (its generator) — no ground sky; the space backdrop instead. */
+  private onSpaceMap = false
   /**
    * The **round's** seed, as `welcome` sent it.
    *
@@ -586,12 +587,6 @@ export class GameScene extends Phaser.Scene {
   private serverDarkness = 0
   /** T22.06: the darkness the last frame was drawn with — `sceneDarkness`'s answer, not the byte. */
   private drawnDarkness = 0
-  /**
-   * e2e only (T22.00H, `holdSky`): the round time the sky is drawn at, or `null` to
-   * follow `roundTime`. Only the sky and its parallax band read it — darkness,
-   * fog and everything else keep the live clock.
-   */
-  private skyHeldAt: number | null = null
 
   private observed = freshObserved()
 
@@ -664,7 +659,7 @@ export class GameScene extends Phaser.Scene {
 
     // The round's identity and its clocks.
     this.mapSeed = 0
-    this.roundSeedBig = 0n
+    this.onSpaceMap = false
     this.roundSeed = ''
     this.phase = 'lobby'
     this.roundTime = 0
@@ -773,8 +768,6 @@ export class GameScene extends Phaser.Scene {
     this.bellEndsTick = null
     this.bellSeq = null
     this.endedAtTick = null
-    // T22.00H: a check's held sky is that round's; the next draws on its own clock.
-    this.skyHeldAt = null
     this.core?.setBell(null)
     this.vortexFx?.clear()
     this.blackHoleFx?.clear()
@@ -815,13 +808,13 @@ export class GameScene extends Phaser.Scene {
     // two rooms on the server, and it is what `lobby.mjs` now measures.
     this.conn = (this.registry.get('liveConn') as Connection | undefined) ?? new Connection()
 
-    this.sky = new SkyLayer(this)
-    // T23.03: the world renderer, under Phaser's canvas, loaded on demand (F10). Described at
-    // the core's size **when it arrives** — `map_init` may have landed first — and re-described
-    // by `onMapInit` after. `loadWorldRenderer` drops it if this scene has shut down meanwhile.
+    this.spaceSky = new SpaceSky(this)
+    // T23.03: the world renderer, under Phaser's canvas, loaded on demand (F10). Described from
+    // the map as it stands **when it arrives** — `map_init` may have landed first — and
+    // re-described by `onMapInit` after. `loadWorldRenderer` drops it if this scene has shut down meanwhile.
     this.worldRenderer = null
     void loadWorldRenderer(this).then((m) => {
-      if (m) this.worldRenderer = m.createGameWorld(this, this.core.width, this.core.height)
+      if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
     })
     this.lightmap = new Lightmap(this)
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
@@ -1468,7 +1461,7 @@ export class GameScene extends Phaser.Scene {
       this.debugHud?.destroy()
       this.world?.destroy()
       this.lightmap.destroy()
-      this.sky.destroy()
+      this.spaceSky.destroy()
       this.fx?.destroy()
       // **Destroyed, then forgotten.** This block used to null seven of its
       // fields by hand and leave the rest — including `world` and `ready`, the
@@ -1586,7 +1579,6 @@ export class GameScene extends Phaser.Scene {
     // map lands. Low 32 bits, because that is all the ridge hash consumes.
     this.mapSeed = Number(BigInt(w.seed || '0') & 0xffffffffn) | 0
     this.roundSeed = String(w.seed ?? '')
-    this.roundSeedBig = /^\d+$/.test(this.roundSeed) ? BigInt(this.roundSeed) : 0n
     this.roundTime = w.roundTime
     this.serverRoundTime = w.roundTime
     this.phase = w.phase as Phase
@@ -1608,6 +1600,11 @@ export class GameScene extends Phaser.Scene {
     this.setStatus('decoding map…')
   }
 
+  /** T23.04: what the world renderer's sky needs of the map in force: size, seed, space-ness. */
+  private gameMap(): GameMap {
+    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap }
+  }
+
   private onMapInit(b64: string): void {
     if (!b64) return
     const init = this.mirror.applyMapInitB64(b64)
@@ -1625,23 +1622,12 @@ export class GameScene extends Phaser.Scene {
     // R58: non-empty asteroids), and they arrive in this very message.
     const spaceMap = init.asteroids.length > 0
     this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, spaceMap)
-    this.worldRenderer?.mapChanged(this.core.width, this.core.height)
+    // T23.04: the sky is keyed on the generator that made the map (`MapGenerator::to_u8`, off the wire).
+    this.onSpaceMap = init.generator === MapGenerator.Space
+    this.worldRenderer?.mapChanged(this.gameMap())
 
-    // The **same** theme the terrain resolves, not a second opinion: both now
-    // read `map_init`'s theme, so a distant ridge stays the colour of the ground
-    // in front of it. **The old note here said the theme "is not on the wire
-    // today" and that was wrong** — `codec.rs` has written it into `map_init`
-    // all along and `codec.ts` decodes it; the two were agreeing on 0 because
-    // both read `core.meta`, not because there was nothing better to read.
-    // T21.31: the clouds' ground and wind too. **The wind off `map_init`**, not
-    // `core.meta`, which a networked client never generates (see §C5 below).
-    const core = this.core
-    this.sky.setSeed(this.mapSeed, init.theme, {
-      width: core.width,
-      height: core.height,
-      solidAt: (x, y) => core.solidAt(x, y),
-      wind: init.wind,
-    })
+    // T22.06's space backdrop, seeded off the same wire seed (the ground sky's seed goes in above).
+    this.spaceSky.setSeed(this.mapSeed)
 
     // §C5. Built from the wire rather than from `core.meta`: a networked client
     // never runs the generator, so `core.meta.teleport_pads` is empty here and a
@@ -2251,9 +2237,10 @@ export class GameScene extends Phaser.Scene {
     const space = this.gravity === SPACE_GRAVITY
     const darkness = sceneDarkness(space, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
     this.drawnDarkness = darkness
-    // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
-    this.sky.parallax.setWeatherShade(this.world?.weather.ambientIntensity ?? 0, this.world?.weather.toxicIntensity ?? 0)
-    this.sky.update(this.skyHeldAt ?? this.roundTime, darkness, C().NIGHT_DARKNESS, space)
+    // T23.04: the space backdrop is up exactly on a space map — derived per frame, no latch —
+    // and placed after the rig moved the camera (above).
+    if (this.spaceSky.isShown !== this.onSpaceMap) this.spaceSky.setShown(this.onSpaceMap)
+    this.spaceSky.update(this.roundTime)
 
     this.death.update(
       !this.meAlive,
@@ -2308,13 +2295,7 @@ export class GameScene extends Phaser.Scene {
         fallScale: C().MAX_FALL_SPEED,
         fog: this.fog.strength(this.roundTime),
         hasFlashlight: this.hasFlashlight,
-        // T21.26: the harmless rain — the same pure function of the full map seed and
-        // the round clock that every client evaluates, so nothing about it is on the
-        // wire and two clients cannot disagree.
-        // T22.06: and none in space, where there is no weather to rain.
-        ambient: this.gravity === SPACE_GRAVITY ? 0 : ambientRain(this.roundSeedBig, this.roundTime),
-        // T21.31: rain falls from these clouds and nowhere else.
-        clouds: this.sky.parallax.rainClouds(),
+        // (T21.26's ambient rain retired with the clouds it fell from — T23.04.)
       })
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
@@ -3154,44 +3135,6 @@ export class GameScene extends Phaser.Scene {
        * acknowledging the ask — a hook that answers `true` for "I was called"
        * is the shape this project keeps paying for.
        */
-      /** e2e only (§C2, T21.26): hide one rain for a control frame. Freeze first. */
-      setRainVisible(which: 'toxic' | 'ambient', on: boolean) {
-        return self.world?.weather.setRainVisible(which, on) ?? { visible: false }
-      },
-      /**
-       * e2e only (§C2, T21.20): hide the parallax band — ridges and their foot — for a
-       * check whose subject stands in front of it. Read back off the layer.
-       */
-      setParallaxVisible(on: boolean) {
-        self.sky?.parallax.setVisible(on)
-        return { hidden: self.sky?.parallax.debug().hidden ?? null }
-      },
-      /**
-       * e2e only (T21.31): every cloud's world box at clock `t`, drawn or not. In a round
-       * the clouds run on `roundTime`, so a check passes `debug().roundTime` to see them
-       * where they are.
-       */
-      cloudsAt(t: number) {
-        return self.sky?.parallax.cloudsAt(t) ?? []
-      },
-      /**
-       * e2e only (T22.00H): draw the sky at round time `t` until `null` releases it.
-       *
-       * The day cycle moves the sky's gradient on `roundTime` (`sky-math.ts`,
-       * `KEYFRAMES`), fastest in the first `0.12 * CYCLE_LENGTH` seconds of a round.
-       * A check photographing a band of sky across a running scene cannot call it a
-       * still control otherwise: `beams-shader`'s stroked beam read 75.2 % changed
-       * on an idle box, where it reached the band ~3 s into the round, and 0.0 %
-       * under `--jobs 4`, where it got there ~17 s in. Returns the clock it holds.
-       */
-      holdSky(t: number | null) {
-        self.skyHeldAt = t
-        return { heldAt: self.skyHeldAt }
-      },
-      /** e2e only (§C2, T21.31): hide the clouds alone for a same-instant control frame. */
-      setCloudsVisible(on: boolean) {
-        return self.sky?.parallax.setCloudsVisible(on) ?? { visible: false }
-      },
       /** e2e only (T21.18): flip High Quality here, and say what is painted now. */
       setHighQuality(on: boolean) {
         setHighQuality(localStorage, on)
@@ -3723,13 +3666,6 @@ export class GameScene extends Phaser.Scene {
           // ...and where the ordnance layer's live drops are, the state they are drawn
           // from — so a check compares places, not only counts.
           toxicDropsLive: self.world?.liveToxicDropList ?? [],
-          ambientAlive: self.world?.weather.ambientAlive ?? 0,
-          // T21.26: the ambient sheet's own fields — never `rainDrops`, which is the
-          // toxic sheet's and which `toxic-rain-game` reads.
-          ambientAsked: self.world?.weather.ambientAsked ?? 0,
-          ambientIntensity: self.world?.weather.ambientIntensity ?? 0,
-          ambientDrops: self.world?.weather.ambientDrops ?? 0,
-          ambientPool: self.world?.weather.ambientPool ?? 0,
           toxicIntensity: self.world?.weather.toxicIntensity ?? 0,
           // Positions too, so a check can aim a patch at a projectile rather
           // than guess a screen point — a hardcoded coordinate is a test that
@@ -3952,8 +3888,9 @@ export class GameScene extends Phaser.Scene {
           // above can be 0 while the frame is dark — that `||` is why both exist.
           drawnDarkness: self.drawnDarkness,
           sky: {
-            space: self.sky?.spaceDebug ?? null,
-            parallax: self.sky?.parallax.debug() ?? null,
+            space: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
+            // T23.04: whether the world renderer draws the ground sky (not on a space map).
+            ground: self.worldRenderer ? !self.onSpaceMap : null,
           },
           // T19.24. **World coordinates, so a check can find what it is
           // photographing.** The client learns vent positions only by deriving

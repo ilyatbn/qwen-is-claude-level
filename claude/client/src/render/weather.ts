@@ -15,9 +15,8 @@
  * Both rains were `scrollFactor(0)` sheets, and the report from play was *"it
  * literally rains from the whole screen when the clouds are below me"*. Now:
  *
- * - **Ambient rain** is `CloudRain`: droplets leave the underside of the clouds over
- *   the view and die at the first rock — none above a cloud, none without one, none
- *   in a cave.
+ * - **Ambient rain** (T21.26/T21.31, `CloudRain` from the clouds) is **retired** with the
+ *   clouds it fell from (T23.04: F's sky has haze, not clouds, and F has no rain).
  * - **Toxic rain** is a streak at each of the server's **real** drops, so the picture
  *   and the damage are one population by construction (T20.05's rule, which a density
  *   scalar over an invented sheet only approximated). The green cast stays
@@ -25,7 +24,7 @@
  */
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { CloudRain, EmberField, fogVeilAlpha, type RainCloud } from './weather-math'
+import { EmberField, fogVeilAlpha } from './weather-math'
 import { FOG_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 import { C } from '../core'
@@ -76,15 +75,6 @@ export class WeatherLayer {
    * behind the drops and force one alpha to mean two effects.
    */
   private readonly fogVeil: Phaser.GameObjects.Graphics
-  /**
-   * T21.26's **ambient** rain: harmless, grey-blue, on its own schedule — never a
-   * reuse of the toxic streaks, which are the real drops and which `toxic-rain-game`
-   * reads as `rainDrops`. T21.31: it falls from the clouds, in the world.
-   */
-  private readonly ambient: CloudRain
-  private readonly ambientGfx: Phaser.GameObjects.Graphics
-  private ambientTarget = 0
-  private ambientDrawn = 0
   /** T21.31: the real toxic drops this frame, world px — what the streaks are drawn at. */
   private toxicDrops: ReadonlyArray<{ x: number; y: number }> = []
   private toxicDrawn: Array<{ x: number; y: number }> = []
@@ -92,28 +82,15 @@ export class WeatherLayer {
   private toxicCast = 0
   private readonly embers = new EmberField(70, 260)
   private readonly cam: Phaser.Cameras.Scene2D.Camera
-  private readonly solidAt: (x: number, y: number) => boolean
 
-  /** `solidAt` is the live mask: a drop dies at the first rock it reaches. */
-  constructor(scene: Phaser.Scene, solidAt: (x: number, y: number) => boolean) {
+  constructor(scene: Phaser.Scene) {
     this.cam = scene.cameras.main
-    this.solidAt = solidAt
     // T21.31: both rains are **world-space** now (scroll factor 1); only the green
     // cast and the fog stay on the lens.
     // Order matters and is not obvious: created second at the same depth, the
     // vignette drew *over* the drops and washed them out. The measured colour
     // delta was real and was entirely the cast — the rain was invisible and the
     // number said otherwise, which is the §A15 trap wearing a new hat.
-    // T21.26's ambient sheet: under the toxic sheet and its cast, and **not additive**
-    // — ADD is what makes the acid glow, and a harmless rain that glowed would read as
-    // a hazard.
-    //
-    // **At the vignette's depth, created before it, not at a depth of its own.** It
-    // was `particles - 2` (38) and `two-clients` went red: the game's world-layer set
-    // is pinned there, and 38 is the sandbox's hazard furniture, deliberately absent
-    // from the game (§C0/§C1). Equal depths draw in creation order, so this still
-    // sits under the green cast — the same place 38 put it — without a new layer.
-    this.ambientGfx = scene.add.graphics().setDepth(DEPTH.particles - 1)
     this.vignette = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.particles - 1)
     this.rainGfx = scene.add.graphics().setDepth(DEPTH.particles)
     this.rainGfx.setBlendMode(Phaser.BlendModes.ADD)
@@ -147,7 +124,6 @@ export class WeatherLayer {
     // A live toggle: layers built under the old value have to follow it, or the
     // player flips the switch, sees nothing, and flips it back (T21.16).
     this.unsubscribeQuality = onHighQualityChange(() => this.applyQuality())
-    this.ambient = new CloudRain(C().AMBIENT_RAIN_DROPS, 9191, C())
   }
 
   /** The veil's current opacity, so a check can count at both ends (§A39). */
@@ -233,55 +209,6 @@ export class WeatherLayer {
     return this.toxicDrawn
   }
 
-  /**
-   * T21.26: the ambient schedule's intensity this frame, `0..1`.
-   *
-   * The schedule is Rust's (`world::ambient`), evaluated by the scene from the map
-   * seed and the round clock. Unlike the toxic sheet there is no real-drop count
-   * behind it, so "is it raining" and "how hard" are honestly the same number.
-   */
-  setAmbient(intensity: number): void {
-    this.ambientTarget = Math.max(0, Math.min(1, intensity))
-  }
-
-  /** What the ambient sheet was asked for this frame, before the field's ramp. */
-  get ambientAsked(): number {
-    return this.ambientTarget
-  }
-
-  /** Ambient droplets drawn inside the view on the last frame — its own count, never `rainDrops`. */
-  get ambientDrops(): number {
-    return this.ambientDrawn
-  }
-
-  /** Ambient droplets in the air anywhere, on screen or not. */
-  get ambientAlive(): number {
-    return this.ambient.alive
-  }
-
-  get ambientPool(): number {
-    return this.ambient.drops.length
-  }
-
-  get ambientIntensity(): number {
-    return this.ambient.intensity
-  }
-
-  /**
-   * Show or hide one rain, **for a pixel check's control frame** (§C2): the only way
-   * to know what a sheet contributes to a frozen frame is to take it away. Read back
-   * off the object rather than echoed.
-   */
-  setRainVisible(which: 'toxic' | 'ambient', on: boolean): { visible: boolean } {
-    if (which === 'toxic') {
-      this.rainGfx.setVisible(on)
-      this.vignette.setVisible(on)
-      return { visible: this.rainGfx.visible }
-    }
-    this.ambientGfx.setVisible(on)
-    return { visible: this.ambientGfx.visible }
-  }
-
   get emberCount(): number {
     return this.embers.embers.length
   }
@@ -313,17 +240,12 @@ export class WeatherLayer {
     // frame and the flashlight is a multiplier on that, so a stored copy would be
     // a second place the answer could go stale.
     hasFlashlight: boolean,
-    // **T21.31: the clouds rain falls from**, world px — required for `fog`'s reason:
-    // an empty default is a scene that silently never rains.
-    clouds: readonly RainCloud[],
   ): void {
     const c = C()
     const step = dt / c.TOXIC_CAST_RAMP
     const wantCast = this.toxicDrops.length > 0 ? 1 : 0
     this.toxicCast =
       wantCast > this.toxicCast ? Math.min(1, this.toxicCast + step) : Math.max(0, this.toxicCast - step)
-    // Drops past the bottom of the view are re-launched rather than carried.
-    this.ambient.update(dt, this.ambientTarget, clouds, this.solidAt, this.cam.worldView.bottom + c.AMBIENT_RAIN_STREAK_MAX)
 
     for (const v of vents) {
       if (v.jetting) this.embers.emit(dt, v.x, v.y, v.lean, 260)
@@ -331,7 +253,6 @@ export class WeatherLayer {
     this.embers.update(dt, fallScale * 0.9)
 
     this.drawRain()
-    this.drawAmbient()
     this.drawFire(vents)
     this.drawFog(fog, hasFlashlight)
   }
@@ -403,28 +324,6 @@ export class WeatherLayer {
     v.fillRect(0, 0, this.cam.width, this.cam.height)
   }
 
-  /**
-   * The ambient droplets: grey-blue, thinner, and **no full-screen cast** — the toxic
-   * cast is part of what says "acid", and this rain says nothing. A streak's tail never
-   * reaches above the cloud it left.
-   */
-  private drawAmbient(): void {
-    const g = this.ambientGfx
-    g.clear()
-    this.ambientDrawn = 0
-    if (this.ambient.intensity <= 0) return
-    const c = C()
-    const view = this.cam.worldView
-    g.lineStyle(c.AMBIENT_RAIN_WIDTH, c.AMBIENT_RAIN_COLOUR, c.AMBIENT_RAIN_ALPHA * this.ambient.intensity)
-    for (const d of this.ambient.drops) {
-      if (!d.alive) continue
-      const tail = Math.max(d.y0, d.y - d.len)
-      if (d.y < view.y || tail > view.bottom || d.x < view.x || d.x > view.right) continue
-      g.lineBetween(d.x, tail, d.x, d.y)
-      this.ambientDrawn++
-    }
-  }
-
   private drawFire(vents: VentView[]): void {
     const g = this.fireGfx
     g.clear()
@@ -455,7 +354,6 @@ export class WeatherLayer {
   destroy(): void {
     this.embers.clear()
     this.rainGfx.destroy()
-    this.ambientGfx.destroy()
     this.fireGfx.destroy()
     this.vignette.destroy()
     this.fogVeil.destroy()

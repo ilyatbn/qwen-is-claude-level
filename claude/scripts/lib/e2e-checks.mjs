@@ -54,7 +54,17 @@ export const CHECKS = [
     url: '?look=F1',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
-  // T23.03: three.js under Phaser — canvas order, the test layer where Phaser draws nothing,
+  // T23.04: the sky — the look-lab's F1/F5 sky alone against the mockup's sky alone at Level A
+  // (full tier, every look-thresholds.json metric, F5's sky as the must-fail control), then live
+  // in the sandbox: each band's pan shift = pan × zoom × parallax, far < near, a moon fixed;
+  // seeded; none on a space map.
+  {
+    name: 'look-sky',
+    file: 'scripts/checks/look-sky.mjs',
+    url: '?look=F1&only=sky',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
+  // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
   { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
@@ -69,15 +79,8 @@ export const CHECKS = [
   { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242', flaky: true },
   { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=0' },
   { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242' },
-  // T21.18 item 1: the sprite clouds are retired, and High Quality paints them
-  // with a shader instead. Asserts **both** pictures — the empty band is the
-  // deliberate half.
-  // T21.31: world clouds, on both renderers — the owner plays on Canvas, and a check
-  // that only ever ran on WebGL is how his sky went empty without anything noticing.
-  { name: 'clouds', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'clouds-canvas', file: 'scripts/checks/clouds.mjs', url: '?sandbox=1&seed=4242&renderer=canvas' },
-  // T21.31 B: every rain pixel under a cloud and above the rock — under, above, in a cave.
-  { name: 'cloud-rain', file: 'scripts/checks/cloud-rain.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
+  // clouds) and the ambient rain that fell from them.
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.
@@ -134,7 +137,7 @@ export const CHECKS = [
   { name: 'radiation-standard', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
   // T22.06: the space backdrop — sun, earth, moon and stars each located on the frame
   // against its own hidden-body control frame, moving across a round with the camera and
-  // an asteroid patch held still, seeded, and the ground sky's ridge, clouds, rain and
+  // an asteroid patch held still, seeded, and the ground sky (T23.04: the world renderer's) and
   // night absent in space beside their presence after a regenerate to standard. Both paths.
   { name: 'space-sky', file: 'scripts/checks/space-sky.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
   {
@@ -177,19 +180,9 @@ export const CHECKS = [
   // §C6: the weather must reach the screen, not just the simulation.
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'sky', file: 'scripts/checks/sky.mjs', url: '?sandbox=1&seed=4242' },
-  // §C14: the mountains and clouds must reach the frame, not just the maths.
-  // `serial` (measured, one occurrence): red in the second `--jobs 4` run — the
-  // parallax band's pixel change against its own motion, 5.6% vs 1.3% — green at `--jobs 1`.
-  { name: 'living-sky', file: 'scripts/checks/living-sky.mjs', url: '?sandbox=1&seed=4242', serial: true },
-  // T21.33: the owner's renderer. Every other check runs WebGL; this one forces Canvas and
-  // reads the foot under the ridge, the ridge's colour and its wrap seam off the game canvas.
-  {
-    name: 'canvas-renderer',
-    file: 'scripts/checks/canvas-renderer.mjs',
-    url: '?sandbox=1&seed=4242&renderer=canvas',
-    serial: true,
-  },
+  // T23.04 retired `sky` (the §A4 keyframe gradient's phases), `living-sky` (the ridges) and
+  // `canvas-renderer` (every region of it was the ridge band: foot, tint, wrap seam) with the
+  // sky they photographed; `look-sky` is the new sky's check. The night/moonlit-day look is T23.11's.
   // T21.37: the red Recruit is red on Canvas too, against the plain Recruit in the same frame.
   {
     name: 'canvas-tinted-skin',
@@ -366,7 +359,7 @@ export const CHECKS = [
   // `disabled` (T21.39): toxic rain is switched off and `WEATHER=toxic` is refused, so
   // this can only run once T21.41's rewrite flips `TOXIC_RAIN_ENABLED` back on.
   { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true, disabled: 'T21.41' },
-  { name: 'ambient-rain', file: 'scripts/checks/ambient-rain.mjs', standalone: true },
+  // T23.04 retired `ambient-rain` with the ambient rain (F has no rain; no gameplay reader).
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
   { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
   { name: 'smoke-shader', file: 'scripts/checks/smoke-shader.mjs', standalone: true },
@@ -384,7 +377,7 @@ export const CHECKS = [
   { name: 'radiation-match', file: 'scripts/checks/radiation-match.mjs', standalone: true },
   // T22.06: the space backdrop in GameScene — the sky seeded off `welcome`'s seed (a
   // networked client's `core.meta.seed` is the startup map's), darkness 0 at the
-  // ground's night on the wire *and* on the frame, the ridge and clouds off, the bodies
+  // ground's night on the wire *and* on the frame, the ground sky off (T23.04), the bodies
   // moving on the round's clock; a standard stack at the same clock is the control.
   { name: 'space-sky-match', file: 'scripts/checks/space-sky-match.mjs', standalone: true },
   // T22.08B: GameScene's flare, which no sandbox run reaches — `effect_start` into

@@ -13,10 +13,11 @@
  * (full tier; the low tier renders the whole canvas at half resolution and drops MSAA) → `OutputPass` (ACES at `look.exposure`,
  * then sRGB). Bloom and the grade come in T23.08.
  *
- * **What it draws today: one test layer**, a flat quad the colour of `look.bg.skyBottom` (read
- * as linear, as `e_style.js::hex` does), so the plumbing is visible. T23.04 replaces it with
- * the sky. `createWorldRenderer` is the single constructor the look-lab, `GameScene` and
- * `SandboxScene` call.
+ * **What it draws: the sky** (T23.04, `skyMaterial.ts` — the mockup's `bgQuad`), its layers
+ * moved per frame by their parallax offsets (`skyLayout.ts::skyOffsets`, from the same view the
+ * ortho camera is laid out from). No sky in space (`look.bg` null): T22.06's backdrop draws there
+ * until T23.20. `createWorldRenderer` is the single constructor the look-lab, `GameScene`,
+ * `SandboxScene` and `TitleScene` call.
  */
 import type Phaser from 'phaser'
 import {
@@ -29,9 +30,7 @@ import {
   OrthographicCamera,
   PlaneGeometry,
   Scene,
-  ShaderMaterial,
   SRGBColorSpace,
-  Vector3,
   WebGLRenderer,
   WebGLRenderTarget,
 } from 'three'
@@ -41,25 +40,12 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import type { SceneDescription, ViewRect } from './scene'
+import type { Background, SceneDescription, ViewRect } from './scene'
 import { F1 } from './scenes/F1'
+import { SkyQuad } from './skyMaterial'
+import { gameSky, skyOffsets, type Offset } from './skyLayout'
 import { exposeWorldHandle } from './worldHandle'
-import { TIER_SAMPLES, bufferFor, hexLinear, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
-
-/** The mockup's full-screen quad: clip-space, drawn first, never culled (`e_style.js::bgQuad`). */
-function testLayer(): Mesh<PlaneGeometry, ShaderMaterial> {
-  const mat = new ShaderMaterial({
-    uniforms: { c: { value: new Vector3() } },
-    vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0., 1.); }',
-    fragmentShader: 'uniform vec3 c; void main(){ gl_FragColor = vec4(c, 1.); }',
-    depthTest: false,
-    depthWrite: false,
-  })
-  const m = new Mesh(new PlaneGeometry(2, 2), mat)
-  m.frustumCulled = false
-  m.renderOrder = -10
-  return m
-}
+import { TIER_SAMPLES, bufferFor, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /**
  * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
@@ -82,7 +68,9 @@ export class WorldRenderer implements SceneRenderer {
   private readonly renderer: WebGLRenderer
   private readonly scene3 = new Scene()
   private readonly camera = new OrthographicCamera(0, 1, 1, 0, -2000, 2000)
-  private readonly sky = testLayer()
+  private readonly sky = new SkyQuad()
+  /** The parallax offsets the last drawn frame used (screen px), for the dev handle. */
+  private drawnOffsets: { layers: Offset[]; horizon: Offset } = { layers: [], horizon: [0, 0] }
   private composer: EffectComposer
   private desc: SceneDescription | null = null
   private tier: QualityTier
@@ -105,7 +93,9 @@ export class WorldRenderer implements SceneRenderer {
     this.renderer.toneMapping = ACESFilmicToneMapping
     this.renderer.outputColorSpace = SRGBColorSpace
     this.camera.position.z = 1000
-    this.addLayer({ object: this.sky, animated: false })
+    // Static: `bgMaterial` has no clock (stars a hash grid, rays a function of angle), so an
+    // unchanged view is an unchanged sky and the redraw skip stands (skyMaterial.ts).
+    this.addLayer({ object: this.sky.mesh, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
@@ -211,8 +201,7 @@ export class WorldRenderer implements SceneRenderer {
     this.desc = desc
     this.dirty = true
     this.stats.scene = sceneCounts(desc)
-    const [r, g, b] = hexLinear(desc.look.bg.skyBottom)
-    ;(this.sky.material.uniforms['c']!.value as Vector3).set(r, g, b)
+    this.sky.setSky(desc.look.bg)
     this.renderer.toneMappingExposure = desc.look.exposure
   }
 
@@ -234,6 +223,13 @@ export class WorldRenderer implements SceneRenderer {
     this.camera.top = o.top
     this.camera.bottom = o.bottom
     this.camera.updateProjectionMatrix()
+    const bg = this.desc.look.bg
+    if (bg) {
+      // The same view the camera was just laid out from, so the bands move in the frame they are drawn in.
+      const frame: [number, number] = [this.phaserCanvas.width, this.phaserCanvas.height]
+      this.drawnOffsets = skyOffsets(bg, view, this.desc.world, frame[0])
+      this.sky.setOffsets(this.drawnOffsets.layers, this.drawnOffsets.horizon, frame)
+    }
     this.composer.render()
     this.stats.frames++
     this.stats.view = { ...view }
@@ -252,6 +248,24 @@ export class WorldRenderer implements SceneRenderer {
     this.markers.push(m)
     this.scene3.add(m)
     this.dirty = true
+  }
+
+  /** Dev (`look-sky`): draw only the sky layers not listed — one band isolated at a time. */
+  hideSkyLayers(hide: number[]): void {
+    this.sky.hideLayers(hide)
+    this.dirty = true
+  }
+
+  /** Dev: the sky as last drawn — its layers' factors and periods, and the offsets that frame used. */
+  skyInfo(): { drawn: boolean; hidden: number[]; layers: { parallax: number; period: number }[]; offsets: Offset[]; horizon: Offset } {
+    const bg = this.desc?.look.bg ?? null
+    return {
+      drawn: this.sky.mesh.visible,
+      hidden: this.sky.hiddenLayers,
+      layers: (bg?.layers ?? []).map((l) => ({ parallax: l.parallax ?? 0, period: l.period ?? 0 })),
+      offsets: this.drawnOffsets.layers.map((o) => [o[0], o[1]]),
+      horizon: [this.drawnOffsets.horizon[0], this.drawnOffsets.horizon[1]],
+    }
   }
 
   /** Dev: remove every marker (a check measuring twice on one page must find only its own). */
@@ -281,6 +295,8 @@ export class WorldRenderer implements SceneRenderer {
     samples: number
     exposure: number
     animated: boolean
+    /** T23.04: whether the sky is drawn (false on a space map). */
+    sky: boolean
   } {
     const rt = this.composer.renderTarget1
     const gl = this.gl
@@ -293,6 +309,7 @@ export class WorldRenderer implements SceneRenderer {
       samples: rt.samples,
       exposure: this.renderer.toneMappingExposure,
       animated: this.animated,
+      sky: this.sky.mesh.visible,
     }
   }
 
@@ -307,26 +324,37 @@ export class WorldRenderer implements SceneRenderer {
       m.geometry.dispose()
       ;(m.material as MeshBasicMaterial).dispose()
     }
-    this.sky.geometry.dispose()
-    this.sky.material.dispose()
+    this.sky.dispose()
     this.composer.dispose()
     this.renderer.dispose()
     this.canvas.remove()
   }
 }
 
+/** What the game scenes tell the world renderer about the map (T23.04: its seed and whether it is space). */
+export interface GameMap {
+  w: number
+  h: number
+  /** The map seed's low 32 bits — `welcome`'s in a match, so every client of a round lays out one sky. */
+  seed: number
+  /** A space map (`MapGenerator.Space`): no sky is drawn; T22.06's backdrop is (until T23.20). */
+  space: boolean
+}
+
 /**
  * The game's scene description until the sim fills more of it: F1's night look (R7 — T23.11
- * blends it with F5's by darkness), the map's size for the y flip, no mask yet (T23.07), no
- * actors (T23.12+). Rebuild it when the map changes size.
+ * blends it with F5's by darkness) with its sky laid out as seeded parallax bands for this map
+ * (`skyLayout.ts::gameSky`), none on a space map; the map's size for the y flip; no mask yet
+ * (T23.07), no actors (T23.12+). Rebuild it when the map changes.
  */
-export function gameDescription(mapW: number, mapH: number): SceneDescription {
+export function gameDescription(map: GameMap): SceneDescription {
+  const f1 = F1.look.bg as Background
   return {
     id: 'game',
-    camera: { x: 0, y: 0, w: mapW, h: mapH },
-    world: { w: mapW, h: mapH },
+    camera: { x: 0, y: 0, w: map.w, h: map.h },
+    world: { w: map.w, h: map.h },
     masks: null,
-    look: F1.look,
+    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1) },
     palette: F1.palette,
     actors: [],
     fx: [],
@@ -335,25 +363,24 @@ export function gameDescription(mapW: number, mapH: number): SceneDescription {
   }
 }
 
-
 /** The game scenes' world renderer, re-described when the map changes. */
 export interface GameWorld {
   readonly renderer: SceneRenderer
-  /** `map_init` / a regenerated sandbox map: describe the new size. */
-  mapChanged(mapW: number, mapH: number): void
+  /** `map_init` / a regenerated sandbox map: describe the new map. */
+  mapChanged(map: GameMap): void
   /** R20: the tier detected on this renderer's GPU (the options panel's "Auto (…)"); low where three did not start. */
   detectedTier(): QualityTier
 }
 
 /**
- * `GameScene` and `SandboxScene`'s entry point (T23.03B, F10): they load this module on
- * demand (`loadWorldRenderer.ts`), so they cannot import `gameDescription` from it statically.
+ * `GameScene`, `SandboxScene` and `TitleScene`'s entry point (T23.03B, F10): they load this
+ * module on demand (`loadWorldRenderer.ts`), so they cannot import `gameDescription` from it statically.
  */
-export function createGameWorld(scene: Phaser.Scene, mapW: number, mapH: number): GameWorld {
-  const renderer = createWorldRenderer(scene, gameDescription(mapW, mapH))
+export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
+  const renderer = createWorldRenderer(scene, gameDescription(map))
   return {
     renderer,
-    mapChanged: (w, h) => renderer.setScene(gameDescription(w, h)),
+    mapChanged: (m) => renderer.setScene(gameDescription(m)),
     detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
   }
 }
@@ -378,7 +405,7 @@ export function createWorldRenderer(scene: Phaser.Scene, desc: SceneDescription)
   r.setScene(desc)
   driveFromScene(scene, r)
   scene.events.once('shutdown', () => r.destroy())
-  if (devSurface()) exposeWorldHandle(scene, r, r instanceof WorldRenderer ? r : null, desc)
+  if (devSurface()) exposeWorldHandle(scene, r, r instanceof WorldRenderer ? r : null)
   return r
 }
 

@@ -53,7 +53,6 @@ export default async function ({ page, shot, log }) {
     // Freeze the sky and the cycle so nothing but the terrain can differ.
     await page.evaluate(() => {
       window.__game.setTime(0)
-      window.__game.setParallaxClock(0)
     })
     await page.waitForTimeout(250)
     const theme = await page.evaluate(() => window.__game.core.meta.theme)

@@ -64,7 +64,6 @@ export default async function ({ page, shot, log }) {
 
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
   // The whole loop on screen at once: it is up to SPAN wide and HEIGHT tall at any angle.
   await page.evaluate(() => window.__game.setZoom(1))

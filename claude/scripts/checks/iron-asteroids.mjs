@@ -128,7 +128,6 @@ export default async function ({ page, shot, log }) {
     await page.evaluate(([x, y]) => window.__game.watch(x, y), [s.x, s.y])
     await page.evaluate(() => {
       window.__game.setTime(0)
-      window.__game.setParallaxClock(0)
     })
     const body = await toScreen(page, s.x, s.above)
     await page.mouse.move(Math.max(1, Math.min(1279, Math.round(body.x))), 1)

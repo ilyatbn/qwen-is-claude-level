@@ -1,9 +1,10 @@
 /**
  * The title screen (`docs/71-amendments-v3.md` §B3, `docs/74-amendments-v6.md` §E9).
  *
- * Behind the name and the Start button there is a **sky**: the game's own
- * gradient, sun, moon, stars, ridges and drifting clouds, seeded once and
- * advanced from the wall clock. No `World`, no core, no bots, no server.
+ * Behind the name and the Start button there is a **sky**: the game's own (T23.04 — the world
+ * renderer's F1 haze, stepped layers, moon and stars, `look/skyMaterial.ts`), seeded once. No
+ * `World`, no core, no bots, no server. The world renderer's chunk (three.js, T23.03B F10) loads
+ * here after the title has painted, so the button never waits on it; the game then finds it cached.
  *
  * §B3 originally asked for a live round here, on the reasoning that it is a
  * continuous smoke test of `game-core` anyone can see. **§E9 overrides that, and
@@ -29,15 +30,16 @@
  */
 import Phaser from 'phaser'
 import { installFont, DISPLAY_STACK } from '../ui/hud'
-import { SkyLayer } from '../render/sky'
+import { loadWorldRenderer } from '../look/loadWorldRenderer'
+import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { devSurface } from '../dev'
 import { newGuard, runGuarded, runGuardedAsync, type Guard } from './title-math'
 
 export class TitleScene extends Phaser.Scene {
-  private sky: SkyLayer | null = null
+  private sky: GameWorld | null = null
   private ui: HTMLElement | null = null
-  /** Seconds of wall clock since the scene started; drives the sky's day cycle. */
+  /** Seconds of wall clock since the scene started. */
   private elapsed = 0
   /** The sky's seed, drawn once and never again — nothing here re-rolls it. */
   private seed = 0
@@ -107,14 +109,29 @@ export class TitleScene extends Phaser.Scene {
         // that flickers between frames would be the same class of bug as the
         // one this replaces.
         this.seed = Math.floor(Math.random() * 0xffffffff)
-        this.sky = new SkyLayer(this, this.seed, this.seed)
+        // The world renderer, on demand; `loadWorldRenderer` drops it if the player has already
+        // pressed Start (this scene shut down meanwhile) and says why on a failed load.
+        void loadWorldRenderer(this).then((m) => {
+          runGuarded(
+            this.backdropGuard,
+            () => {
+              if (m) this.sky = m.createGameWorld(this, this.skyMap(true))
+            },
+            (e) => console.warn(`[title] no backdrop: ${e}`),
+          )
+        })
       },
       (m) => console.warn(`[title] no backdrop: ${m}`),
     )
   }
 
+  /** The title's "map": the screen itself, so the sky is laid out as seeded, at rest. `shown` false draws none (a check's control). */
+  private skyMap(shown: boolean): GameMap {
+    return { w: this.scale.width, h: this.scale.height, seed: this.seed, space: !shown }
+  }
+
   private teardown(): void {
-    this.sky?.destroy()
+    // The world renderer tears itself down on this scene's shutdown (`createWorldRenderer`).
     this.sky = null
     this.ui?.remove()
     this.ui = null
@@ -158,16 +175,10 @@ export class TitleScene extends Phaser.Scene {
     this.frames++
     this.elapsed += deltaMs / 1000
 
-    runGuarded(
-      this.frameGuard,
-      () => {
-        // `cycleU` wraps at `CYCLE_LENGTH`, so the title walks a full day in two
-        // minutes: visibly alive, and it costs a gradient re-bake only when the
-        // colours actually change.
-        this.sky?.update(this.elapsed, 0)
-      },
-      (m) => console.warn(`[title] the backdrop stopped drawing: ${m}`),
-    )
+    // T23.04: nothing to advance — the sky is static (`skyMaterial.ts`: the mockup's has no
+    // clock) and draws on the scene's render event. The guard stays for anything decorative
+    // that animates here again (R7's moving moons, T23.11).
+    runGuarded(this.frameGuard, () => {}, (m) => console.warn(`[title] the backdrop stopped drawing: ${m}`))
   }
 
   private exposeDebugHandle(): void {
@@ -205,9 +216,10 @@ export class TitleScene extends Phaser.Scene {
       /**
        * Stop `update` so a check can diff one frozen frame against itself.
        *
-       * The sky twinkles, drifts and interpolates, so two samples a moment apart
-       * differ whether or not the backdrop exists — measured, the check's own
-       * control fired on exactly that. `pause` stops the scene updating while it
+       * The old sky twinkled, drifted and interpolated, so two samples a moment apart
+       * differed whether or not the backdrop existed — measured, the check's own
+       * control fired on exactly that (T23.04's sky is static, and this stays the
+       * control's precondition for whatever animates here next). `pause` stops the scene updating while it
        * keeps rendering, which is what makes a layer toggle inside one frame
        * possible at all.
        */
@@ -217,7 +229,7 @@ export class TitleScene extends Phaser.Scene {
       },
       /** Hide the sky so a check can diff one frozen frame against itself. */
       setBackdropVisible(on: boolean) {
-        self.sky?.setVisible(on)
+        self.sky?.mapChanged(self.skyMap(on))
       },
       start() {
         self.start()

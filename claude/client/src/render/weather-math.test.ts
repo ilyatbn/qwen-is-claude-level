@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, fogStrength } from '../core'
-import { CloudRain, EmberField, FlareClock, FogClock, LavaClock, ServerClock, fogVeilAlpha, type RainCloud } from './weather-math'
+import { EmberField, FlareClock, FogClock, LavaClock, ServerClock, fogVeilAlpha } from './weather-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -292,105 +292,6 @@ describe("FlareClock — the networked client's half of a solar flare (T22.08B)"
     f.start(4, 'SolarFlare', SEED, 0)
     f.clear()
     expect(f.query(1)).toBeNull()
-  })
-})
-
-describe('CloudRain — rain falls from clouds and stops at the ground (T21.31)', () => {
-  // Fixture geometry, not tunables: one cloud over flat ground, and a rock shelf.
-  const cloud = { left: 400, top: 100, w: 120, h: 50 }
-  const groundY = 600
-  const shelf = { x0: 440, x1: 480, y: 320 }
-  const solid = (x: number, y: number) => y >= groundY || (x >= shelf.x0 && x < shelf.x1 && y >= shelf.y && y < shelf.y + 20)
-  const DT = 1 / 60
-
-  const run = (rain: CloudRain, seconds: number, clouds: RainCloud[], target = 1, onStep?: () => void) => {
-    for (let t = 0; t < seconds; t += DT) {
-      rain.update(DT, target, clouds, solid, groundY + 100)
-      onStep?.()
-    }
-  }
-
-  it('draws nothing without a cloud, however hard the schedule says it is raining', () => {
-    const rain = new CloudRain(C().AMBIENT_RAIN_DROPS, 1, C())
-    run(rain, 5, [])
-    expect(rain.alive).toBe(0)
-    // The control: the same pool under a cloud does rain.
-    run(rain, 5, [cloud])
-    expect(rain.alive).toBeGreaterThan(0)
-  })
-
-  it('draws nothing when the schedule is dry, even under a cloud', () => {
-    const rain = new CloudRain(C().AMBIENT_RAIN_DROPS, 1, C())
-    run(rain, 5, [cloud], 0)
-    expect(rain.alive).toBe(0)
-  })
-
-  it('every live drop is under its cloud, below the cloud\'s lower part, and never in rock', () => {
-    const k = C()
-    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 7, k)
-    let seen = 0
-    let underShelf = 0
-    run(rain, 20, [cloud], 1, () => {
-      for (const d of rain.drops) {
-        if (!d.alive) continue
-        seen++
-        expect(d.x).toBeGreaterThanOrEqual(cloud.left)
-        expect(d.x).toBeLessThanOrEqual(cloud.left + cloud.w)
-        expect(d.y0).toBeCloseTo(cloud.top + cloud.h * k.AMBIENT_RAIN_SPAWN_DEPTH, 6)
-        expect(d.y).toBeGreaterThanOrEqual(d.y0)
-        expect(solid(Math.round(d.x), Math.round(d.y))).toBe(false)
-        // The column the rock test asks about is the rounded one, so count that column.
-        const rx = Math.round(d.x)
-        if (rx >= shelf.x0 && rx < shelf.x1 && d.y > shelf.y) underShelf++
-      }
-    })
-    // Presence, and the shelf really was in the rain's way: without the rock test the
-    // column under it fills with drops.
-    expect(seen).toBeGreaterThan(1000)
-    expect(underShelf).toBe(0)
-  })
-
-  it('never steps over thin rock, however long the frame', () => {
-    const k = C()
-    // A ledge 2 px thick under the whole cloud, and a frame far longer than 60 fps: the
-    // drop moves tens of px a step, so a test only at the landing row skips the ledge.
-    const ledgeY = 300
-    const thin = (_x: number, y: number) => y >= groundY || y === ledgeY || y === ledgeY + 1
-    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 5, k)
-    const bigStep = 0.1
-    let seen = 0
-    for (let t = 0; t < 20; t += bigStep) {
-      rain.update(bigStep, 1, [cloud], thin, groundY + 100)
-      for (const d of rain.drops) {
-        if (!d.alive) continue
-        seen++
-        expect(d.y).toBeLessThan(ledgeY)
-      }
-    }
-    // Presence: drops were falling, or "none below the ledge" is a dry sky.
-    expect(seen).toBeGreaterThan(100)
-  })
-
-  it('falls at the constant speeds and thins with the schedule', () => {
-    const k = C()
-    const rain = new CloudRain(k.AMBIENT_RAIN_DROPS, 3, k)
-    run(rain, 10, [cloud], 1)
-    const full = rain.alive
-    for (const d of rain.drops.filter((x) => x.alive)) {
-      expect(d.vy).toBeGreaterThanOrEqual(k.AMBIENT_RAIN_FALL_MIN)
-      expect(d.vy).toBeLessThanOrEqual(k.AMBIENT_RAIN_FALL_MAX)
-    }
-    run(rain, 10, [cloud], 0.25)
-    expect(rain.alive).toBeLessThanOrEqual(Math.round(0.25 * k.AMBIENT_RAIN_DROPS))
-    expect(rain.alive).toBeLessThan(full)
-  })
-
-  it('is the same rain from the same seed', () => {
-    const a = new CloudRain(40, 99, C())
-    const b = new CloudRain(40, 99, C())
-    run(a, 3, [cloud])
-    run(b, 3, [cloud])
-    expect(a.drops).toEqual(b.drops)
   })
 })
 

@@ -33,7 +33,6 @@ import { GATE_KEY, PadLayer, type PadView } from './pads'
 import { PlatformLayer, type PlatformView } from './platforms'
 import { OrdnanceLayer } from './ordnance'
 import { WeatherLayer, type VentView } from './weather'
-import type { RainCloud } from './weather-math'
 import { KIND_BY_WEAPON_KEY, WEAPON_KEYS, type ProjectileKind } from './ordnance-state'
 
 export interface WorldViewTimings {
@@ -191,7 +190,7 @@ export class WorldView {
 
     this.ordnance = new OrdnanceLayer(scene)
     // T21.31: the live mask, so a raindrop dies at the first rock it reaches.
-    this.weather = new WeatherLayer(scene, (x, y) => core.solidAt(x, y))
+    this.weather = new WeatherLayer(scene)
     this.items = new ItemLayer(scene)
     this.pads = new PadLayer(scene)
     // A locally generated map already knows its pads; a networked one is told by
@@ -351,10 +350,6 @@ export class WorldView {
       fallScale: number
       fog: number
       hasFlashlight: boolean
-      /** T21.26: the ambient rain's intensity, `0..1` — required, for `fog`'s reason. */
-      ambient: number
-      /** T21.31: the clouds over the view, world px — rain falls from these and nowhere else. */
-      clouds: readonly RainCloud[]
     },
   ): void {
     if (dt > 0) this.ordnance.update(dt)
@@ -364,7 +359,6 @@ export class WorldView {
       // believed the first while the damage came from the second. One source now,
       // and it is the one the player is actually standing under.
       this.weather.setToxic(this.liveToxicDropList)
-      this.weather.setAmbient(weather.ambient)
       // `fog` is required, not optional: both scenes have a fog strength to give
       // and the whole of §F9 is that one of them never passed it on. A default
       // here would let the next scene silently draw no fog and still typecheck.
@@ -377,7 +371,6 @@ export class WorldView {
         weather.fallScale,
         weather.fog,
         weather.hasFlashlight,
-        weather.clouds,
       )
     }
     this.drainDirty()

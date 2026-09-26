@@ -9,13 +9,16 @@
  *
  * 1. **Order.** `#game` holds the three.js canvas first and Phaser's second, on the same box,
  *    and the top element at the centre is Phaser's (input still goes to Phaser).
- * 2. **The test layer is visible where Phaser draws nothing** (sandbox; the look-lab too, where
- *    Phaser draws nothing at all). Phaser's own alpha is read back per point; at every point it
- *    left transparent the screenshot must show `skyBottom` through ACES at the scene's exposure
- *    (`worldRenderer-math.ts::acesSrgb`, a CPU copy of three's shader) — which also proves the
- *    `OutputPass` and the exposure are in the chain (without them the pixel is `0x3a3040`-ish).
- *    **Control frame:** with the Phaser sky shown again those points are covered and the
- *    screenshot there must *not* match — a comparison that cannot fail proves nothing.
+ * 2. **The world canvas is visible where Phaser draws nothing** (sandbox). Phaser's own alpha
+ *    is read back per point; at every point it left transparent the screenshot must show the
+ *    world canvas's own pixel there, read back from it in a frame it drew (`__world.worldPixels`,
+ *    the 2×2 buffer block the CSS pixel blends — the low tier is half size). T23.04: this was a
+ *    flat test layer compared with `skyBottom` through a CPU ACES; the layer is the sky now (a
+ *    gradient, bands, stars), so the comparison is with the canvas itself, and the post chain's
+ *    colour is `look-sky`'s to measure against the mockup. **Control region:** at the points
+ *    Phaser covers (terrain), the screenshot must mostly *not* match the world canvas — a
+ *    comparison that cannot fail proves nothing. (Phaser's sky, which the old control showed
+ *    covering the layer, is retired.)
  * 3. **One camera.** A world-anchored marker is drawn in both canvases; while the camera pans,
  *    each drawn frame reads the marker's screen x back from **both** canvases in the same
  *    frame (`__world.probe`, in Phaser's `postrender`, after both have drawn). They must agree
@@ -53,7 +56,7 @@ const MAX_DX = 1.5
 /** The pan has to move the marker this far on screen, and on this many frames. */
 const MIN_TRAVEL_PX = 40
 const MIN_MOVING_FRAMES = 5
-/** Channel tolerance for the test layer against the CPU ACES: 8-bit quantisation of a half-float target. */
+/** Channel tolerance, screenshot vs the world canvas's own 2×2 block: 8-bit rounding in the page's scaler. */
 const TOL = 3
 /** Boxes are fractional under FIT (1100×618.75); the canvases must match to float noise. */
 const BOX_EPS = 0.01
@@ -246,22 +249,22 @@ async function screenPixels(page, points) {
   )
 }
 
-const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= TOL)
+
+/** Inside the 2×2 block's range, per channel, give or take `TOL` (8-bit quantisation, the page's scaler). */
+const within = (p, b) => p.every((v, i) => v >= b.min[i] - TOL && v <= b.max[i] + TOL)
 
 /**
- * The test layer where Phaser draws nothing: hide Phaser's sky, read its alpha back per point,
- * and at every transparent point on the canvas the screenshot must show `skyBottom` through
- * ACES (`expectedTestColor`). Returns the points used, for the control frame.
+ * The world canvas where Phaser draws nothing: read Phaser's alpha back per point, and at every
+ * transparent point on the canvas the screenshot must show the world canvas's own pixel. Returns
+ * the points Phaser covers, for the control.
  */
-async function testLayerShows(page, where) {
+async function worldShows(page, where) {
   // Markers left by a measurement would sit on some points (and CSS-scaling blurs three's edges
   // past Phaser's): this step is about the layer, so take them out of both canvases.
   await page.evaluate(() => window.__world.clearMarkers())
-  const want = await page.evaluate(() => window.__world.expectedTestColor())
   const { W, H } = await page.evaluate(() => ({ W: innerWidth, H: innerHeight }))
   const grid = []
   for (let y = 20; y < H; y += 70) for (let x = 20; x < W; x += 90) grid.push([x, y])
-  await page.evaluate(() => window.__game.skyVisible(false))
   await drawnFrames(page, 3)
   const alpha = await page.evaluate((pts) => window.__world.phaserAlpha(pts), grid)
   // Only points where nothing sits over the canvases (the sandbox's DOM panel and readout do).
@@ -270,16 +273,27 @@ async function testLayerShows(page, where) {
     grid,
   )
   const clear = grid.filter((_, i) => alpha[i] === 0 && onCanvas[i])
-  const shown = await screenPixels(page, clear)
-  const bad = clear.filter((_, i) => !near(shown[i], want))
+  const covered = grid.filter((_, i) => alpha[i] === 255 && onCanvas[i])
+  const world = await page.evaluate((pts) => window.__world.worldPixels(pts), [...clear, ...covered])
+  const shown = await screenPixels(page, [...clear, ...covered])
+  const bad = clear.filter((_, i) => !within(shown[i], world[i]))
   if (clear.length < 5) {
-    t.fail(`${where}: with the sky hidden Phaser still covers ${grid.length - clear.length}/${grid.length} points — nowhere to see the world canvas`)
+    t.fail(`${where}: Phaser covers ${grid.length - clear.length}/${grid.length} points — nowhere to see the world canvas`)
   } else if (bad.length) {
-    t.fail(`${where}: ${bad.length}/${clear.length} Phaser-transparent points do not show the test layer ${J(want)}: e.g. ${J(shown[clear.indexOf(bad[0])])} at ${bad[0]}`)
+    const k = clear.indexOf(bad[0])
+    t.fail(`${where}: ${bad.length}/${clear.length} Phaser-transparent points do not show the world canvas: e.g. ${J(shown[k])} at ${bad[0]}, world ${J(world[k])}`)
   } else {
-    t.ok(`${where}: the test layer ${J(want)} shows at all ${clear.length}/${grid.length} points Phaser leaves transparent`)
+    t.ok(`${where}: the world canvas shows at all ${clear.length}/${grid.length} points Phaser leaves transparent`)
   }
-  return { want, clear }
+  // Control region: where Phaser is opaque the same comparison must mostly fail.
+  const coveredMatch = covered.filter((_, i) => within(shown[clear.length + i], world[clear.length + i])).length
+  if (covered.length < 5) {
+    t.fail(`${where}: control: only ${covered.length} Phaser-opaque points to compare`)
+  } else if (coveredMatch > covered.length / 2) {
+    t.fail(`${where}: control: ${coveredMatch}/${covered.length} points Phaser covers still match the world canvas — the comparison cannot fail`)
+  } else {
+    t.ok(`${where}: control: ${coveredMatch}/${covered.length} Phaser-covered points match the world canvas (Phaser's terrain covers it)`)
+  }
 }
 
 /** Hold the camera where it is (the e2e `watch` hook), so nothing but the step under test changes the picture. */
@@ -322,19 +336,7 @@ try {
     t.fail(`tier not named: ${HIGH_QUALITY_KEY}=${J(named.stored)}, tier ${named.info?.tier}`)
   }
 
-  const { want, clear } = await testLayerShows(page, 'sandbox')
-  await page.screenshot({ path: join(shotsDir, 'world-canvas-sandbox-nosky.png') })
-  console.log('  shot: shots/world-canvas-sandbox-nosky.png')
-  // Control frame: the sky back on covers them, and the same comparison must fail there.
-  await page.evaluate(() => window.__game.skyVisible(true))
-  await drawnFrames(page, 3)
-  const covered = await screenPixels(page, clear)
-  const stillMatch = clear.filter((_, i) => near(covered[i], want)).length
-  if (clear.length && stillMatch > clear.length / 2) {
-    t.fail(`control: with the sky shown, ${stillMatch}/${clear.length} of those points still match the test layer — the comparison cannot fail`)
-  } else {
-    t.ok(`control: with Phaser's sky shown, ${stillMatch}/${clear.length} of those points match (the sky covers the layer)`)
-  }
+  await worldShows(page, 'sandbox')
   await page.screenshot({ path: join(shotsDir, 'world-canvas-sandbox.png') })
   console.log('  shot: shots/world-canvas-sandbox.png')
 
@@ -386,8 +388,7 @@ try {
   const rinfo = await page.evaluate(() => window.__world.info())
   if (same(rinfo.buffer, LOW) && same(rinfo.display, GAME)) t.ok(`resized: buffer still ${rinfo.buffer} of game ${rinfo.display} (R18: a resize is CSS only)`)
   else t.fail(`resized: buffer ${rinfo.buffer}, game ${rinfo.display} — want ${LOW} of ${GAME}`)
-  await testLayerShows(page, 'resized, camera still')
-  await page.evaluate(() => window.__game.skyVisible(true))
+  await worldShows(page, 'resized, camera still')
   const rStill = await measurePan(page, 'resized still', '', 8, { still: true })
   if (rStill.ok) t.ok(`resized, camera still: canvases agree ${J(rStill.stats)}`)
   else t.fail(`resized, camera still: ${rStill.reason} ${J(rStill.stats)} ${J(rStill.samples.slice(0, 3))}`)
@@ -400,8 +401,7 @@ try {
     await page.evaluate((v) => window.__game.setHighQuality(v), on)
     await drawnFrames(page, 3)
     const drew = (await page.evaluate(() => window.__world.frames())) - before
-    await testLayerShows(page, `tier switched to ${on ? 'full' : 'low'}, camera still (${drew} frame(s) redrawn)`)
-    await page.evaluate(() => window.__game.skyVisible(true))
+    await worldShows(page, `tier switched to ${on ? 'full' : 'low'}, camera still (${drew} frame(s) redrawn)`)
   }
   await page.screenshot({ path: join(shotsDir, 'world-canvas-resized.png') })
   console.log('  shot: shots/world-canvas-resized.png')

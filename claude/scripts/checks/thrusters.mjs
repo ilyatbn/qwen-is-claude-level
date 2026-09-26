@@ -115,10 +115,9 @@ export default async function ({ page, shot, log }) {
   if (!spot) throw new Error('no open space three bodies clear anywhere on this map')
   log(`open space at (${spot.x}, ${spot.y}), field ${spot.mag.toFixed(0)} px/s²`)
 
-  // The same light in every photograph: the day clock and the ridges pinned.
+  // The same light in every photograph: the day clock pinned (the ridges went in T23.04).
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
 
   /**
@@ -358,7 +357,6 @@ async function standardArm({ page, shot, log, k, dbg, waitFor, frames, isCanvas 
   if (!spot) throw new Error('no open air three bodies clear on this map')
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
   const strip = async (px, py, side) => {
     const cy = py - k.PLAYER_H / 2

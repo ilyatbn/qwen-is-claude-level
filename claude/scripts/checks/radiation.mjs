@@ -82,7 +82,6 @@ export default async function ({ page, shot, log }) {
   // The same light and the same camera in every photograph.
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
     const p = window.__game.debug().player
     window.__game.watch(p.x, p.y)
   })

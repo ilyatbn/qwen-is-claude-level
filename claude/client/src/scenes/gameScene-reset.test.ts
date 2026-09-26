@@ -50,7 +50,7 @@ const EXEMPT: Record<string, string> = {
   mirror: 'new WorldMirror, every create()',
   interp: 'new RemoteInterpolator, every create()',
   clock: 'new ClockSync, every create()',
-  sky: 'new SkyLayer, every create()',
+  spaceSky: 'new SpaceSky, every create()',
   worldRenderer: 'nulled, then createGameWorld when its chunk loads, every create(); destroyed by its own SHUTDOWN hook (T23.03, T23.03B)',
   lightmap: 'new Lightmap, every create()',
   fx: 'new OrdnanceFxLayer, every create()',

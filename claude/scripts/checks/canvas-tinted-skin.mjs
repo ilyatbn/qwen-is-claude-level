@@ -50,7 +50,6 @@ export default async function ({ page, shot, log }) {
   await page.waitForTimeout(500)
   await page.evaluate(() => {
     window.__game.setTime(0.3 * 120)
-    window.__game.setParallaxClock(0)
   })
 
   // Stand the two bodies either side of the player, clear of it and of each other, in carved air

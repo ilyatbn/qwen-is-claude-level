@@ -3,9 +3,11 @@
  * moving on the round's clock. `spaceSky-math.ts` has the where and the what; this
  * file only places sprites.
  *
- * Owned by `SkyLayer`, which shows this *instead of* its gradient's day, its sun and
- * moon arcs, its night stars and the parallax band. Everything here sits at
- * `DEPTH.sky`, under the terrain, the thruster plume and the radiation edge glow.
+ * Built by the scenes and shown **only on a space map** (T23.04: `SkyLayer`, which used to own
+ * this and swap it with the ground's day, is retired; the ground's sky is the world renderer's,
+ * which draws none in space). The space gradient moved here with it. Everything here sits at
+ * `DEPTH.sky`, under the terrain, the thruster plume and the radiation edge glow. Restyled to F3
+ * by T23.20.
  *
  * **Both render paths draw the same thing**: every colour is baked into a texture, so
  * nothing depends on `setTint` (which Canvas ignores), and the glows are `ADD`, which
@@ -16,6 +18,8 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import {
+  SPACE_SKY_BOTTOM,
+  SPACE_SKY_TOP,
   earthPixels,
   moonPixels,
   shadowPixels,
@@ -72,6 +76,8 @@ export class SpaceSky {
   private readonly scene: Phaser.Scene
   private moonFront = false
   private readonly starGfx: Phaser.GameObjects.Graphics
+  /** T23.04: the black-to-navy gradient behind everything (was `SkyLayer`'s, baked with these colours in space). */
+  private readonly gradient: Phaser.GameObjects.Image
   private readonly sunGlow: Phaser.GameObjects.Image
   private readonly sun: Phaser.GameObjects.Image
   private readonly earthGlow: Phaser.GameObjects.Image
@@ -98,6 +104,16 @@ export class SpaceSky {
     const par = c.SPACE_BODY_PARALLAX
     const body = (key: string, depth: number) =>
       scene.add.image(0, 0, key).setScrollFactor(par).setDepth(depth).setVisible(false)
+    // Drawn generously oversized and pinned to the camera (as `SkyLayer` drew it): with scroll
+    // factor 0 the image is in camera space, so at zoom < 1 a viewport-sized one covers only
+    // part of the screen.
+    this.gradient = scene.add
+      .image(-c.VIEWPORT_W, -c.VIEWPORT_H, this.gradientTexture())
+      .setOrigin(0, 0)
+      .setDisplaySize(c.VIEWPORT_W * 4, c.VIEWPORT_H * 4)
+      .setScrollFactor(0)
+      .setDepth(DEPTH.sky)
+      .setVisible(false)
     // Stars in front of the gradient (`sky`), bodies in front of the stars; the
     // moon's depth flips per frame around the earth's (`sky + 3`).
     this.starGfx = scene.add.graphics().setScrollFactor(0).setDepth(DEPTH.sky + 1).setVisible(false)
@@ -129,13 +145,36 @@ export class SpaceSky {
     this.moon.setTexture(this.pixels('moon', moonPixels(seed, c.SPACE_MOON_RADIUS), c.SPACE_MOON_RADIUS))
   }
 
+  /** Reused by `view()`, so the per-frame maths does not allocate a literal. */
+  private readonly rect = { left: 0, top: 0, w: 0, h: 0 }
+
   /**
-   * Place everything for round time `t`. `scrollX`/`scrollY` are the camera's
-   * **live** scroll, read after the rig moved it this frame.
+   * The camera-space rectangle a `scrollFactor(0)` object is actually seen in (moved here from
+   * the retired `parallax.ts` with this layer, T23.04). **Zoom applies to camera-space objects
+   * too**: at zoom Z a pinned object only shows the middle `1/Z` of the viewport.
    */
-  update(t: number, view: { left: number; top: number; w: number; h: number }, scrollX: number, scrollY: number): void {
+  private view(): { left: number; top: number; w: number; h: number } {
+    const c = C()
+    const z = this.scene.cameras.main.zoom || 1
+    const v = this.rect
+    v.w = c.VIEWPORT_W / z
+    v.h = c.VIEWPORT_H / z
+    v.left = c.VIEWPORT_W / 2 - v.w / 2
+    v.top = c.VIEWPORT_H / 2 - v.h / 2
+    return v
+  }
+
+  /**
+   * Place everything for round time `t`, from the camera's **live** scroll — call after the rig
+   * moved it this frame.
+   */
+  update(t: number): void {
     if (!this.shown) return
     const c = C()
+    const cam0 = this.scene.cameras.main
+    const view = this.view()
+    const scrollX = cam0.scrollX
+    const scrollY = cam0.scrollY
     this.clock = t
     const b = spaceBodies(t, this.phases, c, view.w, view.h)
     // A body at view fraction (fx, fy) lands there when the camera is centred on the
@@ -181,9 +220,10 @@ export class SpaceSky {
     }
   }
 
-  /** Show or hide the whole space sky — `SkyLayer` does this when the mode changes. */
+  /** Show or hide the whole space sky — the scene does, from the map (shown iff a space map). */
   setShown(on: boolean): void {
     this.shown = on
+    this.gradient.setVisible(on)
     this.starGfx.setVisible(on)
     this.applyVisibility()
     if (!on) this.starGfx.clear()
@@ -249,7 +289,12 @@ export class SpaceSky {
     }
   }
 
+  get isShown(): boolean {
+    return this.shown
+  }
+
   destroy(): void {
+    this.gradient.destroy()
     this.starGfx.destroy()
     for (const o of this.bodies()) o.destroy()
     for (const k of this.keys) if (this.scene.textures.exists(k)) this.scene.textures.remove(k)
@@ -261,6 +306,23 @@ export class SpaceSky {
 
   private key(name: string): string {
     return `__space_${name}_${this.gen}`
+  }
+
+  /** The space gradient, `SPACE_SKY_TOP` → `SPACE_SKY_BOTTOM`, baked once (2 × 256, stretched). */
+  private gradientTexture(): string {
+    const key = this.key('gradient')
+    const tex = this.scene.textures.createCanvas(key, 2, 256)
+    const ctx = tex?.getContext()
+    if (tex && ctx) {
+      const g = ctx.createLinearGradient(0, 0, 0, 256)
+      g.addColorStop(0, `#${SPACE_SKY_TOP.toString(16).padStart(6, '0')}`)
+      g.addColorStop(1, `#${SPACE_SKY_BOTTOM.toString(16).padStart(6, '0')}`)
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, 2, 256)
+      tex.refresh()
+      this.keys.push(key)
+    }
+    return key
   }
 
   /** Upload RGBA pixels as this instance's texture `name`, replacing any earlier one. */

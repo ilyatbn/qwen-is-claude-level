@@ -6,9 +6,9 @@
  */
 import type Phaser from 'phaser'
 import type { RenderStats, SceneRenderer } from './renderer'
-import type { SceneDescription, ViewRect } from './scene'
+import type { ViewRect } from './scene'
 import type { WorldRenderer } from './worldRenderer'
-import { acesSrgb, hexLinear, sameView } from './worldRenderer-math'
+import { sameView } from './worldRenderer-math'
 
 /** What a dev check can reach: `window.__world` (dev surface only). */
 export interface WorldHandle {
@@ -27,8 +27,22 @@ export interface WorldHandle {
   probe(n: number, row: number, col: number): Promise<ProbeSample[]>
   /** Phaser's canvas alpha at page CSS points (inside its box), read back after the next drawn frame; `null` on Canvas Phaser. */
   phaserAlpha(points: [number, number][]): Promise<number[] | null>
-  /** What the test layer must look like on screen: `skyBottom` through ACES at the scene's exposure, 0–255 sRGB. */
-  expectedTestColor(): [number, number, number] | null
+  /**
+   * T23.04: the world canvas's own pixels at page CSS points, read back in a frame it drew (the
+   * frame is forced) — the 2×2 buffer block each point falls in, as `[min, max]` per channel,
+   * because the page shows the buffer CSS-scaled (the low tier is half size) and so blends it.
+   * `null` without three.js.
+   */
+  worldPixels(points: [number, number][]): Promise<{ min: number[]; max: number[] }[] | null>
+  /**
+   * T23.04: the whole world canvas, read back in a frame it drew (forced), with the view that
+   * frame was drawn from — RGBA rows top-down, base64. `null` without three.js.
+   */
+  readFrame(): Promise<{ w: number; h: number; view: ViewRect | null; rgba: string } | null>
+  /** T23.04: the sky as last drawn — layers' parallax factors, periods and the offsets used. */
+  sky(): ReturnType<WorldRenderer['skyInfo']> | null
+  /** T23.04: draw only the sky layers not listed (`look-sky` isolates one band). */
+  hideSkyLayers(hide: number[]): void
 }
 
 export interface ProbeSample {
@@ -96,15 +110,8 @@ function readRow(gl: WebGLRenderingContext, y: number): { row: Uint8Array; w: nu
   return { row, w }
 }
 
-export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: WorldRenderer | null, desc: SceneDescription): void {
+export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: WorldRenderer | null): void {
   const stats = (r as { stats?: RenderStats }).stats
-  // The description in force, followed through later `setScene` calls (a regenerated map).
-  let currentDesc = desc
-  const set = r.setScene.bind(r)
-  r.setScene = (d: SceneDescription): void => {
-    currentDesc = d
-    set(d)
-  }
   const rects: Phaser.GameObjects.Rectangle[] = []
   const handle: WorldHandle = {
     backend: r.backend,
@@ -120,9 +127,79 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       for (const r of rects) r.destroy()
       rects.length = 0
     },
-    expectedTestColor() {
-      const d = stats?.scene ? currentDesc : null
-      return d ? acesSrgb(hexLinear(d.look.bg.skyBottom), d.look.exposure) : null
+    worldPixels(points) {
+      if (!three) return Promise.resolve(null)
+      const game = scene.game
+      const before = stats?.frames ?? 0
+      three.invalidate()
+      return new Promise((resolve) => {
+        const onPost = (): void => {
+          // Only a frame the world canvas drew has a buffer to read (it is not preserved).
+          if ((stats?.frames ?? 0) === before) return
+          game.events.off('postrender', onPost)
+          const gl = three.gl
+          const box = three.canvas.getBoundingClientRect()
+          const W = gl.drawingBufferWidth
+          const H = gl.drawingBufferHeight
+          const sx = W / (box.width || W)
+          const sy = H / (box.height || H)
+          const out = points.map(([x, y]) => {
+            // The buffer px either side of the CSS pixel's centre, clamped to the buffer.
+            const bx = ((x + 0.5 - box.left) * sx) - 0.5
+            const by = ((y + 0.5 - box.top) * sy) - 0.5
+            const x0 = Math.min(W - 2, Math.max(0, Math.floor(bx)))
+            const y0 = Math.min(H - 2, Math.max(0, Math.floor(by)))
+            const raw = new Uint8Array(2 * 2 * 4)
+            const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+            gl.readPixels(x0, H - 1 - (y0 + 1), 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, raw)
+            gl.bindFramebuffer(gl.FRAMEBUFFER, prev)
+            const min = [255, 255, 255]
+            const max = [0, 0, 0]
+            for (let i = 0; i < 4; i++) {
+              for (let c = 0; c < 3; c++) {
+                min[c] = Math.min(min[c]!, raw[i * 4 + c]!)
+                max[c] = Math.max(max[c]!, raw[i * 4 + c]!)
+              }
+            }
+            return { min, max }
+          })
+          resolve(out)
+        }
+        game.events.on('postrender', onPost)
+      })
+    },
+    readFrame() {
+      if (!three) return Promise.resolve(null)
+      const game = scene.game
+      const before = stats?.frames ?? 0
+      three.invalidate()
+      return new Promise((resolve) => {
+        const onPost = (): void => {
+          if ((stats?.frames ?? 0) === before) return
+          game.events.off('postrender', onPost)
+          const gl = three.gl
+          const w = gl.drawingBufferWidth
+          const h = gl.drawingBufferHeight
+          const raw = new Uint8Array(w * h * 4)
+          const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw)
+          gl.bindFramebuffer(gl.FRAMEBUFFER, prev)
+          // GL rows run bottom-up; flip to top-down.
+          const out = new Uint8Array(w * h * 4)
+          for (let y = 0; y < h; y++) out.set(raw.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4)
+          let bin = ''
+          for (let i = 0; i < out.length; i += 0x8000) bin += String.fromCharCode(...out.subarray(i, i + 0x8000))
+          const v = stats?.view ?? null
+          resolve({ w, h, view: v ? { ...v } : null, rgba: btoa(bin) })
+        }
+        game.events.on('postrender', onPost)
+      })
+    },
+    sky: () => three?.skyInfo() ?? null,
+    hideSkyLayers(hide) {
+      three?.hideSkyLayers(hide)
     },
     phaserAlpha(points) {
       const game = scene.game

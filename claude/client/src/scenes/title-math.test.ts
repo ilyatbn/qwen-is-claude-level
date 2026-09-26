@@ -144,7 +144,7 @@ describe('the title screen does not run the simulation', () => {
       '.remove()',
       'scene.restart',
       'scene.start',
-      'new SkyLayer',
+      'createGameWorld',
     ]) {
       expect(update).not.toContain(forbidden)
     }
@@ -157,7 +157,7 @@ describe('the title screen does not run the simulation', () => {
     const create = code.slice(code.indexOf('async create('), code.indexOf('private teardown('))
     const ui = create.indexOf('this.buildUi()')
     const load = create.indexOf('loadAssetManifest')
-    const backdrop = create.indexOf('new SkyLayer')
+    const backdrop = create.indexOf('createGameWorld')
     expect(ui).toBeGreaterThan(-1)
     expect(load).toBeGreaterThan(ui)
     expect(backdrop).toBeGreaterThan(ui)

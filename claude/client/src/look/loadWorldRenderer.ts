@@ -2,7 +2,7 @@
  * T23.03B (F10): the world renderer is loaded **on demand**. `worldRenderer.ts` pulls in
  * three.js (~480 kB minified), and a static import from `GameScene` put that in the entry
  * chunk every player downloads before the title screen draws. The scenes that draw the world
- * (`GameScene`, `SandboxScene`, `LookScene`) call this instead, and only a type crosses the
+ * (`GameScene`, `SandboxScene`, `LookScene`; `TitleScene` for its sky since T23.04, after the title has painted) call this instead, and only a type crosses the
  * static import graph, so three.js is its own chunk fetched when the first of them starts.
  *
  * Three-free on purpose: importing this module must not import `three`.

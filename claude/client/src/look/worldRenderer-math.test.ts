@@ -3,8 +3,7 @@
  * tiers, and the CPU copy of the output transform `world-canvas` compares the screen against.
  */
 import { describe, expect, it } from 'vitest'
-import { SCENES } from './scenes'
-import { TIER_SAMPLES, TIER_SCALE, acesSrgb, bufferFor, hexLinear, mustDraw, orthoFromView, sameView, toWorld } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -61,28 +60,5 @@ describe('the redraw skip (T23.03B F1, F3)', () => {
   })
   it('an animated layer draws every frame, even with the view and scene unchanged (F3)', () => {
     expect(mustDraw({ dirty: false, animated: true, last: v, view: { ...v } })).toBe(true)
-  })
-})
-
-describe('the output transform (OutputPass: ACES then sRGB)', () => {
-  it('reads 0xRRGGBB as linear, as e_style.js::hex does', () => {
-    expect(hexLinear(0xff0080)).toEqual([1, 0, 128 / 255])
-  })
-  it('maps black to black and saturates bright input', () => {
-    expect(acesSrgb([0, 0, 0], 1.1)).toEqual([0, 0, 0])
-    const w = acesSrgb([100, 100, 100], 1.1)
-    for (const c of w) expect(c).toBeGreaterThanOrEqual(254)
-  })
-  it('is monotone in exposure, so a dropped exposure is visible', () => {
-    const sky = hexLinear(SCENES.F1!.look.bg.skyBottom)
-    const at1 = acesSrgb(sky, 1)
-    const at11 = acesSrgb(sky, SCENES.F1!.look.exposure)
-    expect(SCENES.F1!.look.exposure).not.toBe(1)
-    for (let i = 0; i < 3; i++) expect(at11[i]!).toBeGreaterThan(at1[i]!)
-  })
-  it('differs from the raw colour: without the OutputPass the screen would show the hex', () => {
-    const h = SCENES.F1!.look.bg.skyBottom
-    const raw = [(h >> 16) & 255, (h >> 8) & 255, h & 255]
-    expect(acesSrgb(hexLinear(h), SCENES.F1!.look.exposure)).not.toEqual(raw)
   })
 })

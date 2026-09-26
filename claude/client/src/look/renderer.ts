@@ -10,7 +10,7 @@
  * `camera.worldView` is recomputed in `Camera.preRender`, which `CameraManager.render` calls
  * **after** the scene's `update` and after the scene's own `PRE_RENDER` event. A layer laid out
  * from `worldView` in `update` is drawn against last frame's camera — the `living-sky` trap,
- * measured at 3–9 px of trail on a falling camera (`render/parallax-math.ts::liveViewY`).
+ * measured at 3–9 px of trail on a falling camera (the retired `render/parallax-math.ts::liveViewY`, T21.20).
  * `Systems.render` emits `RENDER` right after `cameras.render`, i.e. after `preRender` has
  * run for this frame, in the same task as Phaser's own draw — so both canvases present the
  * same frame. (Phaser 3.90 `scene/Systems.js::render`.)

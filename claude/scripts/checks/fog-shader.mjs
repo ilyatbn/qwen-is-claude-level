@@ -113,7 +113,6 @@ export default async function ({ page, shot, log }) {
   // for fog moving.
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
   await page.waitForTimeout(250)
 

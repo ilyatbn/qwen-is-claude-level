@@ -140,7 +140,6 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [rock.x, rock.y])
   await page.evaluate(() => {
     window.__game.setTime(0)
-    window.__game.setParallaxClock(0)
   })
   // Aim straight up, so the crosshair rides above the body, away from the rock.
   {

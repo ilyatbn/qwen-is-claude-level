@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, ambientRain, strictConstants, type EffectForce, type WeatherState } from '../core'
+import { C, Core, MapScale, strictConstants, type EffectForce, type WeatherState } from '../core'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
@@ -30,11 +30,9 @@ import { Minimap } from '../ui/minimap'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
-import { SkyLayer } from '../render/sky'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
-import type { GameWorld } from '../look/worldRenderer'
-import type { SpaceSkyPart } from '../render/spaceSky'
-import type { SkyGround } from '../render/parallax'
+import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
@@ -76,9 +74,12 @@ export class SandboxScene extends Phaser.Scene {
   private gravity: string = DEFAULT_GRAVITY
   private carveRadius = 42
 
-  private sky!: SkyLayer
-  /** T23.03 (R1): three.js draws the world under the transparent Phaser canvas; one test layer today. */
-  /** T23.03 (R1): three.js under Phaser's canvas; `null` until its chunk has loaded (T23.03B, F10). */
+  /**
+   * T22.06's space backdrop, shown only on a space map (T23.04: `SkyLayer`, which owned it, is
+   * retired; the ground's sky is the world renderer's).
+   */
+  private spaceSky!: SpaceSky
+  /** T23.03 (R1): three.js under Phaser's canvas — the sky since T23.04; `null` until its chunk has loaded (T23.03B, F10). */
   private worldRenderer: GameWorld | null = null
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
@@ -138,8 +139,6 @@ export class SandboxScene extends Phaser.Scene {
   private roundTime = 0
   /** T21.31: where the e2e `watch` hook holds the camera, or `null` to follow the player. */
   private watchPoint: { x: number; y: number } | null = null
-  /** T21.31: the e2e `forceAmbient` override of the ambient schedule, or `null`. */
-  private ambientOverride: number | null = null
   private timeScrub = false
 
   private player!: PlayerView
@@ -200,10 +199,12 @@ export class SandboxScene extends Phaser.Scene {
     this.buildUi()
     this.regenerate()
 
-    this.sky = new SkyLayer(this, this.core.meta.seed, this.core.meta.theme)
+    this.spaceSky = new SpaceSky(this)
+    // Seeded here as well as in `regenerate`: `create()` regenerates before it builds this.
+    this.spaceSky.setSeed(this.core.meta.seed)
     this.worldRenderer = null
     void loadWorldRenderer(this).then((m) => {
-      if (m) this.worldRenderer = m.createGameWorld(this, this.core.width, this.core.height)
+      if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
     })
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
@@ -249,7 +250,7 @@ export class SandboxScene extends Phaser.Scene {
       this.world.destroy()
       this.lightmap.destroy()
       this.overlay.destroy()
-      this.sky.destroy()
+      this.spaceSky.destroy()
     })
 
     this.buildHud()
@@ -371,15 +372,18 @@ export class SandboxScene extends Phaser.Scene {
 
   // ---------------------------------------------------------------- generation
 
-  /** T21.31: what the sky needs of this map — its size, its rock and its wind. */
-  private skyGround(): SkyGround {
+  /**
+   * T23.04: what the world renderer's sky needs of this map — its size, its seed, and whether
+   * it is space (**keyed on the generator** that made it, `Map::space_geometry`'s answer, not on
+   * the gravity setting beside it): no ground sky is drawn there.
+   */
+  private gameMap(): GameMap {
     const core = this.core
-    return {
-      width: core.width,
-      height: core.height,
-      solidAt: (x, y) => core.solidAt(x, y),
-      wind: core.meta.wind,
-    }
+    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap() }
+  }
+
+  private isSpaceMap(): boolean {
+    return this.core.meta.generator === 'Space'
   }
 
   private regenerate(): void {
@@ -399,8 +403,8 @@ export class SandboxScene extends Phaser.Scene {
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, undefined, undefined, this.gravity === SPACE_GRAVITY)
     // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
-    // and until its chunk loads; it is then described at the core's size as it stands.
-    this.worldRenderer?.mapChanged(mapW, mapH)
+    // and until its chunk loads; it is then described from the core as it stands.
+    this.worldRenderer?.mapChanged(this.gameMap())
     this.timings.buildAllMs = this.world.timings.buildAllMs
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
@@ -426,12 +430,10 @@ export class SandboxScene extends Phaser.Scene {
     // than once at create() — otherwise every regenerate silently disarms you.
     this.grantSandboxLoadout()
 
-    // The background is seeded from the map, so it has to follow a regenerate.
-    // Without this the sandbox kept the first map's skyline for the whole
-    // session and "a seed always looks the same" was true of the terrain only.
-    // `sky` is undefined on the first call: `create()` regenerates before it
-    // builds the sky, and the constructor above passes the seed directly.
-    this.sky?.setSeed(this.core.meta.seed, this.core.meta.theme, this.skyGround())
+    // The space backdrop is seeded from the map, so it has to follow a regenerate (the
+    // world renderer's sky is re-seeded by `mapChanged` above). `spaceSky` is undefined on
+    // the first call: `create()` regenerates before it builds it.
+    this.spaceSky?.setSeed(this.core.meta.seed)
 
     this.seedInput.value = this.seed.toString()
     this.refreshReadout()
@@ -793,13 +795,11 @@ export class SandboxScene extends Phaser.Scene {
           // predicate itself (R26: never a literal).
           simTime: self.simTime,
           roundTime: self.roundTime,
-          skyPhase: self.sky?.currentPhase ?? 'morning',
-          // §C14. `cloudsDrawn` beside `clouds` separates "the round has clouds"
-          // from "this frame drew some", which is the distinction §A15 keeps being
-          // about (T21.31).
-          parallax: self.sky?.parallax.debug() ?? null,
-          // T22.06: the space sky's bodies and stars, or null while the ground's sky is up.
-          spaceSky: self.sky?.spaceDebug ?? null,
+          skyPhase: skyPhase(cycleU(self.roundTime)),
+          // Which renderer Phaser is drawing with (it was the retired parallax band's to report).
+          renderer: self.game.renderer.type === Phaser.WEBGL ? 'webgl' : 'canvas',
+          // T22.06: the space sky's bodies and stars, or null while it is not shown (not a space map).
+          spaceSky: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
           darkness: self.darkness(),
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           // §F9, counted at both ends (§A39): the strength the scene believes,
@@ -833,11 +833,6 @@ export class SandboxScene extends Phaser.Scene {
           // construction, and `toxicDropsDrawn` says where they went.
           toxicDrops: self.world.liveToxicDrops,
           toxicDropsDrawn: self.world.weather.toxicDropsDrawn,
-          ambientAlive: self.world.weather.ambientAlive,
-          ambientAsked: self.world.weather.ambientAsked,
-          ambientIntensity: self.world.weather.ambientIntensity,
-          ambientDrops: self.world.weather.ambientDrops,
-          ambientPool: self.world.weather.ambientPool,
           embers: self.world.weather.emberCount,
           // Jetting vents, so "the layer drew nothing" can be told apart from
           // "the simulation never jetted" — different bugs, same silence.
@@ -1155,9 +1150,6 @@ export class SandboxScene extends Phaser.Scene {
           setting: isHighQuality(),
           shaderFog: self.world.weather.fogIsShader,
           shaderBeams: self.world.ordnance.beamsAreShader,
-          // T21.31: the clouds exist either way; High Quality only paints more,
-          // fainter rings. Read off the layer's last frame, repainted on the flip.
-          cloudRings: self.sky?.parallax.debug().cloudRings ?? 0,
         }
       },
       toggleOverlays() {
@@ -1171,55 +1163,23 @@ export class SandboxScene extends Phaser.Scene {
         // `waitForFunction` with no deadline. This throws instead.
         return strictConstants()
       },
-      /**
-       * Hide the parallax band, for the control frame `living-sky` needs.
-       *
-       * A check asserting "there are ridge pixels here" is satisfied by the
-       * gradient that was always there; the only way to attribute them is to
-       * take the layer away and look again.
-       */
-      setParallaxVisible(on: boolean) {
-        self.sky?.parallax.setVisible(on)
-      },
       /** T22.06: hide the space sky's bodies, one or all — `space-sky`'s control frames. */
-      /**
-       * T23.03: hide Phaser's whole sky, so `world-canvas` can see the three.js layer under it
-       * where Phaser then draws nothing. Returns whether the sky is shown.
-       */
-      skyVisible(on: boolean) {
-        self.sky?.setVisible(on)
-        return on
-      },
       setSpaceBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all') {
-        self.sky?.space.setBodiesVisible(on, which)
-        return self.sky?.spaceDebug ?? null
+        self.spaceSky.setBodiesVisible(on, which)
+        return self.spaceSky.isShown ? self.spaceSky.debug() : null
       },
       /**
-       * Re-seed the **skyline only**, leaving the map alone.
+       * Re-seed the **skies only** — the space backdrop and the world renderer's — leaving the
+       * map alone.
        *
        * `regenerate` with a new seed changes the terrain too, so a frame diff
-       * after one measures a new map rather than a new ridge — the check read
-       * 100 % changed and would have read 100 % for a skyline that ignored the
+       * after one measures a new map rather than a new sky — the check read
+       * 100 % changed and would have read 100 % for a sky that ignored the
        * seed entirely.
        */
       setSkySeed(seed: number) {
-        self.sky?.setSeed(seed, self.core.meta.theme, self.skyGround())
-      },
-      /**
-       * Pin the cloud drift clock, `null` to resume.
-       *
-       * **Every moving quantity the cloud shader gets is derived from the same
-       * elapsed time**, so this freezes the clouds completely — which is what
-       * gives `clouds-shader` a control frame for its motion claim. Its sibling
-       * `setTime` freezes the sky, and a check measuring clouds needs both or it
-       * is measuring the gradient.
-       *
-       * The two seams this sat beside — `cloudTintAt` and `cloudSpriteTintAt`,
-       * which let `living-sky` compare a sprite's tint against the function that
-       * computed it — went with the sprite clouds in T21.18.
-       */
-      setParallaxClock(t: number | null) {
-        self.sky?.parallax.setClock(t)
+        self.spaceSky.setSeed(seed)
+        self.worldRenderer?.mapChanged({ ...self.gameMap(), seed })
       },
       /**
        * T21.37: stand extra bodies at world points, `null` to remove them.
@@ -1252,26 +1212,10 @@ export class SandboxScene extends Phaser.Scene {
         return self.skinLineup.length
       },
       /**
-       * T21.31: hide the clouds alone, for a same-instant control frame. Read back
-       * off the layer — `setParallaxVisible` takes the ridges too, and a cloud check
-       * whose control also moved the ridges would be measuring both.
-       */
-      setCloudsVisible(on: boolean) {
-        return self.sky?.parallax.setCloudsVisible(on) ?? { visible: false }
-      },
-      /** T21.31: every cloud's world box at clock `t`, drawn or not — for the rock sweep. */
-      cloudsAt(t: number) {
-        return self.sky?.parallax.cloudsAt(t) ?? []
-      },
-      /**
        * T21.31: frame a world point and hold the camera there, `null` to follow the
        * player again. The game scene's `watch`, for the same reason: a cloud is
        * wherever the seed put it, usually well above the player's view.
        */
-      /** T21.31: force the ambient rain's intensity, `null` to hand it back to the schedule. */
-      forceAmbient(v: number | null) {
-        self.ambientOverride = v
-      },
       /**
        * T22.04, e2e only (§C2): hide the local player's thruster plume for a
        * same-instant control frame. Freeze first. Returns what the view now reports.
@@ -1284,10 +1228,6 @@ export class SandboxScene extends Phaser.Scene {
       freeze(on: boolean) {
         if (on) self.scene.pause()
         else self.scene.resume()
-      },
-      /** e2e only (§C2, T21.31): hide one rain for a control frame. Freeze first. */
-      setRainVisible(which: 'toxic' | 'ambient', on: boolean) {
-        return self.world.weather.setRainVisible(which, on)
       },
       watch(x: number | null, y = 0) {
         self.watchPoint = x === null ? null : { x, y }
@@ -1549,12 +1489,13 @@ export class SandboxScene extends Phaser.Scene {
     if (!this.timeScrub) this.roundTime += dt
     // Darkness is the server's scalar in M6; here it follows the doc's formula so
     // the sandbox shows what a real round will.
-    // The camera moves **before** the sky reads it, as in `GameScene`: the ridge is placed
-    // against the camera this frame is drawn with, or it trails a moving camera by a frame.
+    // The camera moves **before** the space sky reads it, as in `GameScene`: its bodies are
+    // placed against the camera this frame is drawn with, or they trail a moving camera by a frame.
     this.world.rig.update(dt)
-    // T21.31: last frame's weather shades the sky — grey rain clouds, the toxic deck.
-    this.sky.parallax.setWeatherShade(this.world.weather.ambientIntensity, this.world.weather.toxicIntensity)
-    this.sky.update(this.roundTime, this.darkness(), C().NIGHT_DARKNESS, this.gravity === SPACE_GRAVITY)
+    // T23.04: the space backdrop is up exactly on a space map — derived per frame, no latch.
+    const space = this.isSpaceMap()
+    if (this.spaceSky.isShown !== space) this.spaceSky.setShown(space)
+    this.spaceSky.update(this.roundTime)
 
     if (this.feelEnabled) this.feel.update(dt, this.feelFrame())
     // T22.09B. The same Rust predicate snapshot bit 7 is encoded from. The sandbox
@@ -1616,22 +1557,8 @@ export class SandboxScene extends Phaser.Scene {
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.
     this.fogStrength = this.fogActive ? 1 : weather.fog
-    // T21.26: the same pure ambient schedule the game scene evaluates, from this map's seed.
-    // `forceAmbient` (e2e, T21.31) overrides the schedule so a check need not wait for a shower.
-    // T22.06: no weather to rain in space — ahead of the override too, which exists to
-    // make a *standard* check's shower arrive on time, not to rain in orbit.
-    this.world.weather.setAmbient(
-      this.gravity === SPACE_GRAVITY ? 0 : (this.ambientOverride ?? ambientRain(this.seed, this.roundTime)),
-    )
-    this.world.weather.update(
-      dt,
-      weather.vents,
-      C().MAX_FALL_SPEED,
-      this.fogStrength,
-      this.hasFlashlight(),
-      // T21.31: rain falls from these clouds and nowhere else.
-      this.sky.parallax.rainClouds(),
-    )
+    // (T21.26's ambient rain retired with the clouds it fell from — T23.04.)
+    this.world.weather.update(dt, weather.vents, C().MAX_FALL_SPEED, this.fogStrength, this.hasFlashlight())
     // Fog from the effect ramps; the Fog button is a separate manual override so
     // visibility can be inspected without waiting for a burst.
     const fogMult = this.fogActive
