@@ -32,9 +32,36 @@ export function toWorld(x: number, y: number, maskH: number): { x: number; y: nu
   return { x, y: maskH - y }
 }
 
-/** The drawing buffer for a canvas shown at `cssW × cssH` on a `dpr` screen: device pixels, at least 1. */
-export function bufferSize(cssW: number, cssH: number, dpr: number): { w: number; h: number } {
-  return { w: Math.max(1, Math.round(cssW * dpr)), h: Math.max(1, Math.round(cssH * dpr)) }
+/**
+ * T23.03B / R18: the world canvas's drawing buffer — **Phaser's game resolution** (`gameW × gameH`,
+ * the size of Phaser's own drawing buffer) times the tier's scale, at least 1. Never the CSS box
+ * times `devicePixelRatio`: the pictures are drawn at `setPixelRatio(1)` on 1280×720, so an effect
+ * sized in buffer px (bloom radius, MSAA, blur taps) only matches them at this size. Equivalently
+ * R18's pixel ratio `gameW / cssW × TIER_SCALE` on a canvas shown `cssW` wide — computed as the
+ * buffer itself, so a fractional CSS width cannot floor 1280 to 1279.
+ */
+export function bufferFor(gameW: number, gameH: number, tier: QualityTier): { w: number; h: number } {
+  const k = TIER_SCALE[tier]
+  return { w: Math.max(1, Math.round(gameW * k)), h: Math.max(1, Math.round(gameH * k)) }
+}
+
+/**
+ * T23.03B (F1): the one definition of "the same view". The redraw skip uses it, and
+ * `world-canvas` asserts every frame that Phaser's `worldView` and the view last drawn pass it —
+ * a skip that forgot one field (the review planted `y`) then shows as a frame where they differ.
+ */
+export function sameView(a: ViewRect | null, b: ViewRect | null): boolean {
+  return a !== null && b !== null && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
+}
+
+/**
+ * T23.03B (F3): must this frame be drawn? An unchanged view of an unchanged, **unanimated**
+ * scene is an unchanged picture, and the canvas keeps showing the last one (measured: drawing
+ * every frame cost SwiftShader 60 → 51 fps in a match). Anything animated — T23.04's stars —
+ * draws every frame, or it freezes.
+ */
+export function mustDraw(s: { dirty: boolean; animated: boolean; last: ViewRect | null; view: ViewRect }): boolean {
+  return s.dirty || s.animated || !sameView(s.last, s.view)
 }
 
 /** `0xRRGGBB` read as **linear** components, the way `e_style.js::hex` does (`setHex(h, LinearSRGBColorSpace)`). */

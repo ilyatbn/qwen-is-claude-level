@@ -68,8 +68,8 @@ const FIRE_CUE: Record<string, 'fire_bazooka' | 'fire_grenade' | 'fire_smg' | nu
 import { Predictor } from '../net/prediction'
 import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
-import type { SceneRenderer } from '../look/renderer'
-import { createWorldRenderer, gameDescription } from '../look/worldRenderer'
+import { loadWorldRenderer } from '../look/loadWorldRenderer'
+import type { GameWorld } from '../look/worldRenderer'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
@@ -286,9 +286,9 @@ export class GameScene extends Phaser.Scene {
   /**
    * T23.03 (R1): three.js draws the world under this scene's transparent canvas — today one
    * test layer; the layers Phaser draws move across task by task. Destroyed on shutdown by
-   * `createWorldRenderer` itself.
+   * `createWorldRenderer` itself. `null` until its chunk has loaded (T23.03B, F10).
    */
-  private worldRenderer: SceneRenderer | null = null
+  private worldRenderer: GameWorld | null = null
   private sky!: SkyLayer
   /** The map seed from `welcome`, for §C14's seeded skyline. */
   private mapSeed = 0
@@ -816,9 +816,13 @@ export class GameScene extends Phaser.Scene {
     this.conn = (this.registry.get('liveConn') as Connection | undefined) ?? new Connection()
 
     this.sky = new SkyLayer(this)
-    // T23.03: the world renderer, under Phaser's canvas. The startup core's size until
-    // `map_init` says otherwise (`onMapInit` re-describes it).
-    this.worldRenderer = createWorldRenderer(this, gameDescription(this.core.width, this.core.height))
+    // T23.03: the world renderer, under Phaser's canvas, loaded on demand (F10). Described at
+    // the core's size **when it arrives** — `map_init` may have landed first — and re-described
+    // by `onMapInit` after. `loadWorldRenderer` drops it if this scene has shut down meanwhile.
+    this.worldRenderer = null
+    void loadWorldRenderer(this).then((m) => {
+      if (m) this.worldRenderer = m.createGameWorld(this, this.core.width, this.core.height)
+    })
     this.lightmap = new Lightmap(this)
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
     // T11.05 and nothing subscribed. This is the other half.
@@ -1621,7 +1625,7 @@ export class GameScene extends Phaser.Scene {
     // R58: non-empty asteroids), and they arrive in this very message.
     const spaceMap = init.asteroids.length > 0
     this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, spaceMap)
-    this.worldRenderer?.setScene(gameDescription(this.core.width, this.core.height))
+    this.worldRenderer?.mapChanged(this.core.width, this.core.height)
 
     // The **same** theme the terrain resolves, not a second opinion: both now
     // read `map_init`'s theme, so a distant ridge stays the colour of the ground

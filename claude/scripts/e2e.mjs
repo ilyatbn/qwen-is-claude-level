@@ -42,6 +42,7 @@ import { CHECKS } from './lib/e2e-checks.mjs'
 import { startRouter } from './lib/stack-router.mjs'
 import { freePort } from './lib/free-port.mjs'
 import { BROWSER_ARGS } from './lib/browser-args.mjs'
+import { nameTheTier } from './lib/check-tier.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /**
@@ -406,6 +407,8 @@ try {
     // A fresh page per check: shared page state is how one check's leftover
     // keyboard or paused clock silently changes the next one's result.
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
+    // T23.03B / R20: the checks name their tier (low) rather than inherit a detected one.
+    await nameTheTier(page)
     const errors = []
     page.on('pageerror', (e) => errors.push(String(e)))
     let shots = 0

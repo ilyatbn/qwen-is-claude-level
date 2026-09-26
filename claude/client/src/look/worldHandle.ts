@@ -8,7 +8,7 @@ import type Phaser from 'phaser'
 import type { RenderStats, SceneRenderer } from './renderer'
 import type { SceneDescription, ViewRect } from './scene'
 import type { WorldRenderer } from './worldRenderer'
-import { acesSrgb, hexLinear } from './worldRenderer-math'
+import { acesSrgb, hexLinear, sameView } from './worldRenderer-math'
 
 /** What a dev check can reach: `window.__world` (dev surface only). */
 export interface WorldHandle {
@@ -18,12 +18,14 @@ export interface WorldHandle {
   info(): ReturnType<WorldRenderer['info']> | null
   /** Add a world-anchored marker to **both** canvases: three's quad and a Phaser rect. */
   addMarker(x: number, y: number, w: number, h: number): void
+  /** Remove every marker from both canvases. */
+  clearMarkers(): void
   /**
    * Record the next `n` drawn frames: the marker's centre in each canvas, read back in the same
    * frame — x along CSS row `row`, y along CSS column `col`.
    */
   probe(n: number, row: number, col: number): Promise<ProbeSample[]>
-  /** Phaser's canvas alpha at CSS points, read back after the next drawn frame; `null` on Canvas Phaser. */
+  /** Phaser's canvas alpha at page CSS points (inside its box), read back after the next drawn frame; `null` on Canvas Phaser. */
   phaserAlpha(points: [number, number][]): Promise<number[] | null>
   /** What the test layer must look like on screen: `skyBottom` through ACES at the scene's exposure, 0–255 sRGB. */
   expectedTestColor(): [number, number, number] | null
@@ -43,6 +45,15 @@ export interface ProbeSample {
   /** The view the world renderer drew this frame. */
   viewX: number | null
   viewY: number | null
+  /**
+   * T23.03B (F1): Phaser's `cameras.main.worldView` at this frame's readback, and the view the
+   * world canvas **last drew** (it keeps showing that picture on a skipped frame). They must be
+   * `sameView` on every frame: a redraw skip that missed a change leaves them different.
+   */
+  worldView: ViewRect
+  drawnView: ViewRect | null
+  /** `sameView(worldView, drawnView)` — the redraw skip's own comparison, so the check and the skip cannot disagree about what "same" means. */
+  same: boolean
 }
 
 /** Centre of the first magenta run in a strip of RGBA px, in px along it; `null` if none. */
@@ -94,6 +105,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     currentDesc = d
     set(d)
   }
+  const rects: Phaser.GameObjects.Rectangle[] = []
   const handle: WorldHandle = {
     backend: r.backend,
     frames: () => stats?.frames ?? 0,
@@ -101,7 +113,12 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     info: () => three?.info() ?? null,
     addMarker(x, y, w, h) {
       three?.addMarker(x, y, w, h)
-      scene.add.rectangle(x, y, w, h, 0xff00ff).setOrigin(0, 0).setDepth(1e6)
+      rects.push(scene.add.rectangle(x, y, w, h, 0xff00ff).setOrigin(0, 0).setDepth(1e6))
+    },
+    clearMarkers() {
+      three?.clearMarkers()
+      for (const r of rects) r.destroy()
+      rects.length = 0
     },
     expectedTestColor() {
       const d = stats?.scene ? currentDesc : null
@@ -113,12 +130,15 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       if (!pgl) return Promise.resolve(null)
       return new Promise((resolve) => {
         game.events.once('postrender', () => {
-          const pc = game.canvas
-          const sx = pgl.drawingBufferWidth / (pc.clientWidth || pc.width)
-          const sy = pgl.drawingBufferHeight / (pc.clientHeight || pc.height)
+          // Page CSS points → Phaser's buffer: FIT letterboxes the canvas (at 1100×900 it sits
+          // at top 140.625, 618.75 tall), so subtract its box before scaling (T23.03B).
+          const box = game.canvas.getBoundingClientRect()
+          const sx = pgl.drawingBufferWidth / (box.width || pgl.drawingBufferWidth)
+          const sy = pgl.drawingBufferHeight / (box.height || pgl.drawingBufferHeight)
+          const clampTo = (v: number, n: number): number => Math.min(n - 1, Math.max(0, v))
           const out = points.map(([x, y]) => {
-            const { row } = readRow(pgl, Math.round(y * sy))
-            return row[Math.round(x * sx) * 4 + 3]!
+            const { row } = readRow(pgl, clampTo(Math.round((y - box.top) * sy), pgl.drawingBufferHeight))
+            return row[clampTo(Math.round((x - box.left) * sx), pgl.drawingBufferWidth) * 4 + 3]!
           })
           resolve(out)
         })
@@ -134,8 +154,10 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       let lastThree: [number | null, number | null] = [null, null]
       /** The marker's centre in one canvas, CSS px, from a row and a column read in this frame. */
       const locate = (gl: WebGLRenderingContext, el: HTMLCanvasElement): [number | null, number | null] => {
-        const cw = el.clientWidth || gl.drawingBufferWidth
-        const ch = el.clientHeight || gl.drawingBufferHeight
+        // Fractional CSS box (F5): FIT can give 618.75 px, and `clientHeight` says 619.
+        const box = el.getBoundingClientRect()
+        const cw = box.width || gl.drawingBufferWidth
+        const ch = box.height || gl.drawingBufferHeight
         const sx = gl.drawingBufferWidth / cw
         const sy = gl.drawingBufferHeight / ch
         const r = readRow(gl, Math.round(row * sy))
@@ -154,7 +176,21 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
           if (three && drew) lastThree = locate(three.gl, three.canvas)
           const [threeX, threeY] = three ? lastThree : [null, null]
           const v = stats?.view ?? null
-          samples.push({ frame: game.loop.frame, drew, phaserX, threeX, phaserY, threeY, viewX: v?.x ?? null, viewY: v?.y ?? null })
+          const wv = scene.cameras.main.worldView
+          const worldView = { x: wv.x, y: wv.y, w: wv.width, h: wv.height }
+          samples.push({
+            frame: game.loop.frame,
+            drew,
+            phaserX,
+            threeX,
+            phaserY,
+            threeY,
+            viewX: v?.x ?? null,
+            viewY: v?.y ?? null,
+            worldView,
+            drawnView: v ? { ...v } : null,
+            same: sameView(worldView, v),
+          })
           if (samples.length >= n) {
             game.events.off('postrender', onPost)
             resolve(samples)

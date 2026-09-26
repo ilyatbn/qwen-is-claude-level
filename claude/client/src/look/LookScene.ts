@@ -14,8 +14,8 @@ import Phaser from 'phaser'
 import { devSurface } from '../dev'
 import { actorBoxes, describeScene, type Box, type SceneDescription } from './scene'
 import { SCENES } from './scenes'
+import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import { createWorldRenderer } from './worldRenderer'
 
 export interface LookHandle {
   ready: boolean
@@ -75,16 +75,20 @@ export class LookScene extends Phaser.Scene {
     cam.setZoom(this.scale.width / desc.camera.w)
     cam.centerOn(desc.camera.x + desc.camera.w / 2, desc.camera.y + desc.camera.h / 2)
 
-    // T23.03: the game's world renderer, through the same constructor the game scenes use.
-    const renderer = createWorldRenderer(this, desc)
-    const stats = (renderer as { stats?: RenderStats }).stats
-    handle.backend = renderer.backend
-    handle.rendered = stats?.scene ?? null
-    // After the renderer's own `render` listener (registered first, so it runs first).
-    this.events.on('render', () => {
-      handle.frames = stats?.frames ?? 0
-      handle.view = stats?.view ?? null
-      handle.ready = handle.frames > 0
+    // T23.03: the game's world renderer, through the same constructor the game scenes use —
+    // loaded on demand like theirs (T23.03B, F10), so the lab measures the same path.
+    void loadWorldRenderer(this).then((m) => {
+      if (!m) return
+      const renderer = m.createWorldRenderer(this, desc)
+      const stats = (renderer as { stats?: RenderStats }).stats
+      handle.backend = renderer.backend
+      handle.rendered = stats?.scene ?? null
+      // After the renderer's own `render` listener (registered first, so it runs first).
+      this.events.on('render', () => {
+        handle.frames = stats?.frames ?? 0
+        handle.view = stats?.view ?? null
+        handle.ready = handle.frames > 0
+      })
     })
   }
 }

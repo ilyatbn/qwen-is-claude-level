@@ -27,9 +27,26 @@
  *    full at the display with 4×.
  * 5. **Control: `&world=off`** (the draw-nothing stub) must fail the marker measurement **by
  *    name** — "no marker in the three.js canvas".
+ *
+ * T23.03B, from the review that planted bugs into the redraw skip and saw two stay green:
+ * 6. **The view drawn is Phaser's, every frame (F1).** Each probed frame carries
+ *    `cameras.main.worldView` and the view the world canvas last drew; they must be the same
+ *    view (`worldRenderer-math.ts::sameView`, the skip's own comparison). Both pans get a
+ *    **pure vertical leg** (x held, y stepped) — a skip that ignored `y` passed every
+ *    horizontal pan.
+ * 7. **Resize and tier switch with the camera still (F2).** Viewport 1280×720 → 1100×900: the
+ *    canvases share the fractional FIT box exactly (F5), the buffer stays Phaser's resolution
+ *    (R18: a resize never reallocates it), the test layer's pixels are read back and the marker
+ *    still agrees. Then the tier is switched — which does reallocate — and the pixels are read
+ *    again: a reallocated buffer is blank until redrawn, and nothing but the invalidation
+ *    redraws it while the camera is still.
+ * 8. **R18 on a DPR-2 screen:** the buffer is still 640×360 (low) / 1280×720 (full).
+ * 9. **R20:** the checks store their tier explicitly (`lib/check-tier.mjs`): the page must read
+ *    `'0'` and run low, whatever GPU string it detects (printed).
  */
 import { join } from 'node:path'
 import { startStack, enterBattle, tally, freePort, drawnFrames, shotsDir } from './harness.mjs'
+import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 
 /** Agreement between the two canvases, CSS px: sub-pixel placement differs (MSAA vs roundPixels). */
 const MAX_DX = 1.5
@@ -38,6 +55,12 @@ const MIN_TRAVEL_PX = 40
 const MIN_MOVING_FRAMES = 5
 /** Channel tolerance for the test layer against the CPU ACES: 8-bit quantisation of a half-float target. */
 const TOL = 3
+/** Boxes are fractional under FIT (1100×618.75); the canvases must match to float noise. */
+const BOX_EPS = 0.01
+/** The low tier's buffer, R18: Phaser's 1280×720 game resolution × 0.5 — whatever the window or DPR. */
+const GAME = [1280, 720]
+const LOW = [640, 360]
+const J = JSON.stringify
 
 const t = tally('world-canvas')
 const stack = await startStack({ port: await freePort(), label: 'world-canvas', env: { BOT_COUNT: '0' } })
@@ -54,7 +77,7 @@ async function assertOrder(page, where) {
     const phaser = cs.find((c) => c.dataset.world === undefined) ?? null
     const r = (c) => {
       const b = c.getBoundingClientRect()
-      return [b.left, b.top, b.width, b.height].map(Math.round)
+      return [b.left, b.top, b.width, b.height]
     }
     let stack = []
     if (three && phaser) {
@@ -77,8 +100,8 @@ async function assertOrder(page, where) {
     t.fail(`${where}: #game canvases ${JSON.stringify(o)} — want a three.js canvas and Phaser's`)
   } else if (JSON.stringify(o.paint) !== JSON.stringify(['phaser', 'three'])) {
     t.fail(`${where}: paint order top-down is ${JSON.stringify(o.paint)}, want Phaser over three.js`)
-  } else if (JSON.stringify(o.boxes[0]) !== JSON.stringify(o.boxes[1])) {
-    t.fail(`${where}: the canvases do not share a box: ${JSON.stringify(o.boxes)}`)
+  } else if (o.boxes[0].some((v, i) => Math.abs(v - o.boxes[1][i]) > BOX_EPS)) {
+    t.fail(`${where}: the canvases do not share a box (three, phaser): ${JSON.stringify(o.boxes)}`)
   } else if (!o.topIsPhaser || !o.firstIsPhaser) {
     t.fail(`${where}: Phaser's canvas is not the one input and \`querySelector('canvas')\` reach (${JSON.stringify(o)})`)
   } else {
@@ -90,12 +113,13 @@ async function assertOrder(page, where) {
  * Pan while probing; returns `{ ok, reason, stats }`. `startPan` runs in the page right after
  * the probe is armed, so the first sample is the first frame of the pan.
  */
-async function measurePan(page, where, startPan, frames = 40) {
+async function measurePan(page, where, startPan, frames = 40, { still = false, axis = null } = {}) {
   // A plus sign centred at (cx, cy), world px: a thin tall bar and a thin wide bar. Any row
   // within `ARM` of cy crosses it with a run centred on cx, and any column within `ARM` of cx
   // with a run centred on cy — so a pan of up to `ARM` in any direction stays measurable on
   // every frame (a small square left the probe lines on a fast jetpack pan: 45/60 frames).
   const setup = await page.evaluate(() => {
+    window.__world.clearMarkers()
     const v = window.__world.view()
     const ARM = 400
     const BAR = 12
@@ -125,6 +149,36 @@ async function measurePan(page, where, startPan, frames = 40) {
   for (let i = 1; i < samples.length; i++) {
     if (samples[i].frame !== samples[i - 1].frame + 1) {
       return { ok: false, reason: `frames not consecutive: ${samples[i - 1].frame} -> ${samples[i].frame}`, stats, samples }
+    }
+  }
+  // F1: the view the world canvas shows is Phaser's, on every frame — drawn or skipped. Compared
+  // here, field by field, **and** by the page's `sameView` (the skip's own function): a bug in
+  // `sameView` would blind a check that only asked it.
+  const eqView = (a, b) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
+  const stale = samples.find((x) => !eqView(x.worldView, x.drawnView))
+  if (stale) {
+    return { ok: false, reason: `frame ${stale.frame}: Phaser's worldView ${J(stale.worldView)} but the world canvas last drew ${J(stale.drawnView)} (drew this frame: ${stale.drew})`, stats, samples }
+  }
+  const split = samples.find((x) => x.same !== eqView(x.worldView, x.drawnView))
+  if (split) return { ok: false, reason: `frame ${split.frame}: sameView says ${split.same} for ${J(split.worldView)} vs ${J(split.drawnView)}`, stats, samples }
+  stats.views = samples.length
+  stats.drawn = samples.filter((x) => x.drew).length
+  // A leg meant to move one axis must hold the other, or it cannot tell a skip that ignores
+  // one axis from one that works (the review's planted `y`).
+  if (axis) {
+    // Counted per frame: frames on which only `axis` moved are the ones that exercise it alone.
+    // (The sandbox rig's snap can nudge x by a pixel on a frame or two; those frames just do
+    // not count.)
+    const other = axis === 'y' ? 'x' : 'y'
+    let only = 0
+    for (let i = 1; i < samples.length; i++) {
+      const a = samples[i].worldView
+      const b = samples[i - 1].worldView
+      if (a[axis] !== b[axis] && a[other] === b[other]) only++
+    }
+    stats[`${axis}OnlyFrames`] = only
+    if (only < MIN_MOVING_FRAMES) {
+      return { ok: false, reason: `the ${axis} leg moved ${axis} alone on only ${only} frames (want ${MIN_MOVING_FRAMES})`, stats, samples }
     }
   }
   // Per axis, per frame: found in both canvases or in neither — one without the other is a
@@ -165,7 +219,9 @@ async function measurePan(page, where, startPan, frames = 40) {
   // under the arm length.
   const blind = samples.find((x) => !((x.phaserX !== null && x.threeX !== null) || (x.phaserY !== null && x.threeY !== null)))
   if (blind) return { ok: false, reason: `frame ${blind.frame}: the marker is on neither probe line in both canvases`, stats, samples }
-  if (travel < MIN_TRAVEL_PX || moving < MIN_MOVING_FRAMES) {
+  if (still) {
+    if (moving > 0) return { ok: false, reason: `the camera was meant to be still but the marker moved on ${moving} frames`, stats, samples }
+  } else if (travel < MIN_TRAVEL_PX || moving < MIN_MOVING_FRAMES) {
     return { ok: false, reason: `the pan did not move the marker (travel ${travel.toFixed(1)} px, ${moving} moving frames)`, stats, samples }
   }
   return { ok: true, reason: null, stats, samples }
@@ -192,6 +248,57 @@ async function screenPixels(page, points) {
 
 const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= TOL)
 
+/**
+ * The test layer where Phaser draws nothing: hide Phaser's sky, read its alpha back per point,
+ * and at every transparent point on the canvas the screenshot must show `skyBottom` through
+ * ACES (`expectedTestColor`). Returns the points used, for the control frame.
+ */
+async function testLayerShows(page, where) {
+  // Markers left by a measurement would sit on some points (and CSS-scaling blurs three's edges
+  // past Phaser's): this step is about the layer, so take them out of both canvases.
+  await page.evaluate(() => window.__world.clearMarkers())
+  const want = await page.evaluate(() => window.__world.expectedTestColor())
+  const { W, H } = await page.evaluate(() => ({ W: innerWidth, H: innerHeight }))
+  const grid = []
+  for (let y = 20; y < H; y += 70) for (let x = 20; x < W; x += 90) grid.push([x, y])
+  await page.evaluate(() => window.__game.skyVisible(false))
+  await drawnFrames(page, 3)
+  const alpha = await page.evaluate((pts) => window.__world.phaserAlpha(pts), grid)
+  // Only points where nothing sits over the canvases (the sandbox's DOM panel and readout do).
+  const onCanvas = await page.evaluate(
+    (pts) => pts.map(([x, y]) => document.elementFromPoint(x, y) === document.querySelector('#game canvas:not([data-world])')),
+    grid,
+  )
+  const clear = grid.filter((_, i) => alpha[i] === 0 && onCanvas[i])
+  const shown = await screenPixels(page, clear)
+  const bad = clear.filter((_, i) => !near(shown[i], want))
+  if (clear.length < 5) {
+    t.fail(`${where}: with the sky hidden Phaser still covers ${grid.length - clear.length}/${grid.length} points — nowhere to see the world canvas`)
+  } else if (bad.length) {
+    t.fail(`${where}: ${bad.length}/${clear.length} Phaser-transparent points do not show the test layer ${J(want)}: e.g. ${J(shown[clear.indexOf(bad[0])])} at ${bad[0]}`)
+  } else {
+    t.ok(`${where}: the test layer ${J(want)} shows at all ${clear.length}/${grid.length} points Phaser leaves transparent`)
+  }
+  return { want, clear }
+}
+
+/** Hold the camera where it is (the e2e `watch` hook), so nothing but the step under test changes the picture. */
+const holdStill = (page) =>
+  page.evaluate(() => {
+    const v = window.__world.view()
+    window.__game.watch(v.x + v.w / 2, v.y + v.h / 2)
+  })
+
+/**
+ * A pure vertical leg (F1): the camera centre stepped `dy` world px a frame in y with x held,
+ * via `__game.watch`, away from the nearer top edge.
+ */
+const verticalLeg = (dy) => `const v = window.__world.view()
+  const cx = v.x + v.w / 2, cy = v.y + v.h / 2, dir = v.y > 200 ? -1 : 1
+  let k = 0
+  const step = () => { window.__game.watch(cx, cy + dir * ${dy} * ++k); if (k < 45) requestAnimationFrame(step) }
+  requestAnimationFrame(step)`
+
 try {
   // ---------------------------------------------------------------- sandbox
   const ctx = await stack.browser.newContext({ viewport: { width: 1280, height: 720 } })
@@ -207,28 +314,15 @@ try {
   if (backend !== 'three') t.fail(`sandbox: the world renderer is "${backend}", not three.js`)
   await assertOrder(page, 'sandbox')
 
-  // The test layer where Phaser draws nothing: hide Phaser's sky, find transparent points.
-  const want = await page.evaluate(() => window.__world.expectedTestColor())
-  const grid = []
-  for (let y = 20; y < 720; y += 70) for (let x = 20; x < 1280; x += 90) grid.push([x, y])
-  await page.evaluate(() => window.__game.skyVisible(false))
-  await drawnFrames(page, 3)
-  const alpha = await page.evaluate((pts) => window.__world.phaserAlpha(pts), grid)
-  // Only points where nothing sits over the canvases (the sandbox's DOM panel and readout do).
-  const onCanvas = await page.evaluate(
-    (pts) => pts.map(([x, y]) => document.elementFromPoint(x, y) === document.querySelector('#game canvas:not([data-world])')),
-    grid,
-  )
-  const clear = grid.filter((_, i) => alpha[i] === 0 && onCanvas[i])
-  const shown = await screenPixels(page, clear)
-  const bad = clear.filter((_, i) => !near(shown[i], want))
-  if (clear.length < 5) {
-    t.fail(`sandbox: with the sky hidden Phaser still covers ${grid.length - clear.length}/${grid.length} points — nowhere to see the world canvas`)
-  } else if (bad.length) {
-    t.fail(`sandbox: ${bad.length}/${clear.length} Phaser-transparent points do not show the test layer ${JSON.stringify(want)}: e.g. ${JSON.stringify(shown[clear.indexOf(bad[0])])} at ${bad[0]}`)
+  // R20: the check named its tier (lib/check-tier.mjs) — stored '0', running low, whatever GPU.
+  const named = await page.evaluate((k) => ({ stored: localStorage.getItem(k), info: window.__world.info() }), HIGH_QUALITY_KEY)
+  if (named.stored === '0' && named.info?.tier === 'low') {
+    t.ok(`tier named: ${HIGH_QUALITY_KEY}='0' -> low (detected renderer "${named.info.gpu}")`)
   } else {
-    t.ok(`sandbox: the test layer ${JSON.stringify(want)} shows at all ${clear.length}/${grid.length} points Phaser leaves transparent`)
+    t.fail(`tier not named: ${HIGH_QUALITY_KEY}=${J(named.stored)}, tier ${named.info?.tier}`)
   }
+
+  const { want, clear } = await testLayerShows(page, 'sandbox')
   await page.screenshot({ path: join(shotsDir, 'world-canvas-sandbox-nosky.png') })
   console.log('  shot: shots/world-canvas-sandbox-nosky.png')
   // Control frame: the sky back on covers them, and the same comparison must fail there.
@@ -244,28 +338,29 @@ try {
   await page.screenshot({ path: join(shotsDir, 'world-canvas-sandbox.png') })
   console.log('  shot: shots/world-canvas-sandbox.png')
 
-  // R14: low halves the target and drops MSAA; full is the buffer with 4×.
-  const tiers = await page.evaluate(async () => {
-    const out = {}
-    for (const on of [false, true]) {
-      window.__game.setHighQuality(on)
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-      out[on ? 'full' : 'low'] = window.__world.info()
-    }
-    window.__game.setHighQuality(false)
-    return out
-  })
-  const { low, full } = tiers
+  // R14 + R18: low renders the canvas and its target at half of Phaser's game resolution with no
+  // MSAA, full at the game resolution with 4× — never the CSS box times devicePixelRatio.
+  const readTiers = (pg) =>
+    pg.evaluate(async () => {
+      const out = { dpr: devicePixelRatio }
+      for (const on of [false, true]) {
+        window.__game.setHighQuality(on)
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+        out[on ? 'full' : 'low'] = window.__world.info()
+      }
+      window.__game.setHighQuality(false)
+      return out
+    })
   const same = (a, b) => a[0] === b[0] && a[1] === b[1]
-  const half = (a) => [Math.round(a[0] / 2), Math.round(a[1] / 2)]
-  if (
+  const tiersOk = ({ low, full }) =>
     low?.tier === 'low' && full?.tier === 'full' &&
-    same(low.buffer, half(low.display)) && same(low.target, low.buffer) && low.samples === 0 &&
-    same(full.buffer, full.display) && same(full.target, full.buffer) && full.samples === 4
-  ) {
-    t.ok(`tiers: low canvas+target ${low.target} of display ${low.display} (MSAA ${low.samples}), full ${full.target} (MSAA ${full.samples})`)
+    same(low.display, GAME) && same(low.buffer, LOW) && same(low.target, low.buffer) && low.samples === 0 &&
+    same(full.buffer, GAME) && same(full.target, full.buffer) && full.samples === 4
+  const tiers = await readTiers(page)
+  if (tiersOk(tiers)) {
+    t.ok(`tiers: low canvas+target ${tiers.low.target} of game ${tiers.low.display} (MSAA ${tiers.low.samples}), full ${tiers.full.target} (MSAA ${tiers.full.samples})`)
   } else {
-    t.fail(`tiers: ${JSON.stringify(tiers)}`)
+    t.fail(`tiers: ${J(tiers)}`)
   }
 
   // One camera: pan by teleporting the player sideways; the rig eases the camera over frames.
@@ -274,8 +369,44 @@ try {
     'sandbox',
     `const c = window.__game.debug().camera; window.__game.place(c.x + 260, c.y)`,
   )
-  if (sandPan.ok) t.ok(`sandbox pan: both canvases agree on every frame ${JSON.stringify(sandPan.stats)}`)
-  else t.fail(`sandbox pan: ${sandPan.reason} ${JSON.stringify(sandPan.stats)} ${JSON.stringify(sandPan.samples.slice(0, 6))}`)
+  if (sandPan.ok) t.ok(`sandbox pan: both canvases agree on every frame ${J(sandPan.stats)}`)
+  else t.fail(`sandbox pan: ${sandPan.reason} ${J(sandPan.stats)} ${J(sandPan.samples.slice(0, 6))}`)
+  // F1: and a pure vertical leg.
+  const sandV = await measurePan(page, 'sandbox vertical', verticalLeg(3), 40, { axis: 'y' })
+  await page.evaluate(() => window.__game.watch(null))
+  if (sandV.ok) t.ok(`sandbox vertical leg: the drawn view is Phaser's on every frame, canvases agree ${J(sandV.stats)}`)
+  else t.fail(`sandbox vertical leg: ${sandV.reason} ${J(sandV.stats)} ${J(sandV.samples.slice(0, 4))}`)
+
+  // F2 + F5 + R18: resize with the camera still, then switch tier with it still.
+  await holdStill(page)
+  await drawnFrames(page, 5)
+  await page.setViewportSize({ width: 1100, height: 900 })
+  await drawnFrames(page, 5)
+  await assertOrder(page, 'resized 1100x900')
+  const rinfo = await page.evaluate(() => window.__world.info())
+  if (same(rinfo.buffer, LOW) && same(rinfo.display, GAME)) t.ok(`resized: buffer still ${rinfo.buffer} of game ${rinfo.display} (R18: a resize is CSS only)`)
+  else t.fail(`resized: buffer ${rinfo.buffer}, game ${rinfo.display} — want ${LOW} of ${GAME}`)
+  await testLayerShows(page, 'resized, camera still')
+  await page.evaluate(() => window.__game.skyVisible(true))
+  const rStill = await measurePan(page, 'resized still', '', 8, { still: true })
+  if (rStill.ok) t.ok(`resized, camera still: canvases agree ${J(rStill.stats)}`)
+  else t.fail(`resized, camera still: ${rStill.reason} ${J(rStill.stats)} ${J(rStill.samples.slice(0, 3))}`)
+  // Markers off first and the frame settled, so the tier switch is the only thing that can
+  // cause a redraw (clearing markers is itself an invalidation).
+  await page.evaluate(() => window.__world.clearMarkers())
+  await drawnFrames(page, 3)
+  for (const on of [true, false]) {
+    const before = await page.evaluate(() => window.__world.frames())
+    await page.evaluate((v) => window.__game.setHighQuality(v), on)
+    await drawnFrames(page, 3)
+    const drew = (await page.evaluate(() => window.__world.frames())) - before
+    await testLayerShows(page, `tier switched to ${on ? 'full' : 'low'}, camera still (${drew} frame(s) redrawn)`)
+    await page.evaluate(() => window.__game.skyVisible(true))
+  }
+  await page.screenshot({ path: join(shotsDir, 'world-canvas-resized.png') })
+  console.log('  shot: shots/world-canvas-resized.png')
+  await page.evaluate(() => window.__game.watch(null))
+  await page.setViewportSize({ width: 1280, height: 720 })
 
   // Control: the stub renderer must fail the marker measurement by name.
   await openSandbox('&world=off')
@@ -287,10 +418,24 @@ try {
   if (!off.ok && off.reason === 'no marker in the three.js canvas') {
     t.ok(`control: with the renderer off the marker check fails by name — "${off.reason}"`)
   } else {
-    t.fail(`control: with the renderer off the marker check reported ${JSON.stringify({ ok: off.ok, reason: off.reason })}`)
+    t.fail(`control: with the renderer off the marker check reported ${J({ ok: off.ok, reason: off.reason })}`)
   }
   if (errors.length) t.fail(`sandbox page errors: ${errors.slice(0, 3).join(' | ')}`)
   await ctx.close()
+
+  // ---------------------------------------------------------------- R18 on a DPR-2 screen
+  const hi = await stack.browser.newContext({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2 })
+  const hp = await hi.newPage()
+  await hp.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242`)
+  await hp.waitForFunction('!!window.__game && !!window.__world && window.__world.frames() > 2', null, { timeout: 60_000 })
+  await assertOrder(hp, 'DPR 2, 1100x900')
+  const hiTiers = await readTiers(hp)
+  if (hiTiers.dpr === 2 && tiersOk(hiTiers)) {
+    t.ok(`DPR ${hiTiers.dpr}: buffers low ${hiTiers.low.buffer} / full ${hiTiers.full.buffer} — Phaser's resolution, not the 2200-px-wide device box (R18)`)
+  } else {
+    t.fail(`DPR 2: ${J(hiTiers)}`)
+  }
+  await hi.close()
 
   // ---------------------------------------------------------------- networked match
   const { page: gp, shot, pageErrors } = await stack.openClient({ name: 'ana' })
@@ -311,9 +456,13 @@ try {
      requestAnimationFrame(step)`,
     40,
   )
-  await gp.evaluate(() => window.__game.watch(null))
   if (matchPan.ok) t.ok(`match pan (camera via watch): both canvases agree on every frame ${JSON.stringify(matchPan.stats)}`)
   else t.fail(`match pan: ${matchPan.reason} ${JSON.stringify(matchPan.stats)} ${JSON.stringify(matchPan.samples.slice(0, 6))}`)
+  // F1: and a pure vertical leg, through the same hook.
+  const matchV = await measurePan(gp, 'match vertical', verticalLeg(3), 40, { axis: 'y' })
+  await gp.evaluate(() => window.__game.watch(null))
+  if (matchV.ok) t.ok(`match vertical leg: the drawn view is Phaser's on every frame, canvases agree ${J(matchV.stats)}`)
+  else t.fail(`match vertical leg: ${matchV.reason} ${J(matchV.stats)} ${J(matchV.samples.slice(0, 4))}`)
   await shot('world-canvas-match')
   if (pageErrors.length) t.fail(`match page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 } catch (e) {

@@ -7,7 +7,11 @@ import {
   loadSettings,
   onFpsCounterChange,
   onHighQualityChange,
+  detectTier,
+  qualityTier,
+  readChoice,
   readFlag,
+  rendererString,
   resetSettingsForTest,
   setFpsCounter,
   setHighQuality,
@@ -155,5 +159,81 @@ describe('the FPS counter setting (T21.24)', () => {
     expect(() => setFpsCounter(hostile, true)).not.toThrow()
     expect(isFpsCounter()).toBe(true)
     expect(readFlag(hostile, FPS_COUNTER_KEY)).toBe(false)
+  })
+})
+
+/** A GL context stand-in answering `renderer` for the unmasked renderer string (or masked, without the extension). */
+function gl(renderer: string, unmasked = true) {
+  const asked: number[] = []
+  return {
+    asked,
+    getExtension: (name: string) => (unmasked && name === 'WEBGL_debug_renderer_info' ? {} : null),
+    getParameter: (p: number) => {
+      asked.push(p)
+      return renderer
+    },
+  } as unknown as Parameters<typeof detectTier>[0] & { asked: number[] }
+}
+
+const GPU = 'ANGLE (Intel, Intel(R) Arc(TM) B390 GPU (0x0000B0B0) Direct3D11 vs_5_0 ps_5_0, D3D11)'
+const SWIFTSHADER = 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'
+
+describe('the quality tier (T23.03B / R20)', () => {
+  beforeEach(() => resetSettingsForTest())
+
+  it('never chosen: detected from the renderer string — full on a GPU, low on a software rasteriser', () => {
+    loadSettings(store())
+    expect(qualityTier(gl(GPU))).toBe('full')
+    expect(qualityTier(gl(SWIFTSHADER))).toBe('low')
+    expect(qualityTier(gl('llvmpipe (LLVM 15.0.7, 256 bits)'))).toBe('low')
+    expect(qualityTier(gl('Microsoft Basic Render Driver (Software)'))).toBe('low')
+    // No context, or one that says nothing: low, never a guess at full.
+    expect(qualityTier(null)).toBe('low')
+    expect(qualityTier(gl(''))).toBe('low')
+  })
+
+  it('reads the unmasked renderer where the extension exists, gl.RENDERER where it does not', () => {
+    const a = gl(GPU)
+    expect(rendererString(a)).toBe(GPU)
+    expect((a as unknown as { asked: number[] }).asked).toEqual([0x9246])
+    const b = gl(GPU, false)
+    expect(rendererString(b)).toBe(GPU)
+    expect((b as unknown as { asked: number[] }).asked).toEqual([0x1f01])
+  })
+
+  it('an explicit choice always wins over the detected tier, both ways', () => {
+    loadSettings(store({ [HIGH_QUALITY_KEY]: '0' }))
+    expect(qualityTier(gl(GPU))).toBe('low')
+    loadSettings(store({ [HIGH_QUALITY_KEY]: '1' }))
+    expect(qualityTier(gl(SWIFTSHADER))).toBe('full')
+    // And a live toggle, from never-chosen.
+    resetSettingsForTest()
+    const s = store()
+    loadSettings(s)
+    expect(qualityTier(gl(GPU))).toBe('full')
+    setHighQuality(s, false)
+    expect(qualityTier(gl(GPU))).toBe('low')
+  })
+
+  it('detecting never writes the setting, and never turns High Quality on', () => {
+    // High Quality still gates today's Phaser shader layers: a detected full tier must not
+    // switch them on, and must not become a stored choice the player never made.
+    const s = store()
+    loadSettings(s)
+    expect(qualityTier(gl(GPU))).toBe('full')
+    expect(isHighQuality()).toBe(false)
+    expect(s.raw.has(HIGH_QUALITY_KEY)).toBe(false)
+  })
+
+  it('the stored value has three states, and anything but 1/0 is "never chosen"', () => {
+    expect(readChoice(store({ [HIGH_QUALITY_KEY]: '1' }), HIGH_QUALITY_KEY)).toBe(true)
+    expect(readChoice(store({ [HIGH_QUALITY_KEY]: '0' }), HIGH_QUALITY_KEY)).toBe(false)
+    for (const junk of ['', 'true', 'banana']) expect(readChoice(store({ [HIGH_QUALITY_KEY]: junk }), HIGH_QUALITY_KEY)).toBe(null)
+    expect(readChoice(store(), HIGH_QUALITY_KEY)).toBe(null)
+    expect(readChoice(hostile, HIGH_QUALITY_KEY)).toBe(null)
+    // Junk behaves as never chosen end to end: detected tier, High Quality off.
+    loadSettings(store({ [HIGH_QUALITY_KEY]: 'banana' }))
+    expect(qualityTier(gl(GPU))).toBe('full')
+    expect(isHighQuality()).toBe(false)
   })
 })

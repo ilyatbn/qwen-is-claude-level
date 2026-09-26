@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { SCENES } from './scenes'
-import { TIER_SAMPLES, TIER_SCALE, acesSrgb, bufferSize, hexLinear, orthoFromView, toWorld } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, acesSrgb, bufferFor, hexLinear, mustDraw, orthoFromView, sameView, toWorld } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -32,10 +32,35 @@ describe('tiers and buffers', () => {
     expect(TIER_SAMPLES.full).toBe(4)
     expect(TIER_SAMPLES.low).toBe(0)
   })
-  it('sizes the drawing buffer in device pixels, once', () => {
-    expect(bufferSize(1280, 720, 1)).toEqual({ w: 1280, h: 720 })
-    expect(bufferSize(1280, 720, 1.5)).toEqual({ w: 1920, h: 1080 })
-    expect(bufferSize(0, 0, 2)).toEqual({ w: 1, h: 1 })
+  it("R18: the buffer is Phaser's game resolution times the tier, whatever the window or the screen", () => {
+    // No CSS size and no devicePixelRatio in the signature: a 4K screen gets the same buffer
+    // as a 720p one, which is what the pictures were drawn at (setPixelRatio(1), 1280×720).
+    expect(bufferFor(1280, 720, 'full')).toEqual({ w: 1280, h: 720 })
+    expect(bufferFor(1280, 720, 'low')).toEqual({ w: 640, h: 360 })
+    expect(bufferFor(0, 0, 'full')).toEqual({ w: 1, h: 1 })
+    // The pixel ratio R18 states, for a canvas shown 1100 CSS px wide: 1280/1100 × scale.
+    // Floored the way three's setSize floors it, that ratio can lose a pixel; the buffer cannot.
+    const ratio = (1280 / 1100) * TIER_SCALE.full
+    expect(Math.round(1100 * ratio)).toBe(bufferFor(1280, 720, 'full').w)
+  })
+})
+
+describe('the redraw skip (T23.03B F1, F3)', () => {
+  const v = { x: 10, y: 20, w: 640, h: 360 }
+  it('sameView compares every field — each one alone makes a different view', () => {
+    expect(sameView(v, { ...v })).toBe(true)
+    for (const k of ['x', 'y', 'w', 'h'] as const) expect(sameView(v, { ...v, [k]: v[k] + 1 }), k).toBe(false)
+    expect(sameView(null, v)).toBe(false)
+    expect(sameView(v, null)).toBe(false)
+  })
+  it('skips only an unchanged view of a clean, unanimated scene', () => {
+    expect(mustDraw({ dirty: false, animated: false, last: v, view: { ...v } })).toBe(false)
+    expect(mustDraw({ dirty: true, animated: false, last: v, view: { ...v } })).toBe(true)
+    expect(mustDraw({ dirty: false, animated: false, last: v, view: { ...v, y: v.y + 1 } })).toBe(true)
+    expect(mustDraw({ dirty: false, animated: false, last: null, view: v })).toBe(true)
+  })
+  it('an animated layer draws every frame, even with the view and scene unchanged (F3)', () => {
+    expect(mustDraw({ dirty: false, animated: true, last: v, view: { ...v } })).toBe(true)
   })
 })
 

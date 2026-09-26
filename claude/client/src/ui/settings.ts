@@ -42,6 +42,20 @@ export function readFlag(store: Pick<Storage, 'getItem'>, key: string): boolean 
   }
 }
 
+/**
+ * T23.03B / R20: a stored choice, or `null` when the player has **never chosen** — the key is
+ * missing, unreadable, or holds anything but `'1'` / `'0'`. Not a new flag: the same key, read
+ * with its third state kept instead of folded into `false`. `readFlag` is this with `null → false`.
+ */
+export function readChoice(store: Pick<Storage, 'getItem'>, key: string): boolean | null {
+  try {
+    const v = store.getItem(key)
+    return v === '1' ? true : v === '0' ? false : null
+  } catch {
+    return null
+  }
+}
+
 /** Write a boolean. Swallows a storage failure for the reason `readFlag` does. */
 export function writeFlag(store: Pick<Storage, 'setItem'>, key: string, on: boolean): void {
   try {
@@ -60,7 +74,8 @@ export function writeFlag(store: Pick<Storage, 'setItem'>, key: string, on: bool
  * in a draw loop is a renderer that stutters. The menu writes; this is what
  * everything else reads.
  */
-let highQuality = false
+/** `null`: the player has never chosen (R20) — High Quality reads off, the tier is auto-detected. */
+let highQuality: boolean | null = null
 /** The FPS counter's live value, cached for the same reason (T21.24). */
 let fpsCounter = false
 
@@ -74,7 +89,7 @@ let fpsCounter = false
  * exactly this reason.
  */
 export function loadSettings(store: Pick<Storage, 'getItem'>): void {
-  highQuality = readFlag(store, HIGH_QUALITY_KEY)
+  highQuality = readChoice(store, HIGH_QUALITY_KEY)
   fpsCounter = readFlag(store, FPS_COUNTER_KEY)
 }
 
@@ -85,7 +100,9 @@ export function loadSettings(store: Pick<Storage, 'getItem'>): void {
  * second thing that can disagree — the shape this project keeps paying for.
  */
 export function isHighQuality(): boolean {
-  return highQuality
+  // R20: "never chosen" is off here — this flag still gates today's Phaser shader layers, and
+  // auto-detecting a tier must not switch them on.
+  return highQuality === true
 }
 
 /**
@@ -97,21 +114,53 @@ export function isHighQuality(): boolean {
 export function setHighQuality(store: Pick<Storage, 'setItem'>, on: boolean): boolean {
   highQuality = on
   writeFlag(store, HIGH_QUALITY_KEY, on)
-  for (const fn of listeners) fn(highQuality)
-  return highQuality
+  for (const fn of listeners) fn(on)
+  return isHighQuality()
 }
 
 /**
  * T23.03 / R14: High Quality picks the world renderer's **tier**, not whether shaders exist —
- * full is the pictures, low halves the render target (`look/worldRenderer-math.ts::TIER_SCALE`).
+ * full is the pictures, low renders the world canvas at half resolution
+ * (`look/worldRenderer-math.ts::TIER_SCALE`).
  *
- * Derived from the one High Quality flag, not a second setting (CLAUDE.md: derive, do not add a
- * flag). **Default: the flag's default, off → low**, although R14 says full: flipping the stored
- * default now would also switch today's Phaser shader layers on for every player and check that
- * has never set it. The default moves to full when those readers retire (R15, T23.23).
+ * T23.03B / R20: **an explicit choice always wins** (stored `'1'` → full, `'0'` → low). A player
+ * who has never chosen gets the tier detected from the world renderer's own GL context
+ * (`detectTier`): full on a real GPU, low on a software rasteriser. Detecting never writes the
+ * setting — `isHighQuality()` stays off, so today's Phaser shader layers are not switched on by
+ * it. No context (a caller that has none) reads as low. The browser checks store `'0'`
+ * (`scripts/checks/harness.mjs`), naming their tier rather than inheriting SwiftShader's.
  */
-export function qualityTier(): 'full' | 'low' {
-  return highQuality ? 'full' : 'low'
+export function qualityTier(gl: RendererInfoSource | null = null): 'full' | 'low' {
+  if (highQuality !== null) return highQuality ? 'full' : 'low'
+  return detectTier(gl)
+}
+
+/** What `detectTier` reads from a WebGL context: the renderer string, unmasked where allowed. */
+export type RendererInfoSource = Pick<WebGLRenderingContext, 'getParameter' | 'getExtension'>
+
+/** `WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL` and `gl.RENDERER`: GL enums, not tunables. */
+const UNMASKED_RENDERER_WEBGL = 0x9246
+const GL_RENDERER = 0x1f01
+
+/** Software rasterisers: Chrome's SwiftShader (the browser checks), Mesa's llvmpipe / softpipe, "Software". */
+const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|software/i
+
+/** The context's renderer string, unmasked where the browser allows it; `''` if unreadable. */
+export function rendererString(gl: RendererInfoSource | null): string {
+  if (!gl) return ''
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    const v: unknown = gl.getParameter(ext ? UNMASKED_RENDERER_WEBGL : GL_RENDERER)
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return ''
+  }
+}
+
+/** R20: full on a real GPU's renderer string, low on a software one or none at all. */
+export function detectTier(gl: RendererInfoSource | null): 'full' | 'low' {
+  const r = rendererString(gl)
+  return r !== '' && !SOFTWARE_RENDERER.test(r) ? 'full' : 'low'
 }
 
 type Listener = (on: boolean) => void
@@ -164,7 +213,7 @@ const fpsListeners = new Set<Listener>()
 
 /** Test seam: forget everything, so a suite can exercise the empty path. */
 export function resetSettingsForTest(): void {
-  highQuality = false
+  highQuality = null
   fpsCounter = false
   listeners.clear()
   fpsListeners.clear()

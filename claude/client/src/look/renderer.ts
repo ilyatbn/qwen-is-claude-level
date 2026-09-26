@@ -65,10 +65,26 @@ export class StubRenderer implements SceneRenderer {
   destroy(): void {}
 }
 
-/** The view rect of a Phaser camera's `worldView`, as the renderer takes it. */
-export function viewOf(cam: Pick<Phaser.Cameras.Scene2D.Camera, 'worldView'>): ViewRect {
-  const v = cam.worldView
-  return { x: v.x, y: v.y, w: v.width, h: v.height }
+/** What `viewOf` reads of a Phaser camera — all of it set by `Camera.preRender`. */
+export type CameraView = Pick<Phaser.Cameras.Scene2D.Camera, 'width' | 'height' | 'zoomX' | 'zoomY'> & {
+  midPoint: { x: number; y: number }
+}
+
+/**
+ * The view rect a Phaser camera shows, as the renderer takes it — **derived, not copied from
+ * `worldView`** (T23.03B, F6). Phaser 3.90's `Camera.preRender` rounds `worldView` to integers
+ * (`Math.floor(v + 0.5)` on its size and corner) but draws its own sprites from the unrounded
+ * `scrollX/scrollY` and zoom; the camera zooms about its centre, so what it shows is `midPoint`
+ * (`scrollX + width / 2`, unrounded — "otherwise it breaks smooth zoom") ± half of
+ * `width / zoom`. Copying `worldView` would put the world up to half a world px off Phaser's
+ * layers once `roundPixels` is gone (R15 drops `pixelArt`) — a jitter. **Today** `roundPixels`
+ * floors the scroll and the zoom is an integer, so this equals `worldView` exactly, and
+ * `world-canvas` asserts that on every frame.
+ */
+export function viewOf(cam: CameraView): ViewRect {
+  const w = cam.width / cam.zoomX
+  const h = cam.height / cam.zoomY
+  return { x: cam.midPoint.x - w / 2, y: cam.midPoint.y - h / 2, w, h }
 }
 
 /**

@@ -27,6 +27,7 @@ import { killGroup } from '../proc-group.mjs'
 import { BROWSER_ARGS, chromePath, libDir } from '../lib/browser-args.mjs'
 import { ROUTE_COOKIE } from '../lib/stack-router.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
+import { nameTheTier } from '../lib/check-tier.mjs'
 
 /**
  * `freePort` lives in `lib/free-port.mjs` so the runner can take a port without
@@ -221,6 +222,8 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
     newContext: async (opts) => {
       const ctx = await real.newContext(opts)
       contexts.push(ctx)
+      // T23.03B / R20: the checks name their tier (low) rather than inherit a detected one.
+      await nameTheTier(ctx)
       await ctx.addCookies([{ name: ROUTE_COOKIE, value: String(port), url: viteUrl }])
       return ctx
     },

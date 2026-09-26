@@ -3,9 +3,11 @@
  *
  * Phaser keeps scenes, input, camera, audio and UI; its canvas is transparent (`main.ts`), and
  * this renderer's canvas sits beneath it, sized to the same box. Phaser's camera is the only
- * source of truth: each drawn frame `driveFromScene` hands this renderer `cameras.main.worldView`
- * **after** `Camera.preRender` (the `living-sky` trap — see `renderer.ts`), and it copies that
- * into an ortho camera in the mockup's y-up mask space (`worldRenderer-math.ts`).
+ * source of truth: each drawn frame `driveFromScene` hands this renderer the camera's view
+ * **after** `Camera.preRender` (the `living-sky` trap — see `renderer.ts`; derived unrounded,
+ * `renderer.ts::viewOf`), and it copies that into an ortho camera in the mockup's y-up mask
+ * space (`worldRenderer-math.ts`). **Resolution (R18):** the drawing buffer is Phaser's game
+ * resolution × the tier's scale, never `devicePixelRatio` — the pictures' `setPixelRatio(1)`.
  *
  * The post chain is the mockup's skeleton (`kit.js::post`): a half-float target with 4× MSAA
  * (full tier; the low tier renders the whole canvas at half resolution and drops MSAA) → `OutputPass` (ACES at `look.exposure`,
@@ -23,6 +25,7 @@ import {
   HalfFloatType,
   Mesh,
   MeshBasicMaterial,
+  type Object3D,
   OrthographicCamera,
   PlaneGeometry,
   Scene,
@@ -36,20 +39,12 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { devSurface } from '../dev'
-import { onHighQualityChange, qualityTier } from '../ui/settings'
+import { onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import type { SceneDescription, ViewRect } from './scene'
 import { F1 } from './scenes/F1'
 import { exposeWorldHandle } from './worldHandle'
-import {
-  TIER_SAMPLES,
-  TIER_SCALE,
-  bufferSize,
-  hexLinear,
-  orthoFromView,
-  toWorld,
-  type QualityTier,
-} from './worldRenderer-math'
+import { TIER_SAMPLES, bufferFor, hexLinear, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /** The mockup's full-screen quad: clip-space, drawn first, never culled (`e_style.js::bgQuad`). */
 function testLayer(): Mesh<PlaneGeometry, ShaderMaterial> {
@@ -66,6 +61,17 @@ function testLayer(): Mesh<PlaneGeometry, ShaderMaterial> {
   return m
 }
 
+/**
+ * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
+ * T23.04's stars, a flickering light — ends the redraw skip (`mustDraw`): an unchanged view of
+ * it is **not** an unchanged picture. Declared here, where the layer is added, so the skip
+ * cannot be taught about it by a second list somewhere else.
+ */
+interface Layer {
+  readonly object: Object3D
+  readonly animated: boolean
+}
+
 export class WorldRenderer implements SceneRenderer {
   readonly backend = 'three' as const
   readonly stats: RenderStats & { skipped: number } = { frames: 0, view: null, scene: null, skipped: 0 }
@@ -80,7 +86,11 @@ export class WorldRenderer implements SceneRenderer {
   private composer: EffectComposer
   private desc: SceneDescription | null = null
   private tier: QualityTier
-  private css = { w: 0, h: 0, dpr: 0 }
+  /** Phaser's CSS box as last applied to this canvas (fractional — `getBoundingClientRect`). */
+  private box = { left: NaN, top: NaN, w: NaN, h: NaN }
+  /** The drawing buffer as last allocated (R18: Phaser's game resolution × the tier's scale). */
+  private buf = { w: 0, h: 0 }
+  private readonly layers: Layer[] = []
   private readonly markers: Mesh[] = []
   private readonly unsubscribe: () => void
 
@@ -95,11 +105,24 @@ export class WorldRenderer implements SceneRenderer {
     this.renderer.toneMapping = ACESFilmicToneMapping
     this.renderer.outputColorSpace = SRGBColorSpace
     this.camera.position.z = 1000
-    this.scene3.add(this.sky)
-    this.tier = qualityTier()
+    this.addLayer({ object: this.sky, animated: false })
+    // R20: the tier this machine gets when the player has never chosen is read from this
+    // renderer's own context — the GPU that will actually draw the world.
+    this.tier = qualityTier(this.gl)
     this.composer = this.buildComposer()
     this.mount()
-    this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier()))
+    this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
+  }
+
+  private addLayer(l: Layer): void {
+    this.layers.push(l)
+    this.scene3.add(l.object)
+    this.dirty = true
+  }
+
+  /** F3: does anything drawn change on its own? Then every frame is drawn. */
+  get animated(): boolean {
+    return this.layers.some((l) => l.animated)
   }
 
   /**
@@ -123,31 +146,47 @@ export class WorldRenderer implements SceneRenderer {
     this.syncBox()
   }
 
-  /** Match Phaser's box (Scale.FIT moves and resizes it) and the device pixel ratio — once each, here. */
-  /** Returns whether the box, the pixel ratio or the tier changed (so the frame must redraw). */
-  private syncBox(): boolean {
+  /**
+   * Follow Phaser's box, and size the drawing buffer — once each, here.
+   *
+   * **The box** (Scale.FIT moves and resizes Phaser's canvas) is read with
+   * `getBoundingClientRect`, fractional (T23.03B, F5): FIT at 1100×900 gives Phaser a
+   * 1100×618.75 box at top 140.625, and `clientHeight`/`offsetTop` would round this canvas to
+   * 619 at 140 — a quarter-pixel stretch and a sub-pixel shift. Positioned relative to the
+   * parent's padding box, which is what `position: absolute` resolves against.
+   *
+   * **The buffer** is R18's: Phaser's game resolution × the tier's scale, never the CSS box ×
+   * `devicePixelRatio`. So a window resize changes only the CSS box, exactly as it does for
+   * Phaser's canvas, and never reallocates the buffer; a tier switch does. A reallocated buffer
+   * is blank, so it marks the frame dirty (the redraw skip must not keep "the last picture").
+   * R14's low tier renders the **whole** canvas at half resolution and lets CSS scale it up —
+   * the mockup's own `kit.js::makeRenderer({ scale: 2 })`; measured on the checks' SwiftShader
+   * (sandbox, seed 4242): halving only the post target cost 60 → 47 fps and put `birds`' aim out.
+   */
+  private syncBox(): void {
     const p = this.phaserCanvas
-    const w = p.clientWidth || p.width
-    const h = p.clientHeight || p.height
-    const dpr = window.devicePixelRatio || 1
-    const s = this.canvas.style
-    const left = `${p.offsetLeft}px`
-    const top = `${p.offsetTop}px`
-    if (s.left !== left) s.left = left
-    if (s.top !== top) s.top = top
-    if (w === this.css.w && h === this.css.h && dpr === this.css.dpr) return false
-    this.css = { w, h, dpr }
-    s.width = `${w}px`
-    s.height = `${h}px`
-    // R14's low tier renders the **whole** world canvas at half resolution and lets CSS scale it
-    // up — the mockup's own `kit.js::makeRenderer({ scale: 2 })`. Measured on the checks'
-    // SwiftShader (sandbox, seed 4242): halving only the post target cost 60 → 47 fps and put the
-    // `birds` check's aim out (2/2 red, green with the renderer off); halving the canvas: 58.5–59.
-    this.renderer.setPixelRatio(dpr * TIER_SCALE[this.tier])
-    this.renderer.setSize(w, h, false)
-    this.composer.setPixelRatio(dpr * TIER_SCALE[this.tier])
-    this.composer.setSize(w, h)
-    return true
+    const parent = p.parentElement
+    const r = p.getBoundingClientRect()
+    const pr = parent?.getBoundingClientRect()
+    const box = {
+      left: r.left - (pr?.left ?? 0) - (parent?.clientLeft ?? 0),
+      top: r.top - (pr?.top ?? 0) - (parent?.clientTop ?? 0),
+      w: r.width,
+      h: r.height,
+    }
+    const b = this.box
+    if (box.left !== b.left || box.top !== b.top || box.w !== b.w || box.h !== b.h) {
+      this.box = box
+      Object.assign(this.canvas.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.w}px`, height: `${box.h}px` })
+    }
+    const buf = bufferFor(p.width, p.height, this.tier)
+    if (buf.w === this.buf.w && buf.h === this.buf.h) return
+    this.buf = buf
+    this.renderer.setPixelRatio(1)
+    this.renderer.setSize(buf.w, buf.h, false)
+    this.composer.setPixelRatio(1)
+    this.composer.setSize(buf.w, buf.h)
+    this.dirty = true
   }
 
   private buildComposer(): EffectComposer {
@@ -164,9 +203,8 @@ export class WorldRenderer implements SceneRenderer {
     this.tier = tier
     this.composer.dispose()
     this.composer = this.buildComposer()
-    this.css = { w: 0, h: 0, dpr: 0 }
+    this.buf = { w: 0, h: 0 }
     this.syncBox()
-    this.dirty = true
   }
 
   setScene(desc: SceneDescription): void {
@@ -180,13 +218,12 @@ export class WorldRenderer implements SceneRenderer {
 
   render(view: ViewRect): void {
     if (!this.desc) return
-    const resized = this.syncBox()
-    // Nothing this renderer draws moves on its own yet, so an unchanged view, scene and box is
-    // an unchanged picture: the canvas keeps showing the last one. Measured on the checks'
-    // SwiftShader in a match: drawing every frame cost 60 → 51 fps and turned `birds` red
-    // (1/5 green; 3/3 with the renderer off). **Animated layers (T23.04's stars) remove this.**
-    const v = this.stats.view
-    if (!this.dirty && !resized && v && v.x === view.x && v.y === view.y && v.w === view.w && v.h === view.h) {
+    this.syncBox()
+    // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
+    // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
+    // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
+    // renderer off). An animated layer draws every frame (F3) — that cost returns with T23.04.
+    if (!mustDraw({ dirty: this.dirty, animated: this.animated, last: this.stats.view, view })) {
       this.stats.skipped++
       return
     }
@@ -217,25 +254,45 @@ export class WorldRenderer implements SceneRenderer {
     this.dirty = true
   }
 
-  /** `display`: Phaser's box in device px; `buffer`: this canvas's drawing buffer; `target`: the post chain's. */
+  /** Dev: remove every marker (a check measuring twice on one page must find only its own). */
+  clearMarkers(): void {
+    // Only a picture that had markers changes: an empty clear must not redraw, or a check that
+    // clears before measuring an invalidation would supply the redraw it is measuring.
+    if (this.markers.length) this.dirty = true
+    for (const m of this.markers) {
+      this.scene3.remove(m)
+      m.geometry.dispose()
+      ;(m.material as MeshBasicMaterial).dispose()
+    }
+    this.markers.length = 0
+  }
+
+  /**
+   * `display`: Phaser's drawing buffer (the game resolution, R18); `buffer`: this canvas's drawing
+   * buffer; `target`: the post chain's; `gpu`: the renderer string the tier would be detected
+   * from (R20); `animated`: whether the redraw skip is off (F3).
+   */
   info(): {
     tier: QualityTier
+    gpu: string
     display: [number, number]
     buffer: [number, number]
     target: [number, number]
     samples: number
     exposure: number
+    animated: boolean
   } {
     const rt = this.composer.renderTarget1
-    const d = bufferSize(this.css.w, this.css.h, this.css.dpr)
     const gl = this.gl
     return {
       tier: this.tier,
-      display: [d.w, d.h],
+      gpu: rendererString(gl),
+      display: [this.phaserCanvas.width, this.phaserCanvas.height],
       buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
       target: [rt.width, rt.height],
       samples: rt.samples,
       exposure: this.renderer.toneMappingExposure,
+      animated: this.animated,
     }
   }
 
@@ -278,6 +335,22 @@ export function gameDescription(mapW: number, mapH: number): SceneDescription {
   }
 }
 
+
+/** The game scenes' world renderer, re-described when the map changes. */
+export interface GameWorld {
+  readonly renderer: SceneRenderer
+  /** `map_init` / a regenerated sandbox map: describe the new size. */
+  mapChanged(mapW: number, mapH: number): void
+}
+
+/**
+ * `GameScene` and `SandboxScene`'s entry point (T23.03B, F10): they load this module on
+ * demand (`loadWorldRenderer.ts`), so they cannot import `gameDescription` from it statically.
+ */
+export function createGameWorld(scene: Phaser.Scene, mapW: number, mapH: number): GameWorld {
+  const renderer = createWorldRenderer(scene, gameDescription(mapW, mapH))
+  return { renderer, mapChanged: (w, h) => renderer.setScene(gameDescription(w, h)) }
+}
 
 /**
  * The one constructor (step 4): a three.js world renderer under `scene`'s Phaser canvas, fed

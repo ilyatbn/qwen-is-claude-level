@@ -31,8 +31,8 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
-import type { SceneRenderer } from '../look/renderer'
-import { createWorldRenderer, gameDescription } from '../look/worldRenderer'
+import { loadWorldRenderer } from '../look/loadWorldRenderer'
+import type { GameWorld } from '../look/worldRenderer'
 import type { SpaceSkyPart } from '../render/spaceSky'
 import type { SkyGround } from '../render/parallax'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -78,7 +78,8 @@ export class SandboxScene extends Phaser.Scene {
 
   private sky!: SkyLayer
   /** T23.03 (R1): three.js draws the world under the transparent Phaser canvas; one test layer today. */
-  private worldRenderer: SceneRenderer | null = null
+  /** T23.03 (R1): three.js under Phaser's canvas; `null` until its chunk has loaded (T23.03B, F10). */
+  private worldRenderer: GameWorld | null = null
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
@@ -200,7 +201,10 @@ export class SandboxScene extends Phaser.Scene {
     this.regenerate()
 
     this.sky = new SkyLayer(this, this.core.meta.seed, this.core.meta.theme)
-    this.worldRenderer = createWorldRenderer(this, gameDescription(this.core.width, this.core.height))
+    this.worldRenderer = null
+    void loadWorldRenderer(this).then((m) => {
+      if (m) this.worldRenderer = m.createGameWorld(this, this.core.width, this.core.height)
+    })
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
@@ -394,8 +398,9 @@ export class SandboxScene extends Phaser.Scene {
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, undefined, undefined, this.gravity === SPACE_GRAVITY)
-    // `worldRenderer` is null on the first call: `create()` regenerates before it builds it.
-    this.worldRenderer?.setScene(gameDescription(mapW, mapH))
+    // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
+    // and until its chunk loads; it is then described at the core's size as it stands.
+    this.worldRenderer?.mapChanged(mapW, mapH)
     this.timings.buildAllMs = this.world.timings.buildAllMs
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
