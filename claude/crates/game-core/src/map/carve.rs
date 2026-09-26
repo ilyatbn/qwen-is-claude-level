@@ -13,7 +13,8 @@
 //! See `docs/11-map-destruction.md` §1–§5.
 
 use crate::constants::{
-    ASTEROID_HARDNESS, BEDROCK_H, CHUNK_SIZE, COARSE_CELL, CORE_HITS, MAX_PENDING_BREACHES, WALL_W,
+    ASTEROID_HARDNESS, BEDROCK_H, CHUNK_SIZE, COARSE_CELL, CORE_HITS, CORE_HIT_MIN_R,
+    MAX_PENDING_BREACHES, WALL_W,
 };
 use crate::map::shape;
 use crate::map::Map;
@@ -511,8 +512,12 @@ impl Map {
     /// raster, so the hit that reaches `CORE_HITS` unlocks the core for the very
     /// carve that made it. A hit is the carve's **hardened** disc (R111 — what it
     /// can remove from rock) overlapping the core's disc, at any stamped centre.
+    ///
+    /// **R112b (T22.22B): only a blast counts** — a carve whose *unhardened* radius is
+    /// under [`CORE_HIT_MIN_R`] (bullets, pellets, scorches, fragments, a shovel) is
+    /// never a hit, however close it lands. The one predicate; nothing else asks.
     fn strike_cores(&mut self, centres: &[(i32, i32)], r: i32) -> bool {
-        if r < 0 {
+        if r < 0 || (r as f32) < CORE_HIT_MIN_R {
             return false;
         }
         let rh = hard_radius(r.min(self.mask.w as i32 + self.mask.h as i32)) as i64;
@@ -1380,6 +1385,86 @@ mod tests {
             raster(r),
             "control: the list is the hardness"
         );
+    }
+
+    /// **R112b (T22.22B): only a blast counts as a core hit.** Every carve in the game,
+    /// classified against [`CORE_HIT_MIN_R`] — every weapon's `blast_radius` (the whole
+    /// registry, so a new weapon is classified the day it lands) and the carves that are
+    /// not a weapon's (a resting flame's scorch, a toxic drop, a lava channel, a core's
+    /// own crumble at the largest core there can be). **The ones that count are named**,
+    /// not computed: grenade, bazooka, mine and a meteor, the coordinator's ruling. Then
+    /// the predicate on a real rock, at its edge: a carve of `CORE_HIT_MIN_R` through the
+    /// core's centre is a hit (the presence control), one pixel narrower is not.
+    ///
+    /// Falsified at the live site: the predicate removed from `strike_cores` fails the
+    /// absence arm on a real rock (the registry arm only classifies).
+    #[test]
+    fn only_a_blast_counts_as_a_core_hit() {
+        use crate::constants::{
+            FLAME_SCORCH_R, LAVA_CHANNEL_R, SPACE_ASTEROID_MASS_MAX, SPACE_ASTEROID_R_MAX,
+            SPACE_CORE_FRAC, TOXIC_DROP_CARVE_R,
+        };
+        use crate::items::registry::{WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_METEOR, WEAPON_MINE};
+        let counts = |r: f32| r.round() >= CORE_HIT_MIN_R;
+        let named = [WEAPON_BAZOOKA, WEAPON_GRENADE, WEAPON_MINE, WEAPON_METEOR];
+        let mut rows = Vec::new();
+        for w in crate::weapons::defs::WEAPONS
+            .iter()
+            .filter(|w| w.blast_radius > 0.0)
+        {
+            rows.push((w.key.to_string(), w.blast_radius));
+            assert_eq!(
+                counts(w.blast_radius),
+                named.contains(&w.id),
+                "{} (carve r {}) is classified against the ruling's list",
+                w.key,
+                w.blast_radius
+            );
+        }
+        let largest_core = (SPACE_CORE_FRAC
+            * crate::map::gen::space::grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX)
+                as f32)
+            .round();
+        for (what, r) in [
+            ("resting-flame scorch", FLAME_SCORCH_R),
+            ("toxic drop", TOXIC_DROP_CARVE_R),
+            ("lava channel", LAVA_CHANNEL_R),
+            ("a core's crumble (largest core)", largest_core),
+        ] {
+            rows.push((what.to_string(), r));
+            assert!(!counts(r), "{what} (carve r {r}) would count as a core hit");
+        }
+        rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (what, r) in &rows {
+            println!(
+                "{what:>32}: carve r {r:>4} — {}",
+                if counts(*r) { "counts" } else { "no" }
+            );
+        }
+
+        let (map, _, _) = space();
+        let (i, a) = map
+            .meta
+            .asteroids
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, a)| !a.iron)
+            .max_by_key(|(_, a)| a.r)
+            .expect("rocks");
+        let min = CORE_HIT_MIN_R as i32;
+        for (r, hit) in [(min - 1, false), (min, true)] {
+            let mut m = map.clone();
+            let res = m.carve_circle(a.x, a.y, r);
+            assert_eq!(
+                res.core_hit, hit,
+                "a carve of r {r} through the core's centre"
+            );
+            assert_eq!(m.meta.asteroids[i].core_hits, u8::from(hit));
+            let mut m = map.clone();
+            let res = m.carve_capsule(a.x - a.r, a.y, a.x + a.r, a.y, r);
+            assert_eq!(res.core_hit, hit, "a capsule of r {r} through the core");
+        }
     }
 
     /// **R113: an iron asteroid never loses a pixel** — a barrage of circles and

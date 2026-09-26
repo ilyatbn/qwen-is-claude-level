@@ -711,8 +711,8 @@ mod tests {
         // it was — *"traversing an asteroid field on legs alone is a real
         // option"*, a sentence true of this fixture's free teleport back to the
         // rock and of nothing in the game. Driving the return leg instead:
-        // arresting a 430 px/s launch costs 0.478 s at the brake's 900
-        // (`SPACE_BRAKE_SCALE`, T22.22; 0.956 s at `SPACE_THRUST_DOWN` before it),
+        // arresting a 430 px/s launch costs 0.434 s at the brake's 990
+        // (`SPACE_BRAKE_SCALE` 1.1, T22.22B; 0.956 s at `SPACE_THRUST_DOWN` before T22.22),
         // and the burn that brings you home after it is at the gentle share. A tank
         // buys **three**.
         assert_eq!(
@@ -1320,38 +1320,29 @@ mod tests {
         })
     }
 
-    /// **R109b's target, met by R109c (T22.22): stopping from the top speed is under
-    /// 0.5 s and 100 px** — the coordinator's numbers, as literals, against the
-    /// basis that does not move with the fix. T22.20 measured **1646 px and 2.47 s**
-    /// from the old 1350; R109b's 450 top speed took it to 180 px / 0.83 s, and the
-    /// strong brake (`SPACE_BRAKE_SCALE`) the rest of the way — **by LEFT/RIGHT**, the
-    /// side thrust. Travel down is stopped by UP (2200) and meets it with room; travel
-    /// **up** is stopped by DOWN, the weakest axis (900), and does **not**: at full
-    /// strength it needs 450 / 900 = 0.5 s and 450² / 1800 ≈ 112 px plus a tick's
-    /// travel, which this test pins as the one known miss (reported, T22.22) so that a
-    /// change that fixes or worsens it is seen. The control is the governed 260
+    /// **R109b's target, met by R109c (T22.22) and T22.22B: stopping from the top speed
+    /// is under 0.5 s and 100 px on every axis** — the coordinator's numbers, as
+    /// literals, against the basis that does not move with the fix. T22.20 measured
+    /// **1646 px and 2.47 s** from the old 1350; R109b's 450 top speed took it to 180 px
+    /// / 0.83 s, and the strong brake (`SPACE_BRAKE_SCALE`) the rest of the way. Travel
+    /// **up** is stopped by DOWN, the weakest axis (900): at a brake of 1.0 it took
+    /// 109 px / 0.50 s (T22.22's one miss); at 1.1 it is the tightest of the four
+    /// (`SPACE_BRAKE_SCALE`'s doc has the arithmetic). The control is the governed 260
     /// cruise, which must stop shorter.
     ///
-    /// Falsified at the live site: `SPACE_BRAKE_SCALE` 1.0 → `SPACE_THRUST_SCALE`
-    /// fails here, and so does `SPACE_MAX_SPEED` 450 → 1350.
+    /// Falsified at the live site: `SPACE_BRAKE_SCALE` 1.1 → 1.0 fails the up arm;
+    /// → `SPACE_THRUST_SCALE` fails every arm; `SPACE_MAX_SPEED` 450 → 1350 fails here.
     #[test]
     fn stopping_from_the_space_top_speed_is_short() {
         let f = flight();
         let [right, left, down, up] = stops_from_top();
-        for (way, (px, s)) in [("right", right), ("left", left), ("down", down)] {
+        for (way, (px, s)) in [("right", right), ("left", left), ("down", down), ("up", up)] {
             assert!(
                 px < 100.0 && s < 0.5,
                 "stopping from SPACE_MAX_SPEED travelling {way} takes {px:.1} px in {s:.2} s \
                  — R109b asked for under 100 px and 0.5 s"
             );
         }
-        assert!(
-            up.0 < 0.1 * 1646.0 && up.1 < 0.25 * 2.47,
-            "stopping from SPACE_MAX_SPEED travelling up (DOWN held, the weakest axis) \
-             takes {:.1} px in {:.2} s",
-            up.0,
-            up.1
-        );
         assert!(
             f.stop_cruise.0 < right.0 && f.stop_cruise.0 > 0.0,
             "control: stopping from the 260 cruise ({:.1} px) is not shorter than from \

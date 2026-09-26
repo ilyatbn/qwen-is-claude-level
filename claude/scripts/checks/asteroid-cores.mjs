@@ -183,10 +183,18 @@ export default async function ({ page, shot, log }) {
   // T22.21 (R112): **the glow dims per hit.** Each hit short of the last is a carve at
   // the centre that the locked core refuses — no pixel moves — and the heart must
   // read darker than the frame before it by `DIM_MIN`, with the control region still.
+  //
+  // *T22.22B (R112b):* only a carve of `CORE_HIT_MIN_R` or wider is a hit — a core-sized
+  // carve (9..26 px) is a bullet-class bite now and would count nothing — so every hit
+  // is a blast of that radius at the centre. Its hardened disc (half of it) is inside
+  // the core, so hits short of the last still move no pixel.
+  const hitR = Math.round(k.CORE_HIT_MIN_R)
+  if (!(hitR > 0)) throw new Error(`CORE_HIT_MIN_R is not in constants(): ${k.CORE_HIT_MIN_R}`)
+  if (hitR / 2 > rock.c) throw new Error(`premise: a hit's hardened disc (${hitR / 2}) is wider than the core (${rock.c})`)
   const lum = (s) => (s.r + s.g + s.b) / 3
   let before = subjectA
   for (let hit = 1; hit < k.CORE_HITS; hit++) {
-    await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, rock.c])
+    await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, hitR])
     await frames(SETTLE_FRAMES)
     const s = await samplePatch(page, p.subject)
     const ctl = await samplePatch(page, p.control)
@@ -208,9 +216,9 @@ export default async function ({ page, shot, log }) {
   }
 
   // The control frame: the last hit — the core breaks and its pixels go with it (the
-  // unlocked core is not hardened, so the core-sized carve takes it whole), and the
-  // rebake reaching the screen.
-  await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, rock.c])
+  // unlocked core is not hardened, so the blast, wider than the core, takes it whole),
+  // and the rebake reaching the screen.
+  await page.evaluate(([x, y, c]) => window.__game.core.carve(x, y, c), [rock.x, rock.y, hitR])
   await frames(SETTLE_FRAMES)
   const p2 = await patches()
   if (JSON.stringify(p2) !== JSON.stringify(p)) throw new Error('the camera moved between the two frames')

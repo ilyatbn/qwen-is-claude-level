@@ -331,6 +331,8 @@ export interface Constants {
   ASTEROID_LUMP_SLOTS: number
   /** T22.21 (R112): hits a core takes before it breaks; the bake dims its glow per hit. */
   CORE_HITS: number
+  /** T22.22B (R112b): the narrowest carve radius, px, that counts as a core hit. */
+  CORE_HIT_MIN_R: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number

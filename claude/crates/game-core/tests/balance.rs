@@ -1435,14 +1435,20 @@ const STANDARD_VOID_MAX: f32 = 0.50;
 const VOID_POOL_SEEDS: usize = 128;
 /// T22.03F: a **winged** bot's pinned runs, both natural arms pooled, allowed per
 /// `RUNS_PER` seeds — wings drive the walking model in every mode (R5), and the traced
-/// cause (the stuck-jump refused under wings) is the same in both. **Was a rate,
-/// `PINNED_WINGS_RUNS_MAX` 0.015** (1.44 runs on the default run's 96 bot-rounds; M3). Per
-/// 32-seed draw (offsets 0/32/64/96): **10 / 6 / 9 / 14 runs at T22.03F's parent**
-/// (`gate-t2203f-before.txt`), **4 / 1 / 2 / 2 after T22.14B** (`gate-t2214b-after.txt`;
-/// T22.03I's 3 / 1 / 2 / 2 counted one arm). So 4 per 32 seeds: over every draw after (the
-/// worst at it), under every draw at the parent; on the default 8 seeds it allows 1, where
-/// the parent had **2** and after has 0–1 — one event either side, stated rather than hidden.
-const PINNED_WINGS_RUNS: u32 = 4;
+/// cause (the stuck-jump refused under wings) is the same in both.
+///
+/// **Re-derived at T22.22B (F3) from a 128-seed measurement**: at `22115a0` the bound of 4
+/// was red on the default run (2 > 1) and on 2 of 4 32-seed draws with the brake off as
+/// well as on — the draws had moved under it with the map (T22.21) and the brake (T22.22),
+/// not with anything the wings do. Measured at T22.22B, offsets 0/32/64/96 of 32 seeds
+/// (`gate-t2222b-bots32-*.txt`): **8 / 4 / 3 / 5 runs, 20 pooled over 128 (5 per 32)**; the
+/// default 8 `SEEDS` 0. The bound is the **worst measured draw, 8 per 32** — at it, as
+/// T22.03F set 4 at its worst draw — so the 128-seed pool is allowed 32 against its
+/// measured 20 (a margin of 12 runs, 1.6×), and the default 8 seeds 2 against its 0.
+/// What it still catches: T22.03F's parent (the stuck-jump refused under wings) measured
+/// **10 / 6 / 9 / 14**, 39 pooled — red on the pool and on three of the four draws. *History:*
+/// 10/6/9/14 at T22.03F's parent, 4/1/2/2 after T22.14B, 5/5/2/4 at T22.22.
+const PINNED_WINGS_RUNS: u32 = 8;
 /// T22.14B M5: vortex trips a bot a round, the natural space arm. The bots kept a live
 /// vortex's half-reach, where its pull is already the cap: a bot held station there on
 /// thrust until it ran dry and was taken (69 of 125 trips over 32 seeds, a dry tank a second
@@ -2905,9 +2911,30 @@ fn run_rock_round(seed: u64, scale: MapScale) -> RockRound {
     }
 }
 
+/// **T22.22B F5: the owner's metric has a floor** — ordinary asteroid rock left at
+/// t = 2 min, pooled over [`SEEDS`], % (the owner: *"2 minutes in, the map was mostly
+/// empty"*). Measured (`gate-t2222b-rock*.txt`), Small / Medium:
+///
+/// | build | left at 2 min |
+/// |---|---|
+/// | before T22.21 | 23.4 / 49.3 |
+/// | T22.21 | 76.4 / 88.8 |
+/// | **T22.22B** | **83.1 / 90.2** (per seed 73–88 / 84–93) |
+/// | plant `ASTEROID_HARDNESS` 1.0 | 57.7 / 74.2 |
+/// | plant the pre-T22.21 meteor aim (a rock's centre) | 69.1 / 87.6 |
+///
+/// The coordinator's suggested 60 / 75 left the aim plant green (69.1 > 60), so each floor
+/// is set **midway between the measured pool and the nearest plant under it**: Small 76
+/// (7.1 under 83.1, 6.9 over the aim plant's 69.1), Medium 82 (8.2 under 90.2, 7.8 over
+/// the hardness plant's 74.2). The aim plant moves Medium only 2.6 points — too close to
+/// gate there — so it is caught on Small; the hardness plant is red on both.
+const ROCK_LEFT_AT_2MIN_MIN: [(MapScale, f32); 2] =
+    [(MapScale::Small, 76.0), (MapScale::Medium, 82.0)];
+
 /// **T22.21 — asteroid rock remaining at 2 minutes and at the round's end**, bots
-/// round, Small and Medium, [`SEEDS`], broken down by carver. Prints; asserts only
-/// that the instrument saw rock and that the columns account for the loss.
+/// round, Small and Medium, [`SEEDS`], broken down by carver. Asserts that the
+/// instrument saw rock, that no iron was lost, and (T22.22B F5) that the rock left at
+/// 2 minutes is over [`ROCK_LEFT_AT_2MIN_MIN`] — a guard, not only a report.
 ///
 /// `cargo test -p game-core --release --test balance asteroid_rock_report -- --ignored --nocapture`
 #[test]
@@ -2917,7 +2944,8 @@ fn asteroid_rock_report() {
         "\n== ASTEROID ROCK LEFT — {} seeds, bots round of {ROUND_SECONDS} s ==",
         SEEDS.len()
     );
-    for scale in [MapScale::Small, MapScale::Medium] {
+    let mut failed = Vec::new();
+    for (scale, floor) in ROCK_LEFT_AT_2MIN_MIN {
         let rounds: Vec<RockRound> = SEEDS.iter().map(|&s| run_rock_round(s, scale)).collect();
         let start: u32 = rounds.iter().map(|r| r.start).sum();
         assert!(
@@ -2965,11 +2993,17 @@ fn asteroid_rock_report() {
                     format!("{:.0}", 100.0 * (o - g) as f32 / o.max(1) as f32)
                 })
                 .collect();
+            let left = 100.0 - pct(gone);
+            if label == "t=120s" && left < floor {
+                failed.push(format!(
+                    "{scale:?}: {left:.1} % of the ordinary rock left at 2 minutes (floor {floor})"
+                ));
+            }
             println!(
                 "{scale:?} {label:>6}: rock left {:.1} % (per seed {}) — taken by meteors {:.1} %, \
                  black hole {:.1} %, players/bots {:.1} %, cores {:.1} %, other {:.1} %; \
                  iron {iron} px ({:.1} % of all rock), lost {}; all rock left {:.1} %",
-                100.0 - pct(gone),
+                left,
                 per_seed.join("/"),
                 pct(by(RockCarver::Meteor)),
                 pct(by(RockCarver::BlackHole)),
@@ -2982,4 +3016,5 @@ fn asteroid_rock_report() {
             );
         }
     }
+    assert!(failed.is_empty(), "asteroid rock: {}", failed.join("; "));
 }

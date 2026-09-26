@@ -369,18 +369,7 @@ impl World {
             // apart, so the margin reaches nothing else.
             let r = a.r + 2;
             let carve = self.map.carve_circle(a.x, a.y, r);
-            if carve.changed() {
-                self.carve_seq += 1;
-                let (tick, seq) = (self.tick, self.carve_seq);
-                self.events.push(GameEvent::Carve {
-                    tick,
-                    seq,
-                    x: a.x,
-                    y: a.y,
-                    r,
-                    kind: CarveKind::Meteor,
-                });
-            }
+            self.publish_carve(&carve, a.x, a.y, r, CarveKind::Meteor);
             self.reveal(&carve.revealed, now);
             Vec2::new(a.x as f32, a.y as f32)
         } else {

@@ -166,18 +166,7 @@ impl World {
             // not hardened (R111), so this core-sized carve takes all of it.
             let r = core_radius(&a);
             let carve = self.map.carve_circle(a.x, a.y, r);
-            if carve.changed() {
-                self.carve_seq += 1;
-                let seq = self.carve_seq;
-                self.events.push(GameEvent::Carve {
-                    tick,
-                    seq,
-                    x: a.x,
-                    y: a.y,
-                    r,
-                    kind: CarveKind::Meteor,
-                });
-            }
+            self.publish_carve(&carve, a.x, a.y, r, CarveKind::Meteor);
             self.reveal(&carve.revealed, now);
             // Floats where the core was (R14: an item in space stays where it is put)
             // — or, when no body can get to it there, where one can (T22.18).
@@ -343,7 +332,8 @@ mod tests {
         let w = space_world(4242);
         let (i, a) = largest(&w);
         let c = core_radius(&a);
-        let r = 8;
+        // The narrowest carve that counts at all (R112b, T22.22B).
+        let r = crate::constants::CORE_HIT_MIN_R as i32;
         let rh = crate::map::carve::hard_radius(r);
         for (d, hit) in [(c + rh + 1, false), (c + rh, true)] {
             let mut m = w.map.clone();
@@ -368,6 +358,184 @@ mod tests {
             core_hits: CORE_HITS,
             ..a
         }));
+    }
+
+    /// The largest ordinary rock of `space_world(seed)` with **everything but its core
+    /// dug away** — the core a bare disc in a hollow, every core pixel solid, nothing else
+    /// of the rock left — and the events of the digging drained. What a player finds
+    /// after tunnelling to the centre, without the tunnelling.
+    fn exposed_core(seed: u64) -> (World, usize, Asteroid) {
+        let mut w = space_world(seed);
+        let (i, a) = largest(&w);
+        let _ = w
+            .map
+            .carve_unguarded(a.x, a.y, a.r + crate::map::carve::ROCK_GUARD_MARGIN);
+        let _ = w.map.fill_circle(a.x, a.y, core_radius(&a));
+        let (solid, total) = core_pixels(&w.map.mask, &a);
+        assert_eq!(solid, total, "premise: the core is whole");
+        let _ = w.drain_events();
+        (w, i, a)
+    }
+
+    /// What a client's mirror does with the carve stream (`game-wasm`'s `carve` /
+    /// `carve_capsule`): the same public carves, on its own copy, in order.
+    fn mirror_follows(m: &mut crate::map::Map, events: &[GameEvent]) {
+        for e in events {
+            match *e {
+                GameEvent::Carve { x, y, r, .. } => {
+                    let _ = m.carve_circle(x, y, r);
+                }
+                GameEvent::CarveCapsule {
+                    x0, y0, x1, y1, r, ..
+                } => {
+                    let _ = m.carve_capsule(x0, y0, x1, y1, r);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn carves_at(events: &[GameEvent], at: (i32, i32)) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, GameEvent::Carve { x, y, .. } if (*x, *y) == at))
+            .count()
+    }
+
+    /// **R112b (T22.22B): three SMG rounds on an exposed core are no hit; three
+    /// bazookas destroy it** — both through `World::land_on_terrain_for_test` (the
+    /// bullet path and the blast path, as a real round lands them), on the same spot one
+    /// pixel off the core's surface, where the SMG's hardened disc **does** reach the
+    /// core (the premise: at T22.21 each round was a hit). Absence arm: after three SMG
+    /// rounds, no hit counted, every core pixel solid, no event, no battery. Presence
+    /// arm, the same spot: bazookas 1–2 count and change no pixel, the third destroys.
+    ///
+    /// **And T22.22B F1 — a hit that moves no pixel still reaches the client.** Each of
+    /// bazookas 1–2 removes **0** pixels (the core refuses them and nothing else is
+    /// left), and still: a carve event goes out at the impact, and a mirror fed **only
+    /// the drained events** (a copy of the map taken after the digging, `mirror_follows`)
+    /// counts the same hits, and at the end holds the same mask and the same count.
+    ///
+    /// Falsified at the live site: `CORE_HIT_MIN_R`'s predicate removed from
+    /// `strike_cores` fails the SMG arm at round 1; `emit_blast` skipping a carve that
+    /// removed no pixel fails the event arm at bazooka 1.
+    #[test]
+    fn three_smg_rounds_on_an_exposed_core_are_no_hit_and_three_bazookas_destroy_it() {
+        use crate::constants::{BAZOOKA_BLAST_RADIUS, SMG_BLAST_RADIUS};
+        use crate::items::registry::{WEAPON_BAZOOKA, WEAPON_SMG};
+        use crate::map::carve::hard_radius;
+        let (mut w, i, a) = exposed_core(4242);
+        let mut mirror = w.map.clone();
+        let c = core_radius(&a);
+        let spot = (a.x + c + 1, a.y);
+        let at = Vec2::new(spot.0 as f32, spot.1 as f32);
+        assert!(
+            spot.0 - a.x <= hard_radius(SMG_BLAST_RADIUS.round() as i32) + c,
+            "premise: the SMG's hardened disc reaches the core from here"
+        );
+        let total = core_pixels(&w.map.mask, &a).1;
+        let mut now = w.round_time;
+        for k in 1..=3 {
+            w.land_on_terrain_for_test(at, WEAPON_SMG, now);
+            w.step(SIM_DT);
+            now = w.round_time;
+            let ev = w.drain_events();
+            mirror_follows(&mut mirror, &ev);
+            let rock = w.map.meta.asteroids[i];
+            assert_eq!(rock.core_hits, 0, "SMG round {k} counted as a core hit");
+            assert_eq!(
+                core_pixels(&w.map.mask, &a).0,
+                total,
+                "SMG round {k}: a core pixel"
+            );
+            assert!(destroyed_events(&ev).is_empty() && batteries(&ev).is_empty());
+        }
+        assert_eq!(mirror.meta.asteroids[i].core_hits, 0);
+
+        let r = BAZOOKA_BLAST_RADIUS.round() as i32;
+        assert!(
+            spot.0 - a.x <= hard_radius(r) + c,
+            "premise: the bazooka reaches the core"
+        );
+        for k in 1..=CORE_HITS {
+            let before = w.map.mask.count_solid();
+            w.land_on_terrain_for_test(at, WEAPON_BAZOOKA, now);
+            let moved = before - w.map.mask.count_solid();
+            w.step(SIM_DT);
+            now = w.round_time;
+            let ev = w.drain_events();
+            mirror_follows(&mut mirror, &ev);
+            let rock = w.map.meta.asteroids[i];
+            assert_eq!(rock.core_hits, k, "bazooka {k}: the count");
+            assert_eq!(
+                mirror.meta.asteroids[i].core_hits, k,
+                "bazooka {k}: the mirror, fed only the drained events, counts a different hit"
+            );
+            if k < CORE_HITS {
+                assert_eq!(moved, 0, "premise: bazooka {k} moved no pixel");
+                assert_eq!(
+                    carves_at(&ev, spot),
+                    1,
+                    "bazooka {k}: a hit that moved no pixel sent no carve event"
+                );
+                assert!(rock.core_intact && destroyed_events(&ev).is_empty());
+                continue;
+            }
+            assert!(!rock.core_intact, "the third bazooka left the core intact");
+            assert_eq!(destroyed_events(&ev), vec![(a.x, a.y)]);
+            assert_eq!(batteries(&ev).len(), 1, "exactly one battery");
+        }
+        assert_eq!(
+            core_pixels(&w.map.mask, &a).0,
+            0,
+            "the core did not crumble"
+        );
+        assert!(
+            mirror.mask == w.map.mask,
+            "the mirror's mask is not the server's after the core went"
+        );
+    }
+
+    /// **T22.22B F1: `World::publish_carve` — the five skip-if-empty sites' one guard —
+    /// sends a carve that counted a core hit and moved no pixel.** Presence: a zero-pixel
+    /// hit and a pixel with no hit both go out, each with the next sequence number.
+    /// Absence: an empty carve with no hit does not. (No production site can hand it a
+    /// hit since R112b — every one of the five carves under `CORE_HIT_MIN_R`, or carves
+    /// a rock already off the list — so this is the guard's own test; the blast path's
+    /// end-to-end twin is the bazooka arm above.)
+    ///
+    /// Falsified at the live site: `carve.changed()` → `carve.pixels_removed > 0` in
+    /// `publish_carve` fails the first arm.
+    #[test]
+    fn publish_carve_sends_a_hit_that_moved_no_pixel() {
+        use crate::map::CarveResult;
+        let mut w = space_world(4242);
+        let _ = w.drain_events();
+        let hit = CarveResult {
+            core_hit: true,
+            ..Default::default()
+        };
+        let bite = CarveResult {
+            pixels_removed: 1,
+            ..Default::default()
+        };
+        let seq0 = w.carve_seq;
+        assert!(w.publish_carve(&hit, 10, 20, 42, CarveKind::Weapon));
+        assert!(!w.publish_carve(&CarveResult::default(), 30, 40, 3, CarveKind::Weapon));
+        assert!(w.publish_carve(&bite, 50, 60, 3, CarveKind::Weapon));
+        let ev = w.drain_events();
+        let seqs: Vec<(u32, i32)> = ev
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Carve { seq, x, .. } => Some((*seq, *x)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![(seq0 + 1, 10), (seq0 + 2, 50)],
+            "a zero-pixel core hit must go out, an empty carve must not"
+        );
     }
 
     /// Every body centre connected to open air by body-fitting one-pixel moves, within
@@ -451,6 +619,15 @@ mod tests {
                 let mut destroyed = false;
                 for (x, y) in path {
                     let _ = w.map.carve_circle(x, y, radius);
+                }
+                // *Since R112b (T22.22B)* no tunnel crater is a hit, however many: the
+                // core goes to `CORE_HITS` blasts at its centre, whose hardened disc is
+                // inside the core (asserted) — so what is left is the tunnels plus the
+                // core's own crumble, the shape this test is about.
+                let blast = crate::constants::CORE_HIT_MIN_R as i32;
+                assert!(crate::map::carve::hard_radius(blast) <= core_radius(&a));
+                for _ in 0..CORE_HITS {
+                    let _ = w.map.carve_circle(a.x, a.y, blast);
                 }
                 {
                     w.step(SIM_DT);
@@ -542,7 +719,9 @@ mod tests {
             let mut w = space_world(77);
             let (_, a) = largest(&w);
             for _ in 0..CORE_HITS {
-                let _ = w.map.carve_circle(a.x, a.y, core_radius(&a));
+                let _ = w
+                    .map
+                    .carve_circle(a.x, a.y, crate::constants::CORE_HIT_MIN_R as i32);
             }
             for _ in 0..3 {
                 w.step(SIM_DT);

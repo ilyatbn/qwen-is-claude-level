@@ -150,16 +150,22 @@ pub const SPACE_THRUST_DOWN: f32 = JETPACK_THRUST_DOWN * SPACE_THRUST_SCALE;
 /// So the boost can only ever take speed away: it cannot accelerate, cannot overshoot
 /// zero, and is continuous at zero velocity (no dead-band needed, nothing divides).
 ///
-/// Stop from [`SPACE_MAX_SPEED`] by LEFT/RIGHT (`JETPACK_THRUST_SIDE` × 1.0):
-/// 450 / 1100 ≈ 0.41 s and 450² / 2200 ≈ 92 px — R109b's target (< 0.5 s,
-/// < 100 px). Measured in `space::tests::space_flight_report`.
+/// **1.1, not 1.0 (T22.22B F6, the coordinator):** the target is R109b's — stop from
+/// [`SPACE_MAX_SPEED`] in < 0.5 s and < 100 px **on every axis**, and the weakest axis
+/// sets it: travel *up* is stopped by DOWN (`JETPACK_THRUST_DOWN` 900). At 1.0 that is
+/// 450 / 900 = 0.50 s and 450² / 1800 ≈ 112 px (measured 109 px / 0.50 s — missed); at
+/// 1.1, 990 px/s²: 450 / 990 ≈ 0.45 s and 450² / 1980 ≈ 102 px in the continuum, measured
+/// in ticks **98 px / 0.47 s** (1.08 measured 100 px, not under: 1.1 is the smallest
+/// tenth that meets it). The side axes (1210) and UP (2420) stop well inside it.
+/// Measured in `space::tests::space_flight_report`; asserted, every axis, by
+/// `stopping_from_the_space_top_speed_is_short`.
 ///
 /// **No escape guarantee reads it.** They are stated against the unboosted
 /// [`SPACE_THRUST_DOWN`], which is the push a player has when the pull is *not*
 /// already moving them the other way (a body at rest against a well gets no boost);
 /// the boost only ever adds to what they assume. *Reverse it by:* setting this to
 /// [`SPACE_THRUST_SCALE`].
-pub const SPACE_BRAKE_SCALE: f32 = 1.0;
+pub const SPACE_BRAKE_SCALE: f32 = 1.1;
 pub const JETPACK_MAX_SPEED: f32 = 260.0;
 pub const JETPACK_GRAVITY_SCALE: f32 = 0.35;
 pub const JETPACK_HOLD_DELAY: f32 = 0.18;
@@ -210,12 +216,12 @@ pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
 /// | jump-and-return round trips (jump, thrust back, land) | **3** (2 at T22.20–T22.21) |
 /// | the same wearing Ironman boots | **2**, at 2.42 of the tank a trip against 1.67 |
 ///
-/// Arresting a bare 430 px/s launch costs 0.478 s of burn at the brake's 900
-/// (`JETPACK_THRUST_DOWN` × [`SPACE_BRAKE_SCALE`]), and a booted 645 px/s one
-/// 0.717 s — so boots buy height per jump and cost range per tank (`M22-RULINGS`
+/// Arresting a bare 430 px/s launch costs 0.434 s of burn at the brake's 990
+/// (`JETPACK_THRUST_DOWN` × [`SPACE_BRAKE_SCALE`] 1.1, T22.22B), and a booted 645 px/s
+/// one 0.652 s — so boots buy height per jump and cost range per tank (`M22-RULINGS`
 /// R41). *T22.20 (R109) halved the space thrust and kept the burn rate: the arrests
 /// doubled and a tank bought two round trips where it bought three; T22.22 (R109c)
-/// brakes at full strength, so the arrest is back to 900 and so is the three. The
+/// brakes at full strength (1.1 since T22.22B), so the arrest is at 990 and the three is back. The
 /// climb back to the rock after the arrest is at the gentle share, so a trip still
 /// costs more than before T22.20.* An earlier version of this
 /// comment said ten pushes meant *"traversing an asteroid field on legs alone is
@@ -702,6 +708,24 @@ pub const ASTEROID_HARDNESS: f32 = 0.5;
 /// Counted inside `Map::carve_circle`/`carve_capsule`, so the mirror counts the
 /// same hits from the same carve stream; on `map_init` for a resync.
 pub const CORE_HITS: u8 = 3;
+
+/// **R112b (T22.22B): the least carve radius that counts as a hit on a core**, px —
+/// the carve's **unhardened** radius, as the weapon or effect asks for it (R111's
+/// hardening then decides what the hit *reaches*). Round 3's review: at T22.21 a hit
+/// was any carve whose hardened disc touched the core, so three SMG rounds (blast
+/// r 3) destroyed a core as surely as three bazookas. **Derived, not picked**: the
+/// smallest explosive blast in the game (grenade, bazooka, mine), so every
+/// grenade/bazooka-class blast — and a meteor — counts, and no bullet, airburst
+/// pellet, resting-flame scorch, toxic drop, meteor fragment, melee swing or lava
+/// channel does (the widest of those, the lava channel, is two thirds of it). Every
+/// carve, classified against this, is `carve::tests::only_a_blast_counts_as_a_core_hit`
+/// (and T22.22B's table). The black hole's eat and a core's own crumble never count:
+/// the eaten rock leaves the list before its carve, and a crumbling core has its hits.
+/// One predicate, in `Map::strike_cores`.
+/// *Reverse it by:* 0.0 (every carve that reaches the core counts, as at T22.21).
+pub const CORE_HIT_MIN_R: f32 = GRENADE_BLAST_RADIUS
+    .min(BAZOOKA_BLAST_RADIUS)
+    .min(MINE_BLAST_RADIUS);
 
 /// The most extra **mass** an asteroid draws, as a fraction (T22.17,
 /// `M22-OWNER-ROUND-2` R103: *"make some asteroids bigger, 0-20% more mass"*).

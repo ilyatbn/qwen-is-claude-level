@@ -2562,25 +2562,10 @@ impl World {
             let r = crate::constants::TOXIC_DROP_CARVE_R.round() as i32;
             let (x, y) = (at.x.round() as i32, at.y.round() as i32);
             let carve = self.map.carve_circle(x, y, r);
-            // `changed`, not `pixels_removed`: a core hit that removed nothing is
-            // still a hit the mirror must count (R112).
-            if carve.changed() {
-                self.carve_seq += 1;
-                let tick = self.tick;
-                let seq = self.carve_seq;
-                // `Weapon`, not a fourth kind: the client keys the carve's
-                // *sound and dust* off this, and a bullet-sized bite is what a
-                // bullet-sized bite already sounds like. §E13 asks for a small
-                // hole, not a new class of hole.
-                self.events.push(GameEvent::Carve {
-                    tick,
-                    seq,
-                    x,
-                    y,
-                    r,
-                    kind: CarveKind::Weapon,
-                });
-            }
+            // `Weapon`, not a fourth kind: the client keys the carve's *sound and
+            // dust* off this, and a bullet-sized bite is what a bullet-sized bite
+            // already sounds like. §E13 asks for a small hole, not a new class of hole.
+            self.publish_carve(&carve, x, y, r, CarveKind::Weapon);
             return;
         }
 
@@ -2654,19 +2639,13 @@ impl World {
             };
             self.apply_damage_log(&log, &bird_log, &animal_log, now);
             if let Some(c) = impact.carve {
-                if c.changed() {
-                    self.carve_seq += 1;
-                    let tick = self.tick;
-                    let seq = self.carve_seq;
-                    self.events.push(GameEvent::Carve {
-                        tick,
-                        seq,
-                        x: at.x.round() as i32,
-                        y: at.y.round() as i32,
-                        r: w.blast_radius.round() as i32,
-                        kind: CarveKind::Weapon,
-                    });
-                }
+                self.publish_carve(
+                    &c,
+                    at.x.round() as i32,
+                    at.y.round() as i32,
+                    w.blast_radius.round() as i32,
+                    CarveKind::Weapon,
+                );
                 self.reveal(&c.revealed, now);
             }
             return;
@@ -2970,6 +2949,41 @@ impl World {
                 p.knocked_until = p.knocked_until.max(until);
             }
         }
+    }
+
+    /// **Publish a carve the clients must follow, if it did anything** — the one guard
+    /// for the five sites that skip an empty carve (a toxic drop, a bullet, a resting
+    /// flame's scorch, a core's crumble, the black hole's eat), so none of them can
+    /// drop it again (T22.22B F1: "share the guard, or share the function"). An empty
+    /// carve is skipped; **a carve that counted a core hit is not empty** even when it
+    /// moved no pixel (R112: a locked core refuses its pixels, and the mirror counts
+    /// hits off this stream) — `CarveResult::changed`, never `pixels_removed > 0`.
+    /// Since R112b none of the five carves wide enough to count a hit, so the arm is a
+    /// guard for the next one that does; `world::cores::tests::
+    /// publish_carve_sends_a_hit_that_moved_no_pixel` is its test. Returns whether it
+    /// published. (A blast — `emit_blast` — publishes unconditionally.)
+    pub(crate) fn publish_carve(
+        &mut self,
+        carve: &CarveResult,
+        x: i32,
+        y: i32,
+        r: i32,
+        kind: CarveKind,
+    ) -> bool {
+        if !carve.changed() {
+            return false;
+        }
+        self.carve_seq += 1;
+        let (tick, seq) = (self.tick, self.carve_seq);
+        self.events.push(GameEvent::Carve {
+            tick,
+            seq,
+            x,
+            y,
+            r,
+            kind,
+        });
+        true
     }
 
     fn emit_blast(&mut self, at: Vec2, r: f32, kind: CarveKind, carve: &CarveResult, now: f32) {
@@ -3304,18 +3318,15 @@ impl World {
             // already eaten. `weapons::flame` reports every crossing of its
             // timer and this is where "there was rock left" is decided, so a
             // fire in a crater does not stream empty carves at `SNAPSHOT_HZ`.
-            if !sc.carve.changed() {
+            if !self.publish_carve(
+                &sc.carve,
+                sc.at.x.round() as i32,
+                sc.at.y.round() as i32,
+                crate::constants::FLAME_SCORCH_R.round() as i32,
+                CarveKind::Weapon,
+            ) {
                 continue;
             }
-            self.carve_seq += 1;
-            self.events.push(GameEvent::Carve {
-                tick,
-                seq: self.carve_seq,
-                x: sc.at.x.round() as i32,
-                y: sc.at.y.round() as i32,
-                r: crate::constants::FLAME_SCORCH_R.round() as i32,
-                kind: CarveKind::Weapon,
-            });
             self.reveal(&sc.carve.revealed, now);
         }
         self.apply_damage_log(&log, &bird_log, &animal_log, now);

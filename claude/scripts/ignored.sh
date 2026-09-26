@@ -84,8 +84,9 @@ MANIFEST=(
   # modes; asserts a fight, the environment under the players, the hole rare.
   "space_bots_report|game-core tests/balance.rs|guard"
   # T22.21: the owner's metric — asteroid rock left at 2 min and at round end, bots
-  # round, Small and Medium, by carver. Prints; asserts only that iron lost nothing.
-  "asteroid_rock_report|game-core tests/balance.rs|report"
+  # round, Small and Medium, by carver. A guard since T22.22B (F5): no iron lost, and
+  # the rock left at 2 min over its floor (Small 76 %, Medium 82 %).
+  "asteroid_rock_report|game-core tests/balance.rs|guard"
   "the_shipping_configuration_produces_a_fight|game-core tests/balance.rs|guard"
   "the_spawn_stream_beats_the_wait_it_replaced|game-core tests/balance.rs|guard"
   # T22.05A, the space map. The first is a tuning gate in `gen/mod.rs`'s shape;

@@ -2315,6 +2315,9 @@ pub fn constants_json() -> String {
         ASTEROID_LUMP_SLOTS => game_core::map::meta::ASTEROID_LUMP_SLOTS,
         // T22.21 (R112): the bake dims a core's glow by its hits over this.
         CORE_HITS => c::CORE_HITS,
+        // T22.22B (R112b): the narrowest carve that counts as a core hit —
+        // `asteroid-cores` hits the core with it.
+        CORE_HIT_MIN_R => c::CORE_HIT_MIN_R,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
         // T22.10H: position/velocity quantum — `codec.ts::decodeSnapshot` multiplies
@@ -5343,7 +5346,6 @@ mod tests {
     fn a_core_destroyed_and_heard_late_switches_the_well_off_at_the_servers_seq() {
         use game_core::constants::SNAPSHOT_QUANTUM;
         use game_core::world::attractors::well_reach;
-        use game_core::world::cores::core_radius;
         use game_core::world::GameEvent;
         const HEARD_AFTER: u32 = 6;
         const BACK: u32 = 4;
@@ -5375,7 +5377,8 @@ mod tests {
                 0.0,
                 well_reach(&rock, centre - Vec2::new(0.0, 1.0)) - INTO_BAND,
             );
-        let c = core_radius(&rock);
+        // A blast at the centre: the narrowest carve that counts as a core hit (R112b).
+        let c = game_core::constants::CORE_HIT_MIN_R as i32;
         let run = |by_seq: bool| -> (f32, f32) {
             let (mut w, mut core) = space_world_and_mirror(true);
             w.add_player(1, 0, String::new());

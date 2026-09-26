@@ -7241,3 +7241,11 @@ Iron on Small 90..100 px (per-scale `iron_r_frac`): 55.7 → 34.3 % of rock; Med
 golden rows. Bots kills 3.05 → 3.30 (128 seeds); winged-pin bound red both with and without the brake (pre-existing).
 thrusters-match: the check's DOWN default (field is 0 in open space since R101) hit T22.21's rock — now aims by mask; the
 `&& meAlive` plant bites. REPLAY 35. Escape caps unchanged (unboosted `SPACE_THRUST_DOWN`).
+
+## T22.22B — what the round-3 review found (builder, 2026-09-26)
+R112b: `CORE_HIT_MIN_R` 36 (smallest explosive) in `strike_cores` — 3 SMG rounds on an exposed core are no hit, 3 bazookas
+destroy it (world test). F1: the five skip-if-empty publish sites are one `World::publish_carve`; since R112b none can carry
+a zero-pixel hit, so the end-to-end arm runs through `emit_blast` (bazooka, 0 px, event + mirror agree). F6 brake 1.1: up
+stop 98 px / 0.47 s. F3 winged-pin bound 4 → 8 per 32 (128 seeds: 8/4/3/5). F4 `cap_iron_share`, floor = map's largest
+ordinary + 1: Small 28.0–35.0 % per map; 3 small goldens. F5 rock floor Small 76 / Medium 82 (hardness and old-aim plants
+red). Economy: batteries 1.43 → 0.79 a bot a round (128 seeds) from R112b, rad deaths 0.16 → 0.17. REPLAY 36.

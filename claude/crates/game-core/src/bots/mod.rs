@@ -883,11 +883,12 @@ mod tests {
                 .filter(|a| !a.iron)
                 .max_by_key(|a| a.r)
                 .expect("rocks");
-            // T22.21 (R112): the core goes on its `CORE_HITS`-th hit.
+            // T22.21 (R112): the core goes on its `CORE_HITS`-th hit — of a blast
+            // (R112b, T22.22B: `CORE_HIT_MIN_R`, the narrowest carve that counts).
             for _ in 0..crate::constants::CORE_HITS {
                 let _ = w
                     .map
-                    .carve_circle(a.x, a.y, crate::world::cores::core_radius(&a));
+                    .carve_circle(a.x, a.y, crate::constants::CORE_HIT_MIN_R as i32);
             }
             let _ = w.drain_events();
             w.step(SIM_DT);

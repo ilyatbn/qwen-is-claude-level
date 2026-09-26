@@ -360,7 +360,13 @@ pub const HEADER_BYTES: usize = 46;
 /// Bumped to 35 by T22.22 (R109c): in space an axis of thrust against the body's
 /// travel pushes at `SPACE_BRAKE_SCALE` until that axis stops — a v34 space recording
 /// that ever counter-thrusts diverges on that tick. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 35;
+///
+/// Bumped to 36 by T22.22B: a carve counts as a core hit only at `CORE_HIT_MIN_R` or
+/// wider (R112b), the brake is `SPACE_BRAKE_SCALE` 1.1, and a map whose iron would be
+/// over `SPACE_IRON_SHARE_MAX` of its rock shrinks its iron (`cap_iron_share`) — a v35
+/// space recording diverges at its first small carve on a core, its first brake, or its
+/// arena. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 36;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
