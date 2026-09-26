@@ -7349,3 +7349,13 @@ tier-vs-tier sky differs mean 1.78 unbaked / 1.84 baked, so ≤1 was a coin flip
 (`pixels.mjs::phaserPatch`, black+white backdrops): 0.0 ×3 each; half-radius plant still red (0/12).
 Suite after the control fix: **74/75** — world-canvas timed out on its match wait `__world.frames() > 2` (30 s); 4/4 green alone
 today. Suspect (unmeasured): the redraw skip — a still match camera draws no frames, so the wait can starve. Reported, not parked.
+
+## T23.04C — one renderer for the page (R22); the T23.04/04B review's F2–F8 (builder, 2026-09-27)
+One `WebGLRenderer`/canvas/context per page (`worldRenderer.ts::thePageRenderer`), borrowed per scene; destroy frees bakes, passes, geometry. Probe released.
+`context-budget` (20 title→quick→results→exit cycles): after, live ≤3 (steady 2), 4 contexts made, 1 three.js, GPU rss 274→313 (growth 10, max 120).
+Before (plant = old per-scene renderer): 43 made, 40 three.js, live 4–5 — GC collects them here; with a held ref (the review's probe) 16 live, Phaser lost at cycle 7, rss 265→713.
+Leak plant (bakes not freed): three textures 11→353 red, rss flat — GC frees GL objects, so rss only catches held leaks; info.memory is the deterministic gate.
+F2 explosion world floor 6/12 (unplanted 7,8,8,8,8,8; ×0.2 plant 1/12 red). F3 world-canvas waits on readFrame. F4 flat-day control 0 stars (plant red, drift throw disabled).
+F6 bands linear+unsnapped: Level A unchanged (≤0.00003), slow pan 0.34 px every step (plant: [0,0,-2,…], 12/16 still → red); draw low 5.0→5.45 ms, full 60.4→63.1 ms.
+F8 no-webgl2: stub on title+sandbox, page colour at all clear points, no console errors (plant: three creates → console.error red). title waits for the lazy backdrop.
+Done-when 7/7; explosion ×3 green; check.sh --changed HEAD~1 --fast EXIT 0 (vitest 1151); full browser suite 77/77.

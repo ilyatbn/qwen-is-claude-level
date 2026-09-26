@@ -134,6 +134,15 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   **Memory** (float32 RGBA, today's zoom-2 view): low 34–43 MB, full 135–171 MB (Small→Large map); at R6's zoom 1,
   low 30–34 MB, full 119–134 MB. Half float would halve it at F5 `deltaE_cave` 0.011 of 0.0125.
   *Reverse it by:* `SkyQuad.place` rebaking every frame (or restoring T23.04's one-pass `bgMaterial`).
+- **R22 — one three.js renderer for the page** (coordinator, 2026-09-26, answering the T23.04/T23.04B review's F1:
+  every scene start built a `WebGLRenderer` and `destroy()` never released its context — live contexts 5 → 16 over
+  ten title ↔ match cycles, GPU memory 343 → 933 MB, and at 17 Chrome dropped Phaser's own context: a white page).
+  One `WebGLRenderer` lives for the page's lifetime; its canvas is re-parented under the current scene's Phaser
+  canvas and taken off the page on shutdown. Scene-owned resources (bakes, targets, materials) are created and
+  disposed per scene. Throwaway probe canvases release their contexts (`WEBGL_lose_context`). Guarded by
+  `context-budget` (T23.04C): ≤ 3 live contexts over ~20 cycles, Phaser's never lost, memory flat.
+  *Reverse it by:* building the renderer in `WorldRenderer`'s constructor again and calling `forceContextLoss()`
+  in `destroy()` (a context per scene, released).
 
 ## Verification — what "exactly the same" means here
 
