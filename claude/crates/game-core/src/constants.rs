@@ -679,18 +679,50 @@ pub const SPACE_IRON_COUNT: u32 = 2;
 /// mass draw on top: 120..160 px.
 pub const SPACE_IRON_R_MIN_FRAC: f32 = 1.5;
 pub const SPACE_IRON_R_MAX_FRAC: f32 = 2.0;
-/// **Small's iron band** (T22.22): 90..100 px against Medium's and Large's 120..160 —
-/// see `ScaleParams::iron_r_frac`. The floor is the smallest round share of 80 over
-/// the largest grown ordinary rock (88).
-pub const SPACE_IRON_R_MIN_FRAC_SMALL: f32 = 1.125;
+/// **Small's iron band** (T22.22; floor raised T22.22C): 99..100 px against Medium's and
+/// Large's 120..160 — see `ScaleParams::iron_r_frac`. The floor is
+/// [`SPACE_IRON_MIN_OVER_ORDINARY`] × the largest grown ordinary rock
+/// (`grown_radius(80, 0.2)` = 88): 1.125 × 88 / 80 = 1.2375 → 99 px, so an iron rock is
+/// drawn at least R113b's ratio over any ordinary rock a map can hold (T22.22's 1.125 ×
+/// 80 = 90 was only over the largest *base* radius, and one map in 24 ended 1 px over its
+/// largest rock). Asserted: `every_space_map_seats_its_iron…` checks every scale's floor.
+pub const SPACE_IRON_R_MIN_FRAC_SMALL: f32 = 1.2375;
 pub const SPACE_IRON_R_MAX_FRAC_SMALL: f32 = 1.25;
+
+/// **R113b (T22.22C, the coordinator): an iron rock is at least this many times the
+/// largest ordinary rock on its map** — the owner's *"a couple asteroids be even
+/// larger"* held on **every** map. T22.22B's per-map share cap shrank Small iron to the
+/// map's largest ordinary rock + 1 (one map in 24: r 75 over 74). Now the floor of
+/// `cap_iron_share` (`space::iron_floor`), and asserted per map by
+/// `iron_is_a_minority_of_the_rock_and_still_the_largest`. 9/8, so the floor
+/// `ceil(1.125 × r)` is exact in f32.
+pub const SPACE_IRON_MIN_OVER_ORDINARY: f32 = 1.125;
 
 /// **The most of a space map's asteroid rock that may be iron**, in stamped pixels
 /// (T22.22, the coordinator amending R113): T22.21's two 120–160 px iron rocks were
-/// **56 %** of all rock on Small, so a Small map was mostly indestructible. Held by
-/// each scale's `ScaleParams::iron_r_frac`, and asserted over seeds by
+/// **56 %** of all rock on Small, so a Small map was mostly indestructible. Held per
+/// map by `space::cap_iron_share` (T22.22B), on Medium and Large; Small's is
+/// [`SPACE_IRON_SHARE_MAX_SMALL`] since R113b (T22.22C). Asserted over seeds by
 /// `map::gen::space::tests::iron_is_a_minority_of_the_rock_and_still_the_largest`.
 pub const SPACE_IRON_SHARE_MAX: f32 = 0.35;
+/// **Small's cap (T22.22C, R113b)** — the rest keep [`SPACE_IRON_SHARE_MAX`]. R113b puts a
+/// floor under the iron ([`SPACE_IRON_MIN_OVER_ORDINARY`] × the map's largest ordinary
+/// rock), and on a Small map with few or small ordinary rocks two iron rocks at that floor
+/// are still over 0.35. Measured over the 999-seed sweep (`density_and_gap_report`) with
+/// the cap at 0.35, so every map over it had shrunk its iron to the floor:
+///
+/// | scale | per map min | p50 | p95 | max | maps over 0.35 |
+/// |---|---|---|---|---|---|
+/// | Small | 27.4 % | 34.8 % | 36.3 % | **42.9 %** | 101 of 999 |
+/// | Medium | 20.2 % | 28.2 % | 33.5 % | 35.0 % | 0 |
+/// | Large | 11.3 % | 16.5 % | 19.7 % | 24.3 % | 0 |
+///
+/// So Small's cap is the observed max 42.9 % plus a margin of 1.1 points (a seed outside
+/// the sweep) = **0.44**: the least cap every map meets with its iron at R113b's floor.
+/// Medium and Large already meet 0.35 and keep it. The generator still aims every map at
+/// 0.35 — a Small map exceeds it only when its iron is at the floor (101 of 999) — so
+/// this is a bound, not a target (`ScaleParams::iron_share_max`).
+pub const SPACE_IRON_SHARE_MAX_SMALL: f32 = 0.44;
 
 /// **R111 (T22.21): asteroid rock is harder.** A carve in space removes the pixels of
 /// an ordinary asteroid only within its radius × this — rock, rim and anything else
@@ -3733,10 +3765,17 @@ pub struct ScaleParams {
     /// same size are a far larger share of a Small arena's rock than of a Large one's.
     /// T22.21's 1.5–2× everywhere made iron **55.7 %** of Small's asteroid pixels (24
     /// seeds; Medium 28.0 %, Large 16.3 %), against [`SPACE_IRON_SHARE_MAX`]. Medium and
-    /// Large keep the ruling's band; Small's is the largest that holds the share while
-    /// every iron rock stays bigger than the biggest ordinary one (`grown_radius(80,
-    /// 0.2)` = 88) — measured in T22.22's file.
+    /// Large keep the ruling's band; Small's (T22.22's 90..100, measured in its file) now
+    /// starts at R113b's floor over the biggest ordinary rock any map holds (1.125 ×
+    /// `grown_radius(80, 0.2)` = 88 → 99, T22.22C).
     pub iron_r_frac: (f32, f32),
+    /// `MapGenerator::Space`: the most of **one map's** asteroid rock that is iron
+    /// (T22.22B F4, per scale since T22.22C): [`SPACE_IRON_SHARE_MAX`] on Medium and
+    /// Large, [`SPACE_IRON_SHARE_MAX_SMALL`] on Small, where R113b's floor on the iron's
+    /// size does not leave room for 0.35 on every map. The generator still shrinks every
+    /// map's iron toward 0.35 (`space::cap_iron_share`); this is the bound its maps are
+    /// held to where the floor stops it, asserted per map.
+    pub iron_share_max: f32,
     /// Destructible scenery stamped into the terrain at pass 6b (§D5).
     ///
     /// **Small is 12, not §D5's 18** — measured, not guessed. A small map is
@@ -3803,6 +3842,7 @@ impl MapScale {
                 object_count: 9,
                 asteroid_count: 12,
                 iron_r_frac: (SPACE_IRON_R_MIN_FRAC_SMALL, SPACE_IRON_R_MAX_FRAC_SMALL),
+                iron_share_max: SPACE_IRON_SHARE_MAX_SMALL,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -3823,6 +3863,7 @@ impl MapScale {
                 object_count: 28,
                 asteroid_count: 32,
                 iron_r_frac: (SPACE_IRON_R_MIN_FRAC, SPACE_IRON_R_MAX_FRAC),
+                iron_share_max: SPACE_IRON_SHARE_MAX,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -3843,6 +3884,7 @@ impl MapScale {
                 object_count: 36,
                 asteroid_count: 62,
                 iron_r_frac: (SPACE_IRON_R_MIN_FRAC, SPACE_IRON_R_MAX_FRAC),
+                iron_share_max: SPACE_IRON_SHARE_MAX,
             },
         }
     }

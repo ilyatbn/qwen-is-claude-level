@@ -38,10 +38,10 @@
 use crate::constants::{
     MapGenerator, MapScale, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS, PLAYER_H,
     PLAYER_W, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_MASS_MAX, SPACE_ASTEROID_R_MAX,
-    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_IRON_COUNT, SPACE_IRON_SHARE_MAX,
-    SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC,
-    SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_INSET,
-    SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
+    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_IRON_COUNT, SPACE_IRON_MIN_OVER_ORDINARY,
+    SPACE_IRON_SHARE_MAX, SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN,
+    SPACE_LUMP_R_MAX_FRAC, SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE,
+    SPACE_RIM_INSET, SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
 use crate::map::gen::spawns::pick_separated;
@@ -523,20 +523,35 @@ fn stamped_pixels(a: &Asteroid) -> u64 {
     rock_pixels(&m, &alone)
 }
 
-/// **`SPACE_IRON_SHARE_MAX`, per map (T22.22B F4, the coordinator's ruling).** T22.22
-/// held the share by the iron's radius band alone, which holds it on average: per map
-/// it ran 28.0–42.5 % on Small and up to 35.5 % on Medium. Here, after the ordinary rocks
-/// are stamped (`ordinary_px`), while the iron share of the stamped pixels is over the
-/// cap, **the last iron rock still above the band's floor `r_min` shrinks by a pixel** —
-/// the second first, then the first — re-drawing its lumps from its own stream position
-/// (`shape_at`), so its silhouette is the same shape smaller. Only ever smaller, so every
-/// placement rule it was seated by still holds, and the ordinary rocks do not move.
-/// **The floor is the map's own largest ordinary rock + 1**, not the scale's band floor:
-/// with both at the band's floor (90 on Small) a Small map with few ordinary rocks still
-/// ran to 40.6 % (measured, 24 seeds), so "even larger" is held per map — iron is larger
-/// than every ordinary rock *on its map*. *Decision for the coordinator; reversible here.*
-/// A map whose iron is at the floor and still over the cap ships as it is —
-/// `iron_is_a_minority…` asserts none does.
+/// **R113b (T22.22C): the smallest an iron rock may be on a map whose largest ordinary
+/// rock is `largest_ordinary`** — `ceil(SPACE_IRON_MIN_OVER_ORDINARY × largest_ordinary)`.
+/// One spelling, for `cap_iron_share` and the tests that assert it.
+pub fn iron_floor(largest_ordinary: i32) -> i32 {
+    (SPACE_IRON_MIN_OVER_ORDINARY * largest_ordinary as f32).ceil() as i32
+}
+
+/// **The iron share cap, per map (T22.22B F4; per scale and R113b's floor, T22.22C).**
+/// T22.22 held the share by the iron's radius band alone, which holds it on average: per
+/// map it ran 28.0–42.5 % on Small and up to 35.5 % on Medium. Here, after the ordinary
+/// rocks are stamped (`ordinary_px`), while the iron share of the stamped pixels is over
+/// `SPACE_IRON_SHARE_MAX` (every scale), **the last iron rock still above `r_min` shrinks
+/// by a pixel** — the second first, then the first — re-drawing its
+/// lumps from its own stream position (`shape_at`), so its silhouette is the same shape
+/// smaller. Only ever smaller, so every placement rule it was seated by still holds, and
+/// the ordinary rocks do not move.
+///
+/// **`r_min` is [`iron_floor`] of the map's largest ordinary rock** (R113b: iron is at
+/// least `SPACE_IRON_MIN_OVER_ORDINARY` × it). T22.22B's floor was that rock + 1, which
+/// left one Small map's iron 1 px larger than its largest ordinary rock. Every scale's
+/// band starts at or above the floor for the largest rock any map can hold (88 → 99), so
+/// no iron is ever drawn under it. **A map whose iron reaches the floor while still over
+/// 0.35 ships as it is** — the owner's "larger" wins (R113b); only such maps exceed 0.35,
+/// and only by what the floor forces. That can happen on Small only (101 of the 999
+/// sweep maps, the most 42.9 %), so the per-map bound each scale's maps are held to is
+/// `ScaleParams::iron_share_max` — 0.44 on Small, 0.35 elsewhere — and
+/// `iron_is_a_minority…` asserts it. *Decision for the coordinator* (T22.22C): shrinking
+/// only to the loosened bound instead put 676 of 999 Small maps over 0.35 (p50 36.6 %
+/// against 34.8 %); reversible by passing the scale's `iron_share_max` here.
 fn cap_iron_share(iron: &mut [Asteroid], shape_at: &[ChaCha8Rng], ordinary_px: u64, r_min: i32) {
     let mut px: Vec<u64> = iron.iter().map(stamped_pixels).collect();
     loop {
@@ -637,7 +652,12 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
     }
     let ordinary_px: u64 = asteroids.iter().map(|a| rock_pixels(&mask, a)).sum();
     let largest_ordinary = asteroids.iter().map(|a| a.r).max().unwrap_or(0);
-    cap_iron_share(&mut iron, &shape_at, ordinary_px, largest_ordinary + 1);
+    cap_iron_share(
+        &mut iron,
+        &shape_at,
+        ordinary_px,
+        iron_floor(largest_ordinary),
+    );
     for a in &iron {
         stamp_asteroid(&mut mask, a);
     }
@@ -2485,6 +2505,10 @@ mod tests {
             let mut levels = [0usize; (SPACE_LEVEL_MAX + 1) as usize];
             let mut attempts = [0usize; 16];
             let mut safe = 0usize;
+            // T22.22C: iron's share of each map's asteroid pixels, and each map's
+            // smallest iron r over its largest ordinary r (R113b).
+            let mut iron_shares: Vec<f32> = Vec::new();
+            let mut iron_ratios: Vec<f32> = Vec::new();
 
             for seed in seeds(999) {
                 let o = generate_terrain(seed, scale);
@@ -2493,6 +2517,9 @@ mod tests {
                     safe += 1;
                 }
                 counts.push(o.asteroids.len());
+                let (i_px, a_px, iron_r, rock_r) = map_iron(&o);
+                iron_shares.push(i_px as f32 / a_px as f32);
+                iron_ratios.push(iron_r as f32 / rock_r as f32);
                 candidates.push(open_space_grid(&o.mask, &geo, &o.asteroids).len() as f32);
                 let params = if o.used_safe_preset {
                     SpaceParams::safe_for(scale)
@@ -2581,6 +2608,22 @@ mod tests {
                 .collect();
             println!("  levels over {total} rocks: {}", shares.join(" "));
             println!("  attempts {attempts:?}, safe preset {safe}");
+            let over = iron_shares
+                .iter()
+                .filter(|&&v| v > SPACE_IRON_SHARE_MAX)
+                .count();
+            println!(
+                "  iron share per map: min {:.4} p50 {:.4} p95 {:.4} max {:.4} (cap {:.4}; \
+                 {over} maps over {SPACE_IRON_SHARE_MAX}); iron / largest ordinary r: min {:.4} \
+                 p50 {:.4}",
+                pct(&mut iron_shares, 0.0),
+                pct(&mut iron_shares, 0.5),
+                pct(&mut iron_shares, 0.95),
+                pct(&mut iron_shares, 1.0),
+                p.iron_share_max,
+                pct(&mut iron_ratios, 0.0),
+                pct(&mut iron_ratios, 0.5)
+            );
         }
     }
 
@@ -2683,7 +2726,8 @@ mod tests {
 
     /// **R113 (T22.21): every space map seats its iron** — `SPACE_IRON_COUNT` rocks,
     /// on every seed and scale, each in its scale's band (`iron_radii`, T22.22) or
-    /// shrunk under it by the share cap and still the map's largest (T22.22B), level 5, clear of the rim and of every other rock by the ordinary rules, and
+    /// shrunk under it by the share cap (T22.22B) never under [`iron_floor`] of the map's largest
+    /// ordinary rock (R113b, T22.22C), level 5, clear of the rim and of every other rock by the ordinary rules, and
     /// stamped (its centre is solid). **And the ordinary rocks do not move with the
     /// count**: the same seed at `iron_count` 0 ships exactly the same ordinary rocks
     /// (the control — iron on the shared stream would re-roll them).
@@ -2692,7 +2736,14 @@ mod tests {
         let (mut kept, mut total) = (0usize, 0usize);
         for scale in MapScale::ALL {
             let (r_min, r_max) = iron_radii(&SpaceParams::default_for(scale));
-            assert!(r_min > grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX));
+            // R113b: every band starts at or above the floor for the largest ordinary
+            // rock any map can hold, so no iron is drawn under it (T22.22C).
+            let largest_possible = grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX);
+            assert!(
+                r_min >= iron_floor(largest_possible),
+                "{scale:?}: iron band floor {r_min} under R113b's {} (1.125 × {largest_possible})",
+                iron_floor(largest_possible)
+            );
             let geo = SpaceGeometry::for_scale(scale);
             for seed in seeds(40) {
                 let o = generate_once(seed, &SpaceParams::default_for(scale));
@@ -2704,7 +2755,7 @@ mod tests {
                     iron.len()
                 );
                 // In the band, or under it only where `cap_iron_share` shrank it — and
-                // then still larger than every ordinary rock on the map (T22.22B).
+                // never under R113b's floor over the map's largest ordinary rock.
                 let largest = o
                     .asteroids
                     .iter()
@@ -2714,7 +2765,7 @@ mod tests {
                     .unwrap_or(0);
                 for a in &iron {
                     assert!(
-                        a.r <= r_max && (a.r >= r_min || a.r > largest),
+                        a.r <= r_max && a.r >= iron_floor(largest),
                         "{scale:?} seed {seed}: r {} (band {r_min}..={r_max}, largest \
                          ordinary {largest})",
                         a.r
@@ -2769,79 +2820,107 @@ mod tests {
         );
     }
 
-    /// Iron's share of all asteroid rock on `scale`, **in stamped pixels** over `n`
-    /// seeds of the shipping generator: every solid pixel inside a rock's bounding
+    /// One map's iron, **in stamped pixels**: every solid pixel inside a rock's bounding
     /// disc (+1 for rounding; rocks sit `gap_min` apart, so no pixel is counted twice,
-    /// and the rim is `SPACE_RIM_CLEARANCE` away). `(share over all seeds, lowest and
-    /// highest share on one map, smallest iron radius, largest ordinary radius)`.
-    /// Iron's share of the asteroid pixels over `n` seeds — pooled, and the least and
-    /// most of any one map — the smallest iron radius, and **the least margin on any map
-    /// between its smallest iron rock and its largest ordinary one** (per map, T22.22B).
-    fn iron_share(scale: MapScale, n: u64) -> (f32, f32, f32, i32, i32) {
-        let (mut iron, mut all) = (0u64, 0u64);
-        let (mut lo, mut hi) = (1.0f32, 0.0f32);
-        let (mut iron_r, mut margin) = (i32::MAX, i32::MAX);
-        for seed in seeds(n) {
-            let o = generate_terrain(seed, scale);
-            let (mut i_px, mut a_px) = (0u64, 0u64);
-            let (mut map_iron_r, mut map_rock_r) = (i32::MAX, 0);
-            for a in &o.asteroids {
-                let px = rock_pixels(&o.mask, a);
-                a_px += px;
-                if a.iron {
-                    i_px += px;
-                    map_iron_r = map_iron_r.min(a.r);
-                } else {
-                    map_rock_r = map_rock_r.max(a.r);
-                }
+    /// and the rim is `SPACE_RIM_CLEARANCE` away). `(iron px, all asteroid px, smallest
+    /// iron r, largest ordinary r)`.
+    fn map_iron(o: &GenOutcome) -> (u64, u64, i32, i32) {
+        let (mut i_px, mut a_px) = (0u64, 0u64);
+        let (mut iron_r, mut rock_r) = (i32::MAX, 0);
+        for a in &o.asteroids {
+            let px = rock_pixels(&o.mask, a);
+            a_px += px;
+            if a.iron {
+                i_px += px;
+                iron_r = iron_r.min(a.r);
+            } else {
+                rock_r = rock_r.max(a.r);
             }
-            iron_r = iron_r.min(map_iron_r);
-            margin = margin.min(map_iron_r - map_rock_r);
+        }
+        (i_px, a_px, iron_r, rock_r)
+    }
+
+    /// Iron over `n` seeds of the shipping generator, per map (T22.22B, T22.22C).
+    #[derive(Debug)]
+    struct IronShare {
+        /// Pooled over every map.
+        pooled: f32,
+        /// The least and most share on one map.
+        lo: f32,
+        hi: f32,
+        /// The least ratio on any map of its smallest iron r to its largest ordinary r.
+        ratio: f32,
+        /// The least slack on any map over R113b's floor, px (negative: under it).
+        slack: i32,
+        /// The smallest iron r on any map.
+        iron_r: i32,
+    }
+
+    fn iron_share(scale: MapScale, n: u64) -> IronShare {
+        let mut m = IronShare {
+            pooled: 0.0,
+            lo: 1.0,
+            hi: 0.0,
+            ratio: f32::MAX,
+            slack: i32::MAX,
+            iron_r: i32::MAX,
+        };
+        let (mut iron, mut all) = (0u64, 0u64);
+        for seed in seeds(n) {
+            let (i_px, a_px, iron_r, rock_r) = map_iron(&generate_terrain(seed, scale));
             let share = i_px as f32 / a_px as f32;
-            lo = lo.min(share);
-            hi = hi.max(share);
+            m.lo = m.lo.min(share);
+            m.hi = m.hi.max(share);
+            m.ratio = m.ratio.min(iron_r as f32 / rock_r as f32);
+            m.slack = m.slack.min(iron_r - iron_floor(rock_r));
+            m.iron_r = m.iron_r.min(iron_r);
             iron += i_px;
             all += a_px;
         }
-        (iron as f32 / all as f32, lo, hi, iron_r, margin)
+        m.pooled = iron as f32 / all as f32;
+        m
     }
 
-    /// **R113 amended (T22.22, T22.22B F4): iron is a couple of big rocks, not most of
-    /// the rock — on every map.** Over 24 seeds of the shipping generator per scale,
-    /// **each map's** iron is at most `SPACE_IRON_SHARE_MAX` of its asteroid pixels (the
-    /// coordinator's ruling: the claim is per map; T22.22 pooled the seeds, and per map it
-    /// ran to 42.5 % on Small) — and on **each map** iron is still **larger than every
-    /// ordinary rock on it** (the owner's *"even larger"*; `cap_iron_share`'s floor), and
-    /// present on every map (the control: a share of zero would pass the bound).
+    /// **R113 amended (T22.22, T22.22B F4, R113b at T22.22C): iron is a couple of big
+    /// rocks, not most of the rock, and clearly the largest — on every map.** Over 24
+    /// seeds of the shipping generator per scale, **each map's** iron is at most its
+    /// scale's `iron_share_max` of its asteroid pixels, and on **each map** every iron rock
+    /// is at least `SPACE_IRON_MIN_OVER_ORDINARY` × the largest ordinary rock on it (the
+    /// owner's *"even larger"*; `cap_iron_share`'s floor) — and iron is present on every
+    /// map (the control: a share of zero would pass the bound).
     ///
     /// Falsified at the live site: `cap_iron_share` returning at once fails the per-map
-    /// arm on Small; its floor dropped to the scale's `SPACE_ASTEROID_R_MIN` fails the
-    /// larger-than arm.
+    /// share arm on Small; its floor back to T22.22B's largest + 1 fails the ratio arm.
     #[test]
     fn iron_is_a_minority_of_the_rock_and_still_the_largest() {
-        use crate::constants::SPACE_IRON_SHARE_MAX;
         let measured = MapScale::ALL.map(|scale| (scale, iron_share(scale, 24)));
-        for &(scale, (share, lo, hi, iron_r, margin)) in &measured {
+        for (scale, m) in &measured {
             println!(
-                "{scale:?}: iron {:.1} % of asteroid pixels (per map {:.1}..{:.1} %), \
-                 smallest iron r {iron_r}, least margin over the map's largest ordinary rock \
-                 {margin} px",
-                share * 100.0,
-                lo * 100.0,
-                hi * 100.0
+                "{scale:?}: iron {:.1} % of asteroid pixels (per map {:.1}..{:.1} %, cap {:.1}), \
+                 smallest iron r {}, least iron / largest ordinary {:.3} (slack {} px)",
+                m.pooled * 100.0,
+                m.lo * 100.0,
+                m.hi * 100.0,
+                scale.params().iron_share_max * 100.0,
+                m.iron_r,
+                m.ratio,
+                m.slack
             );
         }
-        for (scale, (_, lo, hi, _, margin)) in measured {
+        for (scale, m) in measured {
             assert!(
-                hi <= SPACE_IRON_SHARE_MAX,
-                "{scale:?}: a map's iron is {:.1} % of its asteroid rock",
-                hi * 100.0
+                m.hi <= scale.params().iron_share_max,
+                "{scale:?}: a map's iron is {:.1} % of its asteroid rock (cap {:.1})",
+                m.hi * 100.0,
+                scale.params().iron_share_max * 100.0
             );
-            assert!(lo > 0.0, "{scale:?}: a map with no iron");
+            assert!(m.lo > 0.0, "{scale:?}: a map with no iron");
             assert!(
-                margin > 0,
-                "{scale:?}: on some map an iron rock is not larger than every ordinary one \
-                 (margin {margin} px)"
+                m.slack >= 0 && m.ratio >= SPACE_IRON_MIN_OVER_ORDINARY,
+                "{scale:?}: on some map an iron rock is only {:.3} × its largest ordinary one \
+                 (slack {} px)",
+                m.ratio,
+                m.slack
             );
         }
     }

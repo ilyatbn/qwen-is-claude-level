@@ -366,7 +366,11 @@ pub const HEADER_BYTES: usize = 46;
 /// over `SPACE_IRON_SHARE_MAX` of its rock shrinks its iron (`cap_iron_share`) — a v35
 /// space recording diverges at its first small carve on a core, its first brake, or its
 /// arena. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 36;
+///
+/// Bumped to 37 by T22.22C (R113b): Small's iron is drawn at 99..100 px and never shrunk
+/// under 1.125 × its map's largest ordinary rock — a v36 Small space recording is
+/// played on a different arena. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 37;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

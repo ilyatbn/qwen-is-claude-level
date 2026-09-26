@@ -1134,12 +1134,28 @@ mod tests {
         // it sat 19 px past the rim's outer edge — inside the void band once
         // R109b's lower top speed narrowed `SPACE_VOID_GRACE` to 15 px, so the
         // void killed the body and this read as the hole killing after the bell.
-        let at = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH * 0.6, 0.0);
+        //
+        // And **clear of rock**: T22.22C's larger Small iron put this seed's sideways
+        // point 48 px inside an iron rock, where a body is held still. So the point is
+        // the first on the same ring (0.6 × reach), stepping round from sideways, whose
+        // body box and a margin are air inside the arena.
+        use crate::constants::{PLAYER_H, PLAYER_W};
         let geo = w.map.space_geometry().expect("space");
-        assert!(
-            geo.inside(at.x, at.y),
-            "fixture: {at:?} is outside the arena"
-        );
+        let clear = |p: Vec2| {
+            let (hw, hh) = (PLAYER_W as i32, PLAYER_H as i32);
+            geo.inside(p.x, p.y)
+                && (-hh..=hh).all(|dy| {
+                    (-hw..=hw).all(|dx| !w.map.mask.get(p.x as i32 + dx, p.y as i32 + dy))
+                })
+        };
+        let ring = crate::constants::BLACK_HOLE_REACH * 0.6;
+        let at = (0..24)
+            .map(|k| {
+                let a = k as f32 * std::f32::consts::TAU / 24.0;
+                hole + Vec2::new(ring * a.cos(), ring * a.sin())
+            })
+            .find(|&p| clear(p))
+            .expect("fixture: no clear point on the ring");
         assert!(pulls(RoundPhase::Playing));
         assert!(!pulls(RoundPhase::Ended));
         // Playing: pulled toward the hole (the control).
@@ -1147,9 +1163,10 @@ mod tests {
         p.body = crate::physics::body::Body::new(at);
         step(&mut w, 0);
         let v_playing = w.player(0).expect("ana").body.vel;
+        let toward = (hole - at) * (1.0 / (hole - at).len());
         assert!(
-            v_playing.x < -1.0,
-            "control: the hole did not pull ({v_playing:?})"
+            v_playing.x * toward.x + v_playing.y * toward.y > 1.0,
+            "control: the hole did not pull ({v_playing:?} at {at:?})"
         );
         // Ended: the same body, the same place — nothing pulls.
         w.set_phase(RoundPhase::Ended);

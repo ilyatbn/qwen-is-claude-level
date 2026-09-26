@@ -7249,3 +7249,11 @@ a zero-pixel hit, so the end-to-end arm runs through `emit_blast` (bazooka, 0 px
 stop 98 px / 0.47 s. F3 winged-pin bound 4 → 8 per 32 (128 seeds: 8/4/3/5). F4 `cap_iron_share`, floor = map's largest
 ordinary + 1: Small 28.0–35.0 % per map; 3 small goldens. F5 rock floor Small 76 / Medium 82 (hardness and old-aim plants
 red). Economy: batteries 1.43 → 0.79 a bot a round (128 seeds) from R112b, rad deaths 0.16 → 0.17. REPLAY 36.
+
+## T22.22C — iron stays larger on every map (R113b) (builder, 2026-09-26)
+`SPACE_IRON_MIN_OVER_ORDINARY` 1.125; `iron_floor` = ceil(1.125 × map's largest ordinary) is `cap_iron_share`'s floor
+(was largest + 1). Small iron band 90..100 → 99..100 (floor for the 88 px max rock). Per-scale bound
+`ScaleParams::iron_share_max`: Small 0.44 (999-seed max 42.9 %), Medium/Large 0.35; the generator still aims at 0.35,
+only 101/999 Small maps exceed it (decision for the coordinator; literal "shrink to 0.44" put 676 over). Least ratio:
+Small 1.125, Medium 1.364, Large 1.375. Sweep 999/999 first attempt; 4 space-small goldens; REPLAY 37. Fixture
+`at_ended_it_freezes_and_stays` sat inside seed 9's iron — now picks a clear ring point. Plants ×3 red; 4/4 browser.
