@@ -340,7 +340,12 @@ pub const HEADER_BYTES: usize = 46;
 /// Bumped to 31 by T22.18B (F1): a well's band follows the rock's generated outline
 /// (its lumps), and the state hash covers the lumps — a v30 space recording diverges on
 /// the first tick a player is over a lump. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 31;
+///
+/// Bumped to 32 by T22.20 (R109): the thrusters push at `SPACE_THRUST_SCALE` (half) in
+/// space, and the wells' cap, the vortex's pull, the black hole's pull and the bots' brake
+/// halve with them — a v31 space recording diverges on the first tick anyone thrusts.
+/// No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 32;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

@@ -115,6 +115,32 @@ pub const JETPACK_MIN_FUEL_TO_ENGAGE: f32 = 0.3;
 pub const JETPACK_THRUST_UP: f32 = 2200.0;
 pub const JETPACK_THRUST_SIDE: f32 = 1100.0;
 pub const JETPACK_THRUST_DOWN: f32 = 900.0;
+
+/// **What the thrusters push with in space, as a share of the three
+/// `JETPACK_THRUST_*` axes** — T22.20, `M22-RULINGS` R109. The owner: *"can you
+/// make jetpacks in space less powerful? it creates too much inertia."*
+///
+/// Applied in one place, `jetpack::thrust_delta` (through `jetpack::thrust_scale`),
+/// which is the function `apply_input` — server and WASM mirror alike — and the
+/// plume's `thrust_at` both call; standard and low gravity multiply by exactly 1.0,
+/// so their arithmetic is bit-identical to before. **Only thrust**: a jump off a
+/// rock (`JUMP_VELOCITY`) is a velocity, not a thrust, and is unchanged, and so is
+/// the fuel a second of burn costs (`JETPACK_DRAIN`) — the same flight time, with
+/// half the push.
+///
+/// Every escape guarantee in space is stated against [`SPACE_THRUST_DOWN`], which
+/// derives from this, so the wells' cap, the vortex's pull, the black hole's pull
+/// and the bots' brake all move with it. *Reverse it by:* this constant.
+pub const SPACE_THRUST_SCALE: f32 = 0.5;
+
+/// **The weakest thrust a player has in space**, px/s² — `JETPACK_THRUST_DOWN`
+/// (the weakest axis, R46) × [`SPACE_THRUST_SCALE`] = 450. The one number every
+/// escape guarantee in space is measured against (R46, R90, R96, R97): a cap
+/// written against the unscaled 900 would let a pull of 675 hold a player whose
+/// best push is 450, forever, with nothing on screen saying why.
+/// `player::space::tests::the_space_thrust_is_half_what_it_was` pins it as the
+/// weakest of the three scaled axes.
+pub const SPACE_THRUST_DOWN: f32 = JETPACK_THRUST_DOWN * SPACE_THRUST_SCALE;
 pub const JETPACK_MAX_SPEED: f32 = 260.0;
 pub const JETPACK_GRAVITY_SCALE: f32 = 0.35;
 pub const JETPACK_HOLD_DELAY: f32 = 0.18;
@@ -162,15 +188,18 @@ pub const SPACE_JUMP_BURN_SECONDS: f32 = 0.5;
 /// | manoeuvre | measured, on one tank |
 /// |---|---|
 /// | pushes off a rock | **10** |
-/// | jump-and-return round trips (jump, thrust back, land) | **3** |
-/// | the same wearing Ironman boots | **2** |
+/// | jump-and-return round trips (jump, thrust back, land) | **2** (3 before T22.20) |
+/// | the same wearing Ironman boots | **2**, at 4.02 of the tank a trip against 2.55 |
 ///
-/// Arresting a bare 430 px/s launch at `JETPACK_THRUST_DOWN` costs 0.478 s of
-/// burn, and a booted 645 px/s one costs 0.717 s — so boots buy height per jump
-/// and cost range per tank (`M22-RULINGS` R41). An earlier version of this
+/// Arresting a bare 430 px/s launch at [`SPACE_THRUST_DOWN`] costs 0.956 s of
+/// burn, and a booted 645 px/s one costs 1.433 s — so boots buy height per jump
+/// and cost range per tank (`M22-RULINGS` R41). *T22.20 (R109) halved the space
+/// thrust and kept the burn rate: the arrests doubled (0.478 / 0.717 s at 900),
+/// so a tank buys two round trips where it bought three, and the boots' price is
+/// now asserted per trip rather than as a whole one.* An earlier version of this
 /// comment said ten pushes meant *"traversing an asteroid field on legs alone is
 /// a real option"*; that was never measured, and the round-trip number is what
-/// was. The three is asserted alongside the ten.
+/// was. The two is asserted alongside the ten.
 pub const SPACE_JUMP_FUEL: f32 = JETPACK_DRAIN * SPACE_JUMP_BURN_SECONDS;
 
 // ---------------------------------------------------------------------------
@@ -194,7 +223,8 @@ pub const THRUSTER_PLUME_LENGTH: f32 = PLAYER_H * 1.4;
 pub const THRUSTER_PLUME_WIDTH: f32 = PLAYER_W;
 /// T22.04: below this speed, px/s, velocity has no direction worth drawing and
 /// the plume points down — see `thrusterPlume-math.ts::plumeDir`. One tick of the
-/// weakest thrust (`JETPACK_THRUST_DOWN * SIM_DT` = 15 px/s) clears it.
+/// weakest thrust (`SPACE_THRUST_DOWN * SIM_DT` = 7.5 px/s in space since T22.20;
+/// 15 under gravity) clears it.
 pub const THRUSTER_PLUME_MIN_SPEED: f32 = 1.0;
 
 // ---------------------------------------------------------------------------
@@ -730,6 +760,8 @@ pub const SPACE_OPEN_SPACE_TRIES: u32 = 24;
 /// How much of the jetpack's **weakest** axis a level-[`SPACE_LEVEL_MAX`] well
 /// is allowed to spend, at the closest a player body can get to a rock.
 ///
+/// *Since T22.20 the axis as space scales it, [`SPACE_THRUST_DOWN`] (450).*
+///
 /// **The weakest axis is `JETPACK_THRUST_DOWN` (900), not `JETPACK_THRUST_UP`
 /// (2200)** — `M22-RULINGS` R46, which overturns R18 and the design record on
 /// exactly this point. The pack is anisotropic, so the binding case is a player
@@ -753,9 +785,10 @@ pub const SPACE_WELL_ESCAPE_MARGIN: f32 = 0.75;
 /// it directly.
 ///
 /// For scale: `GRAVITY` is 1400, so the deepest rock in the game pulls at
-/// roughly half of ordinary gravity at its surface, and the shallowest (level 1,
-/// a fifth of this) at about a tenth.
-pub const SPACE_WELL_ACCEL_MAX: f32 = JETPACK_THRUST_DOWN * SPACE_WELL_ESCAPE_MARGIN;
+/// roughly a quarter of ordinary gravity at its surface (337.5 px/s²), and the
+/// shallowest (level 1, a fifth of this) at about a twentieth. *Half and a tenth
+/// before T22.20 halved the space thrust this is stated against (R109).*
+pub const SPACE_WELL_ACCEL_MAX: f32 = SPACE_THRUST_DOWN * SPACE_WELL_ESCAPE_MARGIN;
 
 /// **How far a well reaches past its rock: one body height of air**, px —
 /// `M22-OWNER-ROUND-2` R101 (T22.15). The owner: *"gravity should be like a few
@@ -777,9 +810,11 @@ pub const SPACE_WELL_ACCEL_MAX: f32 = JETPACK_THRUST_DOWN * SPACE_WELL_ESCAPE_MA
 ///
 /// **Basis: one body height, `PLAYER_H`** — the ruling's default. A body leaving
 /// the rock at `v` comes back while `v² / 2 < strength · WELL_SURFACE_BAND`, so a
-/// level-1 rock (135 px/s²) returns anything under 87 px/s — the smallest hop, UP
-/// until airborne, is ~70 — and a level-5 one anything under 194 px/s. **A jump
-/// always leaves** (430 px/s would need a 137 px band at the strongest level), and
+/// level-1 rock (67.5 px/s² since T22.20 halved the cap; 135 before) returns anything
+/// under 61 px/s — a hop, UP until airborne, still lands back on 99.6 % of 249 rock
+/// tops (`short_range_wells_report`, after T22.20) — and a level-5 one anything under
+/// 137 px/s. **A jump always leaves** (430 px/s would need a 274 px band at the
+/// strongest level), and
 /// that is the mode's push-off, not a defect: `short_range_wells_report` measures
 /// both. Two rocks' bands can meet only in a lane narrower than
 /// `2 · (PLAYER_H / 2 + WELL_SURFACE_BAND)` = 84 px, against `SPACE_ASTEROID_GAP_MIN` 80, so the arena
@@ -799,9 +834,10 @@ pub const WELL_SURFACE_BAND: f32 = PLAYER_H;
 /// attractor can make you is a free fall from its cutoff to the closest a body
 /// can get — integrated, not remembered, by
 /// `world::attractors::tests::space_max_speed_carries_its_basis`, which asserts
-/// this clamp sits above 1.5x the fastest of them (the deepest well, **194.4
-/// px/s** since T22.16 measures the band from the rock's round body — 247.8 at
-/// R101, 695.8 when a well reached a climb budget out; a
+/// this clamp sits above 1.5x the fastest of them (the deepest well, **137.5
+/// px/s** since T22.20 halved the cap with the space thrust — 194.4 at T22.16, when
+/// the band was first measured from the rock's round body, 247.8 at R101, 695.8
+/// when a well reached a climb budget out; a
 /// vortex capped with the wells; the hole down to its horizon), and checks the
 /// two bounds R10 names: above the 367.7 px/s a diagonal jetpack burn already
 /// reaches (below it, the clamp re-introduces the *"controls fighting you"*
@@ -810,6 +846,19 @@ pub const WELL_SURFACE_BAND: f32 = PLAYER_H;
 /// the clamp is inert). *R101 (T22.15) left the value at 1350:* with no field
 /// between rocks there is no chain of wells to run away along, so it now bounds
 /// stacked thrust and pulls rather than a well-to-well runaway.
+///
+/// **T22.20 (R109) left it at 1350 too, and this is the basis restated against the
+/// halved thrust.** The value is not a function of the thrust: flight from rest
+/// tops out per axis at `JETPACK_MAX_SPEED` (`jetpack::apply_thrust`'s governor,
+/// untouched), and the thrust only sets how fast a body *already past* 260 — a
+/// push-off at `JUMP_VELOCITY`, a pull — climbs on to this clamp. Measured by
+/// `player::space::tests::space_flight_report`, rim to rim across a Medium arena:
+/// from rest **11.57 → 11.68 s**, from a push-off **2.50 → 2.78 s** (both still
+/// reach 1350), so flight still needs this clamp and it is still what the fastest
+/// crossing meets. What the halving moved is the other end — stopping from 1350 by
+/// counter-thrust takes **817 → 1646 px and 1.23 → 2.47 s** (from 260: 28 → 59 px,
+/// 0.25 → 0.48 s), and the dive bounds above fell with the pulls. A lower clamp is
+/// the lever on that stopping distance; it is a separate call, not R109's.
 pub const SPACE_MAX_SPEED: f32 = 1350.0;
 
 // ---------------------------------------------------------------------------
@@ -868,9 +917,10 @@ pub const VORTEX_CAPTURE_R: f32 = SPACE_RIM_THICKNESS as f32;
 /// with the wells and capped with them at [`SPACE_WELL_ACCEL_MAX`]
 /// (`attractors::capped_at`), so outside [`VORTEX_CAPTURE_R`] thrust always wins;
 /// this number now shapes how far out the cap binds (the vortex alone reaches the
-/// cap at `(1 − 675/1800) × REACH` = 80 px since R105 — 318 at the old sizes), not
+/// cap at `(1 − 337.5/900) × REACH` = 80 px since R105 — 318 at the old sizes; the
+/// ratio, and so the 80, is unchanged by T22.20 halving both), not
 /// where escape ends. **Unchanged by R105**: the owner asked for smaller, not weaker.
-pub const VORTEX_ACCEL_MAX: f32 = 2.0 * JETPACK_THRUST_DOWN;
+pub const VORTEX_ACCEL_MAX: f32 = 2.0 * SPACE_THRUST_DOWN;
 
 /// How far a vortex pulls, centre to cutoff, px. **Four capture radii** — 128 since
 /// R105 (T22.18), a quarter of the 508 it was, so the pull is felt about a hole, not
@@ -936,14 +986,15 @@ pub const BLACK_HOLE_HORIZON_R: f32 = SPACE_ASTEROID_R_MAX as f32;
 /// with less headroom, because this one is meant to be nearly a trap.
 pub const BLACK_HOLE_ESCAPE_MARGIN: f32 = 0.9;
 
-/// The pull at the horizon, px/s²: `JETPACK_THRUST_DOWN × BLACK_HOLE_ESCAPE_MARGIN`
-/// = 810 (R90). **DOWN, because it is the weakest thrust** (UP 2200, SIDE 1100,
-/// DOWN 900) — the review's correction: sizing against UP + SIDE (T22.12A) put the
-/// no-escape line at a different radius on every side, so the ring drawn at it
-/// promised a rule the physics did not keep. A single-axis thrust off the radial by
-/// up to the bots'/tests' diagonal threshold still carries `900 · cos 16.7° ≈ 862`
-/// of it outward, above this.
-pub const BLACK_HOLE_EDGE_PULL: f32 = JETPACK_THRUST_DOWN * BLACK_HOLE_ESCAPE_MARGIN;
+/// The pull at the horizon, px/s²: `SPACE_THRUST_DOWN × BLACK_HOLE_ESCAPE_MARGIN`
+/// = 405 since T22.20 (R109 halved the space thrust; 810 at R90). **DOWN, because it
+/// is the weakest thrust** (UP 1100, SIDE 550, DOWN 450 in space) — the review's
+/// correction: sizing against UP + SIDE (T22.12A) put the no-escape line at a
+/// different radius on every side, so the ring drawn at it promised a rule the
+/// physics did not keep. A single-axis thrust off the radial by up to the
+/// bots'/tests' diagonal threshold still carries `450 · cos 16.7° ≈ 431` of it
+/// outward, above this.
+pub const BLACK_HOLE_EDGE_PULL: f32 = SPACE_THRUST_DOWN * BLACK_HOLE_ESCAPE_MARGIN;
 
 /// How far the hole pulls, centre to cutoff, px: **eight horizons, 512** since
 /// T22.18 (`M22-OWNER-ROUND-2` R106 — the owner: *"black hole gravity pull should be
@@ -963,9 +1014,10 @@ pub const BLACK_HOLE_REACH: f32 = 8.0 * BLACK_HOLE_HORIZON_R;
 
 /// The pull at the centre, px/s²: whatever makes the linear falloff (the law every
 /// attractor shares, R47) equal [`BLACK_HOLE_EDGE_PULL`] **at the horizon** —
-/// `EDGE_PULL / (1 − HORIZON_R / REACH)` = 810 / 0.875 ≈ 925.7 since R106 (1080 at
-/// four horizons). The law is linear and falls outward, so **everywhere outside the
-/// horizon the pull is ≤ 810 = 0.9 × DOWN** — R90's margin, at any reach. Nobody
+/// `EDGE_PULL / (1 − HORIZON_R / REACH)` = 405 / 0.875 ≈ 462.9 since T22.20 (925.7 at
+/// R106, 1080 at four horizons). The law is linear and falls outward, so **everywhere
+/// outside the horizon the pull is ≤ 405 = 0.9 × the space DOWN thrust** — R90's
+/// margin, at any reach. Nobody
 /// alive is ever nearer the centre than the horizon, so the number past it is never
 /// felt.
 pub const BLACK_HOLE_ACCEL_MAX: f32 =
@@ -3775,7 +3827,10 @@ pub const BOT_SPACE_CRUISE: f32 = 200.0;
 /// T22.03G: `attractors::wells_at` caps the wells' sum at `SPACE_WELL_ACCEL_MAX`;
 /// before it, three wells in a crevice summed to 919. And beside a vortex only since
 /// R97, T22.03I: `attractors::capped_at` puts the vortices inside the same cap.)*
-pub const BOT_SPACE_BRAKE: f32 = JETPACK_THRUST_DOWN - SPACE_WELL_ACCEL_MAX;
+/// **112.5 since T22.20** (R109 halved the space thrust and the cap with it; 225
+/// before): the same constant the bots plan with, so their stopping distance moved
+/// with the thrust, not a copy of it.
+pub const BOT_SPACE_BRAKE: f32 = SPACE_THRUST_DOWN - SPACE_WELL_ACCEL_MAX;
 /// How far a flying bot's velocity may miss the one it wants, per axis, before it
 /// thrusts, px/s. The dead band is what lets it coast (and refill) instead of
 /// firing the thrusters every tick over a rounding error.

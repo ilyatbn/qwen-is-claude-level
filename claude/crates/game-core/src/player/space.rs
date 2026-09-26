@@ -137,7 +137,7 @@ pub fn engaging(gravity: GravityMode, body: &Body, mods: MoveMods, input: &Input
     if gravity != GravityMode::Space || mods.flying || mods.mounted {
         return false;
     }
-    let (dx, dy) = jetpack::thrust_delta(input, SIM_DT);
+    let (dx, dy) = jetpack::thrust_delta(input, gravity, SIM_DT);
     if body.grounded {
         dy < 0.0
     } else {
@@ -703,19 +703,22 @@ mod tests {
             rested.jet.fuel
         );
 
-        // **And the third literal: three jump-and-return round trips.**
+        // **And the third literal: two jump-and-return round trips** (three
+        // before T22.20 halved the space thrust, R109).
         //
         // Ten *launches* is not ten *journeys*, and the doc comment used to say
         // it was — *"traversing an asteroid field on legs alone is a real
         // option"*, a sentence true of this fixture's free teleport back to the
         // rock and of nothing in the game. Driving the return leg instead:
-        // arresting a 430 px/s launch costs 0.478 s of `JETPACK_THRUST_DOWN`,
-        // roughly the jump itself, and the burn that arrests it is also the
-        // burn that brings you home. A tank buys **three**.
+        // arresting a 430 px/s launch costs 0.956 s of `SPACE_THRUST_DOWN` (0.478
+        // s at the pre-T22.20 900), more than the jump itself, and the burn that
+        // arrests it is also the burn that brings you home. A tank buys **two**.
+        // R109 kept the burn rate (`JETPACK_DRAIN`): a crossing still fits a tank
+        // (`space_flight_report`), a round trip trades one of three for this.
         assert_eq!(
-            round_trips(&map, feet, MoveMods::NONE),
-            3,
-            "a tank no longer buys three jump-and-return round trips; that is \
+            round_trips(MoveMods::NONE).0,
+            2,
+            "a tank no longer buys two jump-and-return round trips; that is \
              the pacing number in SPACE_JUMP_FUEL's doc comment"
         );
     }
@@ -723,7 +726,19 @@ mod tests {
     /// Jump off the rock, hold DOWN until back on it, repeat until a jump is
     /// refused. **The return leg is driven, not teleported** — which is the
     /// whole difference between this and the launch count above.
-    fn round_trips(map: &Map, feet: f32, mods: MoveMods) -> u32 {
+    ///
+    /// Returns the trips and **what the first one cost the tank** — since T22.20
+    /// halved the space thrust a bare and a booted tank both buy two, so the
+    /// count alone no longer shows the boots' price (R41); the cost does.
+    fn round_trips(mods: MoveMods) -> (u32, f32) {
+        // **A sky tall enough that nothing but the thrust arrests a launch**
+        // (T22.20). At `SPACE_THRUST_DOWN` a booted 645 px/s launch climbs 462 px
+        // before it turns; on the 512-px fixture with the rock at 300 it met the
+        // world's top edge, which stopped it for free and made a booted trip read
+        // *cheaper* than a bare one.
+        let map = test_map(W, 3 * H, floor_at(FLOOR + 2 * H as i32));
+        let map = &map;
+        let feet = (FLOOR + 2 * H as i32) as f32 - PLAYER_H / 2.0;
         let released = Input::new(0, 0, 0);
         let pressed = Input::new(0, button::JUMP, 0);
         let down = Input::new(0, button::DOWN, 0);
@@ -738,7 +753,9 @@ mod tests {
         assert!(st.body.grounded, "precondition: never found the rock");
 
         let mut trips = 0;
+        let mut first_cost = 0.0;
         'trip: for _ in 0..20 {
+            let tank = st.jet.fuel;
             st.step(
                 map,
                 &released,
@@ -766,13 +783,16 @@ mod tests {
                     SIM_DT,
                 );
                 if st.body.grounded {
+                    if trips == 0 {
+                        first_cost = tank - st.jet.fuel;
+                    }
                     trips += 1;
                     continue 'trip;
                 }
             }
             panic!("a jump never came back to the rock in 20 s of DOWN thrust");
         }
-        trips
+        (trips, first_cost)
     }
 
     /// **R41 — thrust is the suit's engine, not your legs: it ignores health
@@ -942,10 +962,11 @@ mod tests {
     ///
     /// **It is not free in the round, though, and that is worth having in the
     /// suite too:** the return trip is priced. Arresting 645 px/s at
-    /// `JETPACK_THRUST_DOWN` costs 0.717 s of burn against 0.478 s for 430, so
-    /// measured over a whole tank a booted player gets **two** jump-and-return
-    /// round trips where a bare one gets **three**. Boots buy height per jump
-    /// and cost range per tank.
+    /// `SPACE_THRUST_DOWN` costs 1.433 s of burn against 0.956 s for 430, so a
+    /// booted jump-and-return round trip costs the tank more than a bare one.
+    /// Boots buy height per jump and cost range per tank. *(Before T22.20 halved
+    /// the space thrust this showed as a whole trip — two booted against three
+    /// bare; now both tanks buy two, so the price is asserted per trip.)*
     #[test]
     fn a_booted_space_jump_launches_faster_for_the_same_fuel() {
         let map = test_map(W, H, floor_at(FLOOR));
@@ -1002,14 +1023,20 @@ mod tests {
              {bare_v}), so the equal cost above prices nothing"
         );
 
-        // The priced half, measured by driving the return leg: two round trips
-        // against a bare player's three.
-        assert_eq!(
-            round_trips(&map, feet, boots),
-            2,
-            "a booted tank no longer buys two jump-and-return round trips \
-             against a bare tank's three — the arrest cost of the extra delta-v \
-             is what prices it, and that relation is the doc comment's"
+        // The priced half, measured by driving the return leg: a booted round
+        // trip costs more of the tank than a bare one.
+        let (bare_trips, bare_trip) = round_trips(MoveMods::NONE);
+        let (booted_trips, booted_trip) = round_trips(boots);
+        assert!(
+            booted_trip > bare_trip && booted_trips <= bare_trips && booted_trips > 0,
+            "a booted round trip costs {booted_trip:.3} of the tank against a bare \
+             {bare_trip:.3} ({booted_trips} trips against {bare_trips}) — the arrest \
+             cost of the extra delta-v is what prices it, and that relation is the \
+             doc comment's"
+        );
+        eprintln!(
+            "round trips: bare {bare_trips} at {bare_trip:.3} fuel, booted {booted_trips} \
+             at {booted_trip:.3}"
         );
     }
 
@@ -1121,6 +1148,171 @@ mod tests {
             "engaging the thrusters braked a body already past the clamp \
              ({} from {before}) — the clamp bounds the thrust, not the body",
             knocked.body.vel.x
+        );
+    }
+
+    // ---- T22.20 (`M22-RULINGS` R109): gentler thrusters in space ----------
+
+    /// Space with the arena's real speed cap and no field: what flight alone does.
+    fn capped_space() -> MoveStep {
+        MoveStep {
+            mods: MoveMods::NONE,
+            env: Env {
+                gravity: GravityMode::Space,
+                accel: Vec2::ZERO,
+                max_speed: Some(crate::constants::SPACE_MAX_SPEED),
+            },
+        }
+    }
+
+    fn step_capped(map: &Map, st: &mut MovementState, buttons: u8) {
+        let input = Input::new(0, buttons, 0);
+        st.step(map, &input, &input, capped_space(), SIM_DT);
+    }
+
+    /// The largest velocity change one tick of any held direction set makes in
+    /// space, from rest with a full tank, px/s² — through `apply_input`.
+    fn space_peak_accel() -> f32 {
+        let map = void();
+        let dirs = [button::UP, button::DOWN, button::LEFT, button::RIGHT];
+        (1u8..16)
+            .map(|m| {
+                let held = dirs
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| m & (1 << i) != 0)
+                    .fold(0u8, |a, (_, b)| a | b);
+                let mut st = drifting(Vec2::new(500.0, 260.0), Vec2::ZERO);
+                step_capped(&map, &mut st, held);
+                st.body.vel.len() / SIM_DT
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// What the owner feels, in numbers: the time to cross a Medium arena rim to
+    /// rim, from rest and from a push-off at `JUMP_VELOCITY` (the thrust stacks
+    /// on a body already past `JETPACK_MAX_SPEED`, up to `SPACE_MAX_SPEED`), and
+    /// the distance and time to stop by counter-thrust from the governed flight
+    /// speed and from the space top speed. `(crossing from rest s, crossing
+    /// from a push-off s, top speed reached px/s, [stop px, stop s] at 260, at
+    /// SPACE_MAX_SPEED, fuel left after the 1350 stop)`.
+    struct Flight {
+        cross_rest: f32,
+        cross_push: f32,
+        cross_push_top: f32,
+        stop_cruise: (f32, f32),
+        stop_top: (f32, f32, f32),
+    }
+
+    fn flight() -> Flight {
+        use crate::constants::{
+            MAP_MEDIUM_H, MAP_MEDIUM_W, PLAYER_W, SPACE_MAX_SPEED, SPACE_RIM_THICKNESS,
+        };
+        let map = test_map(MAP_MEDIUM_W, MAP_MEDIUM_H, |_| {});
+        let x0 = SPACE_RIM_THICKNESS as f32 + PLAYER_W;
+        let x1 = MAP_MEDIUM_W as f32 - SPACE_RIM_THICKNESS as f32 - PLAYER_W;
+        let y = MAP_MEDIUM_H as f32 / 2.0;
+        let cross = |v0: f32| {
+            let mut st = drifting(Vec2::new(x0, y), Vec2::new(v0, 0.0));
+            let mut ticks = 0u32;
+            let mut top = 0.0f32;
+            while st.body.pos.x < x1 && ticks < 60 * 60 {
+                step_capped(&map, &mut st, button::RIGHT);
+                top = top.max(st.body.vel.x);
+                ticks += 1;
+            }
+            (ticks as f32 * SIM_DT, top)
+        };
+        let stop = |v0: f32| {
+            let mut st = drifting(Vec2::new(x0, y), Vec2::new(v0, 0.0));
+            let mut ticks = 0u32;
+            while st.body.vel.x > 0.0 && ticks < 60 * 60 {
+                step_capped(&map, &mut st, button::LEFT);
+                ticks += 1;
+            }
+            (st.body.pos.x - x0, ticks as f32 * SIM_DT, st.jet.fuel)
+        };
+        let (cross_rest, _) = cross(0.0);
+        let (cross_push, cross_push_top) = cross(JUMP_VELOCITY);
+        let c = stop(JETPACK_MAX_SPEED);
+        Flight {
+            cross_rest,
+            cross_push,
+            cross_push_top,
+            stop_cruise: (c.0, c.1),
+            stop_top: stop(SPACE_MAX_SPEED),
+        }
+    }
+
+    /// **The owner's words against a basis that does not move with the fix** —
+    /// *"can you make jetpacks in space less powerful? it creates too much
+    /// inertia."* (T22.20, `M22-RULINGS` R109.)
+    ///
+    /// The strongest push the pack could give in space before T22.20 was UP +
+    /// LEFT/RIGHT, `hypot(2200, 1100)` ≈ 2459.7 px/s² — **written out as
+    /// literals**, because a basis spelled `JETPACK_THRUST_UP` would halve with
+    /// any retune of the pack and this assertion would go on passing. Measured
+    /// through `apply_input` over all fifteen held-direction sets, it must now
+    /// be at most half that. The control is standard gravity: its `thrust_delta`
+    /// is still the unscaled pack, so the scale is space's and nobody else's.
+    ///
+    /// Falsified at the live site: `SPACE_THRUST_SCALE` 0.5 → 1.0 fails here
+    /// (peak 2459.7 against the 1229.9 ceiling).
+    #[test]
+    fn the_space_thrust_is_half_what_it_was() {
+        use crate::constants::{
+            JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SPACE_THRUST_DOWN,
+        };
+        // Pre-T22.20 axes, as numbers: UP 2200, SIDE 1100.
+        let before = (2200.0f32 * 2200.0 + 1100.0 * 1100.0).sqrt();
+        let peak = space_peak_accel();
+        assert!(
+            peak <= 0.5 * before * (1.0 + 1e-3),
+            "space peak acceleration {peak:.1} px/s² is over half the pre-T22.20 {before:.1}"
+        );
+        assert!(
+            peak > 0.25 * before,
+            "space peak acceleration {peak:.1} — the pack barely pushes, or the \
+             instrument measured nothing"
+        );
+        assert_eq!(
+            jetpack::thrust_delta(
+                &Input::new(0, button::UP | button::RIGHT, 0),
+                GravityMode::Standard,
+                1.0
+            ),
+            (JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP),
+            "standard gravity's pack moved with the space scale"
+        );
+        // The escape guarantees are all stated against SPACE_THRUST_DOWN: it
+        // must be the weakest of the three scaled axes, or they are stated
+        // against the wrong one (R46's lesson, at the new scale).
+        let s = jetpack::thrust_scale(GravityMode::Space);
+        let weakest = (JETPACK_THRUST_UP * s)
+            .min(JETPACK_THRUST_SIDE * s)
+            .min(JETPACK_THRUST_DOWN * s);
+        assert_eq!(SPACE_THRUST_DOWN, weakest);
+    }
+
+    /// The numbers T22.20's task file carries, printed: `cargo test -p game-core
+    /// space_flight_report -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn space_flight_report() {
+        let f = flight();
+        println!(
+            "T22.20 flight: peak accel {:.1} px/s²; Medium crossing from rest {:.2} s, \
+             from a push-off {:.2} s (top {:.0} px/s); stop from 260: {:.1} px in {:.2} s; \
+             stop from SPACE_MAX_SPEED: {:.1} px in {:.2} s, fuel left {:.2}",
+            space_peak_accel(),
+            f.cross_rest,
+            f.cross_push,
+            f.cross_push_top,
+            f.stop_cruise.0,
+            f.stop_cruise.1,
+            f.stop_top.0,
+            f.stop_top.1,
+            f.stop_top.2,
         );
     }
 }

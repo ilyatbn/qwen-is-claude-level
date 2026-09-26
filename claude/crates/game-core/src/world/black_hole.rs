@@ -764,9 +764,11 @@ mod tests {
             (edge - BLACK_HOLE_EDGE_PULL).abs() < 0.5,
             "edge pull {edge}"
         );
-        let weakest = JETPACK_THRUST_DOWN
-            .min(JETPACK_THRUST_SIDE)
-            .min(JETPACK_THRUST_UP);
+        // T22.20 (R109): the pack as space scales it — the thrust a body here has.
+        let space = crate::player::jetpack::thrust_scale(GravityMode::Space);
+        let weakest = (JETPACK_THRUST_DOWN * space)
+            .min(JETPACK_THRUST_SIDE * space)
+            .min(JETPACK_THRUST_UP * space);
         assert!(
             edge < weakest,
             "the pull at the horizon {edge} beats a thrust {weakest}"

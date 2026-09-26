@@ -90,8 +90,15 @@ const PULL_BUDGET_S = 10
  * a body from 0.97 × reach had moved 52 px at the bell (red: the control wants a quarter
  * of the way in). From 0.865 × reach (443 px) the body reaches the horizon at 1.9 s
  * again, has moved ~230 px by 1.6 s, and is pulled ~540 px/s² there.
+ *
+ * **T22.20 (R109): 0.73, re-derived for the halved pull.** The space thrust was halved and
+ * the hole's pull with it (R90 is stated against the space thrust), so the rate is
+ * √(462.9 / 512) = 0.95 /s: from 0.865 the law gives ~97 px moved by 1.6 s, on the
+ * control's quarter-of-the-way line, and the Rust twin's control measured 0.83 px. From
+ * 0.73 × reach (374 px) the law gives the horizon at ~1.95 s and ~190 px moved by 1.6 s —
+ * the pull at the start is what 0.865 had at T22.18 (computed, not measured here).
  */
-const BELL_PLACE = 0.865
+const BELL_PLACE = 0.73
 const BELL_LEAD_S = 1.6
 /**
  * Arm 5b hears the server this late (`__game.netDelay`): on localhost the page hears the

@@ -345,12 +345,13 @@ fn field_from<I: IntoIterator<Item = Attractor>>(start: Vec2, attractors: I, pos
 /// wells summed to (18, −919) px/s² against `JETPACK_THRUST_DOWN` 900, and a body
 /// holding any of the 8 directions for 30 ticks moved 0–1.8 px — a human trapped
 /// exactly as a bot was. The cap is **derived, not a new number**: it is the
-/// per-well ceiling itself, `JETPACK_THRUST_DOWN × SPACE_WELL_ESCAPE_MARGIN` (675),
+/// per-well ceiling itself, `SPACE_THRUST_DOWN × SPACE_WELL_ESCAPE_MARGIN` (675 then;
+/// 337.5 since T22.20 halved the space thrust, R109),
 /// so wherever one rock's well stands alone it is never touched (a lone well is
 /// below 675 at every point a body can reach — `a_well_alone_still_pulls_at_its_full_strength`),
 /// and wherever wells pile up a player keeps the same quarter of the down thrust
 /// that R46 guarantees next to one rock — which is also the premise
-/// `BOT_SPACE_BRAKE` (`DOWN − SPACE_WELL_ACCEL_MAX`) was already stated on.
+/// `BOT_SPACE_BRAKE` (`SPACE_THRUST_DOWN − SPACE_WELL_ACCEL_MAX`) was already stated on.
 ///
 /// *R96's "wells only" is superseded by R97* — the vortices are inside the cap
 /// now ([`capped_at`]); this is that sum with no vortex in it.
@@ -492,8 +493,8 @@ pub fn env_at(
 mod tests {
     use super::*;
     use crate::constants::{
-        GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_THRUST_DOWN, MAP_SMALL_W, PLAYER_H,
-        SIM_DT, SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_WELL_ESCAPE_MARGIN,
+        GRAVITY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, MAP_SMALL_W, PLAYER_H, SIM_DT,
+        SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN, SPACE_THRUST_DOWN, SPACE_WELL_ESCAPE_MARGIN,
     };
     use crate::map::Map;
     use crate::physics::collide::tests::test_map;
@@ -733,7 +734,8 @@ mod tests {
     // ---- R46: the escape ceiling, stated downward -------------------------
 
     /// **`M22-RULINGS` R46 — the ceiling is `JETPACK_THRUST_DOWN`, and it is
-    /// asserted over the whole table.**
+    /// asserted over the whole table.** *Since T22.20 (R109) the down axis as space
+    /// scales it, `SPACE_THRUST_DOWN` = 450: the pack a player on a rock actually has.*
     ///
     /// R18 and the design record both wrote this guard against `JETPACK_THRUST_UP`
     /// = 2200, the pack's *strongest* axis. The pack is anisotropic — up 2200,
@@ -772,10 +774,10 @@ mod tests {
         }
         let (pull, level, r) = worst;
         assert!(
-            pull < JETPACK_THRUST_DOWN,
+            pull < SPACE_THRUST_DOWN,
             "the worst well in the table pulls at {pull:.1} px/s² at the closest a \
-             body can get (level {level}, r = {r}), against {JETPACK_THRUST_DOWN} \
-             px/s² of down-thrust: a player on the underside of that rock is stuck \
+             body can get (level {level}, r = {r}), against {SPACE_THRUST_DOWN} \
+             px/s² of down-thrust in space: a player on the underside of that rock is stuck \
              there for the rest of the round"
         );
         assert_eq!(
@@ -784,7 +786,7 @@ mod tests {
         );
         // And the margin is the constant, so this cannot pass by the ceiling having
         // quietly become unreachable: a body on a level-5 rock feels exactly it.
-        let expected = SPACE_WELL_ESCAPE_MARGIN * JETPACK_THRUST_DOWN;
+        let expected = SPACE_WELL_ESCAPE_MARGIN * SPACE_THRUST_DOWN;
         assert_eq!(
             pull, expected,
             "the worst pull {pull:.1} should be SPACE_WELL_ACCEL_MAX ({expected}) — a \
@@ -897,12 +899,13 @@ mod tests {
             "level {SPACE_LEVEL_MAX} pulls {ratio:.2}x a level 1 rock at the same \
              distance, and the linear table says at least {SPACE_LEVEL_MAX}x: {pulls:?}"
         );
-        // Stated where a reader will look for it: a level-5 surface is about half
-        // of ordinary gravity, which is the sentence SPACE_WELL_ACCEL_MAX's doc
-        // makes. Pinned loosely, because it is a feel claim and not a law.
+        // Stated where a reader will look for it: a level-5 surface is about a
+        // quarter of ordinary gravity, which is the sentence SPACE_WELL_ACCEL_MAX's
+        // doc makes (about half before T22.20 halved the space thrust the cap is
+        // stated against). Pinned loosely, because it is a feel claim and not a law.
         let deepest = pulls[SPACE_LEVEL_MAX as usize - 1];
         assert!(
-            deepest > GRAVITY * 0.4 && deepest < GRAVITY * 0.55,
+            deepest > GRAVITY * 0.2 && deepest < GRAVITY * 0.3,
             "the deepest well is {deepest:.1} px/s² against GRAVITY {GRAVITY}"
         );
     }
@@ -1014,7 +1017,7 @@ mod tests {
                 "level {bad} off the wire was not clamped to {clamped}"
             );
             assert!(
-                a.pull_at(Vec2::new(0.0, d_min(SPACE_ASTEROID_R_MIN))).len() < JETPACK_THRUST_DOWN
+                a.pull_at(Vec2::new(0.0, d_min(SPACE_ASTEROID_R_MIN))).len() < SPACE_THRUST_DOWN
             );
         }
     }
@@ -1186,10 +1189,11 @@ mod tests {
     }
 
     /// The deepest single-well dive: a level-5 rock, from its reach down to `d_min` —
-    /// measured by the test below. *T22.16: 194.4, exactly one band at 675 px/s²
-    /// (`√(2·675·28)`) — the reach now starts at `d_min` itself (refinement B); 247.8 at
-    /// R101, when it started at `r + PLAYER_H / 2`.*
-    const WELL_DIVE: f32 = 194.4;
+    /// measured by the test below. *T22.20: 137.5, one band at 337.5 px/s²
+    /// (`√(2·337.5·28)`) — the cap halved with the space thrust (R109); 194.4 at T22.16
+    /// (675 px/s², the reach starting at `d_min` itself, refinement B); 247.8 at R101,
+    /// when it started at `r + PLAYER_H / 2`.*
+    const WELL_DIVE: f32 = 137.5;
 
     /// [`SPACE_MAX_SPEED`] against the measurement its doc comment claims, the way
     /// `capacity.rs::max_rooms_carries_its_basis` pins the claim in its constant's
@@ -1456,9 +1460,9 @@ mod tests {
         let pocket = stacked_pocket(&mut w);
         let raw = raw_wells(&w.map, pocket);
         assert!(
-            raw.y < -JETPACK_THRUST_DOWN,
+            raw.y < -SPACE_THRUST_DOWN,
             "the pocket moved: the raw wells there are ({:.0}, {:.0}), no longer over \
-             the {JETPACK_THRUST_DOWN} px/s² down thrust — re-trace it",
+             the {SPACE_THRUST_DOWN} px/s² down thrust in space — re-trace it",
             raw.x,
             raw.y
         );
@@ -1658,9 +1662,9 @@ mod tests {
         let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, vortex);
         let old = wells_at(&w.map, start) + Attractor::vortex(vortex).pull_at(start);
         assert!(
-            old.y < -JETPACK_THRUST_DOWN,
+            old.y < -SPACE_THRUST_DOWN,
             "control: at c3f7861's composition the pull under the rock is ({:.0}, {:.0}), not \
-             over the {JETPACK_THRUST_DOWN} px/s² down thrust — no trap to leave",
+             over the {SPACE_THRUST_DOWN} px/s² down thrust in space — no trap to leave",
             old.x,
             old.y
         );
@@ -2293,6 +2297,17 @@ mod tests {
                 .max_by_key(|a| a.r)
                 .expect("rocks");
             let _ = w.map.carve_circle(a.x, a.y, HOLLOW_R);
+            // **The pass `World::step` runs after every carve of a tick** (T22.20).
+            // The fixture carves between ticks, so without it the first step moved
+            // the body under the still-intact well and the core went off only at
+            // that step's end: one tick of full pull, `337.5 · SIM_DT` = 5.6 px/s
+            // of drift that nothing in space damps. At the pre-T22.20 strength it
+            // was 11.25 px/s and reached the hollow's wall inside the first 5 s,
+            // so the tail window was still — a pass by timing, which halving the
+            // well exposed (the body crossed the whole tail at 5.6 px/s).
+            // Production has no such tick: its carves happen inside `step`,
+            // before `step_cores`, and the next tick's movement sees the well off.
+            w.step_cores(w.round_time);
             let centre = Vec2::new(a.x as f32, a.y as f32);
             let start = centre + off;
             assert!(

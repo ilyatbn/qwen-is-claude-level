@@ -1219,7 +1219,7 @@ impl GameCore {
         if !p.jet.active {
             return Box::new([0.0, 0.0]);
         }
-        let (x, y) = game_core::player::jetpack::thrust_delta(&p.prev_input, 1.0);
+        let (x, y) = game_core::player::jetpack::thrust_delta(&p.prev_input, self.gravity, 1.0);
         Box::new([x, y])
     }
 
@@ -2799,14 +2799,116 @@ mod tests {
         );
     }
 
+    /// **T22.20 (`M22-RULINGS` R109): the server and the mirror push with the same
+    /// halved thrust, side by side.** A body at rest in open air on a real space map —
+    /// no rock's field, clear three bodies every way — holds UP + RIGHT for ten ticks
+    /// on `World::step` (the server) and on `GameCore::apply_input` (the mirror, set
+    /// through the real snapshot codec). Both land on the **same** velocity, bit for
+    /// bit, and it is the scaled push `(SIDE, −UP) × SPACE_THRUST_SCALE × 10 ticks` —
+    /// not the unscaled one, which is the control that says the scale reached both.
+    #[test]
+    fn the_server_and_the_mirror_thrust_at_the_same_halved_rate() {
+        use game_core::constants::{
+            JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H, SPACE_THRUST_SCALE,
+        };
+        use game_core::player::input::button;
+        const TICKS: u32 = 10;
+        let (mut w, mut core) = space_world_and_mirror(true);
+        let clear = |x: f32, y: f32| {
+            let pad = 3.0 * PLAYER_H;
+            (0..=12).all(|i| {
+                (0..=12).all(|j| {
+                    let px = x - pad + i as f32 * pad / 6.0;
+                    let py = y - pad + j as f32 * pad / 6.0;
+                    !game_core::physics::collide::solid_at(&w.map, px as i32, py as i32)
+                })
+            })
+        };
+        let (mw, mh) = (w.map.mask.w as f32, w.map.mask.h as f32);
+        let start = (1..40)
+            .flat_map(|i| {
+                (1..40).map(move |j| Vec2::new(mw * i as f32 / 40.0, mh * j as f32 / 40.0))
+            })
+            .find(|&p| {
+                clear(p.x, p.y)
+                    && game_core::world::attractors::field_at(
+                        game_core::world::attractors::asteroid_attractors(&w.map),
+                        p,
+                    ) == Vec2::ZERO
+            })
+            .expect("field-free open air on the space map");
+        w.add_player(1, 0, String::new());
+        {
+            let p = w.player_mut(1).expect("seated");
+            p.body.pos = start;
+            p.body.vel = Vec2::ZERO;
+            p.body.grounded = false;
+        }
+        let bytes = game_server::codec::encode_snapshot(&w, 1, 0);
+        let snap = game_server::codec::decode_snapshot(&bytes).expect("the server's own bytes");
+        let wire = snap
+            .players
+            .iter()
+            .find(|p| p.id == 1)
+            .expect("in the snapshot");
+        let p = w.player(1).expect("seated");
+        core.add_player(1, p.body.pos.x, p.body.pos.y);
+        core.set_player_state(
+            1,
+            p.body.pos.x,
+            p.body.pos.y,
+            p.body.vel.x,
+            p.body.vel.y,
+            p.body.grounded,
+            p.jetpack.fuel,
+            wire.health as f32,
+            wire.flags & 1 != 0,
+            wire.move_mods,
+        );
+        let held = button::UP | button::RIGHT;
+        let mut seq = 1000u32;
+        for _ in 0..TICKS {
+            seq += 1;
+            w.queue_input(1, Input::new(seq, held, 0));
+            w.step(SIM_DT);
+            core.apply_input(1, seq, held, 0, SIM_DT);
+        }
+        // The server steps a queued input a couple of ticks after it arrives (measured:
+        // two); let it run the rest of the ten, and no more, before comparing.
+        let mut spare = 0;
+        while w.last_simulated_seq(1) != Some(seq) {
+            w.step(SIM_DT);
+            spare += 1;
+            assert!(spare < 30, "the server never simulated seq {seq}");
+        }
+        let server = w.player(1).expect("seated").body.vel;
+        let c = core.player_state(1);
+        let mirror = Vec2::new(c[2], c[3]);
+        assert_eq!(server, mirror, "the server and the mirror thrust apart");
+        let n = TICKS as f32 * SIM_DT;
+        let scaled = Vec2::new(JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP) * (SPACE_THRUST_SCALE * n);
+        assert!(
+            (server - scaled).len() < 0.01,
+            "ten ticks of UP + RIGHT reached {server:?}, not the scaled push {scaled:?}"
+        );
+        let unscaled = Vec2::new(JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP) * n;
+        assert!(
+            (server - unscaled).len() > 0.25 * unscaled.len(),
+            "control: {server:?} is the unscaled push {unscaled:?}"
+        );
+    }
+
     /// T22.04C: **`thrust_at` is the thrust of the input the mirror stepped with**,
     /// so a braking body reports the push, not its travel: a player drifting right who
-    /// holds LEFT is still moving right and reports `(-JETPACK_THRUST_SIDE, 0)`. The
+    /// holds LEFT is still moving right and reports `(-JETPACK_THRUST_SIDE, 0)` — as
+    /// space scales it (`SPACE_THRUST_SCALE`, T22.20: the mirror steps the scaled push). The
     /// unequal axes come through (UP + RIGHT is `(SIDE, -UP)`, not a 45° diagonal), and
     /// nothing held reports zero — the control, and the plume's velocity fallback.
     #[test]
     fn thrust_at_is_the_stepped_inputs_thrust_not_the_velocity() {
-        use game_core::constants::{JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H};
+        use game_core::constants::{
+            JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, PLAYER_H, SPACE_THRUST_SCALE,
+        };
         use game_core::player::input::button;
         let mut core = GameCore::new();
         assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
@@ -2840,13 +2942,16 @@ mod tests {
         assert!(vx > 0.0 && vx < 200.0, "not braking: vx {vx}");
         assert_eq!(
             &*core.thrust_at(1),
-            &[-JETPACK_THRUST_SIDE, 0.0],
+            &[-JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE, 0.0],
             "braking (vx {vx}) reported the travel, not the push"
         );
         step(&mut core, button::UP | button::RIGHT);
         assert_eq!(
             &*core.thrust_at(1),
-            &[JETPACK_THRUST_SIDE, -JETPACK_THRUST_UP]
+            &[
+                JETPACK_THRUST_SIDE * SPACE_THRUST_SCALE,
+                -JETPACK_THRUST_UP * SPACE_THRUST_SCALE
+            ]
         );
         for _ in 0..3 {
             step(&mut core, 0);
@@ -5386,10 +5491,11 @@ mod tests {
             core.set_black_hole(true, hole.x, hole.y, 0);
             w.add_player(1, 0, String::new());
             let start = w
-                // T22.18 (R106): 0.865 of the doubled reach — `black-hole.mjs`'s
-                // `BELL_PLACE`, re-derived there; 0.97 of 512 is pulled too weakly
-                // to move (0.65 px apart six ticks after the bell, the control).
-                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.865)
+                // T22.20 (R109): 0.73 of the reach — `black-hole.mjs`'s `BELL_PLACE`,
+                // re-derived there for the halved pull; at 0.865 (T22.18's, for R106's
+                // doubled reach) the halved pull left the untold mirror only 0.83 px
+                // off six ticks after the bell, the control.
+                .dev_place_near_black_hole(1, BLACK_HOLE_REACH * 0.73)
                 .expect("a clear side");
             core.add_player(1, start.x, start.y);
             let _ = w.drain_events();

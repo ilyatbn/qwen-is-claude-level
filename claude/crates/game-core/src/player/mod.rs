@@ -344,7 +344,7 @@ pub fn apply_input(
         };
         jetpack::update(jet, body, engage_held, engage_pressed, jumped, dt);
         if jet.active {
-            jetpack::apply_thrust(body, input, dt);
+            jetpack::apply_thrust(body, input, gravity, dt);
         }
         jumped
     };

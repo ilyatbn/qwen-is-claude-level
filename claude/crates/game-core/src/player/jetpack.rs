@@ -12,6 +12,7 @@ use crate::constants::{
     GravityMode, JETPACK_DRAIN, JETPACK_GRAVITY_SCALE, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL,
     JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY,
     JETPACK_THRUST_DOWN, JETPACK_THRUST_SIDE, JETPACK_THRUST_UP, SIM_HZ, SPACE_JUMP_FUEL,
+    SPACE_THRUST_SCALE,
 };
 use crate::physics::body::Body;
 use crate::player::input::{button, Input};
@@ -128,6 +129,18 @@ pub fn update(
     }
 }
 
+/// The share of the `JETPACK_THRUST_*` axes the pack pushes with under
+/// `gravity`: [`SPACE_THRUST_SCALE`] in space, `1.0` everywhere else (T22.20,
+/// `M22-RULINGS` R109 — the owner: *"can you make jetpacks in space less
+/// powerful? it creates too much inertia."*).
+pub fn thrust_scale(gravity: GravityMode) -> f32 {
+    if gravity == GravityMode::Space {
+        SPACE_THRUST_SCALE
+    } else {
+        1.0
+    }
+}
+
 /// The velocity change this input asks the pack for, per axis, for one tick.
 ///
 /// **Lifted out of [`apply_thrust`] so there is one author of "which way does
@@ -143,21 +156,30 @@ pub fn update(
 /// refactored into `(accel) * dt`: `(-2200 + 900) * dt` and
 /// `-2200 * dt + 900 * dt` are not the same `f32`, and a physics function's
 /// arithmetic is not something to change while doing something else.
-pub fn thrust_delta(input: &Input, dt: f32) -> (f32, f32) {
+///
+/// **T22.20 (`M22-RULINGS` R109): the match's gravity mode scales the push** —
+/// [`thrust_scale`], `SPACE_THRUST_SCALE` in space and exactly `1.0` elsewhere.
+/// Scaling the constant rather than the product keeps standard and low gravity
+/// bit-identical (`x * 1.0 == x` in `f32`), and it is here rather than at a
+/// caller because this is the one author of the push: `apply_thrust` (so
+/// `apply_input`, server and mirror), `space::engaging` and the plume's
+/// `thrust_at` all read it.
+pub fn thrust_delta(input: &Input, gravity: GravityMode, dt: f32) -> (f32, f32) {
+    let scale = thrust_scale(gravity);
     let mut thrust_x = 0.0;
     let mut thrust_y = 0.0;
 
     if input.held(button::UP) {
-        thrust_y -= JETPACK_THRUST_UP * dt;
+        thrust_y -= JETPACK_THRUST_UP * scale * dt;
     }
     if input.held(button::DOWN) {
-        thrust_y += JETPACK_THRUST_DOWN * dt;
+        thrust_y += JETPACK_THRUST_DOWN * scale * dt;
     }
     if input.held(button::LEFT) {
-        thrust_x -= JETPACK_THRUST_SIDE * dt;
+        thrust_x -= JETPACK_THRUST_SIDE * scale * dt;
     }
     if input.held(button::RIGHT) {
-        thrust_x += JETPACK_THRUST_SIDE * dt;
+        thrust_x += JETPACK_THRUST_SIDE * scale * dt;
     }
 
     (thrust_x, thrust_y)
@@ -170,8 +192,8 @@ pub fn thrust_delta(input: &Input, dt: f32) -> (f32, f32) {
 /// `JETPACK_MAX_SPEED` before the thrust. A body already moving faster than the
 /// limit — a rocket jump at 800 px/s — is left alone, so engaging the jetpack
 /// mid-flight never brakes you. Thrust from rest still tops out at the limit.
-pub fn apply_thrust(body: &mut Body, input: &Input, dt: f32) {
-    let (thrust_x, thrust_y) = thrust_delta(input, dt);
+pub fn apply_thrust(body: &mut Body, input: &Input, gravity: GravityMode, dt: f32) {
+    let (thrust_x, thrust_y) = thrust_delta(input, gravity, dt);
 
     let (before_x, before_y) = (body.vel.x, body.vel.y);
     body.vel.x += thrust_x;
@@ -500,7 +522,7 @@ mod tests {
         for (btn, axis_up) in [(UP, true), (DOWN, false)] {
             let mut b = Body::new(Vec2::ZERO);
             for _ in 0..200 {
-                apply_thrust(&mut b, &input_with(btn), SIM_DT);
+                apply_thrust(&mut b, &input_with(btn), GravityMode::Standard, SIM_DT);
             }
             if axis_up {
                 assert_eq!(b.vel.y, -JETPACK_MAX_SPEED);
@@ -511,7 +533,7 @@ mod tests {
         for (btn, sign) in [(LEFT, -1.0f32), (RIGHT, 1.0)] {
             let mut b = Body::new(Vec2::ZERO);
             for _ in 0..200 {
-                apply_thrust(&mut b, &input_with(btn), SIM_DT);
+                apply_thrust(&mut b, &input_with(btn), GravityMode::Standard, SIM_DT);
             }
             assert_eq!(b.vel.x, sign * JETPACK_MAX_SPEED);
         }
@@ -522,7 +544,12 @@ mod tests {
         // The test that catches a magnitude clamp.
         let mut b = Body::new(Vec2::ZERO);
         for _ in 0..200 {
-            apply_thrust(&mut b, &input_with(UP | RIGHT), SIM_DT);
+            apply_thrust(
+                &mut b,
+                &input_with(UP | RIGHT),
+                GravityMode::Standard,
+                SIM_DT,
+            );
         }
         assert_eq!(b.vel.y, -JETPACK_MAX_SPEED);
         assert_eq!(b.vel.x, JETPACK_MAX_SPEED);
@@ -531,14 +558,24 @@ mod tests {
     #[test]
     fn opposing_lateral_thrust_cancels() {
         let mut b = Body::new(Vec2::ZERO);
-        apply_thrust(&mut b, &input_with(LEFT | RIGHT), SIM_DT);
+        apply_thrust(
+            &mut b,
+            &input_with(LEFT | RIGHT),
+            GravityMode::Standard,
+            SIM_DT,
+        );
         assert_eq!(b.vel.x, 0.0);
     }
 
     #[test]
     fn opposing_vertical_thrust_leaves_the_asymmetric_remainder() {
         let mut b = Body::new(Vec2::ZERO);
-        apply_thrust(&mut b, &input_with(UP | DOWN), SIM_DT);
+        apply_thrust(
+            &mut b,
+            &input_with(UP | DOWN),
+            GravityMode::Standard,
+            SIM_DT,
+        );
         let expected = (JETPACK_THRUST_DOWN - JETPACK_THRUST_UP) * SIM_DT;
         assert!(
             (b.vel.y - expected).abs() < 1e-4,
@@ -551,7 +588,7 @@ mod tests {
     fn no_directional_input_applies_no_thrust() {
         let mut b = Body::new(Vec2::new(1.0, 2.0));
         b.vel = Vec2::new(3.0, 4.0);
-        apply_thrust(&mut b, &input_with(JUMP), SIM_DT);
+        apply_thrust(&mut b, &input_with(JUMP), GravityMode::Standard, SIM_DT);
         assert_eq!(b.vel, Vec2::new(3.0, 4.0));
     }
 
@@ -561,7 +598,7 @@ mod tests {
         // up at 800 px/s must not brake to 260.
         let mut b = Body::new(Vec2::ZERO);
         b.vel.y = -800.0;
-        apply_thrust(&mut b, &input_with(UP), SIM_DT);
+        apply_thrust(&mut b, &input_with(UP), GravityMode::Standard, SIM_DT);
         assert!(
             b.vel.y < -800.0,
             "upward thrust braked a rocket jump to {}",
@@ -571,7 +608,7 @@ mod tests {
         // Thrusting the OPPOSITE way does reduce it, as it should.
         let mut b = Body::new(Vec2::ZERO);
         b.vel.y = -800.0;
-        apply_thrust(&mut b, &input_with(DOWN), SIM_DT);
+        apply_thrust(&mut b, &input_with(DOWN), GravityMode::Standard, SIM_DT);
         assert!(b.vel.y > -800.0);
         assert!(b.vel.y < 0.0, "one tick should not reverse it");
     }
@@ -584,7 +621,7 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..30 {
-            apply_thrust(&mut b, &input_with(UP), SIM_DT);
+            apply_thrust(&mut b, &input_with(UP), GravityMode::Standard, SIM_DT);
             b.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
             b.pos.y += b.vel.y * SIM_DT;
         }
@@ -601,7 +638,12 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..ticks {
-            apply_thrust(&mut powered, &input_with(JUMP), SIM_DT);
+            apply_thrust(
+                &mut powered,
+                &input_with(JUMP),
+                GravityMode::Standard,
+                SIM_DT,
+            );
             powered.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
             powered.pos.y += powered.vel.y * SIM_DT;
         }
