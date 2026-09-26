@@ -7257,3 +7257,8 @@ red). Economy: batteries 1.43 → 0.79 a bot a round (128 seeds) from R112b, rad
 only 101/999 Small maps exceed it (decision for the coordinator; literal "shrink to 0.44" put 676 over). Least ratio:
 Small 1.125, Medium 1.364, Large 1.375. Sweep 999/999 first attempt; 4 space-small goldens; REPLAY 37. Fixture
 `at_ended_it_freezes_and_stays` sat inside seed 9's iron — now picks a clear ring point. Plants ×3 red; 4/4 browser.
+
+## Owner round 3 — batch gate green (coordinator, 2026-09-26)
+Full `./scripts/check.sh` on `1be6085` (T22.20 gentler thrusters + R109b top speed 450 + R109c brake 1.1, T22.21 sturdier/bigger/iron
+asteroids, T22.22/22B/22C): **EXIT=0, 1209 s** — browser **78/78**, vitest 1144/1144, Rust 1765 passed / 0 failed / 31 ignored.
+Owner decision pending: the battery economy (pickups 4.5 → 0.8 per bot round since R112b; radiation deaths 0.16 → 0.17).
