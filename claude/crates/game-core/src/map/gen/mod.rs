@@ -78,6 +78,28 @@ pub struct GenOutcome {
     /// Which generator produced this. Carried so a dump, a log line or a test can
     /// say which of the two it is looking at without being told.
     pub generator: MapGenerator,
+    /// `T23.05B` (M23 R17): everything that **was rock in the generator's landform** —
+    /// the mask as it stood before the first carve pass, OR'd with the mask this
+    /// outcome ships. So `landform ∧ ¬mask` is exactly the rock the carve passes
+    /// took out and nothing refilled: the generated caves, which the M23 renderer
+    /// draws as cave wall. **Render data, never read by the simulation**, and not part
+    /// of `Map` — `tests/golden.rs` cannot see it. A space map carves nothing, so there
+    /// it equals `mask`.
+    pub landform: Mask,
+}
+
+/// `a |= b`, word for word; same dimensions (asserted — both come from one params).
+fn union_into(a: &mut Mask, b: &Mask) {
+    assert_eq!((a.w, a.h), (b.w, b.h), "landform and mask differ in size");
+    for (x, y) in a.words_mut().iter_mut().zip(b.words()) {
+        *x |= *y;
+    }
+}
+
+/// The landform of a finished attempt: the pre-carve mask OR'd with the final one.
+pub(crate) fn landform_of(mut pre_carve: Mask, mask: &Mask) -> Mask {
+    union_into(&mut pre_carve, mask);
+    pre_carve
 }
 
 /// One attempt, no retry. Exposed for tests and for the PNG dump.
@@ -91,6 +113,8 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
     let islands = blobs::add_blobs(&mut mask, seed, params);
     bridges::add_bridges(&mut mask, seed, params, &islands);
 
+    // T23.05B: the landform, before any pass removes rock.
+    let pre_carve = mask.clone();
     let net = network::carve_network(&mut mask, seed, params);
     let mut tunnel_paths = net.paths;
     tunnel_paths.extend(caves::carve_caves(&mut mask, seed, params));
@@ -105,8 +129,10 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
 
     let surface = surface::extract_surface(&mask);
     let report = traversal::analyse(&mask, &surface, &placement.objects);
+    let landform = landform_of(pre_carve, &mask);
 
     GenOutcome {
+        landform,
         mask,
         surface,
         report,
@@ -209,6 +235,60 @@ pub fn surface_for(generator: MapGenerator, mask: &Mask) -> Vec<Point> {
         MapGenerator::V1 | MapGenerator::V2 => surface::extract_surface(mask),
         MapGenerator::Space => {
             space::arena_surface(mask, &space::SpaceGeometry::for_dims(mask.w, mask.h))
+        }
+    }
+}
+
+/// `T23.05B`: **re-run the generator from `map_init`'s own fields** — the seed the
+/// map was actually generated from (`MapMeta.seed`, the attempt that passed, not the
+/// requested one), its scale, generator and theme byte — and return the outcome that
+/// produced the map. The client has only those fields; this is how it gets
+/// [`GenOutcome::landform`] without a second RLE on the wire (R3: nothing on the wire
+/// changes).
+///
+/// **Exact, not approximate, and the reason is the retry loop's shape.** Every
+/// generator's `generate_terrain` tries `requested + k` with its default params and
+/// returns the first attempt whose `report.passed`; failing all of them it runs the
+/// *safe* preset at `requested`. So the seed a map carries was either a passing
+/// default attempt — and the default attempt at that seed passes again, the pipeline
+/// being deterministic — or the safe preset's, in which case the default attempt at
+/// that seed (attempt 0) is one that *failed*. The default's verdict therefore says
+/// which of the two produced the map, and no field needs adding. The theme is the one
+/// other input (`theme_for(requested)`, which pass 6b stamps and the verdict reads);
+/// `map_init` carries it.
+///
+/// Cost: one generation, two when the safe preset shipped (never, in every sweep so
+/// far). Measured in `rederive_timing` (T23.05B's journal line).
+pub fn rederive(seed: u64, scale: MapScale, generator: MapGenerator, theme: u8) -> GenOutcome {
+    match generator {
+        MapGenerator::V1 => {
+            let mut p = GenParams::default_for(scale);
+            p.theme = theme;
+            let o = generate_once(seed, &p);
+            if o.report.passed {
+                return o;
+            }
+            let mut safe = GenParams::safe_for(scale);
+            safe.theme = theme;
+            generate_once(seed, &safe)
+        }
+        MapGenerator::V2 => {
+            let mut p = v2::V2Params::default_for(scale);
+            p.theme = theme;
+            let o = v2::generate_once(seed, &p);
+            if o.report.passed {
+                return o;
+            }
+            let mut safe = v2::V2Params::safe_for(scale);
+            safe.theme = theme;
+            v2::generate_once(seed, &safe)
+        }
+        MapGenerator::Space => {
+            let o = space::generate_once(seed, &space::SpaceParams::default_for(scale));
+            if o.report.passed {
+                return o;
+            }
+            space::generate_once(seed, &space::SpaceParams::safe_for(scale))
         }
     }
 }
@@ -317,6 +397,141 @@ mod tests {
         let mut o = generate_once(1, &GenParams::safe_for(MapScale::Small));
         o.used_safe_preset = true;
         assert!(o.mask.w > 0 && !o.surface.is_empty());
+    }
+
+    /// T23.05B: `map_init`'s fields (the meta's seed — the attempt that passed —
+    /// scale, generator, theme) re-run the generator to **the server's outcome**,
+    /// mask and landform alike, on every generator and scale. The sweep must include
+    /// maps that retried, or the seed-is-the-actual-one half is untested.
+    /// Timings are printed (`--release -- --nocapture` for the journal), not gated.
+    #[test]
+    fn map_init_fields_rederive_the_servers_landform() {
+        use crate::map::meta::{generate_full, theme_for};
+        // One thread per (generator, scale): V1 Large is ~0.8 s a generation in release.
+        let combos: Vec<(MapGenerator, MapScale)> =
+            [MapGenerator::V1, MapGenerator::V2, MapGenerator::Space]
+                .into_iter()
+                .flat_map(|g| MapScale::ALL.into_iter().map(move |s| (g, s)))
+                .collect();
+        let retried: usize = std::thread::scope(|sc| {
+            let hs: Vec<_> = combos
+                .iter()
+                .map(|&(generator, scale)| {
+                    sc.spawn(move || {
+                        let (mut retried, mut worst_ms) = (0usize, 0f64);
+                        for k in 0..8u64 {
+                            let requested = k * 7919 + 13;
+                            let at = format!("{generator:?} {scale:?} requested {requested}");
+                            let server = generate_terrain_with(requested, scale, generator);
+                            retried += usize::from(server.attempts > 1);
+                            // What `map_init` carries (`codec.rs::encode_map_init_at`):
+                            // `meta.seed`, `meta.theme`. Built from the full pipeline on
+                            // two seeds per combo (it is a third generation), and from
+                            // the outcome's own fields — which is what `meta` copies —
+                            // on the rest.
+                            let (seed, theme) = if k < 2 {
+                                let map = generate_full(requested, scale, k ^ 0x5eed, generator);
+                                assert_eq!(map.meta.generator, generator, "{at}");
+                                assert_eq!(map.meta.scale, scale, "{at}");
+                                // Pass 8 only adds rock (the ground fill): everything the
+                                // generator's mask has, the shipped one has.
+                                let mut both = map.mask.clone();
+                                union_into(&mut both, &server.mask);
+                                assert_eq!(both, map.mask, "{at}: pass 8 removed rock?");
+                                (map.meta.seed, map.meta.theme)
+                            } else {
+                                (server.seed, theme_for(requested))
+                            };
+                            let t = std::time::Instant::now();
+                            let d = rederive(seed, scale, generator, theme);
+                            worst_ms = worst_ms.max(t.elapsed().as_secs_f64() * 1e3);
+                            assert_eq!(d.mask, server.mask, "{at}: mask");
+                            assert_eq!(d.landform, server.landform, "{at}: landform");
+                        }
+                        println!("rederive {generator:?} {scale:?}: worst {worst_ms:.0} ms");
+                        retried
+                    })
+                })
+                .collect();
+            hs.into_iter()
+                .map(|h| h.join().expect("combo thread"))
+                .sum()
+        });
+        assert!(
+            retried > 0,
+            "no map in the sweep retried — the actual-seed path is untested"
+        );
+        println!("maps that retried: {retried}");
+    }
+
+    /// Control for the test above: the *requested* seed does not reproduce a retried
+    /// map, so carrying the actual one is load-bearing, not a coincidence.
+    #[test]
+    fn the_requested_seed_does_not_rederive_a_retried_map() {
+        let (requested, o) = (0..64u64)
+            .map(|k| {
+                (
+                    k * 7919 + 13,
+                    generate_terrain(k * 7919 + 13, MapScale::Small),
+                )
+            })
+            .find(|(_, o)| o.attempts > 1)
+            .expect("a retried Small map in 64 seeds");
+        let theme = crate::map::meta::theme_for(requested);
+        let wrong = rederive(requested, MapScale::Small, o.generator, theme);
+        assert_ne!(wrong.mask, o.mask);
+        assert_eq!(
+            rederive(o.seed, MapScale::Small, o.generator, theme).mask,
+            o.mask
+        );
+    }
+
+    /// R17's premise: the landform holds every px of the map, and on every scale and
+    /// both carving generators the carve passes left caves (`landform ∧ ¬mask`) — 20
+    /// seeds, one attempt each (the retry loop is the test above's business), threads
+    /// over quarters of the seeds. Space carves nothing (landform = mask, the control).
+    #[test]
+    fn the_landform_covers_the_mask_and_holds_the_caves() {
+        let jobs: Vec<(MapGenerator, MapScale, u64)> = [MapGenerator::V1, MapGenerator::V2]
+            .into_iter()
+            .flat_map(|g| MapScale::ALL.into_iter().map(move |s| (g, s)))
+            .flat_map(|(g, s)| (0..4u64).map(move |q| (g, s, q)))
+            .collect();
+        std::thread::scope(|sc| {
+            for &(generator, scale, q) in &jobs {
+                sc.spawn(move || {
+                    for k in (q * 5)..(q * 5 + 5) {
+                        let seed = k * 104_729 + 7;
+                        let o = match generator {
+                            MapGenerator::V2 => {
+                                v2::generate_once(seed, &v2::V2Params::default_for(scale))
+                            }
+                            _ => generate_once(seed, &GenParams::default_for(scale)),
+                        };
+                        let at = format!("{generator:?} {scale:?} seed {seed}");
+                        let mut both = o.landform.clone();
+                        union_into(&mut both, &o.mask);
+                        assert_eq!(both, o.landform, "{at}: landform ⊉ mask");
+                        // The caves are **the carved tunnels**, not smoothing crumbs: most
+                        // stamped tunnel centres are cave (`landform ∧ ¬mask`). A landform
+                        // snapshotted after the carve passes leaves ~80 px from smoothing and
+                        // cleanup and fails this; `caves > 0` alone did not.
+                        let pts: Vec<_> = o.tunnel_paths.iter().flatten().collect();
+                        let cave = |p: &&Point| o.landform.get(p.x, p.y) && !o.mask.get(p.x, p.y);
+                        let hit = pts.iter().filter(|p| cave(p)).count();
+                        assert!(
+                            !pts.is_empty() && hit * 2 > pts.len(),
+                            "{at}: {hit}/{} tunnel px are cave",
+                            pts.len()
+                        );
+                    }
+                });
+            }
+        });
+        for scale in MapScale::ALL {
+            let space = generate_terrain_with(4242, scale, MapGenerator::Space);
+            assert_eq!(space.landform, space.mask, "space {scale:?}");
+        }
     }
 
     /// The tuning gate. If this fails, the generation parameters need adjusting —

@@ -98,6 +98,8 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
     // carved, so nothing later punches a hole in one.
     let islands = features::add_islands(&mut mask, &profile, seed, params);
 
+    // T23.05B: the landform, before the cave and arch passes remove rock.
+    let pre_carve = mask.clone();
     let mut tunnel_paths = features::carve_caves(&mut mask, &profile, seed, params);
     tunnel_paths.extend(features::carve_arches(&mut mask, &profile, seed, params));
 
@@ -110,8 +112,10 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
 
     let surface = surface::extract_surface(&mask);
     let report = traversal::analyse(&mask, &surface, &placement.objects);
+    let landform = super::landform_of(pre_carve, &mask);
 
     GenOutcome {
+        landform,
         mask,
         surface,
         report,

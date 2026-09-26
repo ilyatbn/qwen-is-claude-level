@@ -29,6 +29,7 @@
 //! a heuristic with 2.5–16 % open-sky false positives, off via `CAVE_BACKDROP`) differs
 //! from the mockup and is not used.
 
+use game_core::constants::{MapGenerator, MapScale};
 use game_core::map::mask::Mask;
 
 /// Distances are stored ×4 (`kit.js::fieldTextures`).
@@ -217,6 +218,31 @@ pub struct RenderFields {
     h: u32,
     rgba: Vec<u8>,
     wall: Option<BitGrid>,
+    /// T23.05B: the last generator landform derived, keyed by what derived it, so a
+    /// resync of the same map (a second `map_init`) costs no second generation.
+    landform: Option<(LandformKey, BitGrid)>,
+}
+
+/// What identifies a generated landform: `map_init`'s seed, scale, generator, theme.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LandformKey {
+    pub seed: u64,
+    pub scale: MapScale,
+    pub generator: MapGenerator,
+    pub theme: u8,
+}
+
+impl RenderFields {
+    /// R17's generator half (T23.05B): the landform for `key`, re-derived with
+    /// `gen::rederive` (exact — see there) and cached by `key`. The caller always names
+    /// the map, so a cached landform can never be applied to a different one.
+    pub fn landform(&mut self, key: LandformKey) -> &BitGrid {
+        if self.landform.as_ref().map(|(k, _)| *k) != Some(key) {
+            let o = game_core::map::gen::rederive(key.seed, key.scale, key.generator, key.theme);
+            self.landform = Some((key, BitGrid::from_solid(&o.landform)));
+        }
+        &self.landform.as_ref().expect("set above").1
+    }
 }
 
 impl RenderFields {
@@ -552,6 +578,49 @@ impl GameCore {
             .map_err(|e| e.to_string())
     }
 
+    /// **R17 whole (T23.05B): the production full pass for a networked map.** "Was rock"
+    /// = the generator's landform for `map_init`'s own fields (seed — the one it carries,
+    /// the attempt that passed — scale byte, generator byte, theme byte) OR the mask as
+    /// it is now, so generated caves and craters both show the wall. The landform is
+    /// re-derived by running the generator once (cached per map, so a resync is free);
+    /// cost in T23.05B's journal line. Unknown scale/generator bytes throw, writing
+    /// nothing. Returns the rect written.
+    pub fn render_fields_full_landform(
+        &mut self,
+        seed_lo: u32,
+        seed_hi: u32,
+        scale: u8,
+        generator: u8,
+        theme: u8,
+    ) -> Result<Vec<u32>, String> {
+        let key = LandformKey {
+            seed: ((seed_hi as u64) << 32) | seed_lo as u64,
+            scale: MapScale::from_u8(scale).ok_or(format!("render_fields: scale byte {scale}"))?,
+            generator: MapGenerator::from_u8(generator)
+                .ok_or(format!("render_fields: generator byte {generator}"))?,
+            theme,
+        };
+        let wall = self.render_fields.landform(key).clone();
+        self.render_fields
+            .full_with_wall(&self.map.mask, wall)
+            .map(Rect::to_vec)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `render_fields_full_landform` for a map **this core generated** (sandbox, preview):
+    /// its own meta names it, exactly as `map_init` would.
+    pub fn render_fields_full_own_landform(&mut self) -> Result<Vec<u32>, String> {
+        let m = &self.map.meta;
+        let (seed, scale, generator, theme) = (m.seed, m.scale, m.generator, m.theme);
+        self.render_fields_full_landform(
+            seed as u32,
+            (seed >> 32) as u32,
+            scale.as_u8(),
+            generator.to_u8(),
+            theme,
+        )
+    }
+
     /// After a carve with bounds `(x, y, w, h)` (world px, may overhang the map).
     /// Returns the rect written, `[x, y, w, h]` — upload exactly that. Throws, writing
     /// nothing, before a full pass for this map.
@@ -796,6 +865,73 @@ mod tests {
             .filter(|p| p[2] == 255)
             .count();
         assert_eq!(walled, air.len(), "and nothing else is");
+    }
+
+    /// T23.05B (R17): a **generated** cave shows as cave wall, through both production
+    /// entry points — a locally generated map, and a networked one that only has what
+    /// `map_init` carries (the RLE mask and the meta bytes). Control: the round-start-only
+    /// pass on the same pristine map has no wall at all.
+    #[test]
+    fn a_generated_cave_is_cave_wall_on_the_client() {
+        for generator in [0u8, 1] {
+            let mut local = GameCore::new();
+            local.generate_with(0x1234_5678, 0, 0, generator);
+            let backs = |c: &GameCore| {
+                c.render_fields
+                    .rgba()
+                    .chunks_exact(4)
+                    .filter(|p| p[2] == 255)
+                    .count()
+            };
+            local.render_fields_full();
+            assert_eq!(
+                backs(&local),
+                0,
+                "gen {generator}: pristine map, round-start wall only"
+            );
+            local.render_fields_full_own_landform().unwrap();
+            let m = &local.map;
+            let o = game_core::map::gen::rederive(
+                m.meta.seed,
+                m.meta.scale,
+                m.meta.generator,
+                m.meta.theme,
+            );
+            // Counted per px, not as a difference of totals: pass 8's ground fill puts
+            // rock in the map that is not in the landform.
+            let (w, h) = (m.mask.w as i32, m.mask.h as i32);
+            let caves = (0..w * h)
+                .filter(|i| o.landform.get(i % w, i / w) && !m.mask.get(i % w, i / w))
+                .count() as u64;
+            assert!(caves > 1000, "gen {generator}: only {caves} cave px");
+            assert_eq!(
+                backs(&local) as u64,
+                caves,
+                "gen {generator}: every cave px is wall"
+            );
+            // Networked: `worldMirror.applyMapInit`'s calls, then the fields.
+            let mut net = GameCore::new();
+            net.set_map_generator(generator);
+            let rle = game_core::map::rle::encode(&m.mask);
+            assert!(net.load_mask(m.mask.w, m.mask.h, &rle));
+            let seed = m.meta.seed;
+            net.render_fields_full_landform(
+                seed as u32,
+                (seed >> 32) as u32,
+                m.meta.scale.as_u8(),
+                m.meta.generator.to_u8(),
+                m.meta.theme,
+            )
+            .unwrap();
+            assert!(
+                net.render_fields.rgba() == local.render_fields.rgba(),
+                "gen {generator}: net ≠ local"
+            );
+        }
+        let mut c = GameCore::new();
+        assert!(c
+            .render_fields_full_landform(1, 0, 9, 1, 0)
+            .is_err_and(|e| e.contains("scale byte 9")));
     }
 
     /// F9: the two calls that used to degrade silently now refuse, write nothing and say

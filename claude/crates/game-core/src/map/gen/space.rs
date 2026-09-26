@@ -679,6 +679,8 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
     let report = analyse_space(&mask, &surface, &asteroids, &geo, &spawn_points);
 
     GenOutcome {
+        // T23.05B: nothing here removes rock, so the landform is the mask.
+        landform: mask.clone(),
         mask,
         surface,
         report,

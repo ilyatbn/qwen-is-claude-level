@@ -7359,3 +7359,11 @@ F2 explosion world floor 6/12 (unplanted 7,8,8,8,8,8; ×0.2 plant 1/12 red). F3 
 F6 bands linear+unsnapped: Level A unchanged (≤0.00003), slow pan 0.34 px every step (plant: [0,0,-2,…], 12/16 still → red); draw low 5.0→5.45 ms, full 60.4→63.1 ms.
 F8 no-webgl2: stub on title+sandbox, page colour at all clear points, no console errors (plant: three creates → console.error red). title waits for the lazy backdrop.
 Done-when 7/7; explosion ×3 green; check.sh --changed HEAD~1 --fast EXIT 0 (vitest 1151); full browser suite 77/77.
+
+## T23.05B — the generator's cave mask on the client (builder, 2026-09-27)
+Re-derive, exact: `gen::rederive` from map_init's seed (the passing attempt's), scale, generator, theme = server's mask+landform, 72 maps (3 retried).
+Landform = pre-carve ∪ final gen mask (`GenOutcome.landform`, not in Map). wasm `render_fields_full_landform`/`_own_landform`, cached per map.
+Plants: rederive ignores theme → mask ≠ server (red); v2 snapshot after carving → 0/24 tunnel px are cave (red; `caves > 0` alone stayed green, replaced).
+Client test: generated cave px == wall px (312k on Small v1), networked == local bytes; control: round-start-only pass has 0 wall.
+Derive cost (wasm release, L): v2 ≈ 410 ms, v1 ≈ 1.1 s; full field pass 0.7–0.95 s. golden.rs diff empty.
+Done-when EXIT 0 (game-core 1235, game-wasm 65); check.sh --changed HEAD --fast EXIT 0; clippy clean. Browser checks: none mapped beyond the wasm; run with T23.06.
