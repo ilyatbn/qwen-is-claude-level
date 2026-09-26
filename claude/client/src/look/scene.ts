@@ -295,3 +295,44 @@ export interface SceneData {
   hud: Hud | null
   labels: Label[]
 }
+
+/** A camera rect in mask px, y down: what the renderer is asked to show. */
+export interface ViewRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/**
+ * What a renderer is handed (R11): a scene with its masks decoded, one byte per px, the way
+ * the game holds them. The look-lab builds it from `SceneData` (`describeScene`); the game
+ * scenes build it from the sim. `masks` is `null` where no mask is fed yet — the game until
+ * the terrain layer reads one (T23.07); a renderer must draw its sky without one.
+ */
+export interface SceneDescription {
+  id: string
+  camera: ViewRect
+  masks: Masks | null
+  look: FrameLook
+  palette: CombatPalette | null
+  actors: Actor[]
+  fx: Fx[]
+  labels: Label[]
+  hud: Hud | null
+}
+
+/** The look-lab's description of a reference scene: the data verbatim, the mask decoded. */
+export function describeScene(d: SceneData): SceneDescription {
+  return {
+    id: d.id,
+    camera: { ...d.camera },
+    masks: decodeMask(d.mask),
+    look: d.look,
+    palette: d.palette,
+    actors: d.actors,
+    fx: d.fx,
+    labels: d.labels,
+    hud: d.hud,
+  }
+}

@@ -46,6 +46,14 @@ export const CHECKS = [
   // T23.00: WebGL2 + half-float colour buffers in this browser. Every M23 renderer check
   // depends on both, so this fails by name before any of them photographs a black canvas.
   { name: 'webgl2', file: 'scripts/checks/webgl2.mjs', url: '', ready: '!!document.body' },
+  // T23.01: the look-lab — each reference scene F1–F5 described and handed to the world
+  // renderer, counted at both ends of the hand-over; an unknown id is the control.
+  {
+    name: 'look-lab',
+    file: 'scripts/checks/look-lab.mjs',
+    url: '?look=F1',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // T21.28: rock in the rendered pixels under both ends of every gate's drawn base,
   // against the open air above the arch as the control. Seed 7, not 4242: on 4242

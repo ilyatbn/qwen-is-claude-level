@@ -64,6 +64,9 @@ const FORBIDDEN = [
   'SandboxScene',
   'PreviewScene',
   'BootScene',
+  // T23.01: the look-lab (`?look=F1`) — its scene class and its window handle.
+  'LookScene',
+  '__look',
   // The FPS readout's element id — §C17's deliverable names the debug overlays
   // and the FPS counter alongside the scenes.
   'debug-fps',
@@ -126,7 +129,7 @@ if (found.length) {
 // The dev scenes should not be chunks at all, rather than being present and
 // unreachable.
 const prodChunks = readdirSync(join(clientDir, 'dist', 'assets')).filter((f) => f.endsWith('.js'))
-const devChunks = prodChunks.filter((f) => /Sandbox|Preview|Boot/.test(f))
+const devChunks = prodChunks.filter((f) => /Sandbox|Preview|Boot|LookScene/.test(f))
 if (devChunks.length) fail(`the production build emitted dev chunks: ${devChunks.join(', ')}`)
 else ok(`no dev scene chunks in the production build (${prodChunks.length} chunk(s))`)
 
@@ -195,7 +198,7 @@ try {
   else fail('the production bundle rendered no title screen at all')
 
   // The parameters the grep cannot see, one load each.
-  for (const q of ['preview=1', 'boot=1', 'game=1', 'menu=1', 'skins=1']) {
+  for (const q of ['preview=1', 'boot=1', 'game=1', 'menu=1', 'skins=1', 'look=F1']) {
     await load(`?${q}&e2e=1`)
     const seen = await page.evaluate(() => ({
       title: Boolean(document.querySelector('#start-game')),

@@ -7270,3 +7270,13 @@ Headless checks' Chromium (`--checks`): `webgl2 CPU ANGLE (Google, Vulkan 1.3.0 
 Client: `webgl2.ts` probe + full-screen message, gated by `REQUIRE_WEBGL2 = false` until T23.03 flips it. three@0.170.0 pinned, 0 bytes in the bundle.
 Check `webgl2` registered; falsified with `--disable-webgl2` in browser-args → FAILED "no WebGL2 context (disabled by enterprise policy or commandline switch)", restored. Done-when EXIT=0 (vitest 1150/1150, webgl2 1/1).
 Gate: `check.sh --changed HEAD --fast` "all affected checks passed" (vitest 1150/1150); mapped browser suite `node scripts/e2e.mjs` 79/79 (main.ts maps to all).
+
+## T23.01 step 3 — the `?look=` page (builder, 2026-09-26)
+`?look=F1..F5` → `look/LookScene.ts` (dynamic import behind `devSurface`): `describeScene` (masks decoded) → `look/renderer.ts`'s
+`SceneRenderer` (stub: records, draws nothing), driven by `driveFromScene` on the scene's `render` event — after `Camera.preRender`,
+so `worldView` is this frame's. Phaser's camera fitted to the scene rect; `__look` = ready/frames/described/rendered/view.
+Check `look-lab`: per scene, page-built counts == renderer-received (actors, lights, fx, labels, rock px), view == camera rect;
+control `?look=F9` must name F9 and stay not-ready. Plants: renderer gets `actors.slice(1)` → red "built 15, received 14";
+`ready = true` on error → control red. `no-dev-surface` (outside Touch-only, CLAUDE.md: every window handle belongs in it):
++`LookScene`, `__look`, `?look=F1` lands on title — ok. Done-when EXIT=0 (vitest 1157/1157, look-lab 1/1); +no-dev-surface,
+sandbox, title, skins, webgl2 6/6. Full mapped suite (main.ts → all 80) deferred to T23.03's run, which covers this tree.

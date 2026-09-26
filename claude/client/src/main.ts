@@ -118,6 +118,10 @@ async function pickDevScene(): Promise<Phaser.Types.Scenes.SceneType[] | null> {
   if (q.get('boot') === '1') {
     return [(await import('./scenes/BootScene')).BootScene]
   }
+  // T23.01: `?look=F1`..`F5`, the look-lab — the reference scenes through the world renderer.
+  if (q.has('look')) {
+    return [(await import('./look/LookScene')).LookScene]
+  }
   // `?game=1` drops straight into a round, which is what the e2e suite and the
   // two-client checks want — they were written before there was a front end and
   // should not have to click through it.
