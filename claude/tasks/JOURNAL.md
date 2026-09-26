@@ -7211,3 +7211,10 @@ on their mask; planting a dropped `halo` + one misported actor turns 2 red. tsc 
 Full `./scripts/check.sh` on `21b040b` (T22.15–T22.19B + the merged M23 worktree: T23.05, T23.02/T23.01 partial), idle box:
 **EXIT=0, 1245 s** — browser **76/76**, vitest 1143/1143, Rust 1750 passed / 0 failed / 29 ignored. Owner round 2 (R101–R108) is
 done and reviewed; docs/77 §H22 written. M23 continues from T23.00 (WebGL2 on the owner's machine) now that M22's builders are idle.
+
+## T22.20 — gentler space thrusters (builder, 2026-09-26)
+`SPACE_THRUST_SCALE` 0.5 in `jetpack::thrust_delta` (1.0 off space, bit-identical); `SPACE_THRUST_DOWN` 450 feeds the wells'
+cap (337.5), vortex (900), hole edge (405) and `BOT_SPACE_BRAKE` (112.5). Peak accel 2459.7 → 1229.8, asserted against literals
+(plant 1.0 → red); caps planted back on 900 → 9 escape tests red. `SPACE_MAX_SPEED` kept 1350 (basis restated). **Stopping from
+1350 doubled, 817 → 1646 px** — flagged: may be the owner's "inertia". Bots: kills 4.6 → 3.5, no env/pin regressions; winged-pin
+bound already red at HEAD (4/6/4/4). REPLAY 32; `BELL_PLACE` 0.73. `--changed --fast` green after an ignored.sh line; 8/8 browser.

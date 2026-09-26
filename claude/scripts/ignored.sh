@@ -109,6 +109,10 @@ MANIFEST=(
   # in before it touches its rock, intact and with the lumps blown off, 9 seeds.
   # Prints; asserts nothing (the band's guard is the inequality test beside it).
   "well_air_gap_report|game-core src/world/attractors.rs|report"
+  # T22.20 (R109): the flight numbers the halved space thrust is judged by — peak
+  # acceleration, a Medium crossing from rest and from a push-off, the stop from 260 and
+  # from SPACE_MAX_SPEED. Prints; asserts nothing (the_space_thrust_is_half_what_it_was does).
+  "space_flight_report|game-core src/player/space.rs|report"
   # T23.05 (R4): the M23 terrain fields — full pass per scale and a radius-60 crater on
   # real maps. A guard: the crater's incremental bytes must equal a full pass. Prints ms.
   "render_fields_bench|game-wasm src/render_fields.rs|guard"
