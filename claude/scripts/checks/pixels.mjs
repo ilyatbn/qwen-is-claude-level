@@ -215,6 +215,45 @@ export function colourDelta(a, b) {
   return Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b)
 }
 
+
+/**
+ * T23.04B: what is under Phaser's (transparent) canvas — the world canvas as drawn (`null`), or that
+ * canvas hidden and the page behind it one flat colour. CSS only: nothing redraws.
+ */
+export function underPhaser(page, colour) {
+  return page.evaluate((c) => {
+    const world = document.querySelector('#game canvas[data-world]')
+    const game = document.getElementById('game')
+    if (world) world.style.visibility = c === null ? '' : 'hidden'
+    if (game) game.style.background = c === null ? '' : c
+    return { world: !!world, hidden: world?.style.visibility === 'hidden' }
+  }, colour)
+}
+
+/**
+ * T23.04B: a patch of **Phaser's layer alone**, photographed over black and over white in place of
+ * the world canvas (`samplePatch` each). Since R20 the High Quality toggle also switches the world
+ * renderer's tier, which resamples the whole sky (measured: low vs full differ by ~1.8 levels a
+ * channel on average, T23.04 and T23.04B alike) — so a control that asks "did only the setting's own
+ * layer move?" across that toggle must not read the world canvas. Two backdrops, because paint of
+ * coverage `a` moves one of them by at least `a·255/2` whatever its colour. Compare with `phaserDelta`.
+ */
+export async function phaserPatch(page, rect) {
+  const out = {}
+  for (const [k, c] of [['black', '#000000'], ['white', '#ffffff']]) {
+    const b = await underPhaser(page, c)
+    if (b.world && !b.hidden) throw new Error('phaserPatch: the world canvas would not hide')
+    out[k] = await samplePatch(page, rect)
+  }
+  await underPhaser(page, null)
+  return out
+}
+
+/** The larger change of two `phaserPatch`es, over black and over white. */
+export function phaserDelta(a, b) {
+  return Math.max(colourDelta(a.black, b.black), colourDelta(a.white, b.white))
+}
+
 /**
  * Assert a region changed **and** a control region did not.
  *

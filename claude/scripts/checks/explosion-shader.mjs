@@ -41,7 +41,7 @@
  * never writes; that half is structural, and is stated rather than photographed.
  */
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, advanceFrames, drawnFrames } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, phaserPatch, phaserDelta, underPhaser } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('explosion-shader')
@@ -174,6 +174,7 @@ if (arrived) {
   await frame()
   const offBand = await samplePatch(page, band)
   const offCtrl = await samplePatch(page, ctrl)
+  const offCtrlP = await phaserPatch(page, ctrl)
   const offDrawn = (await dbg()).blastShadersDrawn
   await shot('explosion-shader-off')
   const on = await setHQ(true)
@@ -181,6 +182,7 @@ if (arrived) {
   const onDrawn = (await dbg()).blastShadersDrawn
   const onBand = await samplePatch(page, band)
   const onCtrl = await samplePatch(page, ctrl)
+  const onCtrlP = await phaserPatch(page, ctrl)
   await shot('explosion-shader-on')
   await show(false)
   await frame()
@@ -190,9 +192,11 @@ if (arrived) {
   const back = await setHQ(false)
   await frame()
   const backBand = await samplePatch(page, band)
-  const backCtrl = await samplePatch(page, ctrl)
+  const backCtrlP = await phaserPatch(page, ctrl)
   const moved = colourDelta(offBand, onBand)
-  const ctrlMoved = Math.max(colourDelta(offCtrl, onCtrl), colourDelta(offCtrl, backCtrl))
+  // Phaser's layer alone (T23.04B): the toggle also switches the world renderer's tier (R20),
+  // which resamples the sky under the patch by design — see `pixels.mjs::phaserPatch`.
+  const ctrlMoved = Math.max(phaserDelta(offCtrlP, onCtrlP), phaserDelta(offCtrlP, backCtrlP))
   const restored = colourDelta(offBand, backBand)
   const drawn = colourDelta(onBand, noneBand)
   const floor = Math.max(4, colourDelta(onCtrl, noneCtrl) * 3)
@@ -291,15 +295,7 @@ if (arrived) {
     const a = (i / RING_POINTS) * Math.PI * 2
     return { x: cx + Math.cos(a) * (R - 1), y: cy + Math.sin(a) * (R - 1) }
   })
-  /** Put `c` under Phaser's canvas (`null`: the world canvas as drawn). CSS only — nothing redraws. */
-  const backdrop = (c) =>
-    page.evaluate((c) => {
-      const world = document.querySelector('#game canvas[data-world]')
-      const game = document.getElementById('game')
-      if (world) world.style.visibility = c === null ? '' : 'hidden'
-      game.style.background = c === null ? '' : c
-      return { world: !!world, hidden: world?.style.visibility === 'hidden', under: getComputedStyle(game).backgroundColor }
-    }, c)
+  const backdrop = (c) => underPhaser(page, c)
   /** One photograph per backdrop of the frame as it stands. */
   const overEach = async () => {
     const shots = []
@@ -379,13 +375,16 @@ if (arrived) {
   await show(false)
   await frame()
   const lNone = await samplePatch(page, band)
+  const lNoneP = await phaserPatch(page, band)
   await show(true)
   await setHQ(false)
   await frame()
-  const lOff = await samplePatch(page, band)
+  const lOffP = await phaserPatch(page, band)
   await shot('explosion-shader-late-off')
   const lingerOn = colourDelta(lOn, lNone)
-  const lingerOff = colourDelta(lOff, lNone)
+  // HQ off against HQ on with the blast hidden straddles the tier switch (R20): Phaser's layer
+  // alone, over black and white (T23.04B — measured 0.3–1.4 over the resampled sky).
+  const lingerOff = phaserDelta(lOffP, lNoneP)
   console.log(`  at ${(late).toFixed(2)} s (flat flashes left ${posed.impacts}): painted ${lingerOn.toFixed(1)} from none, flat ${lingerOff.toFixed(1)}`)
   if (posed.impacts !== 0) fail(`the flat flash is still alive at ${late.toFixed(2)} s — the linger below proves nothing`)
   if (!(lingerOff <= 1)) fail(`with High Quality off something is still drawn after the flash (${lingerOff.toFixed(1)})`)

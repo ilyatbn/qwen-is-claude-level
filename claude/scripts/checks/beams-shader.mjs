@@ -32,7 +32,7 @@
  * battery — and on its map and loadout.
  */
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, advanceFrames } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, phaserPatch, phaserDelta } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('beams-shader')
@@ -140,22 +140,24 @@ await hold(true)
 const P = await fireAndFreeze('frozen pair')
 if (P) {
   const offBand = await samplePatch(page, P.band)
-  const offCtrl = await samplePatch(page, P.ctrl)
+  const offCtrl = await phaserPatch(page, P.ctrl)
   const offDrawn = (await dbg()).beamShadersDrawn
   await shot('beams-shader-off')
 
   const on = await setHQ(true)
   const onDrawn = (await dbg()).beamShadersDrawn
   const onBand = await samplePatch(page, P.band)
-  const onCtrl = await samplePatch(page, P.ctrl)
+  const onCtrl = await phaserPatch(page, P.ctrl)
   await shot('beams-shader-on')
 
   const back = await setHQ(false)
   const backBand = await samplePatch(page, P.band)
-  const backCtrl = await samplePatch(page, P.ctrl)
+  const backCtrl = await phaserPatch(page, P.ctrl)
 
   const moved = colourDelta(offBand, onBand)
-  const ctrlMoved = Math.max(colourDelta(offCtrl, onCtrl), colourDelta(offCtrl, backCtrl))
+  // Phaser's layer alone (T23.04B): the toggle also switches the world renderer's tier (R20),
+  // which resamples the sky under this patch by design — see `pixels.mjs::phaserPatch`.
+  const ctrlMoved = Math.max(phaserDelta(offCtrl, onCtrl), phaserDelta(offCtrl, backCtrl))
   const restored = colourDelta(offBand, backBand)
   console.log(
     `  frozen beam: stroked->painted ${moved.toFixed(1)}, painted->stroked ${restored.toFixed(1)} from the original, ` +

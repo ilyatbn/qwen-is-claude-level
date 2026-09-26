@@ -7344,3 +7344,6 @@ Memory (R21): low 34–43 MB, full 135–171 MB at zoom 2. look-sky: 0 rebakes o
 explosion-shader: painted = differs from the blast-hidden frame over any of {world canvas, black, white}; 12/12 ×3 (world alone 10/12);
 control re-photograph 0/12; plant half radius → 0/12 red. Plant run also showed linger-off 1.4 > 1 once (pre-existing margin, 0.3–0.8 green).
 vitest bakeExtents/snapOffsets (plants: no zoom, no slack → red). look-sky, look-lab, world-canvas, wasd, thrusters, breach-vortex green.
+Full suite 73/75: beams-shader control 1.3, explosion-shader linger-off 1.4 — both compare HQ-off (low tier) vs HQ-on (full) frames;
+tier-vs-tier sky differs mean 1.78 unbaked / 1.84 baked, so ≤1 was a coin flip. Controls now read Phaser's layer alone
+(`pixels.mjs::phaserPatch`, black+white backdrops): 0.0 ×3 each; half-radius plant still red (0/12).
