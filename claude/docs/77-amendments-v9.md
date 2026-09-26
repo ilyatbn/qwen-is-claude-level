@@ -10,12 +10,13 @@ point it happens.
 Constants introduced or changed here are as authoritative as `02-constants.md` and must be
 mirrored in `crates/game-core/src/constants.rs`. **A constant is cited by name**; its value
 and its basis live at the constant, and the values quoted below are the ones at the close of
-M22, including the owner's second round (`REPLAY_VERSION` 31; §H22).
+M22, including the owner's second and third rounds (`REPLAY_VERSION` 37; §H22).
 
-**Where the decisions came from.** Every rule below carries its ruling id: `R1`–`R108` are the
+**Where the decisions came from.** Every rule below carries its ruling id: `R1`–`R113b` are the
 coordinator's M22 rulings — `R1`–`R72` in `tasks/M22/M22-RULINGS.md`, `R73`–`R100` in the task
 files that `M22-RULINGS.md`'s index points to, `R101`–`R108` (the owner's second round) in
-`tasks/M22/M22-OWNER-ROUND-2.md`. Each has a *"Reverse it by"* line naming the one
+`tasks/M22/M22-OWNER-ROUND-2.md`, `R109`–`R113b` (the owner's third round) in that file's
+round-3 section and the task files `T22.20`–`T22.22C`. Each has a *"Reverse it by"* line naming the one
 place to change. **The final audit's finding ids `H1`–`H3` (`T22.14A`) are unrelated to this
 document's `§H` numbering**; they are cited here as "`T22.14A` H1".
 
@@ -83,17 +84,36 @@ Space is the wings regime generalised — gravity scale 0, and nothing damps (`T
   `ground_snap` is off. **Fall damage is off** (there is no fall). Coyote time and the jump buffer
   work as on the ground.
 - **A jump costs fuel**: `SPACE_JUMP_FUEL` (= `JETPACK_DRAIN` × `SPACE_JUMP_BURN_SECONDS`); a full
-  tank is ten pushes off a rock, three jump-and-return round trips.
+  tank is ten pushes off a rock, three jump-and-return round trips (`R109` halved thrust made it
+  two; `R109c`'s brake restored three — the arrest is a brake).
 - **Thrusters** are the jetpack's one tank and its anisotropic thrust (`JETPACK_THRUST_UP` /
-  `_SIDE` / `_DOWN` — **DOWN is the weakest, and every escape guarantee in this document is
-  against it**, `R46`). Airborne, any held direction engages; grounded, only a net **upward**
+  `_SIDE` / `_DOWN`), **scaled in space by `SPACE_THRUST_SCALE` (0.5)** (`R109`, `T22.20`: the
+  owner's *"too much inertia"*; standard and low gravity are bit-identical). **DOWN is the
+  weakest, and every escape guarantee in this document is against `SPACE_THRUST_DOWN`**
+  (= `JETPACK_THRUST_DOWN` × the scale, 450; `R46`) — the caps *derive* from it, so the scale
+  moves them together. One author, `jetpack::thrust_delta(input, gravity, vel, dt)`, on both
+  sides (`apply_thrust`, `space::engaging`, the plume's `GameCore::thrust_at`).
+- **Gentle to accelerate, strong to stop** (`R109c`, `T22.22`, `T22.22B` F6): in space, **per
+  axis**, a push that opposes that axis's velocity is applied at `SPACE_BRAKE_SCALE` (1.1) ×
+  the unscaled thrust **only until that axis's velocity reaches zero**; the rest of the tick is at
+  the gentle share (`jetpack::brake_axis`). It never accelerates, never overshoots, and is
+  continuous at `v = 0` (no dead-band threshold). Per axis, not a projection: the buttons and
+  `apply_thrust`'s clamp are per axis. **The escape caps derive from the unboosted
+  `SPACE_THRUST_DOWN`** — a body at rest against a pull gets no boost, so every guarantee is
+  as conservative as before. Measured (`space_flight_report`): from `SPACE_MAX_SPEED` a stop takes
+  80 px / 0.38 s sideways, 38 px / 0.20 s travelling down, 98 px / 0.47 s travelling up (DOWN,
+  the weakest axis) — every axis under 100 px and 0.5 s.
+  Airborne, any held direction engages; grounded, only a net **upward**
   push does — sideways is legs, down is into the rock (`R42`, narrowed by `T22.03`). A held
   direction costs `JETPACK_DRAIN`; walking on a rock is free. `JETPACK_MIN_FUEL_TO_ENGAGE` is the
   only floor.
 - **Thrust ignores health and boots** (`R41`): `mods.speed` is the legs' multiplier; the suit's
   engine does not take it. Walking on a rock still does.
 - **Terminal speed is a magnitude**: `SPACE_MAX_SPEED` clamps `|vel|` through `Forces::max_speed`
-  (`R10`). `MAX_FALL_SPEED` is not reused.
+  (`R10`). `MAX_FALL_SPEED` is not reused. **450** since `R109b` (was 1350): the inertia the owner
+  felt was the speed a push-off reaches and cannot shed; 450 ≈ 1.7 × the 260 per-axis cruise, the
+  smallest round value over the 367.7 diagonal burn `R10` forbids undercutting. Not a function of
+  thrust. `SPACE_VOID_GRACE` (two ticks of it) follows, 45 → 15 px.
 - **Projectiles fly dead straight** — the gravity scale reaches both projectile terms (`R38`).
 - **Up stays up for the controls** (`R7`, narrowed by `R107`): movement and aim are
   screen-relative and nobody's physics orients to a rock's surface. *The drawing is no longer
@@ -132,21 +152,64 @@ wire). `THRUSTER_PLUME_LENGTH`, `_WIDTH`, `_MIN_SPEED`.
   *In practice a body past the outer edge is taken by the nearest vortex first* (§H9, `R105`).
 - **Asteroids**: a *base* radius uniform on `SPACE_ASTEROID_R_MIN..=_MAX`, then **+0–20 % mass**
   (`R103`): `m` uniform on `[0, SPACE_ASTEROID_MASS_MAX]` on the generator's own sub-stream
-  (`"asteroid_mass"`, one draw per candidate), `r = round(base · √(1 + m))` — up to 70. The grown
-  radius is what spacing, rim clearance, level, stamp and wire use. A body disc
+  (`"asteroid_mass"`, one draw per candidate), `r = round(base · √(1 + m))` — up to 88 (70
+  before `R110`). The grown radius is what spacing, rim clearance, level, stamp and wire use.
+  **Bigger again since `R110`** (`T22.21`, the owner's *"make them larger again"*): the base range
+  ~~24..64~~ **30..80**, and `ScaleParams::asteroid_count` ~~14/34/64~~ **12/32/62** (Small /
+  Medium / Large) — the most that keep T22.15's field-free share (S 0.958, M 0.966, L 0.967).
+  **Every candidate draws its level jitter** (it was drawn on acceptance), so the iron seated
+  first does not re-roll the ordinary rocks (`R113`). A body disc
   (`SPACE_ASTEROID_CORE_FRAC`) plus `SPACE_LUMPS_*` lumps, `SPACE_ASTEROID_GAP_MIN` apart and
   `SPACE_RIM_CLEARANCE` from the rim. **Level** `1..=SPACE_LEVEL_MAX`, monotone in the grown
   radius with `SPACE_LEVEL_JITTER`. `MapMeta::asteroids` (x, y, r, level, **`lumps`**,
-  **`core_intact`**). **`lumps`** (`T22.18B` F1): `ASTEROID_LUMP_SLOTS` (= `SPACE_LUMPS_MAX`, 4)
+  **`core_intact`**, **`iron`**, **`core_hits`**). **`lumps`** (`T22.18B` F1): `ASTEROID_LUMP_SLOTS` (= `SPACE_LUMPS_MAX`, 4)
   slots of `{dx, dy, r}`, radius 0 = empty — the generator's rounded lumps, which the stamp reads
   and the well's band follows (§H10).
-- **Every asteroid has a core** (`R102`, `T22.16`): a round core at its centre, radius
+- **Asteroid rock is harder than the rim** (`R111`, `T22.21`): per pixel, in `Map::circle`'s one
+  guard list (with pads and platforms), a pixel inside an ordinary rock's bounding disc +
+  `ROCK_GUARD_MARGIN` (2) carves only within `round(r × ASTEROID_HARDNESS)` (0.5) of the carve
+  centre — **radius × ½, so area × ¼**; the rim and open ground carve at the full radius, so a
+  player's rocket still breaches the rim. Standard maps unchanged. A destroyed core's disc is
+  soft, so its crumble takes it whole. The owner's metric, guarded (`asteroid_rock_report`,
+  `ROCK_LEFT_AT_2MIN_MIN` Small 76 %, Medium 82 %): ordinary rock left at 2 min of a bots round
+  23.4 → 83.1 % Small, 49.3 → 90.2 % Medium (8 seeds); `R99`'s old aim and `ASTEROID_HARDNESS` 1.0
+  are its red plants.
+- **Every ordinary asteroid has a core** (`R102`, `T22.16`): a round core at its centre, radius
   `round(SPACE_CORE_FRAC · r)` (`world::cores::core_radius`), drawn distinctly (an ember rim and
-  an amber heart, painted into the rock layer so it goes with the pixels). It is destructible like
-  rock; **once `SPACE_CORE_DESTROYED_FRAC` of its pixels are air it is destroyed** —
+  an amber heart, painted into the rock layer so it goes with the pixels).
+  ~~Once `SPACE_CORE_DESTROYED_FRAC` of its pixels are air it is destroyed~~ — superseded by
+  `R112`/`R112b` (`T22.21`, `T22.22B`; the constant is retired): **the core takes `CORE_HITS` (3)
+  hits, and the third destroys it.** A hit is a carve whose **unhardened radius is ≥
+  `CORE_HIT_MIN_R`** (36 — the smallest explosive blast, grenade/bazooka/mine; a meteor's 50
+  counts) **and whose hardened disc overlaps the core** — one predicate, `Map::strike_cores`,
+  once per carve call, before the raster. Bullets, airburst pellets, resting-flame scorches, toxic
+  drops, meteor fragments, melee and lava channels never count. Until the third hit the core's
+  pixels are guarded (uncarvable); the third unlocks them and `step_cores` destroys it —
   `core_intact` false for the rest of the round, the well off (§H10), the core crumbles, and one
-  battery pack spawns (§H11's `core_destroyed`). **The black hole eating a rock is not a core
-  destruction** — no battery.
+  battery pack spawns (§H11's `core_destroyed`). `core_hits` is hashed state. **The glow dims per
+  hit** on both render paths: the heart mixes toward the rim by `hits / CORE_HITS ×
+  CORE_DIM_TOWARD_RIM` (0.85; client drawing only). **The black hole eating a rock is not a core
+  destruction** — no battery. *In bots rounds a core now essentially never breaks* (bots fire
+  bullets): batteries picked fell 4.5 → 0.8 a bot a round across `R112`/`R112b` — the owner's call
+  (`M22-OWNER-ROUND-2.md`, round 3).
+- **Iron asteroids** (`R113`, `R113b`; `T22.21`, `T22.22`, `T22.22B` F4, `T22.22C`): each space map
+  seats **`SPACE_IRON_COUNT` (2)** iron rocks **first**, on their own sub-streams
+  (`"iron_asteroids"`, `"iron_shape"`), so the ordinary rocks do not move when the count changes.
+  Radius `SPACE_IRON_R_MIN_FRAC..MAX_FRAC` (1.5–2) × `SPACE_ASTEROID_R_MAX` = 120..160 on Medium and
+  Large, **`SPACE_IRON_R_MIN_FRAC_SMALL..MAX_FRAC_SMALL` (1.2375–1.25) = 99..100 on Small**.
+  **Always at least `SPACE_IRON_MIN_OVER_ORDINARY` (1.125) × the largest ordinary rock on its
+  map** (`space::iron_floor`; Small's band starts at `iron_floor(88)` = 99, so no draw is under
+  it). **The share of the map's asteroid pixels**: the generator (`cap_iron_share`) shrinks the
+  second iron, then the first, 1 px at a time from its own saved stream position, while the map is
+  over `SPACE_IRON_SHARE_MAX` (0.35) — never under the floor; so the per-map *bound*
+  (`ScaleParams::iron_share_max`) is 0.35 on Medium/Large and **`SPACE_IRON_SHARE_MAX_SMALL`
+  (0.44)** on Small, where the floor can win (999 seeds: max 42.9 %, 101 maps over 0.35; none on
+  Medium/Large). **Indestructible** — every carve refuses their pixels (the guard list that
+  protects pads). **Level 5, no core** (nothing to destroy, no battery), **never eaten by the black
+  hole**. Spawns, placement and vortex-trip clearance treat them as rock; they count as asteroids
+  for the minimap. Drawn darker on both render paths (`IRON_TINT` `#1c2230` at `IRON_TINT_ALPHA`
+  0.72 over the rock texture) and on the minimap (`MINIMAP_IRON`), pixel-asserted
+  (`iron-asteroids` ×2).
 - **Acceptance** (`R17`): `passed` = the rim is closed (a ring walk, not a sample) **and** at least
   `SPAWN_COUNT_MIN` spawn points exist in open space; `traversable_fraction` is 1.0 by
   construction and `largest_component` means "all reachable" — said at the code.
@@ -163,7 +226,7 @@ wire). `THRUSTER_PLUME_LENGTH`, `_WIDTH`, `_MIN_SPEED`.
   the black hole shrinks — is what `space_geometry()` reads.
 
 **`map_init`, as built** (`docs/40` §3's layout is several amendments stale; this is the whole
-of it at `REPLAY_VERSION` 31):
+of it at `REPLAY_VERSION` 37):
 
 ```
 u32 magic  u32 width  u32 height  u64 seed  u8 scale  u8 theme
@@ -174,14 +237,19 @@ u16 pad_count          repeat: i16 x, i16 y
 u16 platform_count     repeat: i16 x, i16 y
 u16 decoration_count   repeat: u16 kind, i16 x, i16 y, u8 flip|scale_tier<<1
 u16 object_count       repeat: u16 id, i16 x, i16 y, u16 w, u16 h, u8 flip
-u16 asteroid_count     repeat, 27 bytes each (was 7):                 (T22.05A, T22.18B F1)
-                         i16 x, i16 y, u16 r, u8 level,
+u16 asteroid_count     repeat, 29 bytes each (27 at T22.18B, 7 before): (T22.05A, T22.18B F1, T22.21)
+                         i16 x, i16 y, u16 r, u8 level, u8 iron, u8 core_hits,
                          then ASTEROID_LUMP_SLOTS (4) × { i16 dx, i16 dy, u8 r }   (r 0 = empty)
 u32 rle_byte_len       [rle payload]
 ```
 
 `core_intact` is **not** on this wire: a destroyed core reaches a joiner as a `core_destroyed`
-event in the join catch-up (§H11). The client installs the generator
+event in the join catch-up (§H11). `core_hits` is, so a joiner at two hits agrees on the third;
+the mirror counts later hits off the carve stream, and **every carve that counts as a hit is
+published even if it moved no pixel** — the blast path (`emit_blast`) publishes every blast carve,
+and the other carve sites go through one `World::publish_carve` (`CarveResult::changed()`: pixels
+removed *or* a core hit). `set_asteroids` keeps the higher of held and given hits (the hole's
+re-install passes stale ones); `load_mask` zeroes them. The client installs the generator
 (`GameCore::set_map_generator`) and the asteroids (`set_asteroids`, lumps included) **before**
 `loadMask`. `constants_json` exports `MAP_GENERATOR_MAX`, the bound
 both decoders enforce.
@@ -328,9 +396,11 @@ both decoders enforce.
   `well_reach` = that + `WELL_SURFACE_BAND` (= `PLAYER_H`, "a few pixels"). **The same reach at
   every level; the level scales the strength**: `well_strength(level)` = `SPACE_WELL_ACCEL_MAX` ×
   level / `SPACE_LEVEL_MAX` (clamped into the table). `SPACE_WELL_ACCEL_MAX` =
-  `JETPACK_THRUST_DOWN` × `SPACE_WELL_ESCAPE_MARGIN`, so no well out-pulls the weakest thrust —
+  ~~`JETPACK_THRUST_DOWN`~~ **`SPACE_THRUST_DOWN`** (`R109`; 675 → 337.5, about ¼ g at level 5) ×
+  `SPACE_WELL_ESCAPE_MARGIN`, so no well out-pulls the weakest thrust —
   **DOWN**, because the binding case is a player resting on a rock's underside (`R46` overturns
-  `R18`'s UP). Enough to stand, walk and fall back after a hop; a jump pushes off.
+  `R18`'s UP). Enough to stand, walk and fall back after a hop (99.6 % of 249 rock-top hops land
+  back at the halved thrust); a jump pushes off. An iron rock is level 5 (`R113`).
   ~~`well_reach(level)` = `SPACE_WELL_REACH_MAX` × level / `SPACE_LEVEL_MAX`~~ and "wells overlap
   into fields" are superseded by `R101`; `SPACE_WELL_REACH_MAX` is deleted. Measured
   (`short_range_wells_report`, 9 seeds): open arena with any pull 99.8 % → 8.3 %; a player left at
@@ -352,7 +422,9 @@ both decoders enforce.
   vortices keep acting on `Ended`'s neutral steps (T21.30 froze input, not physics), and inside the
   hole's reach — where they are muted — nothing pulls at all, so the results screen is still there.
 - **The asteroid table is hashed** (`R36`, `R61`: x, y, r and level; **`core_intact`** since
-  `T22.16`, **the lumps** since `T22.18B`).
+  `T22.16`, **the lumps** since `T22.18B`, **`iron` and `core_hits`** since `T22.21`).
+- **The vortex's cap derives from the same thrust**: `VORTEX_ACCEL_MAX` = 2 × `SPACE_THRUST_DOWN`
+  (`R97`, `R109`; 1800 → 900), still binding at 80 px, so `R97`'s escape holds unchanged.
 
 ## H11 — The black hole
 
@@ -365,19 +437,26 @@ both decoders enforce.
   y, arrives_in}`, then `black_hole {tick, x, y}`; both scoped to everyone and in the join catch-up.
 - **It eats one asteroid** on arrival — list, mask and well — **never the last** (a one-rock map
   gets the hole at the arena centre). Fixed size; it never grows (`R8`). **Eating a rock is not a
-  core destruction** (`R102`): no `core_destroyed`, no battery.
+  core destruction** (`R102`): no `core_destroyed`, no battery. **It never picks an iron asteroid**
+  (`R113`). **The `black_hole` event is pushed before its eating carve** (`T22.21`): the mirror
+  drops the rock on the event, and a rock still listed guards its pixels, so the carve must find
+  it gone.
 - **The horizon is the rule** (`R90`): `BLACK_HOLE_HORIZON_R`. Inside it you die (death cause
   `black_hole`, `R20`); outside it every thrust escapes, because the pull there is
-  `BLACK_HOLE_EDGE_PULL` = `JETPACK_THRUST_DOWN` × `BLACK_HOLE_ESCAPE_MARGIN`. Linear from
+  `BLACK_HOLE_EDGE_PULL` = ~~`JETPACK_THRUST_DOWN`~~ **`SPACE_THRUST_DOWN`** (`R109`) ×
+  `BLACK_HOLE_ESCAPE_MARGIN` = 405. Linear from
   `BLACK_HOLE_ACCEL_MAX` at the centre to 0 at `BLACK_HOLE_REACH`. **The ring drawn at the horizon
   is the whole death rule**; no second radius kills.
 - **It pulls from further** (`R106`, `T22.18`): `BLACK_HOLE_REACH` = 8 × horizon = 512 (was 4 ×,
-  256), so `BLACK_HOLE_ACCEL_MAX` = `BLACK_HOLE_EDGE_PULL` / (1 − `HORIZON_R` / `REACH`) = 810 /
-  0.875 ≈ 925.7 (was 1080) — the pull outside the horizon is still ≤ 810 = 0.9 × DOWN, so a
+  256), so `BLACK_HOLE_ACCEL_MAX` = `BLACK_HOLE_EDGE_PULL` / (1 − `HORIZON_R` / `REACH`) =
+  ~~810 / 0.875 ≈ 925.7~~ **405 / 0.875 ≈ 462.9** (`R109`; 1080 before `R106`) — the pull outside
+  the horizon is still ≤ ~~810~~ **405** = 0.9 × `SPACE_THRUST_DOWN`, so a
   bigger reach means you feel it sooner, not that it traps you (measured on Large: 416 flights
-  out, the nearest any came back 520.8 px; wings 0 of 208 trapped). `R91` mutes the wells and
-  vortices over the whole larger reach. The horizon stays 64 — the largest *base* radius, not the
-  largest rock (70, `R103`).
+  out, the nearest any came back 520.8 px; wings 0 of 208 trapped; the Small-map arm re-run green
+  at `R109`). `R91` mutes the wells and
+  vortices over the whole larger reach. The horizon stays 64 — **now the literal 64** (it was
+  `SPACE_ASTEROID_R_MAX`, which `R110` grew to 80; the largest ordinary rock is 88, iron up to
+  160).
 - **The reach is drawn, faintly** (`T22.18B` F4): while the hole is here a thin ring in
   `BLACK_HOLE_RING_COLOR` at 0.35 alpha at `BLACK_HOLE_REACH` on both render paths, and the
   minimap marker carries a circle of the reach's radius — the edge of the pull and of `R91`'s
@@ -392,7 +471,8 @@ both decoders enforce.
 - **Drawn full size from the arrival frame** (`T22.14A` L): the disc and the ring are the rule and
   kill on arrival; only the decoration swells in (`BLACK_HOLE_GROW_MS`, drawing only).
 
-**A destroyed core** (`R102`, `T22.16`, `T22.18`) — not the hole's, but the same event shape:
+**A destroyed core** (`R102`, `T22.16`, `T22.18`; on its third counted hit since `R112`/`R112b`,
+§H4) — not the hole's, but the same event shape:
 `core_destroyed {tick, x, y}`, scoped to everyone and in the join catch-up (one per rock whose
 `core_intact` is false). The mirror keys the well's switch-off to the seq the tick maps to, as
 §H16 does for the attractors (`GameCore::set_dead_cores`). The well is off for the round, the
@@ -405,9 +485,11 @@ body is otherwise bait nobody can take).
 
 **Overrides `docs/13` §4 in space, and `docs/13` §1 / `docs/41` §3 on weather at round end.**
 
-- **In space a shower starts inside the rim and aims at the rocks** (`R99`): each meteor starts
+- **In space a shower starts inside the rim** (`R99`): each meteor starts
   `METEOR_SPACE_INSET` (one tick's flight) inside the rim's inner face at a random angle and flies
-  at a random asteroid at `METEOR_SPEED`, in a straight line.
+  ~~at a random asteroid~~ **at a random open point inside the rim** (`R99` amended, `T22.21`:
+  `random_open_space` on the shower's stream; rays through a rock centre 160/160 → 2/160 — aiming
+  at the rocks emptied the map in two minutes) at `METEOR_SPEED`, in a straight line.
 - **Weather ordnance that reaches the rim despawns** — past its inner face, or an impact whose
   blast would bite it — without carving, damage or fragments (`projectile_despawn` reason
   `void`). **The rim breaks only from player weapons.** Standard showers are unchanged.
@@ -547,9 +629,13 @@ store inputs, not snapshots, so none of this moved `REPLAY_VERSION`.
   per cooldown; in zero-g a throw must reach its target; `BOT_SPACE_ZONE_REACH` is the measured
   space stand-off. **In standard the flame stand-off doubled** (`BOT_FLAME_REACH_SCALE` 2.0): at 1×
   the thrower took 4.2 hp of its own fire a throw. That is a standard-mode change, confirmed.
-- The bots' tunables live in `constants.rs` as `BOT_*`, each with its basis.
+- The bots' tunables live in `constants.rs` as `BOT_*`, each with its basis. **`BOT_SPACE_BRAKE`**
+  (the planning deceleration) = `SPACE_THRUST_DOWN` − `SPACE_WELL_ACCEL_MAX` (225 → 112.5 at
+  `R109`), read by `bots::space`'s stop distance and arrival speed; it stays on the unboosted
+  thrust under `R109c`, so bots now stop shorter than they plan. Kills per bot a round fell ~22 %
+  at `R109` (4.83 → 3.33, 8 seeds) and recovered ~8 % with the brake (3.05 → 3.30, 128 seeds).
 
-## H19 — `REPLAY_VERSION`, 14 → 31
+## H19 — `REPLAY_VERSION`, 14 → 37
 
 Per `docs/76` §G8, every number names every change it covers. From `replay.rs`'s own notes:
 
@@ -573,10 +659,17 @@ Per `docs/76` §G8, every number names every change it covers. From `replay.rs`'
 | 29 | T22.16 | asteroid cores (`R102`): `core_intact` hashed, a carved core crumbles and drops a battery, the band measured from the round body |
 | 30 | T22.18 | vortices a quarter the size and the outside arm (`R105`), the hole's doubled reach (`R106`), the sealed suit's halved drain (`R108`), the battery's reachable site |
 | 31 | T22.18B | the band follows each rock's generated outline (its lumps), and the lumps are hashed |
+| 32 | T22.20 | space thrust halved (`R109`); the wells', vortex's and hole's caps derive from `SPACE_THRUST_DOWN` |
+| 33 | T22.21 (R109b) | `SPACE_MAX_SPEED` 1350 → 450; `SPACE_VOID_GRACE` 45 → 15 |
+| 34 | T22.21 | the space map moved: bigger, fewer rocks (`R110`), iron (`R113`), every candidate draws its jitter; hardened rock (`R111`); core hits hashed (`R112`); meteors aim at open space (`R99` amended); the hole's event before its carve |
+| 35 | T22.22 | the brake (`R109c`, 1.0); Small's iron band 90..100 |
+| 36 | T22.22B | only a blast is a core hit (`R112b`); brake 1.1; the per-map iron share cap in the generator |
+| 37 | T22.22C | iron ≥ 1.125 × its map's largest ordinary rock (`R113b`); Small's iron band 99..100 |
 
 Only 14 changed the layout; every other bump is the silent-divergence case — no new tag.
-(`map_init`'s asteroid record grew to 27 bytes at 31, but that is the wire, not a replay: replays
-regenerate the map from the seed.) `T22.19` (`R107`) is drawing only and moved nothing.
+(`map_init`'s asteroid record grew to 27 bytes at 31 and 29 at 34, but that is the wire, not a
+replay: replays regenerate the map from the seed.) `T22.19` (`R107`) is drawing only and moved
+nothing.
 
 ## H20 — New and changed constants
 
@@ -584,24 +677,35 @@ regenerate the map from the seed.) `T22.19` (`R107`) is drawing only and moved n
 |---|---|---|
 | `LOW_GRAVITY_SCALE` | 0.5 | §H2, `R3`, `R31` |
 | `SPACE_JUMP_BURN_SECONDS` / `SPACE_JUMP_FUEL` | 0.5 s / `JETPACK_DRAIN` × it | §H3 |
-| `SPACE_MAX_SPEED` | 1350 | §H3, `R10` |
+| `SPACE_MAX_SPEED` | ~~1350~~ **450** | §H3, `R10`, `R109b` |
+| `SPACE_THRUST_SCALE`, `SPACE_THRUST_DOWN` | 0.5, `JETPACK_THRUST_DOWN` × it (450) | §H3, `R109` |
+| `SPACE_BRAKE_SCALE` | 1.1 (× the unscaled thrust, to zero, per axis) | §H3, `R109c`, `T22.22B` F6 |
 | `SPACE_RIM_THICKNESS`, `SPACE_RIM_CLEARANCE` | 32, 64 | §H4, `R13`, `R34` |
 | `SPACE_RIM_INSET` | `SKY_MARGIN` (96) | §H4, `R104` |
-| `SPACE_ASTEROID_MASS_MAX` | 0.2 (radius × √(1 + m), up to 70) | §H4, `R103` |
-| `SPACE_CORE_FRAC`, `SPACE_CORE_DESTROYED_FRAC` | 0.3, 0.2 | §H4, §H11, `R102` |
+| `SPACE_ASTEROID_MASS_MAX` | 0.2 (radius × √(1 + m), up to ~~70~~ **88**) | §H4, `R103`, `R110` |
+| `SPACE_CORE_FRAC`, ~~`SPACE_CORE_DESTROYED_FRAC`~~ | 0.3, ~~0.2~~ **retired** (`R112`) | §H4, §H11, `R102` |
+| `CORE_HITS`, `CORE_HIT_MIN_R` | 3, min(grenade, bazooka, mine blast) = 36 | §H4, `R112`, `R112b` |
+| `ASTEROID_HARDNESS`, `ROCK_GUARD_MARGIN` (`map/carve.rs`) | 0.5 (radius), 2 px | §H4, `R111` |
+| `SPACE_IRON_COUNT` | 2 | §H4, `R113` |
+| `SPACE_IRON_R_MIN_FRAC`/`_MAX_FRAC` | 1.5/2.0 × `SPACE_ASTEROID_R_MAX` (Medium, Large) | §H4, `R113` |
+| `SPACE_IRON_R_MIN_FRAC_SMALL`/`_MAX_FRAC_SMALL` | ~~1.125~~ **1.2375**/1.25 (99..100 px) | §H4, `R113`, `R113b` |
+| `SPACE_IRON_MIN_OVER_ORDINARY` | 1.125 × the map's largest ordinary rock | §H4, `R113b` |
+| `SPACE_IRON_SHARE_MAX`, `SPACE_IRON_SHARE_MAX_SMALL` | 0.35 (the generator's target everywhere; the bound on Medium/Large), 0.44 (Small's bound) | §H4, `T22.22`, `T22.22B` F4, `R113b` |
+| `CORE_DIM_TOWARD_RIM`, `IRON_TINT`/`_ALPHA`, `MINIMAP_IRON` (client, drawing only) | 0.85, `#1c2230`/0.72, (70, 78, 96) | §H4 |
 | `ASTEROID_LUMP_SLOTS` (`map/meta.rs`) | `SPACE_LUMPS_MAX` (4) | §H4, `T22.18B` F1 |
-| `SPACE_ASTEROID_R_MIN`/`_MAX`, `_GAP_MIN`, `_CORE_FRAC`, `_TRIES` | 24/64 (the *base* radius; grown up to 70 by `R103`), 80, 0.75, 40 | §H4 |
+| `SPACE_ASTEROID_R_MIN`/`_MAX`, `_GAP_MIN`, `_CORE_FRAC`, `_TRIES` | ~~24/64~~ **30/80** (the *base* radius; grown up to 88 by `R103`), 80, 0.75, 40 | §H4, `R110` |
+| `ScaleParams::asteroid_count` | ~~14/34/64~~ **12/32/62** (Small/Medium/Large) | §H4, `R110` |
 | `SPACE_LUMPS_MIN`/`_MAX`, `SPACE_LUMP_R_MIN_FRAC`/`_MAX_FRAC` | 2/4, 0.30/0.45 | §H4 |
 | `SPACE_LEVEL_MAX`, `SPACE_LEVEL_JITTER` | 5, 0.6 | §H4 |
 | `SPACE_SPAWN_GRID`, `SPACE_OPEN_SPACE_TRIES` | 64, 24 | §H4 |
-| `SPACE_WELL_ESCAPE_MARGIN`, `SPACE_WELL_ACCEL_MAX` | 0.75, 675 | §H10, `R46`, `R96` |
+| `SPACE_WELL_ESCAPE_MARGIN`, `SPACE_WELL_ACCEL_MAX` | 0.75, ~~675~~ **337.5** (`SPACE_THRUST_DOWN` × margin) | §H10, `R46`, `R96`, `R109` |
 | ~~`SPACE_WELL_REACH_MAX`~~ | ~~`JETPACK_CLIMB_BUDGET`~~ **deleted** | §H10, `R101` |
 | `WELL_SURFACE_BAND` | `PLAYER_H` (28) | §H10, `R101` |
-| `SPACE_VOID_GRACE` | 2 ticks at `SPACE_MAX_SPEED` (45) | §H4, `R16` |
+| `SPACE_VOID_GRACE` | 2 ticks at `SPACE_MAX_SPEED` (~~45~~ **15**) | §H4, `R16`, `R109b` |
 | `MAX_ACTIVE_VORTICES`, `MAX_PENDING_BREACHES` | 3, 8 | §H9 |
-| `VORTEX_CAPTURE_R`, `VORTEX_ACCEL_MAX`, `VORTEX_REACH` | ~~127~~ **32** (= `SPACE_RIM_THICKNESS`), 1800, 4 × capture (~~508~~ **128**) | §H9, `R105` |
+| `VORTEX_CAPTURE_R`, `VORTEX_ACCEL_MAX`, `VORTEX_REACH` | ~~127~~ **32** (= `SPACE_RIM_THICKNESS`), ~~1800~~ **900** (2 × `SPACE_THRUST_DOWN`), 4 × capture (~~508~~ **128**) | §H9, `R105`, `R109` |
 | `BLACK_HOLE_WINDOW`, `_LATEST`, `_TELEGRAPH` | 60, 10, 2 s | §H11 |
-| `BLACK_HOLE_HORIZON_R`, `_ESCAPE_MARGIN`, `_EDGE_PULL`, `_REACH`, `_ACCEL_MAX` | 64, 0.9, 810, ~~256~~ **512** (8 × horizon), ~~1080~~ **≈925.7** | §H11, `R90`, `R106` |
+| `BLACK_HOLE_HORIZON_R`, `_ESCAPE_MARGIN`, `_EDGE_PULL`, `_REACH`, `_ACCEL_MAX` | 64 (a literal since `R110`), 0.9, ~~810~~ **405** (`SPACE_THRUST_DOWN` × margin), ~~256~~ **512** (8 × horizon), ~~1080~~ ~~≈925.7~~ **≈462.9** | §H11, `R90`, `R106`, `R109` |
 | `BLACK_HOLE_GLOW_HORIZONS`, `BLACK_HOLE_RING_COLOR` (client, drawing only) | 4, `0xffc870` | §H11 |
 | `RADIATION_DPS`, `RADIATION_SHIELD_COST`, `RADIATION_LOG_INTERVAL` | 1, ~~1~~ **0.5** (× `RADIATION_DPS`), 1 s | §H7, `R24`, `R25`, `R108` |
 | `BATTERY_PACK_SPACE_WEIGHT_MULT` | 2 | §H7, `R76` |
@@ -617,6 +721,7 @@ regenerate the map from the seed.) `T22.19` (`R107`) is drawing only and moved n
 | `STAND_TURN_RATE`, `STAND_UPRIGHT_RATE` (client, drawing only) | 12 /s, 5 /s | §H22, `R107` |
 | `SPACE_SUN_*`, `SPACE_EARTH_*`, `SPACE_MOON_*`, `SPACE_STAR_*`, `SPACE_BODY_PARALLAX` | see `constants.rs` | §H5 |
 | `BOT_FLAME_REACH_SCALE`, `BOT_SPACE_ZONE_REACH`, `BOT_SPACE_*` | 2.0, 100, … | §H18, `R95` |
+| `BOT_SPACE_BRAKE` | `SPACE_THRUST_DOWN` − `SPACE_WELL_ACCEL_MAX` (~~225~~ **112.5**) | §H18, `R109` |
 
 ## H21 — What this deliberately does not add
 
@@ -628,16 +733,19 @@ regenerate the map from the seed.) `T22.19` (`R107`) is drawing only and moved n
   §H22.)
 - **Pulling anything but players** (`R14`), and **vortices on the minimap** (`R9`.5).
 
-## H22 — Owner round 2: the space mode after playing it
+## H22 — Owner rounds 2 and 3: the space mode after playing it
 
-Asked by the owner after M22 closed (2026-09-25); every ruling, verbatim request and measurement
-is in `tasks/M22/M22-OWNER-ROUND-2.md`, built by `T22.15`–`T22.19` and `T22.18B`. Each ruling is
-written into the section it changes; this is the index.
+Asked by the owner after M22 closed (round 2, 2026-09-25; round 3, 2026-09-26); every ruling,
+verbatim request and measurement is in `tasks/M22/M22-OWNER-ROUND-2.md` (round 3 in its own
+section) and the task files — round 2 built by `T22.15`–`T22.19`, `T22.18B` and `T22.19B`, round 3
+by `T22.20`–`T22.22C`. Each ruling is written into the section it changes; this is the index.
+
+**Round 2 (2026-09-25)**
 
 | ruling | the owner asked | what the game does now | where |
 |---|---|---|---|
 | `R101` | *"gravity should be like a few pixels around each “asteroid” and its fine to sometimes have no gravity at all and just float in space"* | a well pulls at full strength only in a `WELL_SURFACE_BAND` of air along its rock's outline, zero beyond; open space has no field; the level scales strength, not reach | §H10 |
-| `R102` | *"when an “asterodid” is destroyed (make like a round core at the center) its gravity pull disappears, a battery is spawned when its destroyed"* | a round core (`SPACE_CORE_FRAC`); destroyed at `SPACE_CORE_DESTROYED_FRAC` carved → well off, `core_destroyed`, one reachable battery; the black hole's meal is not a destruction | §H4, §H10, §H11 |
+| `R102` | *"when an “asterodid” is destroyed (make like a round core at the center) its gravity pull disappears, a battery is spawned when its destroyed"* | a round core (`SPACE_CORE_FRAC`); destroyed at `SPACE_CORE_DESTROYED_FRAC` carved (since round 3: on its third blast-sized hit, `R112`/`R112b`) → well off, `core_destroyed`, one reachable battery; the black hole's meal is not a destruction | §H4, §H10, §H11 |
 | `R103` | *"make some asteroids bigger, 0-20% more mass"* | radius × √(1 + m), m ∈ [0, `SPACE_ASTEROID_MASS_MAX`] | §H4 |
 | `R104` | *"edge of the map should be square around the edges"* | a square-cornered rectangular rim `SPACE_RIM_INSET` in, exactly 32 px | §H4 |
 | `R105` | *"the teleports created in the edge of the map when destroyed are way too big"* | a vortex ≈ ¼ size (capture 32, reach 128), and anyone past the rim's outer edge is taken by the nearest vortex | §H9 |
@@ -645,19 +753,39 @@ written into the section it changes; this is the index.
 | `R107` | *"rotate the character to the center of gravity when being pulled towards it so they apear to be standing even if they are on the bottom. when not pulled by gravity they go back to being vertical."* | see below — **drawing only** | §H22 |
 | `R108` | *"drain energy 50% slower"* | the suit's EN: `RADIATION_SHIELD_COST` 1.0 → 0.5 /s; thruster fuel unchanged; radiation deaths 0.25 → 0.12 a player a round | §H7 |
 
+**Round 3 (2026-09-26)**
+
+| ruling | the owner asked | what the game does now | where |
+|---|---|---|---|
+| `R109` | *"can you make jetpacks in space less powerful? it creates too much inertia."* | space thrust × `SPACE_THRUST_SCALE` (0.5); every escape cap derives from `SPACE_THRUST_DOWN` (wells 337.5, vortex 900, hole edge 405 / centre ≈462.9); no drag | §H3, §H10, §H11 |
+| `R109b` | (the same) | the inertia was the top speed: `SPACE_MAX_SPEED` 1350 → 450 (stop from top speed 1646 → 180 px), void grace 45 → 15 | §H3 |
+| `R109c` | (the same) | gentle to accelerate, strong to stop: per axis, a push against that axis's velocity at `SPACE_BRAKE_SCALE` (1.1) until it reaches zero; stop from 450 under 100 px and 0.5 s on every axis; three round trips a tank again | §H3 |
+| `R110` | *"also asteroids should be harder to destroy. i was playing a game, and 2 minutes in, the map was mostly empty. make them larger again, and sturdier so they somehow take less damage. the core should be even stronger so it takes a few hits to destroy the center of gravity."* | base radius 30..80 (grown ≤ 88); 12/32/62 rocks | §H4 |
+| `R111` | (the same) | asteroid rock carves at radius × `ASTEROID_HARDNESS` (0.5), the rim at full; rock left at 2 min 23 → 83 % (Small), 49 → 90 % (Medium) | §H4 |
+| `R112`, `R112b` | (the same) | a core takes `CORE_HITS` (3) hits, the third destroys it; only a blast of radius ≥ `CORE_HIT_MIN_R` (36) is a hit — bullets never; the glow dims per hit | §H4, §H11 |
+| `R99` amended | (the same — the meteors were what emptied the map) | space meteors aim at a random open point, not at a rock | §H12 |
+| `R113`, `R113b` | *"lets also have a couple asteroids be even larger, different darker color (lets say made of iron), and be indestructible."* | 2 iron rocks a map, 1.5–2 × `SPACE_ASTEROID_R_MAX` (Small 99..100), always ≥ 1.125 × the map's largest ordinary rock, share capped per map (0.44 Small, 0.35 others); indestructible, level 5, no core, never eaten, drawn dark | §H4, §H10, §H11 |
+
+**Open for the owner:** the battery economy. Sturdier cores and `R112b` mean bots almost never
+break one: batteries picked fell 4.5 → 0.8 a bot a round (128 seeds: 1.43 → 0.79 from `R112b`
+alone); radiation deaths barely moved (0.16 → 0.17). Nothing was tuned for it.
+
 **`R107` — characters stand on asteroids** (`T22.19`; narrows `R7`, §H3). Visual only:
 
 - **The pull is asked of Rust**, never recomputed in TypeScript: `GameCore::stand_pull_at(x, y,
   move_mod_bits)` runs `attractors::env_at` over the core's live attractors, with `flying`
-  derived by the mirror's own move-mod path (so `R100`'s winged exemption is not copied). Anything
-  that pulls turns the figure — a rock's band, a vortex, the black hole; in open space the pull is
-  exactly zero (`R101`) and the figure eases upright. Local player: at its drawn position with its
+  derived by the mirror's own move-mod path (so `R100`'s winged exemption is not copied).
+  ~~Anything that pulls turns the figure — a rock's band, a vortex, the black hole~~ — **asteroid
+  wells only** since `T22.19B` (no vortices; the hole present but not pulling, so `R91` still mutes
+  the wells in its reach and a figure on a rock there stands upright); in open space the pull is
+  exactly zero (`R101`) and the figure eases upright. The figure pivots at the **feet contact
+  point** (`standTilt-math.ts::feetOffset`), not the box centre. Local player: at its drawn position with its
   own byte; remotes: at their interpolated position with their snapshot byte; the dead draw
   upright. Both render paths (WebGL and Canvas), the match and the sandbox.
 - **Smoothed** (`render/standTilt-math.ts`, drawing only): exponential, the short way round,
   `STAND_TURN_RATE` toward a pull and the slower `STAND_UPRIGHT_RATE` back to upright, so a hop out
   of the band does not spin twice.
-- **What turns**: the figure about the body's centre, feet along the pull, with its boots, wings,
+- **What turns**: the figure about its feet contact point (`T22.19B`; was the body's centre), feet along the pull, with its boots, wings,
   hat, glasses and shield bubble. **The controls stay screen-relative** — nothing in the
   prediction or the input sampler reads a tilt — so **the weapon and the thruster plume ride with
   the body but point in screen space** (the weapon at `aim − tilt` inside the turned container,

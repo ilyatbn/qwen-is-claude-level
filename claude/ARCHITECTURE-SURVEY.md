@@ -94,8 +94,12 @@ different story (see § 1).
   gap > `CARVE_GAP_TIMEOUT_MS` (2000) → `resync_map` (full `map_init`). `mask_checksum` every
   `MASK_CHECKSUM_INTERVAL` 5 s; mismatch → resync. `map_init` (`encode_map_init_at`, magic `0x4D415031`): RLE mask +
   the generator byte after `theme` (T22.14A B3; an unknown byte refused by both decoders, bound `MAP_GENERATOR_MAX` in
-  `constants_json` since T22.14D), carve_seq, spawns, pads, platforms, decorations, objects, asteroids (27 bytes each since T22.18B: x, y, r, level
-  + 4 lump slots; `core_intact` is not on it — `core_destroyed` is; buried slots deliberately omitted). Full layout: `docs/77` §H4.
+  `constants_json` since T22.14D), carve_seq, spawns, pads, platforms, decorations, objects, asteroids (29 bytes each since T22.21, 27 at T22.18B: x, y, r, level,
+  iron, core_hits + 4 lump slots; `core_intact` is not on it — `core_destroyed` is; buried slots deliberately omitted). Full layout: `docs/77` §H4.
+- **Carve publishing (T22.21, T22.22B F1):** a carve that counts as a core hit is sent even if it moved no pixel
+  (the mirror counts hits off the carve stream). Blasts go through `emit_blast`, which publishes every blast carve;
+  the other five sites (toxic drop, bullet, resting flame, core crumble, black hole) share one
+  `World::publish_carve` (`CarveResult::changed()`). The `black_hole` event is pushed before its eating carve.
 - Mid-match joins are refused (§E4); the effect catch-up (T22.08D) is dormant.
 
 ## 3. Prediction and reconciliation
@@ -174,6 +178,11 @@ different story (see § 1).
   (`attractors::well_contact`/`well_reach`) — and exactly zero beyond; open space between rocks has no field
   (measured: 8.3 % of open arena pulled, 99.8 % before). A destroyed core's well is off (`asteroid_attractors`
   filters `core_intact`; the mirror via `set_dead_cores`). Same `env_at` on both sides.
+- **Space thrust (R109, R109c; T22.20, T22.22):** one author, `jetpack::thrust_delta(input, gravity, vel, dt)` —
+  it takes the body's velocity, because in space an axis pushing against that axis's velocity brakes at
+  `SPACE_BRAKE_SCALE` until it reaches zero (`brake_axis`); standard/low never read `vel`. Callers: `apply_thrust`,
+  `space::engaging`, and wasm `GameCore::thrust_at` (the plume; the velocity after the tick). Server and mirror call
+  the same function (a side-by-side test asserts bit-equality).
 
 ## 4. Determinism
 - `docs/01-architecture.md` "Determinism, and how far it needs to go": cross-platform float determinism **not required,
@@ -184,7 +193,7 @@ different story (see § 1).
 - **No test compares wasm vs native output**; game-wasm tests run natively. `golden.rs` is native only.
 - game-core: `f32` 1820 lines, `f64` 61; 50 transcendental calls (map gen, `effects/flare.rs` 6, `world/mod.rs` 5);
   no `libm` dependency (wasm32 gets Rust's libm port, native gets glibc — they can differ in the last bit).
-- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 31 (T22.18B; 30 T22.18, 29 T22.16, 28 T22.15, 27 T22.17, 26 T22.14C, 19 T22.10G). The
+- Replays (`replay.rs`, magic "RPL1", `HEADER_BYTES` 46): seed + ordered `ReplayCommand`s; `REPLAY_VERSION` 37 (T22.22C; 36 T22.22B, 35 T22.22, 34 T22.21, 33 R109b, 32 T22.20, 31 T22.18B, 30 T22.18, 29 T22.16, 28 T22.15, 27 T22.17, 26 T22.14C, 19 T22.10G). The
   header does not record the weather mode.
 
 ## 5. Authority and exposure

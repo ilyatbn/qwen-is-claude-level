@@ -73,3 +73,57 @@ Order: T22.17 first (the map shape everything else reads), then T22.15, T22.16, 
 review; one batch gate at the end; `docs/77` gains a §H22 for this round.
 **Done 2026-09-25:** `docs/77` §H22 indexes R101–R108 (R107 written there); each ruling is also in the section it
 changes (§H4, §H7, §H9, §H10, §H11, §H19, §H20). `DOCS-77-OWED.md` points 28–38 are marked landed.
+
+# Round 3 (2026-09-26): thrusters and sturdier asteroids
+
+Asked by the owner, verbatim (three messages):
+
+> can you make jetpacks in space less powerful? it creates too much inertia.
+
+> also asteroids should be harder to destroy. i was playing a game, and 2 minutes in, the map was mostly empty. make
+> them larger again, and sturdier so they somehow take less damage. the core should be even stronger so it takes a few
+> hits to destroy the center of gravity.
+
+> lets also have a couple asteroids be even larger, different darker color (lets say made of iron), and be
+> indestructible.
+
+## Coordinator rulings (2026-09-26; each reversible by the named constant — full text in the task files)
+
+- **R109 — gentler space thrust** (`T22.20`): `SPACE_THRUST_SCALE` 0.5 on every space thrust direction; no drag; every
+  escape cap derives from `SPACE_THRUST_DOWN` (wells 337.5, vortex 900, hole edge 405 / centre ≈462.9).
+- **R109b — the inertia is the top speed** (`T22.20`, built by T22.21's builder): `SPACE_MAX_SPEED` 1350 → 450;
+  stopping from top speed 1646 px / 2.47 s → 180 px / 0.83 s.
+- **R109c — gentle to accelerate, strong to stop** (`T22.22`; `SPACE_BRAKE_SCALE` 1.0 → 1.1 by `T22.22B` F6): per
+  axis, a push against that axis's velocity brakes at the brake scale until zero; stop from 450 under 100 px and 0.5 s
+  on every axis (up, the weakest, 98 px / 0.47 s).
+- **R110 — bigger asteroids again** (`T22.21`): base radius 30..80 (grown ≤ 88), counts 12/32/62.
+- **R111 — sturdier rock** (`T22.21`): asteroid rock carves at radius × `ASTEROID_HARDNESS` 0.5; the rim does not.
+- **R112 — a tough core** (`T22.21`): `CORE_HITS` 3, the third destroys it; the glow dims per hit.
+- **R112b — only a blast hits a core** (`T22.22B`): a hit needs an unhardened radius ≥ `CORE_HIT_MIN_R` (36, the
+  smallest explosive blast); bullets, pellets, flames, fragments, melee and lava never count.
+- **R99 amended** (`T22.21`): space meteors aim at a random open point, not at a rock (they were emptying the map).
+- **R113 — iron asteroids** (`T22.21`; Small's size and the share cap by `T22.22`, `T22.22B` F4): 2 a map,
+  1.5–2 × the largest base radius, indestructible, level 5, no core, never eaten by the hole, drawn dark.
+- **R113b — iron stays larger** (`T22.22C`): every iron ≥ `SPACE_IRON_MIN_OVER_ORDINARY` 1.125 × its map's largest
+  ordinary rock; Small's band 99..100; share target 0.35 everywhere, per-map bound 0.44 on Small, 0.35 elsewhere.
+
+**Measured, the owner's metric** (`asteroid_rock_report`, 8 seeds, ordinary rock left 2 minutes into a bots round):
+Small 23.4 % → 83.1 %, Medium 49.3 % → 90.2 %; iron loses nothing.
+
+## Pending owner decision — the battery economy
+
+Sturdier cores, then R112b (bots mostly fire bullets, which no longer count), mean bots almost never break a core, so
+almost no batteries appear: **batteries picked fell 4.5 → 0.8 a bot a round** since T22.21 (R112b alone: 1.43 → 0.79
+over 128 seeds). Radiation deaths barely moved: **~0.17 a bot a round** (0.16 with R112b off). A person with a bazooka
+still breaks a core in three shots. Nothing was tuned for this; the owner decides whether batteries need another
+source (table: `T22.22B-what-the-round-3-review-found.md`, "The battery / radiation economy").
+
+## Tasks
+- T22.20 — gentler space thrusters (R109, R109b) — `T22.20-gentler-space-thrusters.md`
+- T22.21 — sturdier, bigger asteroids with a tough core, and iron (R110–R113, R99 amended) — `T22.21-sturdier-asteroids.md`
+- T22.22 — a strong brake in space, less iron on Small maps (R109c) — `T22.22-brake-and-small-map-iron.md`
+- T22.22B — what the round-3 review found (R112b, brake 1.1, per-map iron cap, rock floors) — `T22.22B-what-the-round-3-review-found.md`
+- T22.22C — iron stays larger (R113b) — `T22.22C-iron-stays-larger.md`
+
+**Written into `docs/77` 2026-09-26:** §H22's round-3 table indexes R109–R113b; each ruling is also in the section it
+changes (§H3, §H4, §H10, §H11, §H12, §H18, §H19, §H20). `DOCS-77-OWED.md` points 39–51 are marked landed.

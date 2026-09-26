@@ -209,3 +209,36 @@ index, with R107). Each names its source; §-numbers are `docs/77-amendments-v9.
 38. *(landed: §H11, §H17)* **§H11 (T22.18B F4):** while the hole is here a faint ring (`BLACK_HOLE_RING_COLOR` at 0.35) is drawn at
     `BLACK_HOLE_REACH` on both render paths, and the minimap marker carries a circle of the reach's radius — the edge of
     the pull and of R91's muted wells; the death rule is still the horizon alone.
+
+## Owner round 3 — thrusters and sturdier asteroids (T22.20–T22.22C; collected from each task's "docs/77 lines")
+**Landed 2026-09-26** in `docs/77-amendments-v9.md` (§H22's round-3 table indexes them). Each names its source.
+39. *(landed: §H3, §H20)* **R109 (T22.20):** `SPACE_THRUST_SCALE` 0.5 on all space thrust, one author
+    (`jetpack::thrust_delta`); `SPACE_THRUST_DOWN` (450) is the weakest thrust every escape guarantee is against.
+40. *(landed: §H10, §H11, §H18, §H20)* **R109 caps derive from `SPACE_THRUST_DOWN`:** `SPACE_WELL_ACCEL_MAX` 675 →
+    337.5, `VORTEX_ACCEL_MAX` 1800 → 900, `BLACK_HOLE_EDGE_PULL` 810 → 405, `BLACK_HOLE_ACCEL_MAX` ≈925.7 → ≈462.9,
+    `BOT_SPACE_BRAKE` 225 → 112.5.
+41. *(landed: §H3, §H4, §H20)* **R109b (T22.21's builder):** `SPACE_MAX_SPEED` 1350 → 450 (basis ≈1.7 × the 260
+    cruise, over the 367.7 diagonal burn); `SPACE_VOID_GRACE` 45 → 15.
+42. *(landed: §H3, §H20)* **R109c (T22.22, T22.22B F6):** per-axis brake to zero at `SPACE_BRAKE_SCALE` 1.1 × the
+    unscaled thrust; escape caps stay on the unboosted thrust; stop from 450 < 100 px / < 0.5 s on every axis (up 98 px
+    / 0.47 s); three jump-and-return round trips a tank (T22.20 had two).
+43. *(landed: §H4, §H20)* **R110 (T22.21):** `SPACE_ASTEROID_R_MIN/MAX` 24/64 → 30/80, grown ≤ 88; counts 14/34/64 →
+    12/32/62; every candidate draws its level jitter.
+44. *(landed: §H4, §H20)* **R111 (T22.21):** asteroid rock (not the rim) carves at radius × `ASTEROID_HARDNESS` 0.5,
+    within `ROCK_GUARD_MARGIN` of an ordinary rock's disc; the owner's metric floored (`ROCK_LEFT_AT_2MIN_MIN`).
+45. *(landed: §H4, §H11, §H20)* **R112 / R112b (T22.21, T22.22B):** `CORE_HITS` 3; a hit = unhardened radius ≥
+    `CORE_HIT_MIN_R` (36) and the hardened disc overlaps the core (`Map::strike_cores`); locked core pixels guarded;
+    `SPACE_CORE_DESTROYED_FRAC` retired; `core_hits` hashed; a zero-pixel hit is still published (`emit_blast`,
+    `World::publish_carve`); the glow dims per hit.
+46. *(landed: §H4, §H10, §H11, §H20)* **R113 / R113b (T22.21, T22.22, T22.22B F4, T22.22C):** 2 iron per map,
+    1.5–2 × base max (Small 99..100), ≥ 1.125 × the map's largest ordinary rock, share target 0.35 with per-map bound
+    0.44 Small / 0.35 others; indestructible, level 5, no core, never eaten; drawn dark on both paths and the minimap.
+47. *(landed: §H4)* **map_init asteroid record 27 → 29 bytes** (`u8 iron, u8 core_hits` after `level`);
+    `set_asteroids` keeps the higher hit count, `load_mask` zeroes them.
+48. *(landed: §H12)* **R99 amended (T22.21):** space meteors aim at a random open point inside the rim.
+49. *(landed: §H11)* **The black hole (T22.21):** never picks iron; its `black_hole` event precedes its eating carve;
+    `BLACK_HOLE_HORIZON_R` is the literal 64 (was `SPACE_ASTEROID_R_MAX`).
+50. *(landed: §H19)* **`REPLAY_VERSION` 32 (T22.20), 33 (R109b), 34 (T22.21), 35 (T22.22), 36 (T22.22B), 37
+    (T22.22C).**
+51. *(landed: §H22)* **Also corrected while there:** §H22's R107 text still said any pull turns the figure; since
+    T22.19B it is asteroid wells only, pivoting at the feet contact point.
