@@ -7347,3 +7347,5 @@ vitest bakeExtents/snapOffsets (plants: no zoom, no slack → red). look-sky, lo
 Full suite 73/75: beams-shader control 1.3, explosion-shader linger-off 1.4 — both compare HQ-off (low tier) vs HQ-on (full) frames;
 tier-vs-tier sky differs mean 1.78 unbaked / 1.84 baked, so ≤1 was a coin flip. Controls now read Phaser's layer alone
 (`pixels.mjs::phaserPatch`, black+white backdrops): 0.0 ×3 each; half-radius plant still red (0/12).
+Suite after the control fix: **74/75** — world-canvas timed out on its match wait `__world.frames() > 2` (30 s); 4/4 green alone
+today. Suspect (unmeasured): the redraw skip — a still match camera draws no frames, so the wait can starve. Reported, not parked.
