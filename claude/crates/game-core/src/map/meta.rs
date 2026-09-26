@@ -76,6 +76,17 @@ pub struct Asteroid {
     /// event carries it). The mirror sets it per replayed seq
     /// (`GameCore::apply_input`), so a seq stepped before the destruction still pulls.
     pub core_intact: bool,
+    /// **R113 (T22.21): an iron asteroid** — indestructible (every carve refuses its
+    /// pixels, `map::carve`), level 5, no core, never eaten by the black hole, drawn
+    /// darker. From the generator; on the wire (`map_init`), in `World::state_hash`
+    /// and in the golden digest (it is the rock's substance, as `level` is its pull).
+    pub iron: bool,
+    /// **R112 (T22.21): carves that have hit this rock's core**, up to `CORE_HITS`
+    /// — counted by the carve itself (`Map::carve_circle`/`carve_capsule`), so the
+    /// mirror counts the same hits from the same carve stream. Below `CORE_HITS` the
+    /// core's pixels are uncarvable; at it the core is destroyed. On `map_init` (a
+    /// resync lands mid-round) and in `World::state_hash`; always 0 in the golden.
+    pub core_hits: u8,
     /// **The lumps stamped on the round body** (T22.18B F1), exactly as the generator
     /// rounded them — `map::gen::space::stamp_asteroid` stamps *from* this list, so
     /// the list and the pixels cannot disagree. A slot of radius 0 is empty. With the
@@ -110,8 +121,21 @@ impl Asteroid {
             r,
             level,
             core_intact: true,
+            iron: false,
+            core_hits: 0,
             lumps: [Lump::default(); ASTEROID_LUMP_SLOTS],
         }
+    }
+
+    /// **The core's radius**, px (T22.16, R102): `round(SPACE_CORE_FRAC · r)` — 9 on
+    /// the smallest rock, 26 on the largest since R110. **0 on an iron asteroid**
+    /// (R113: no core). Here rather than in `world::cores` because the carve's guard
+    /// (`map::carve`) reads it, and `map` does not reach up into `world`.
+    pub fn core_r(&self) -> i32 {
+        if self.iron {
+            return 0;
+        }
+        (crate::constants::SPACE_CORE_FRAC * self.r as f32).round() as i32
     }
 
     /// The round body's radius, px — the disc the generator stamps first,

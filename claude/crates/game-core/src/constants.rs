@@ -628,8 +628,47 @@ pub const SPACE_RIM_CLEARANCE: f32 = 64.0;
 /// smallest rock's core disc is pi*18^2 = 1018 px, 2.5x the 400 px speck
 /// threshold that `components::cleanup` — a pass the space pipeline skips —
 /// would otherwise have enforced.
-pub const SPACE_ASTEROID_R_MIN: i32 = 24;
-pub const SPACE_ASTEROID_R_MAX: i32 = 64;
+///
+/// **R110 (T22.21): about a quarter bigger again**, 24..64 → 30..80 (the owner:
+/// *"make them larger again, and sturdier"*); the R103 mass draw still grows each
+/// rock on top, to at most `grown_radius(80, 0.2)` = 88. The counts in
+/// `MapScale::params` dropped with it so the open arena stays at least as
+/// field-free as it was (T22.21's file has the measurement).
+pub const SPACE_ASTEROID_R_MIN: i32 = 30;
+pub const SPACE_ASTEROID_R_MAX: i32 = 80;
+
+/// **R113 (T22.21): iron asteroids** — the owner: *"lets also have a couple
+/// asteroids be even larger, different darker color (lets say made of iron), and
+/// be indestructible."* This many on every space map, placed **after** the
+/// ordinary rocks on their own sub-streams (`"iron_asteroids"`, `"iron_shape"`),
+/// so the ordinary rocks do not move when this count changes. Indestructible
+/// through the carve's one uncarvable-ground predicate (`map::carve`), level
+/// [`SPACE_LEVEL_MAX`], no core, never eaten by the black hole.
+pub const SPACE_IRON_COUNT: u32 = 2;
+
+/// An iron asteroid's bounding radius, as a multiple of the largest ordinary
+/// *base* radius [`SPACE_ASTEROID_R_MAX`] — drawn uniformly on
+/// `[SPACE_IRON_R_MIN_FRAC, SPACE_IRON_R_MAX_FRAC]` (the ruling: 1.5–2×), no
+/// mass draw on top: 120..160 px.
+pub const SPACE_IRON_R_MIN_FRAC: f32 = 1.5;
+pub const SPACE_IRON_R_MAX_FRAC: f32 = 2.0;
+
+/// **R111 (T22.21): asteroid rock is harder.** A carve in space removes the pixels of
+/// an ordinary asteroid only within its radius × this — rock, rim and anything else
+/// outside a rock's bounding disc still go at the full radius (the rim is not
+/// hardened: a player's rocket must still breach it). Per pixel, in the carve's one
+/// rasteriser (`Map::circle`), so the server and the mirror agree by construction.
+/// A destroyed core's disc is not hardened: what is left of it crumbles whole.
+pub const ASTEROID_HARDNESS: f32 = 0.5;
+
+/// **R112 (T22.21): the core takes this many hits** before it can be carved — a hit
+/// being one carve call whose hardened disc overlaps the core's disc (a capsule is
+/// one call, however many discs it stamps). Until then every core pixel is
+/// uncarvable; the hit that reaches this count unlocks the core, and
+/// `World::step_cores` destroys it on the same step (well off, crumble, battery).
+/// Counted inside `Map::carve_circle`/`carve_capsule`, so the mirror counts the
+/// same hits from the same carve stream; on `map_init` for a resync.
+pub const CORE_HITS: u8 = 3;
 
 /// The most extra **mass** an asteroid draws, as a fraction (T22.17,
 /// `M22-OWNER-ROUND-2` R103: *"make some asteroids bigger, 0-20% more mass"*).
@@ -670,9 +709,9 @@ pub const SPACE_ASTEROID_CORE_FRAC: f32 = 0.75;
 
 /// **An asteroid's core** (T22.16, `M22-OWNER-ROUND-2` R102 — the owner: *"make like
 /// a round core at the center"*): a disc of this fraction of the bounding radius,
-/// at the rock's centre — 7 px on the smallest rock, 21 on the largest (radius
+/// at the rock's centre — 9 px on the smallest rock, 26 on the largest since R110 (radius
 /// `round(SPACE_CORE_FRAC · r)`, `world::cores::core_radius`). Drawn distinctly;
-/// destructible like rock; destroyed at [`SPACE_CORE_DESTROYED_FRAC`], and then the
+/// uncarvable until its [`CORE_HITS`]-th hit destroys it (R112), and then the
 /// rock's well is off for the round and one battery pack floats where it was.
 ///
 /// **Not [`SPACE_ASTEROID_CORE_FRAC`]**, the generator's round *body* (0.75 r), which
@@ -680,27 +719,14 @@ pub const SPACE_ASTEROID_CORE_FRAC: f32 = 0.75;
 /// (`attractors::well_contact`, refinement B): a core that large would be most of the
 /// rock, and the threshold refinement A needs would fall to ~5 % of it — one pistol
 /// crater anywhere in the body. Small keeps the core *at the centre*: you dig to it.
-/// *Reverse it by:* this constant (and re-derive the threshold below).
+/// *Reverse it by:* this constant.
 pub const SPACE_CORE_FRAC: f32 = 0.3;
 
-/// **When a core counts as destroyed**: at least this fraction of its disc's pixels
-/// are air (T22.16, R102 "≥ a named fraction carved").
-///
-/// **Basis — refinement A, and the arithmetic is the whole reason for the number.**
-/// A rock's well is full strength everywhere inside its reach (R101's step), so a
-/// body in a hollowed-out centre was swung through it and back with nothing to damp
-/// it (±20 px at ~54 px/s for seconds, the review of T22.15). A body can only cross
-/// the centre if its box — `PLAYER_W` × `PLAYER_H`, 16 × 28, all air — can hold the
-/// centre pixel, and such a box covers at least the core pixels in a 16 × 28 box with
-/// the centre at its corner: a quarter of the disc while the core radius `c` ≤
-/// `PLAYER_W`, and at the largest core (c = 21) 310 of 1373 px. The minimum over every
-/// rock radius 24..70 and every pixel placement is **22.58 %**
-/// (`cores::tests::a_body_that_can_hold_the_centre_has_already_destroyed_the_core`
-/// brute-forces it). 0.2 is under that, so **a cavity a body fits in can never hold
-/// the centre while the well is on** — by the time it could, the core is gone.
-/// *Reverse it by:* this constant (the test above fails if it is raised past the
-/// minimum).
-pub const SPACE_CORE_DESTROYED_FRAC: f32 = 0.2;
+// *`SPACE_CORE_DESTROYED_FRAC` (0.2, T22.16) is retired by R112 (T22.21):* a core
+// is destroyed on its `CORE_HITS`-th hit, not when a fraction of it is air. Its basis
+// was refinement A — no body-sized cavity can hold the centre while the well is on —
+// and R112 buys that outright: the core's pixels refuse every carve until the hit
+// that destroys it, so the centre is rock for as long as the well pulls.
 
 /// Lumps stamped on an asteroid's core, and their radii as a fraction of the
 /// bounding radius. Enough to break the silhouette; not so many that the union
@@ -736,10 +762,10 @@ pub const SPACE_SPAWN_GRID: i32 = 64;
 ///
 /// **The basis is a measured rate, not a round number.** Over 60 seeds x 3
 /// scales, `space::tests::the_open_space_hit_rate` reports a single draw
-/// succeeding **0.692 / 0.748 / 0.772** of the time on Small / Medium / Large
-/// (T22.17's square rim, R104; the ellipse's bounding box gave 0.534 / 0.569 /
-/// 0.592). At the worst of those, 24 attempts all miss with probability
-/// **5.2e-13** —
+/// succeeding **0.566 / 0.673 / 0.711** of the time on Small / Medium / Large
+/// (T22.21's bigger rocks and iron, R110/R113; 0.692 / 0.748 / 0.772 on T22.17's
+/// square rim, and the ellipse's bounding box gave 0.534 / 0.569 / 0.592). At the
+/// worst of those, 24 attempts all miss with probability **2.0e-9** —
 /// against roughly one crate a minute, one item batch every
 /// `ITEM_SPAWN_INTERVAL`, and a round measured in minutes.
 ///
@@ -976,7 +1002,13 @@ pub const BLACK_HOLE_TELEGRAPH: f32 = 2.0;
 /// (the owner asked for a farther pull, not a bigger kill), the ring drawn at the
 /// horizon is the rule and the crater is only terrain, and a body touching the grown
 /// rock (centre ≥ 70 + `PLAYER_H / 2`) was outside the ring either way.
-pub const BLACK_HOLE_HORIZON_R: f32 = SPACE_ASTEROID_R_MAX as f32;
+///
+/// *R110 (T22.21): now the literal 64.* It was spelled `SPACE_ASTEROID_R_MAX`, which
+/// R110 grew to 80 — that would have moved the kill ring and, through
+/// `BLACK_HOLE_REACH`, the pull, which the owner did not ask about. The basis above
+/// (the pre-R110 largest base radius, and R106's "the horizon and the kill stay")
+/// is unchanged; the eaten rock's crater can now reach further past the ring.
+pub const BLACK_HOLE_HORIZON_R: f32 = 64.0;
 
 /// The pull at the horizon as a share of the **weakest** thrust (R90). Under 1, so
 /// a player one pixel outside the horizon holding the thrust that points away
@@ -3626,6 +3658,15 @@ pub struct ScaleParams {
     /// 0.549 / 0.623 / 0.662) and the rocks up to 20 % heavier, and they now cover
     /// **6.5 / 6.3 / 6.3 %** of it (p50, 999 seeds, `density_and_gap_report`) —
     /// sparser, with every map still seating its full count first try.
+    ///
+    /// **R110 (T22.21): 14 / 34 / 64 → 12 / 32 / 62**, with the rocks a quarter
+    /// bigger and two iron rocks on top. The ruling let the count drop so the open
+    /// arena stays at least as field-free as it was; measured (the share
+    /// `attractors::tests::beyond_the_band_the_pull_is_exactly_zero_on_every_seed`
+    /// prints, 9 seeds a scale) before → after: Small 0.958 → 0.958, Medium 0.964 →
+    /// 0.966, Large 0.966 → 0.967 — and one more rock on any scale takes it under.
+    /// A well reaches only one band past its rock (R101), so bigger rocks cost the
+    /// field-free share little and the count barely had to move.
     pub asteroid_count: u32,
     /// Destructible scenery stamped into the terrain at pass 6b (§D5).
     ///
@@ -3691,7 +3732,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 1,
                 object_count: 9,
-                asteroid_count: 14,
+                asteroid_count: 12,
             },
             MapScale::Medium => ScaleParams {
                 width: MAP_MEDIUM_W,
@@ -3710,7 +3751,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 1,
                 object_count: 28,
-                asteroid_count: 34,
+                asteroid_count: 32,
             },
             MapScale::Large => ScaleParams {
                 width: MAP_LARGE_W,
@@ -3729,7 +3770,7 @@ impl MapScale {
                 cave_count: 2,
                 arch_count: 2,
                 object_count: 36,
-                asteroid_count: 64,
+                asteroid_count: 62,
             },
         }
     }

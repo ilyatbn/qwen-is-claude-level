@@ -374,6 +374,11 @@ impl GameCore {
         };
         let coarse = CoarseGrid::build(&mask);
         let mut meta = self.map.meta.clone();
+        // T22.21 (R112): a new mask is a new count — `set_asteroids` installs this
+        // map's from `map_init` next, and keeps the higher of the two.
+        for a in meta.asteroids.iter_mut() {
+            a.core_hits = 0;
+        }
         // **Re-extracted, not cleared** (T19.24). This was `.clear()`, and
         // `LavaBurst::new` reads `map.meta.surface_points` and *nothing else* to
         // choose where the ground opens — so a networked client derived **zero
@@ -563,6 +568,15 @@ impl GameCore {
     /// `lumps` (T22.18B): `[dx, dy, r]` per slot, `ASTEROID_LUMP_SLOTS` slots a rock, in
     /// the rocks' order — the outline the well's band follows. Slots it does not cover
     /// are empty (a round rock).
+    ///
+    /// `irons` and `hits` (T22.21, R113/R112): each rock's substance and its core's
+    /// hits as `map_init` had them (missing entries: ordinary, 0). **A rock already
+    /// in the list keeps the higher of its own count and the given one** — hits only
+    /// rise within a round, and `WorldMirror.pushBlackHole` re-installs the list it
+    /// decoded from the last `map_init` when the hole eats a rock, whose counts are
+    /// older than the ones this core's carves have since reached. [`GameCore::load_mask`]
+    /// zeroes the counts first, so a new map starts from what its `map_init` says.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_asteroids(
         &mut self,
         xs: &[i32],
@@ -570,12 +584,21 @@ impl GameCore {
         rs: &[i32],
         levels: &[u8],
         lumps: &[i32],
+        irons: &[u8],
+        hits: &[u8],
     ) {
         use game_core::map::meta::{Asteroid, Lump, ASTEROID_LUMP_SLOTS};
         let n = xs.len().min(ys.len()).min(rs.len()).min(levels.len());
+        let before = std::mem::take(&mut self.map.meta.asteroids);
         self.map.meta.asteroids = (0..n)
             .map(|i| {
                 let mut a = Asteroid::round(xs[i], ys[i], rs[i], levels[i]);
+                a.iron = irons.get(i).is_some_and(|&v| v != 0);
+                let held = before
+                    .iter()
+                    .find(|b| b.x == a.x && b.y == a.y && b.r == a.r)
+                    .map_or(0, |b| b.core_hits);
+                a.core_hits = hits.get(i).copied().unwrap_or(0).max(held);
                 for (j, l) in a.lumps.iter_mut().enumerate() {
                     let q = (i * ASTEROID_LUMP_SLOTS + j) * 3;
                     if let Some(v) = lumps.get(q..q + 3) {
@@ -624,17 +647,42 @@ impl GameCore {
         }
     }
 
-    /// T22.16 (R102): every asteroid's **core disc**, as `[x, y, radius, …]` in the
-    /// map's order — `world::cores::core_radius`, so the disc the terrain bake paints
-    /// in the core's colour is the pixel set the server judges destroyed. All of them,
-    /// intact or not: a destroyed core has crumbled (carved), so there is no rock left
-    /// under its disc to paint, and the bake punches the colour to the live mask.
+    /// T22.16 (R102): every ordinary asteroid's **core disc and its hits**, as
+    /// `[x, y, radius, hits, …]` in the map's order — `world::cores::core_radius`, so the
+    /// disc the terrain bake paints in the core's colour is the pixel set the carve
+    /// guards and the crumble clears; `hits` (T22.21, R112) is what the bake dims the
+    /// glow by. All of them, intact or not: a destroyed core has crumbled (carved), so
+    /// there is no rock left under its disc to paint, and the bake punches the colour
+    /// to the live mask. **Iron rocks are not in it** (R113: no core) —
+    /// [`GameCore::iron_discs`] has them.
     pub fn core_discs(&self) -> Vec<i32> {
         self.map
             .meta
             .asteroids
             .iter()
-            .flat_map(|a| [a.x, a.y, game_core::world::cores::core_radius(a)])
+            .filter(|a| !a.iron)
+            .flat_map(|a| {
+                [
+                    a.x,
+                    a.y,
+                    game_core::world::cores::core_radius(a),
+                    i32::from(a.core_hits),
+                ]
+            })
+            .collect()
+    }
+
+    /// T22.21 (R113): every **iron** asteroid, as `[x, y, radius, …]` — the bounding
+    /// radius plus the carve guard's margin, so a disc of it covers every pixel the
+    /// rock stamped and nothing else (rocks are a lane apart). The terrain bake and the
+    /// minimap colour what is solid inside it in the iron palette.
+    pub fn iron_discs(&self) -> Vec<i32> {
+        self.map
+            .meta
+            .asteroids
+            .iter()
+            .filter(|a| a.iron)
+            .flat_map(|a| [a.x, a.y, a.r + game_core::map::carve::ROCK_GUARD_MARGIN])
             .collect()
     }
 
@@ -2254,6 +2302,8 @@ pub fn constants_json() -> String {
         // T22.18B: the lump slots each asteroid carries on `map_init` —
         // `codec.test.ts` pins `codec.ts::ASTEROID_LUMP_SLOTS` to it.
         ASTEROID_LUMP_SLOTS => game_core::map::meta::ASTEROID_LUMP_SLOTS,
+        // T22.21 (R112): the bake dims a core's glow by its hits over this.
+        CORE_HITS => c::CORE_HITS,
         SNAPSHOT_HEADER_BYTES => c::SNAPSHOT_HEADER_BYTES,
         SNAPSHOT_FOOTER_BYTES => c::SNAPSHOT_FOOTER_BYTES,
         // T22.10H: position/velocity quantum — `codec.ts::decodeSnapshot` multiplies
@@ -4203,7 +4253,9 @@ mod tests {
             .iter()
             .flat_map(|a| a.lumps.iter().flat_map(|l| [l.dx, l.dy, l.r]))
             .collect();
-        core.set_asteroids(&xs, &ys, &rs, &levels, &lumps);
+        let irons: Vec<u8> = rocks.iter().map(|a| u8::from(a.iron)).collect();
+        let hits: Vec<u8> = rocks.iter().map(|a| a.core_hits).collect();
+        core.set_asteroids(&xs, &ys, &rs, &levels, &lumps, &irons, &hits);
     }
 
     /// A space `World`, and the `GameCore` a networked client holds after
@@ -4263,6 +4315,99 @@ mod tests {
             install_asteroids(&mut core, &parts.asteroids);
         }
         (w, core)
+    }
+
+    /// **T22.21: the mirror carves asteroids as the server does — hard rock (R111),
+    /// iron (R113), the locked core and its hits (R112) — and a resync mid-count lands
+    /// on the server's count.** Server and mirror take the same carves, the mirror
+    /// through `GameCore::carve` (what `worldMirror.applyCarve` calls); after each the
+    /// masks are bit-equal and the hit counts equal. Two hits in, a second client joins
+    /// by `map_init` (the resync path); the third hit then destroys the core on all
+    /// three — the core's pixels go on the server and on both mirrors together.
+    ///
+    /// The control is the client this build would be without the wire's two bytes:
+    /// a mirror handed the rocks with `core_hits` 0 after two hits leaves the core
+    /// standing on the third carve while the server's goes.
+    #[test]
+    fn the_mirror_carves_asteroids_as_the_server_does_and_a_resync_keeps_the_count() {
+        use game_core::constants::CORE_HITS;
+        let (mut w, mut core) = space_world_and_mirror(true);
+        let rock = *w
+            .map
+            .meta
+            .asteroids
+            .iter()
+            .filter(|a| !a.iron)
+            .max_by_key(|a| a.r)
+            .expect("rocks");
+        let iron = *w.map.meta.asteroids.iter().find(|a| a.iron).expect("iron");
+        let c = rock.core_r();
+        let r = 2 * (c + 3);
+        let core_solid =
+            |m: &game_core::map::Map| game_core::world::cores::core_pixels(&m.mask, &rock).0;
+        let (_, core_total) = game_core::world::cores::core_pixels(&w.map.mask, &rock);
+        let hits = |m: &game_core::map::Map| {
+            m.meta
+                .asteroids
+                .iter()
+                .find(|a| a.x == rock.x && a.y == rock.y)
+                .map(|a| a.core_hits)
+        };
+        // Iron and hard rock first: an iron-centred crater and one on the rock's rim.
+        for (x, y, rr) in [(iron.x, iron.y, 40), (rock.x + rock.r, rock.y, 20)] {
+            let _ = w.map.carve_circle(x, y, rr);
+            core.carve(x, y, rr);
+            assert_eq!(core.map.mask, w.map.mask, "the masks parted at ({x}, {y})");
+        }
+        let mut resynced = None;
+        for k in 1..=CORE_HITS {
+            if k == CORE_HITS {
+                // A client that joins now, through the real wire.
+                let bytes = game_server::codec::encode_map_init(&w.map);
+                let parts = game_server::codec::decode_map_init_parts(&bytes).expect("bytes");
+                let mut late = GameCore::new();
+                assert!(late.set_map_generator(parts.generator.to_u8()));
+                assert!(late.load_mask(
+                    parts.mask.w,
+                    parts.mask.h,
+                    &game_core::map::rle::encode(&parts.mask)
+                ));
+                install_asteroids(&mut late, &parts.asteroids);
+                let mut forgot = parts.asteroids.clone();
+                for a in &mut forgot {
+                    a.core_hits = 0;
+                }
+                let mut blank = GameCore::new();
+                assert!(blank.set_map_generator(parts.generator.to_u8()));
+                assert!(blank.load_mask(
+                    parts.mask.w,
+                    parts.mask.h,
+                    &game_core::map::rle::encode(&parts.mask)
+                ));
+                install_asteroids(&mut blank, &forgot);
+                resynced = Some((late, blank));
+            }
+            let _ = w.map.carve_circle(rock.x, rock.y, r);
+            core.carve(rock.x, rock.y, r);
+            assert_eq!(core.map.mask, w.map.mask, "hit {k}: the masks parted");
+            assert_eq!(hits(&core.map), hits(&w.map), "hit {k}: the counts parted");
+            assert_eq!(hits(&w.map), Some(k));
+            let expect = if k < CORE_HITS { core_total } else { 0 };
+            assert_eq!(core_solid(&w.map), expect, "hit {k}: the server's core");
+        }
+        let (mut late, mut blank) = resynced.expect("resynced");
+        late.carve(rock.x, rock.y, r);
+        blank.carve(rock.x, rock.y, r);
+        assert_eq!(
+            late.map.mask, w.map.mask,
+            "the resynced mirror parted on the last hit"
+        );
+        assert_eq!(core_solid(&late.map), 0);
+        assert_eq!(
+            core_solid(&blank.map),
+            core_total,
+            "control: a mirror told 0 hits kept the core the server destroyed"
+        );
     }
 
     /// **T22.19 (R107): the pull a figure stands against.** Over a rock's top it points
@@ -5149,8 +5294,11 @@ mod tests {
             let (mut seq, mut destroyed) = (1000u32, None::<u32>);
             for i in 0.. {
                 if i == IDLE {
-                    let _ = w.map.carve_circle(rock.x, rock.y, c);
-                    core.carve(rock.x, rock.y, c);
+                    // T22.21 (R112): the core goes on its `CORE_HITS`-th hit.
+                    for _ in 0..game_core::constants::CORE_HITS {
+                        let _ = w.map.carve_circle(rock.x, rock.y, c);
+                        core.carve(rock.x, rock.y, c);
+                    }
                 }
                 seq += 1;
                 w.queue_input(1, Input::new(seq, 0, 0));
@@ -5668,7 +5816,7 @@ mod tests {
 
         // Take the rocks away, which is the check's control frame.
         let mut cleared = core;
-        cleared.set_asteroids(&[], &[], &[], &[], &[]);
+        cleared.set_asteroids(&[], &[], &[], &[], &[], &[], &[]);
         let none = cleared.field_accel_at(start.x, start.y);
         assert_eq!((none[0], none[1]), (0.0, 0.0));
 

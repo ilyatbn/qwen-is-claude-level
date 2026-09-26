@@ -532,6 +532,8 @@ mod tests {
             r,
             level,
             core_intact: true,
+            iron: false,
+            core_hits: 0,
             lumps: Default::default(),
         }
     }
@@ -1746,6 +1748,7 @@ mod tests {
             "inside a band only {near_pulled} of {near} points were pulled — the field is off"
         );
         let share = far as f32 / (far + near) as f32;
+        println!("field-free share {share:.3} ({far} of {})", far + near);
         assert!(
             share > OPEN_ARENA_FIELD_FREE_MIN,
             "only {:.1} % of the open arena is field-free ({far} of {})",
@@ -2301,9 +2304,15 @@ mod tests {
                 .meta
                 .asteroids
                 .iter()
+                .filter(|a| !a.iron)
                 .max_by_key(|a| a.r)
                 .expect("rocks");
-            let _ = w.map.carve_circle(a.x, a.y, HOLLOW_R);
+            // T22.21: the core refuses carves until its `CORE_HITS`-th hit (R112), and
+            // rock bites at half the radius (R111) — so `CORE_HITS` carves of twice
+            // the hollow's radius dig the hollow `HOLLOW_R` wide, as one used to.
+            for _ in 0..crate::constants::CORE_HITS {
+                let _ = w.map.carve_circle(a.x, a.y, 2 * HOLLOW_R);
+            }
             // **The pass `World::step` runs after every carve of a tick** (T22.20).
             // The fixture carves between ticks, so without it the first step moved
             // the body under the still-intact well and the core went off only at

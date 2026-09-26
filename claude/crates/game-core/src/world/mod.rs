@@ -2562,7 +2562,9 @@ impl World {
             let r = crate::constants::TOXIC_DROP_CARVE_R.round() as i32;
             let (x, y) = (at.x.round() as i32, at.y.round() as i32);
             let carve = self.map.carve_circle(x, y, r);
-            if carve.pixels_removed > 0 {
+            // `changed`, not `pixels_removed`: a core hit that removed nothing is
+            // still a hit the mirror must count (R112).
+            if carve.changed() {
                 self.carve_seq += 1;
                 let tick = self.tick;
                 let seq = self.carve_seq;
@@ -2652,7 +2654,7 @@ impl World {
             };
             self.apply_damage_log(&log, &bird_log, &animal_log, now);
             if let Some(c) = impact.carve {
-                if c.pixels_removed > 0 {
+                if c.changed() {
                     self.carve_seq += 1;
                     let tick = self.tick;
                     let seq = self.carve_seq;
@@ -3302,7 +3304,7 @@ impl World {
             // already eaten. `weapons::flame` reports every crossing of its
             // timer and this is where "there was rock left" is decided, so a
             // fire in a crater does not stream empty carves at `SNAPSHOT_HZ`.
-            if sc.carve.pixels_removed == 0 {
+            if !sc.carve.changed() {
                 continue;
             }
             self.carve_seq += 1;
@@ -5074,6 +5076,9 @@ impl World {
             // T22.16: a destroyed core switches the well off — a pull the two sides
             // could disagree about, so the hash says which tick.
             h.update(&[a.core_intact as u8]);
+            // T22.21: the hits a core has taken decide when its pixels carve (R112),
+            // and an iron rock refuses every carve (R113).
+            h.update(&[a.core_hits, a.iron as u8]);
             // T22.18B: the lumps measure the band (`Asteroid::outline_radius`).
             for l in &a.lumps {
                 h.update(&l.dx.to_le_bytes());

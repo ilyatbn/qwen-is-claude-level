@@ -157,6 +157,11 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
         b.extend_from_slice(&(a.y as i16).to_le_bytes());
         b.extend_from_slice(&(a.r as u16).to_le_bytes());
         b.push(a.level);
+        // T22.21: the substance (R113 — the mirror's carve refuses an iron rock's
+        // pixels) and the core's hits (R112 — a resync lands mid-round, and the
+        // mirror counts on from here).
+        b.push(u8::from(a.iron));
+        b.push(a.core_hits);
         // T22.18B: the lumps, every slot (radius 0 = empty) — the well's band is
         // measured from them (`Asteroid::outline_radius`).
         for l in &a.lumps {
@@ -293,6 +298,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
                 u16::from_le_bytes([b(4), b(5)]) as i32,
                 b(6),
             );
+            a.iron = b(7) != 0;
+            a.core_hits = b(8);
             for (j, l) in a.lumps.iter_mut().enumerate() {
                 let q = ASTEROID_HEAD_BYTES + j * LUMP_WIRE_BYTES;
                 *l = game_core::map::meta::Lump {
@@ -320,7 +327,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     })
 }
 
-/// `i16 x, i16 y, u16 r, u8 level`, then every lump slot (T22.18B).
+/// `i16 x, i16 y, u16 r, u8 level, u8 iron, u8 core_hits`, then every lump slot
+/// (T22.18B; the two `u8`s T22.21).
 ///
 /// Named for the same reason `OBJECT_WIRE_BYTES` is: the writer's loop and the
 /// reader's stride are the same number said twice, and the decoration section
@@ -328,8 +336,9 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
 pub const ASTEROID_WIRE_BYTES: usize =
     ASTEROID_HEAD_BYTES + game_core::map::meta::ASTEROID_LUMP_SLOTS * LUMP_WIRE_BYTES;
 
-/// An asteroid's fixed head: `i16 x, i16 y, u16 r, u8 level`.
-const ASTEROID_HEAD_BYTES: usize = 7;
+/// An asteroid's fixed head: `i16 x, i16 y, u16 r, u8 level, u8 iron, u8 core_hits`
+/// (the last two T22.21's).
+const ASTEROID_HEAD_BYTES: usize = 9;
 
 /// One lump slot: `i16 dx, i16 dy, u8 r` (T22.18B; radius 0 = empty).
 const LUMP_WIRE_BYTES: usize = 5;

@@ -83,7 +83,8 @@ impl MeteorShower {
     }
 
     /// **R99 (T22.14A): in space a meteor starts just inside the rim, at a random
-    /// angle, and flies at a random asteroid.** The ground's spawn — above the map,
+    /// angle, and flies at a random open point** (at a random asteroid until
+    /// T22.21 amended it). The ground's spawn — above the map,
     /// falling in — put every meteor in the void first, so each one struck the rim
     /// from outside: a forced shower carved the rim ~39 times and opened 10–14
     /// vortices (measured, `world::space_meteor_tests`), turning the owner's *"if you
@@ -107,15 +108,22 @@ impl MeteorShower {
         let a = range_f32(&mut self.rng, 0.0, std::f32::consts::TAU);
         let (x, y) = geo.along_ray(a.cos(), a.sin(), geo.thickness * 0.5 + METEOR_SPACE_INSET);
         let at = Vec2::new(x, y);
-        let rocks = &map.meta.asteroids;
-        let pick = rand::RngCore::next_u32(&mut self.rng) as usize;
-        // A space map always has a rock (the black hole never eats the last one);
-        // the centre is the answer if it somehow did not.
-        let target = rocks
-            .get(pick % rocks.len().max(1))
-            .map_or(Vec2::new(geo.cx, geo.cy), |r| {
-                Vec2::new(r.x as f32, r.y as f32)
-            });
+        // **R99 amended (T22.21): at a random open point inside the rim, not at a
+        // rock.** Aimed at a rock, 152 of 160 meteors hit one (T22.14A) and the
+        // shower was most of what emptied the map by two minutes (T22.21's
+        // measurement: meteors took 67 % of Small's asteroid rock by then). Open
+        // space is `random_open_space`'s — where a body fits, clear of every rock —
+        // drawn on the shower's own stream; a meteor still meets any rock in its way.
+        let target = crate::map::gen::space::random_open_space(
+            &map.mask,
+            geo,
+            &map.meta.asteroids,
+            &mut self.rng,
+            |_| 0.0,
+        )
+        .map_or(Vec2::new(geo.cx, geo.cy), |p| {
+            Vec2::new(p.x as f32, p.y as f32)
+        });
         let dir = (target - at).normalized();
         projectiles.spawn_raw(WEAPON_METEOR, u8::MAX, at, dir * METEOR_SPEED, now)
     }
@@ -362,6 +370,56 @@ mod tests {
         }
         let _ = &mut map;
         assert_eq!(n, (METEOR_DURATION / METEOR_EVERY) as usize, "{n} meteors");
+    }
+
+    /// **R99 amended (T22.21): a space meteor aims at open space, not at a rock.** Over a
+    /// full shower on eight space maps, each meteor's ray from its spawn is checked
+    /// against every rock's centre: aimed at rocks (as until T22.21) every ray passes
+    /// through one to within a pixel; aimed at a random open point, almost none does.
+    /// The presence halves: the showers threw their meteors, every one from inside the
+    /// rim and heading inward (its ray reaches the arena's far side).
+    ///
+    /// Falsified at the live site: the old rock-centre target restored → 160 of 160.
+    #[test]
+    fn a_space_meteor_aims_at_open_space_not_at_a_rock() {
+        let (mut total, mut at_rock) = (0usize, 0usize);
+        for seed in [1u64, 7, 42, 99, 4242, 12345, 31337, 8675309] {
+            let map = crate::map::meta::generate_with(
+                seed,
+                MapScale::Small,
+                crate::constants::MapGenerator::Space,
+            );
+            let geo = map.space_geometry().expect("space");
+            let mut pr = Projectiles::new();
+            let mut shower = MeteorShower::new(seed, 0.0);
+            for i in 0..(METEOR_DURATION / DT) as u32 {
+                let _ = shower.tick(&mut pr, &map, true, i as f32 * DT);
+            }
+            for p in pr.iter() {
+                total += 1;
+                assert!(
+                    geo.inside(p.pos.x, p.pos.y),
+                    "seed {seed}: spawned outside the rim"
+                );
+                let dir = p.vel.normalized();
+                let through = map.meta.asteroids.iter().any(|a| {
+                    let c = Vec2::new(a.x as f32, a.y as f32) - p.pos;
+                    let along = c.x * dir.x + c.y * dir.y;
+                    along > 0.0 && (c.x * dir.y - c.y * dir.x).abs() < 1.0
+                });
+                at_rock += usize::from(through);
+            }
+        }
+        eprintln!("meteors aimed through a rock's centre: {at_rock} of {total}");
+        assert_eq!(
+            total,
+            8 * (METEOR_DURATION / METEOR_EVERY) as usize,
+            "control: the showers"
+        );
+        assert!(
+            at_rock * 10 < total,
+            "{at_rock} of {total} meteors fly straight at a rock's centre"
+        );
     }
 
     #[test]

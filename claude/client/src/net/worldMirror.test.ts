@@ -69,7 +69,15 @@ function initMirror(
   // space map is a `map_init` no server would send and it wipes the field the
   // mirror predicts against. Empty on every map these fixtures generate, which
   // is why it is a default rather than an argument every caller passes.
-  asteroids = c.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level, lumps: a.lumps })),
+  asteroids = c.meta.asteroids.map((a) => ({
+    x: a.x,
+    y: a.y,
+    r: a.r,
+    level: a.level,
+    iron: a.iron,
+    coreHits: a.core_hits,
+    lumps: a.lumps,
+  })),
 ): WorldMirror {
   const m = new WorldMirror(c)
   m.applyMapInit({
@@ -291,9 +299,20 @@ describe('mask agreement', () => {
     // The "server": it generated the map, so it knows where the rocks are.
     const server = other
     expect(server.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
-    const wire = server.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level, lumps: a.lumps }))
+    const wire = server.meta.asteroids.map((a) => ({
+      x: a.x,
+      y: a.y,
+      r: a.r,
+      level: a.level,
+      iron: a.iron,
+      coreHits: a.core_hits,
+      lumps: a.lumps,
+    }))
     expect(wire.length).toBeGreaterThan(0)
-    const deepest = wire.reduce((best, a) => (a.level > best.level ? a : best), wire[0]!)
+    // An ordinary rock: an iron one (T22.21, R113) is level 5 too, and so big its
+    // lumps leave `r + PLAYER_H / 2` past its band.
+    const rock = wire.filter((a) => !a.iron)
+    const deepest = rock.reduce((best, a) => (a.level > best.level ? a : best), rock[0]!)
     // Just clear of the outermost lump — inside the band (R101, T22.15; T22.16 measures
     // the band from the rock's round body, so one body height off `r` is past it on
     // the big rocks).
@@ -312,7 +331,17 @@ describe('mask agreement', () => {
 
     initMirror(core, 0, undefined, undefined, wire)
     // The wire's fields (T22.16's `core_intact` is not on it; T22.18B's lumps are).
-    expect(core.meta.asteroids.map(({ x, y, r, level, lumps }) => ({ x, y, r, level, lumps }))).toEqual(wire)
+    expect(
+      core.meta.asteroids.map(({ x, y, r, level, iron, core_hits, lumps }) => ({
+        x,
+        y,
+        r,
+        level,
+        iron,
+        coreHits: core_hits,
+        lumps,
+      })),
+    ).toEqual(wire)
     expect(pull(core)).toBeCloseTo(pull(server), 3)
 
     // **The control that the line reads the wire rather than remembering.** The
@@ -736,7 +765,15 @@ describe('breach vortices', () => {
 describe('the black hole (T22.12)', () => {
   it('pulls once announced, drops the eaten rock, survives a resync, and a new round clears it', () => {
     expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
-    const wire = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level, lumps: a.lumps }))
+    const wire = core.meta.asteroids.map((a) => ({
+      x: a.x,
+      y: a.y,
+      r: a.r,
+      level: a.level,
+      iron: a.iron,
+      coreHits: a.core_hits,
+      lumps: a.lumps,
+    }))
     expect(wire.length).toBeGreaterThan(1)
     const mirror = initMirror(core, 0, undefined, undefined, wire)
     // R101 (T22.15): a well reaches only one band past its rock, so the probe is
@@ -827,7 +864,15 @@ describe('asteroid cores (T22.16)', () => {
     expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
     core.setPhase('playing')
     core.setBell(null)
-    const wire = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level, lumps: a.lumps }))
+    const wire = core.meta.asteroids.map((a) => ({
+      x: a.x,
+      y: a.y,
+      r: a.r,
+      level: a.level,
+      iron: a.iron,
+      coreHits: a.core_hits,
+      lumps: a.lumps,
+    }))
     const mirror = initMirror(core, 0, undefined, undefined, wire)
     // Just clear of the rock's highest possible lump (its bounding radius plus half a
     // body), straight above it: inside its band, in air.

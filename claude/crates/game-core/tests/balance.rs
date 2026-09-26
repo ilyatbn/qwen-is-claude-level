@@ -2727,3 +2727,259 @@ fn the_wait_ceiling_is_still_the_one_the_constant_records() {
         );
     }
 }
+
+/// Who carved asteroid rock, as [`asteroid_rock_report`] attributes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RockCarver {
+    Meteor,
+    BlackHole,
+    Players,
+    Core,
+    /// Lava, or rock gone with no carve event to own it (none expected).
+    Other,
+}
+
+/// One bots round on a space map: asteroid rock pixels at the start, and how many
+/// each carver took by `t = 120 s` and by the end of the round.
+struct RockRound {
+    start: u32,
+    /// Of `start`, iron (R113) — never carved, so what the ordinary rocks keep is
+    /// `start - iron - gone`.
+    iron: u32,
+    /// Iron pixels found gone at the end (must be 0).
+    iron_lost: u32,
+    at_2min: BTreeMap<RockCarver, u32>,
+    at_end: BTreeMap<RockCarver, u32>,
+}
+
+/// **T22.21 — the owner's metric** (*"2 minutes in, the map was mostly empty"*):
+/// a shipping bots round on a space map, and every asteroid-rock pixel it loses,
+/// attributed to the carve event that took it.
+///
+/// "Asteroid rock" is every solid pixel at the round's start inside an asteroid's
+/// bounding radius (asteroids are spaced by it and kept a lane off the rim, so
+/// nothing else is in there). After each tick, every `Carve`/`CarveCapsule` event's
+/// bounding box is scanned for rock pixels now air — the pixel goes to that event's
+/// carver, first event first. A `Meteor`-kind carve centred on the tick's
+/// `BlackHole` is the hole's; on the tick's `CoreDestroyed`, the core's crumble;
+/// otherwise weather. `Weapon` carves and melee capsules are players/bots; a
+/// `Lava` carve, or rock found gone that no event covered, is `Other` (a final
+/// sweep counts those, so the columns add up to the loss).
+fn run_rock_round(seed: u64, scale: MapScale) -> RockRound {
+    use game_core::constants::DEFAULT_MAP_GENERATOR;
+    use game_core::world::CarveKind;
+    let mut w = World::with_gravity(seed, scale, 0, DEFAULT_MAP_GENERATOR, GravityMode::Space);
+    w.set_phase(RoundPhase::Playing);
+    let mut bots = Vec::new();
+    for i in 0..BOTS {
+        let id = i as u8;
+        w.add_player(id, 0, format!("Bot {i}"));
+        bots.push(Bot::new(id, seed, i as u32, SKILL));
+    }
+    let _ = w.drain_events();
+    let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+    let mut rock = vec![false; (mw * mh) as usize];
+    let mut iron_px = vec![false; (mw * mh) as usize];
+    let (mut start, mut iron) = (0u32, 0u32);
+    for a in &w.map.meta.asteroids {
+        for y in (a.y - a.r - 2).max(0)..=(a.y + a.r + 2).min(mh - 1) {
+            for x in (a.x - a.r - 2).max(0)..=(a.x + a.r + 2).min(mw - 1) {
+                let (dx, dy) = (x - a.x, y - a.y);
+                if dx * dx + dy * dy <= (a.r + 2) * (a.r + 2) && w.map.mask.get(x, y) {
+                    let i = (y * mw + x) as usize;
+                    if !rock[i] {
+                        rock[i] = true;
+                        start += 1;
+                        if a.iron {
+                            iron_px[i] = true;
+                            iron += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut taken: BTreeMap<RockCarver, u32> = BTreeMap::new();
+    let mut at_2min = None;
+    let sweep = |w: &World,
+                 rock: &mut Vec<bool>,
+                 taken: &mut BTreeMap<RockCarver, u32>,
+                 (x0, y0, x1, y1): (i32, i32, i32, i32),
+                 who: RockCarver| {
+        for y in y0.max(0)..=y1.min(mh - 1) {
+            for x in x0.max(0)..=x1.min(mw - 1) {
+                let i = (y * mw + x) as usize;
+                if rock[i] && !w.map.mask.get(x, y) {
+                    rock[i] = false;
+                    *taken.entry(who).or_insert(0) += 1;
+                }
+            }
+        }
+    };
+    while w.phase == RoundPhase::Playing {
+        let now = w.round_time;
+        for b in bots.iter_mut() {
+            let inp = b.think(&w, now, SIM_DT);
+            w.queue_input(b.player, inp);
+            if let Some(slot) = b.wants_select() {
+                w.select_slot(b.player, slot);
+            }
+            if inp.buttons & button::FIRE != 0 {
+                let _ = w.fire(b.player, now);
+            }
+            if let Some(slot) = b.wants_use() {
+                let _ = w.use_item(b.player, slot, now);
+            }
+        }
+        w.step(SIM_DT);
+        let events = w.drain_events();
+        let hole: Vec<(i32, i32)> = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::BlackHole { x, y, .. } => Some((x.round() as i32, y.round() as i32)),
+                _ => None,
+            })
+            .collect();
+        let cores: Vec<(i32, i32)> = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::CoreDestroyed { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect();
+        for e in &events {
+            let (bbox, who) = match *e {
+                GameEvent::Carve { x, y, r, kind, .. } => {
+                    let who = match kind {
+                        CarveKind::Weapon => RockCarver::Players,
+                        CarveKind::Lava => RockCarver::Other,
+                        CarveKind::Meteor if hole.contains(&(x, y)) => RockCarver::BlackHole,
+                        CarveKind::Meteor if cores.contains(&(x, y)) => RockCarver::Core,
+                        CarveKind::Meteor => RockCarver::Meteor,
+                    };
+                    ((x - r, y - r, x + r, y + r), who)
+                }
+                GameEvent::CarveCapsule {
+                    x0, y0, x1, y1, r, ..
+                } => (
+                    (
+                        x0.min(x1) - r,
+                        y0.min(y1) - r,
+                        x0.max(x1) + r,
+                        y0.max(y1) + r,
+                    ),
+                    RockCarver::Players,
+                ),
+                _ => continue,
+            };
+            sweep(&w, &mut rock, &mut taken, bbox, who);
+        }
+        if at_2min.is_none() && w.round_time >= 120.0 {
+            let mut t = taken.clone();
+            sweep(
+                &w,
+                &mut rock.clone(),
+                &mut t,
+                (0, 0, mw - 1, mh - 1),
+                RockCarver::Other,
+            );
+            at_2min = Some(t);
+        }
+    }
+    sweep(
+        &w,
+        &mut rock,
+        &mut taken,
+        (0, 0, mw - 1, mh - 1),
+        RockCarver::Other,
+    );
+    let iron_lost = (0..(mw * mh) as usize)
+        .filter(|&i| iron_px[i] && !rock[i])
+        .count() as u32;
+    RockRound {
+        start,
+        iron,
+        iron_lost,
+        at_2min: at_2min.unwrap_or_else(|| taken.clone()),
+        at_end: taken,
+    }
+}
+
+/// **T22.21 — asteroid rock remaining at 2 minutes and at the round's end**, bots
+/// round, Small and Medium, [`SEEDS`], broken down by carver. Prints; asserts only
+/// that the instrument saw rock and that the columns account for the loss.
+///
+/// `cargo test -p game-core --release --test balance asteroid_rock_report -- --ignored --nocapture`
+#[test]
+#[ignore = "report: T22.21's owner metric, ~1 min in release"]
+fn asteroid_rock_report() {
+    println!(
+        "\n== ASTEROID ROCK LEFT — {} seeds, bots round of {ROUND_SECONDS} s ==",
+        SEEDS.len()
+    );
+    for scale in [MapScale::Small, MapScale::Medium] {
+        let rounds: Vec<RockRound> = SEEDS.iter().map(|&s| run_rock_round(s, scale)).collect();
+        let start: u32 = rounds.iter().map(|r| r.start).sum();
+        assert!(
+            start > 0,
+            "{scale:?}: the instrument found no asteroid rock"
+        );
+        assert_eq!(
+            rounds.iter().map(|r| r.iron_lost).sum::<u32>(),
+            0,
+            "{scale:?}: an iron pixel was lost in a bots round"
+        );
+        for (label, pick) in [
+            (
+                "t=120s",
+                (|r: &RockRound| &r.at_2min) as fn(&RockRound) -> &BTreeMap<RockCarver, u32>,
+            ),
+            ("end", |r: &RockRound| &r.at_end),
+        ] {
+            let by = |c: RockCarver| {
+                rounds
+                    .iter()
+                    .map(|r| pick(r).get(&c).copied().unwrap_or(0))
+                    .sum::<u32>()
+            };
+            let gone: u32 = [
+                RockCarver::Meteor,
+                RockCarver::BlackHole,
+                RockCarver::Players,
+                RockCarver::Core,
+                RockCarver::Other,
+            ]
+            .iter()
+            .map(|&c| by(c))
+            .sum();
+            // Every share is of the **ordinary** rock: iron (R113) is never carved,
+            // and counting it in would flatter the map by however big the iron is.
+            let iron: u32 = rounds.iter().map(|r| r.iron).sum();
+            let ordinary = start - iron;
+            let pct = |n: u32| 100.0 * n as f32 / ordinary.max(1) as f32;
+            let per_seed: Vec<String> = rounds
+                .iter()
+                .map(|r| {
+                    let g: u32 = pick(r).values().sum();
+                    let o = r.start - r.iron;
+                    format!("{:.0}", 100.0 * (o - g) as f32 / o.max(1) as f32)
+                })
+                .collect();
+            println!(
+                "{scale:?} {label:>6}: rock left {:.1} % (per seed {}) — taken by meteors {:.1} %, \
+                 black hole {:.1} %, players/bots {:.1} %, cores {:.1} %, other {:.1} %; \
+                 iron {iron} px ({:.1} % of all rock), lost {}; all rock left {:.1} %",
+                100.0 - pct(gone),
+                per_seed.join("/"),
+                pct(by(RockCarver::Meteor)),
+                pct(by(RockCarver::BlackHole)),
+                pct(by(RockCarver::Players)),
+                pct(by(RockCarver::Core)),
+                pct(by(RockCarver::Other)),
+                100.0 * iron as f32 / start as f32,
+                rounds.iter().map(|r| r.iron_lost).sum::<u32>(),
+                100.0 * (start - gone) as f32 / start as f32,
+            );
+        }
+    }
+}

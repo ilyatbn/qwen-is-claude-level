@@ -407,7 +407,11 @@ describe('Core', () => {
     expect(core.generateForGravity(4242n, MapScale.Small, MapGenerator.V2, 'space')).toBe(true)
     // A copy, because `setAsteroids([])` below invalidates the cached meta and
     // this list is what a `map_init` would have carried.
-    const rocks = core.meta.asteroids.map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
+    // Ordinary rocks only: an iron one (T22.21, R113) is level 5 and so big that
+    // `r + PLAYER_H / 2` is past its band.
+    const rocks = core.meta.asteroids
+      .filter((a) => !a.iron)
+      .map((a) => ({ x: a.x, y: a.y, r: a.r, level: a.level }))
     expect(rocks.length).toBeGreaterThan(0)
 
     // The deepest rock's neighbourhood, one body height off its bounding radius:

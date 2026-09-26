@@ -349,7 +349,14 @@ pub const HEADER_BYTES: usize = 46;
 /// Bumped to 33 by T22.21's R109b: `SPACE_MAX_SPEED` 1350 → 450 (and the void band,
 /// two ticks of it, 45 → 15 px) — a v32 space recording diverges on the first tick a
 /// body passes 450 px/s. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 33;
+///
+/// Bumped to 34 by T22.21 (R110–R113): the space map moved (rocks a quarter bigger,
+/// fewer, two iron rocks seated first, the level jitter drawn per candidate), a carve
+/// bites asteroid rock at half its radius and never iron, a core refuses carves until
+/// its third hit, and meteors aim at open space — a v33 space recording is played on a
+/// different arena and diverges at the first tick anything touches it. The state hash
+/// covers each rock's `iron` and `core_hits`. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 34;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

@@ -80,6 +80,13 @@ export interface MapAsteroid {
   r: number
   /** Gravity level, 1..`SPACE_LEVEL_MAX`. Monotone in `r`, with jitter. */
   level: number
+  /** T22.21 (R113): an iron rock — indestructible, drawn darker. */
+  iron: boolean
+  /**
+   * T22.21 (R112): the hits its core had taken when this `map_init` was cut — the
+   * mirror's carve counts on from here (a resync lands mid-round).
+   */
+  coreHits: number
   /**
    * T22.18B: the lumps stamped on its round body, every slot (radius 0 = empty) —
    * the well's band follows this outline (`Asteroid::outline_radius`).
@@ -222,13 +229,13 @@ export const ASTEROID_LUMP_SLOTS = 4
 export const LUMP_WIRE_BYTES = 5
 
 /**
- * `i16 x, i16 y, u16 r, u8 level`, then every lump slot — `codec.rs`'s own
- * `ASTEROID_WIRE_BYTES`.
+ * `i16 x, i16 y, u16 r, u8 level, u8 iron, u8 core_hits` (the last two T22.21's),
+ * then every lump slot — `codec.rs`'s own `ASTEROID_WIRE_BYTES`.
  *
  * Exported for the same reason as above: the length check here and the byte
  * fixture in the test both read it rather than spelling it twice.
  */
-export const ASTEROID_WIRE_BYTES = 7 + ASTEROID_LUMP_SLOTS * LUMP_WIRE_BYTES
+export const ASTEROID_WIRE_BYTES = 9 + ASTEROID_LUMP_SLOTS * LUMP_WIRE_BYTES
 
 export function decodeMapInit(buf: ArrayBuffer): MapInit {
   const r = new Reader(new DataView(buf))
@@ -320,7 +327,14 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
   const asteroids: MapAsteroid[] = []
   for (let i = 0; i < astCount; i++) {
-    const head = { x: r.i16(), y: r.i16(), r: r.u16(), level: r.u8() }
+    const head = {
+      x: r.i16(),
+      y: r.i16(),
+      r: r.u16(),
+      level: r.u8(),
+      iron: r.u8() !== 0,
+      coreHits: r.u8(),
+    }
     const lumps: MapLump[] = []
     for (let j = 0; j < ASTEROID_LUMP_SLOTS; j++) {
       lumps.push({ dx: r.i16(), dy: r.i16(), r: r.u8() })

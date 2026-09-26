@@ -219,10 +219,15 @@ impl World {
     /// Which rock `pick` eats and where the hole opens: the rock's index in the list
     /// as it stands and its centre — or, with fewer than two rocks, the arena centre
     /// and no rock (never the last asteroid; the module doc says why).
+    ///
+    /// **R113 (T22.21): never an iron asteroid** — `pick` indexes the rocks that are
+    /// not iron, in list order (the index returned is still the rock's place in the
+    /// whole list, which `arrive_black_hole` removes).
     fn site_for_pick(&self, pick: usize) -> (u32, Vec2) {
         let rocks = &self.map.meta.asteroids;
-        if rocks.len() >= 2 {
-            let i = pick % rocks.len();
+        let edible: Vec<usize> = (0..rocks.len()).filter(|&i| !rocks[i].iron).collect();
+        if rocks.len() >= 2 && !edible.is_empty() {
+            let i = edible[pick % edible.len()];
             (i as u32, Vec2::new(rocks[i].x as f32, rocks[i].y as f32))
         } else {
             let geo = self.map.space_geometry().expect("gated by the caller");
@@ -283,14 +288,16 @@ impl World {
     }
 
     /// The index of the rock whose centre is nearest `near` among those at least
-    /// `min` from it (all of them if none is), 0 on an empty list.
+    /// `min` from it (all of them if none is), 0 on an empty list. Never an iron
+    /// asteroid (R113).
     fn rock_nearest(&self, near: Vec2, min: f32) -> usize {
         let d = |a: &crate::map::meta::Asteroid| (Vec2::new(a.x as f32, a.y as f32) - near).len();
         let rocks = &self.map.meta.asteroids;
-        let far_enough = rocks.iter().any(|a| d(a) >= min);
+        let far_enough = rocks.iter().any(|a| !a.iron && d(a) >= min);
         rocks
             .iter()
             .enumerate()
+            .filter(|(_, a)| !a.iron)
             .filter(|(_, a)| !far_enough || d(a) >= min)
             .min_by(|(_, a), (_, b)| d(a).total_cmp(&d(b)))
             .map_or(0, |(i, _)| i)
@@ -343,15 +350,26 @@ impl World {
     /// the ordinary carve stream.
     fn arrive_black_hole(&mut self, pick: usize, now: f32) {
         let n = self.map.meta.asteroids.len();
-        let pos = if n >= 2 {
+        let edible = n >= 2 && !self.map.meta.asteroids[pick % n].iron;
+        let pos = if edible {
             // `pick % n` is `pick` itself when it came from `site_for_pick`.
             let a = self.map.meta.asteroids.remove(pick % n);
+            // **The arrival first, then its carve** (T22.21): the mirror drops the rock
+            // from its list on `black_hole`, and since R111–R113 a rock in the list
+            // guards its pixels — so the carve that eats it must reach the client
+            // after the rock has left the list there too, as it has here.
+            let tick = self.tick;
+            self.events.push(GameEvent::BlackHole {
+                tick,
+                x: a.x as f32,
+                y: a.y as f32,
+            });
             // `+ 2`: the stamp keeps every pixel inside `r`, and rounding may put
             // one on it (`stamp_asteroid`); asteroids are `SPACE_ASTEROID_GAP_MIN`
             // apart, so the margin reaches nothing else.
             let r = a.r + 2;
             let carve = self.map.carve_circle(a.x, a.y, r);
-            if carve.pixels_removed > 0 {
+            if carve.changed() {
                 self.carve_seq += 1;
                 let (tick, seq) = (self.tick, self.carve_seq);
                 self.events.push(GameEvent::Carve {
@@ -367,15 +385,16 @@ impl World {
             Vec2::new(a.x as f32, a.y as f32)
         } else {
             let geo = self.map.space_geometry().expect("gated by the caller");
-            Vec2::new(geo.cx, geo.cy)
+            let pos = Vec2::new(geo.cx, geo.cy);
+            let tick = self.tick;
+            self.events.push(GameEvent::BlackHole {
+                tick,
+                x: pos.x,
+                y: pos.y,
+            });
+            pos
         };
         self.black_hole = BlackHole::Here { pos };
-        let tick = self.tick;
-        self.events.push(GameEvent::BlackHole {
-            tick,
-            x: pos.x,
-            y: pos.y,
-        });
     }
 }
 
@@ -557,7 +576,19 @@ mod tests {
             1,
             "the arrival was not announced exactly once"
         );
-        assert!(events.iter().any(|e| matches!(e, GameEvent::Carve { .. })));
+        // T22.21: the arrival goes out **before** the carve that eats the rock — the
+        // mirror drops the rock on `black_hole`, and a rock still in its list would
+        // guard its pixels (R111–R113) against the carve the server made without it.
+        let arrival = events
+            .iter()
+            .position(|e| matches!(e, GameEvent::BlackHole { .. }));
+        let eaten = events
+            .iter()
+            .position(|e| matches!(e, GameEvent::Carve { .. }));
+        assert!(
+            eaten.is_some() && arrival < eaten,
+            "the eating carve ({eaten:?}) went out before the arrival ({arrival:?})"
+        );
         // R8.3: never again — a second summon and a whole minute of steps eat nothing.
         assert_eq!(w.summon_black_hole_near(centre, w.round_time), None);
         park_far(&mut w, centre);
@@ -803,14 +834,15 @@ mod tests {
                 for with_vortex in [false, true] {
                     let (mut w, hole) = hole_world_on(seed, ESCAPE_SCALE);
                     // Through `Map::carve_circle` (the coarse grid collision reads is
-                    // kept with the mask), with its pending breaches drained: this
+                    // kept with the mask) — unguarded, since T22.21's hard rock and iron
+                    // would keep half the ground — with its pending breaches drained: this
                     // arm is about the hole and the wells, and the vortex a breach
                     // opens is the other arm's subject (placed where it is worst,
                     // rather than wherever this disc happens to reach the rim).
                     let clear = clearing.ceil() as i32;
-                    let _ = w
-                        .map
-                        .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
+                    let _ =
+                        w.map
+                            .carve_unguarded(hole.x.round() as i32, hole.y.round() as i32, clear);
                     let _ = w.map.take_breaches();
                     if k == 0 && !with_vortex {
                         // The control that there are wells to mute: some rock's well
@@ -932,7 +964,7 @@ mod tests {
                 let clear = (BLACK_HOLE_REACH + 8.0 + PLAYER_H).ceil() as i32;
                 let _ = w
                     .map
-                    .carve_circle(hole.x.round() as i32, hole.y.round() as i32, clear);
+                    .carve_unguarded(hole.x.round() as i32, hole.y.round() as i32, clear);
                 let _ = w.map.take_breaches();
                 place(&mut w, hole, BLACK_HOLE_HORIZON_R + 1.0, angle);
                 w.player_mut(0)
@@ -1054,6 +1086,51 @@ mod tests {
             with, without,
             "control: inside the reach the hole pulled nothing"
         );
+    }
+
+    /// **R113 (T22.21): the hole never eats an iron asteroid.** Every pick the roll can
+    /// make, on eight maps, names an ordinary rock — and the picks still reach every
+    /// ordinary rock (the control: a filter that refused everything would pass the
+    /// first half). Asked to come nearest an iron rock's centre, it eats the nearest
+    /// ordinary one, and the iron stays in the list and in the mask.
+    #[test]
+    fn the_black_hole_never_eats_an_iron_asteroid() {
+        for seed in [1u64, 7, 42, 99, 4242, 12345, 31337, 8675309] {
+            let mut w = world(GravityMode::Space, seed, 600.0);
+            let rocks = &w.map.meta.asteroids;
+            assert!(rocks.iter().any(|a| a.iron), "seed {seed}: premise, iron");
+            let mut named = std::collections::BTreeSet::new();
+            for pick in 0..4 * rocks.len() {
+                let (i, _) = w.site_for_pick(pick);
+                assert!(
+                    !rocks[i as usize].iron,
+                    "seed {seed}: pick {pick} names iron"
+                );
+                named.insert(i);
+            }
+            assert_eq!(
+                named.len(),
+                rocks.iter().filter(|a| !a.iron).count(),
+                "seed {seed}: control — some ordinary rock can never be picked"
+            );
+            let iron = *rocks.iter().find(|a| a.iron).expect("iron");
+            let hole = w
+                .summon_black_hole_near(Vec2::new(iron.x as f32, iron.y as f32), 0.0)
+                .expect("summoned");
+            assert_ne!(
+                hole,
+                Vec2::new(iron.x as f32, iron.y as f32),
+                "seed {seed}: ate iron"
+            );
+            assert!(
+                w.map.meta.asteroids.contains(&iron),
+                "seed {seed}: iron left the list"
+            );
+            assert!(
+                w.map.mask.get(iron.x, iron.y),
+                "seed {seed}: iron left the mask"
+            );
+        }
     }
 
     /// R8.4: at `Ended` it freezes — no pull, no kill — and stays (drawn: the

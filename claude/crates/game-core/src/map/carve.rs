@@ -13,7 +13,7 @@
 //! See `docs/11-map-destruction.md` §1–§5.
 
 use crate::constants::{
-    BEDROCK_H, CHUNK_SIZE, COARSE_CELL, GUN_PLATFORMS, MAX_PENDING_BREACHES, TELEPORT_PADS, WALL_W,
+    ASTEROID_HARDNESS, BEDROCK_H, CHUNK_SIZE, COARSE_CELL, CORE_HITS, MAX_PENDING_BREACHES, WALL_W,
 };
 use crate::map::shape;
 use crate::map::Map;
@@ -30,6 +30,19 @@ pub struct CarveResult {
     /// T22.10: the point on the space rim's centreline where this carve opened a
     /// hole through it, if it did — once per **carve call**, never per stamp.
     pub breach: Option<(i32, i32)>,
+    /// R112 (T22.21): this carve counted a hit on an asteroid's core — the mask may
+    /// not have changed (a locked core refuses its pixels), but the hit count did,
+    /// and the mirror counts hits off the carve stream, so the event must go out.
+    pub core_hit: bool,
+}
+
+impl CarveResult {
+    /// **Must this carve reach the clients?** It removed rock, or it hit a core
+    /// (R112). Every site that skips publishing an empty carve asks this, not
+    /// `pixels_removed > 0` — a skipped hit is a hit the mirror never counts.
+    pub fn changed(&self) -> bool {
+        self.pixels_removed > 0 || self.core_hit
+    }
 }
 
 /// What [`Map::breach_probe`] saw before a carve: the rim, the padded box the
@@ -40,6 +53,82 @@ struct BreachProbe {
     bbox: (i32, i32, i32, i32),
     at: (i32, i32),
     was_open: bool,
+}
+
+/// **R111 (T22.21):** the radius a carve of radius `r` bites ordinary asteroid rock
+/// with — `round(r · ASTEROID_HARDNESS)`.
+pub fn hard_radius(r: i32) -> i32 {
+    (r as f32 * ASTEROID_HARDNESS).round() as i32
+}
+
+/// How far past a rock's bounding radius its guard reaches: the stamp keeps every
+/// pixel inside `r`, and rounding may put one on it (`arrive_black_hole`'s margin).
+/// Rocks are `SPACE_ASTEROID_GAP_MIN` apart and a lane off the rim, so it reaches
+/// nothing else.
+pub const ROCK_GUARD_MARGIN: i32 = 2;
+
+/// One asteroid a carve reaches, as the rasteriser guards it (T22.21).
+struct RockGuard {
+    x: i32,
+    y: i32,
+    /// The guarded disc's radius: the rock's bounding radius + the margin.
+    r: i32,
+    kind: RockKind,
+}
+
+enum RockKind {
+    /// R113: nothing of it carves.
+    Iron,
+    /// An ordinary rock: outside the carve's hardened disc it refuses (R111); its
+    /// core disc (`core` px) refuses while `locked` (R112), and once destroyed it is
+    /// soft — what is left of a destroyed core crumbles whole.
+    Rock { core: i32, locked: bool },
+}
+
+impl RockGuard {
+    /// Push the parts of row `y` this rock refuses to a carve centred on column
+    /// `cx`, row offset `dy` from its centre, hardened radius `rh`.
+    fn guard_row(&self, y: i32, (cx, dy, rh): (i32, i32, i32), out: &mut Vec<(i32, i32)>) {
+        let gy = y - self.y;
+        if gy.abs() > self.r {
+            return;
+        }
+        let gdx = isqrt(self.r * self.r - gy * gy);
+        let rock = (self.x - gdx, self.x + gdx);
+        let RockKind::Rock { core, locked } = self.kind else {
+            out.push(rock);
+            return;
+        };
+        let core_span = (gy.abs() <= core).then(|| {
+            let c = isqrt(core * core - gy * gy);
+            (self.x - c, self.x + c)
+        });
+        if locked {
+            out.extend(core_span);
+        }
+        // Soft: the carve's own hardened disc on this row, and a destroyed core.
+        let hard = (dy.abs() <= rh).then(|| {
+            let h = isqrt(rh * rh - dy * dy);
+            (cx - h, cx + h)
+        });
+        let soft_core = if locked { None } else { core_span };
+        let mut cuts = [hard, soft_core];
+        cuts.sort_unstable();
+        let mut cursor = rock.0;
+        for (c0, c1) in cuts.into_iter().flatten() {
+            if c1 < cursor {
+                continue;
+            }
+            if c0 > cursor {
+                out.push((cursor, (c0 - 1).min(rock.1)));
+            }
+            cursor = cursor.max(c1 + 1);
+            if cursor > rock.1 {
+                return;
+            }
+        }
+        out.push((cursor, rock.1));
+    }
 }
 
 impl Map {
@@ -54,7 +143,9 @@ impl Map {
             cy.saturating_add(r),
         );
         let probe = self.breach_probe(bbox, (cx, cy));
+        let core_hit = self.strike_cores(&[(cx, cy)], r);
         let mut out = self.circle(cx, cy, r, false);
+        out.core_hit = core_hit;
         self.note_breach(probe, &mut out);
         out
     }
@@ -106,6 +197,8 @@ impl Map {
         // `self.circle` needs `&mut self`.
         let mut centres = Vec::new();
         shape::walk_capsule(x0, y0, x1, y1, |x, y| centres.push((x, y)));
+        // One call, one hit per core however many discs it stamps (R112).
+        acc.core_hit = self.strike_cores(&centres, r);
 
         for (x, y) in centres {
             let step = self.circle(x, y, r, false);
@@ -122,6 +215,18 @@ impl Map {
         // of one shovel swing or one lava channel.
         self.note_breach(probe, &mut acc);
         acc
+    }
+
+    /// **Test fixtures' eraser** (T22.21): a carve with the asteroid guards off —
+    /// hard rock (R111), iron (R113) and locked cores (R112) all go, the list (and so
+    /// every well) stays. For fixtures that clear ground to set up a flight; not a
+    /// game rule, and nothing outside `#[cfg(test)]` can call it.
+    #[cfg(test)]
+    pub(crate) fn carve_unguarded(&mut self, cx: i32, cy: i32, r: i32) -> CarveResult {
+        let rocks = std::mem::take(&mut self.meta.asteroids);
+        let out = self.carve_circle(cx, cy, r);
+        self.meta.asteroids = rocks;
+        out
     }
 
     /// **T22.10: could this carve open the space rim, and was it open here
@@ -243,6 +348,11 @@ impl Map {
         // "a couple pixels of ground you cannot destroy under it". One list, so
         // the two cannot disagree about what protection means.
         //
+        // **And the asteroids (T22.21) through the same per-row list** — the one
+        // uncarvable-ground predicate: an iron rock refuses every pixel (R113), a
+        // locked core refuses its disc (R112), and ordinary rock outside this
+        // carve's hardened disc refuses the rest (R111). Empty off a space map.
+        //
         // Only for a **carve**. `fill_circle` adding rock inside a footprint
         // cannot break the guarantee, and refusing it would make the footprint a
         // hole that nothing can ever fill.
@@ -259,7 +369,19 @@ impl Map {
                 })
                 .collect()
         };
+        let rocks = if solid {
+            Vec::new()
+        } else {
+            self.rock_guards(cx, cy, r)
+        };
+        let rh = hard_radius(r);
 
+        // The row's protected intervals. **One `Vec` per circle, cleared per row**,
+        // and it only allocates when something is protected — this runs once per
+        // row of every carve (an r=200 sandbox carve is 400 rows) and `docs/60` §6
+        // budgets a single-chunk rebake at 4 ms, so a per-row heap allocation is not
+        // free; nearly every carve protects nothing and never touches the heap.
+        let mut guarded: Vec<(i32, i32)> = Vec::new();
         for dy in -r..=r {
             let y = cy + dy;
             // Bedrock and the top clamp. Excluding them by clamping the span rather
@@ -275,73 +397,37 @@ impl Map {
                 continue;
             }
 
-            // The row's span minus every protected rect crossing it. Sorted and
-            // non-empty spans only, so the coarse-cell walk below is unchanged.
-            //
-            // **A fixed array, not a `Vec`.** This runs once per row of every
-            // carve — an r=200 sandbox carve is 400 rows — and the first version
-            // allocated on every one of them even though `protected` is empty for
-            // nearly every carve. `docs/60` §6 budgets a single-chunk rebake at
-            // 4 ms and `perf` asserts against it, so a per-row heap allocation is
-            // not free. Each rect cuts at most one span in two, so the pads and
-            // the platforms together bound the count at
-            // `TELEPORT_PADS + GUN_PLATFORMS + 1`.
-            let mut spans = [(0i32, 0i32); TELEPORT_PADS + GUN_PLATFORMS + 1];
-            let mut n_spans = 1;
-            spans[0] = (x0, x1);
+            guarded.clear();
             for &(px0, py0, px1, py1) in &protected {
-                if y < py0 || y > py1 {
-                    continue;
+                if y >= py0 && y <= py1 {
+                    guarded.push((px0, px1));
                 }
-                let mut next = [(0i32, 0i32); TELEPORT_PADS + GUN_PLATFORMS + 1];
-                let mut n_next = 0;
-                for &(sx, ex) in &spans[..n_spans] {
-                    if ex < px0 || sx > px1 {
-                        next[n_next] = (sx, ex);
-                        n_next += 1;
-                        continue;
-                    }
-                    if sx < px0 {
-                        next[n_next] = (sx, px0 - 1);
-                        n_next += 1;
-                    }
-                    if ex > px1 {
-                        next[n_next] = (px1 + 1, ex);
-                        n_next += 1;
-                    }
-                }
-                spans = next;
-                n_spans = n_next;
+            }
+            for g in &rocks {
+                g.guard_row(y, (cx, dy, rh), &mut guarded);
             }
 
-            // Split each span at coarse-cell boundaries so the grid can be updated
-            // from the exact per-cell counts, with no recounting.
-            for &(span_start, span_end) in &spans[..n_spans] {
-                let mut sx = span_start;
-                while sx <= span_end {
-                    let cell_end = ((sx / COARSE_CELL as i32) + 1) * COARSE_CELL as i32 - 1;
-                    let ex = cell_end.min(span_end);
-                    let (cell_x, cell_y) = (sx as u32 / COARSE_CELL, y as u32 / COARSE_CELL);
-
-                    let n = if solid {
-                        let before = self.mask.count_run(y, sx, ex);
-                        self.mask.set_run(y, sx, ex);
-                        let added = (ex - sx + 1) as u32 - before;
-                        if added > 0 {
-                            self.coarse.add(cell_x, cell_y, added as u8);
-                        }
-                        added
-                    } else {
-                        let removed = self.mask.clear_run(y, sx, ex);
-                        if removed > 0 {
-                            self.coarse.subtract(cell_x, cell_y, removed as u8);
-                        }
-                        removed
-                    };
-
-                    changed += n;
-                    sx = ex + 1;
+            // The row's span minus every protected interval: sorted, then walked
+            // once, so the coarse-cell walk below sees non-empty spans in order.
+            guarded.sort_unstable();
+            let mut cursor = x0;
+            for &(gx0, gx1) in &guarded {
+                if gx1 < cursor {
+                    continue;
                 }
+                if gx0 > x1 {
+                    break;
+                }
+                if gx0 > cursor {
+                    changed += self.apply_run(y, cursor, gx0 - 1, solid);
+                }
+                cursor = cursor.max(gx1 + 1);
+                if cursor > x1 {
+                    break;
+                }
+            }
+            if cursor <= x1 {
+                changed += self.apply_run(y, cursor, x1, solid);
             }
         }
 
@@ -358,6 +444,102 @@ impl Map {
         }
 
         result
+    }
+
+    /// Set or clear one row span, split at coarse-cell boundaries so the grid is
+    /// updated from the exact per-cell counts, with no recounting. Returns the
+    /// pixels changed.
+    fn apply_run(&mut self, y: i32, span_start: i32, span_end: i32, solid: bool) -> u32 {
+        let mut changed = 0u32;
+        let mut sx = span_start;
+        while sx <= span_end {
+            let cell_end = ((sx / COARSE_CELL as i32) + 1) * COARSE_CELL as i32 - 1;
+            let ex = cell_end.min(span_end);
+            let (cell_x, cell_y) = (sx as u32 / COARSE_CELL, y as u32 / COARSE_CELL);
+
+            let n = if solid {
+                let before = self.mask.count_run(y, sx, ex);
+                self.mask.set_run(y, sx, ex);
+                let added = (ex - sx + 1) as u32 - before;
+                if added > 0 {
+                    self.coarse.add(cell_x, cell_y, added as u8);
+                }
+                added
+            } else {
+                let removed = self.mask.clear_run(y, sx, ex);
+                if removed > 0 {
+                    self.coarse.subtract(cell_x, cell_y, removed as u8);
+                }
+                removed
+            };
+
+            changed += n;
+            sx = ex + 1;
+        }
+        changed
+    }
+
+    /// The asteroids a carve of radius `r` at `(cx, cy)` can reach, as the
+    /// rasteriser guards them (T22.21). Empty off a space map.
+    fn rock_guards(&self, cx: i32, cy: i32, r: i32) -> Vec<RockGuard> {
+        let (cx, cy, r) = (cx as i64, cy as i64, r as i64);
+        self.meta
+            .asteroids
+            .iter()
+            .filter(|a| {
+                let reach = (a.r + ROCK_GUARD_MARGIN) as i64 + r;
+                (a.x as i64 - cx).abs() <= reach && (a.y as i64 - cy).abs() <= reach
+            })
+            .map(|a| RockGuard {
+                x: a.x,
+                y: a.y,
+                r: a.r + ROCK_GUARD_MARGIN,
+                kind: if a.iron {
+                    RockKind::Iron
+                } else {
+                    RockKind::Rock {
+                        core: a.core_r(),
+                        locked: a.core_hits < CORE_HITS,
+                    }
+                },
+            })
+            .collect()
+    }
+
+    /// **R112 (T22.21): count this carve's hits on every core it reaches** — one
+    /// per call, at the two public carves (as the breach probe is), before the
+    /// raster, so the hit that reaches `CORE_HITS` unlocks the core for the very
+    /// carve that made it. A hit is the carve's **hardened** disc (R111 — what it
+    /// can remove from rock) overlapping the core's disc, at any stamped centre.
+    fn strike_cores(&mut self, centres: &[(i32, i32)], r: i32) -> bool {
+        if r < 0 {
+            return false;
+        }
+        let rh = hard_radius(r.min(self.mask.w as i32 + self.mask.h as i32)) as i64;
+        let mut struck = Vec::new();
+        for a in self
+            .meta
+            .asteroids
+            .iter_mut()
+            .filter(|a| !a.iron && a.core_hits < CORE_HITS)
+        {
+            let reach = rh + a.core_r() as i64;
+            let near = centres.iter().any(|&(x, y)| {
+                let (dx, dy) = (x as i64 - a.x as i64, y as i64 - a.y as i64);
+                dx * dx + dy * dy <= reach * reach
+            });
+            if near {
+                a.core_hits += 1;
+                struck.push((a.x, a.y, a.core_r()));
+            }
+        }
+        // The core's glow dims per hit (R112), so its chunks rebake — a hit on a
+        // locked core changes no pixel, and the mask's own dirty marking would miss it.
+        let mut scratch = CarveResult::default();
+        for &(x, y, c) in &struck {
+            self.mark_dirty_box(x - c, y - c, x + c, y + c, &mut scratch);
+        }
+        !struck.is_empty()
     }
 
     /// Every chunk the circle's bounding box overlaps. The bounding box is close
@@ -1032,7 +1214,9 @@ mod tests {
     fn a_carve_through_the_rim_is_a_breach_and_an_island_or_a_nick_is_not() {
         let (mut map, geo, (tx, ty)) = space();
         let rock = map.meta.asteroids[0];
-        let island = map.carve_circle(rock.x, rock.y, rock.r / 2);
+        // `rock.r`, not `rock.r / 2` as before T22.21: asteroid rock bites at half
+        // the radius (R111), and at a quarter the locked core (R112) was all of it.
+        let island = map.carve_circle(rock.x, rock.y, rock.r);
         assert!(
             island.pixels_removed > 0,
             "control: the island carve removed nothing"
@@ -1131,5 +1315,125 @@ mod tests {
         // is only a claim about landscape *rock* if some of it went.
         assert!(removed > 0, "control: none of the carves removed rock");
         assert!(map.take_breaches().is_empty());
+    }
+
+    // ---- T22.21: hard rock (R111), iron (R113) ------------------------------------
+
+    /// The pixels a disc of radius `r` covers in the shared raster.
+    fn raster(r: i32) -> u32 {
+        let mut m = crate::map::Mask::new_empty(256, 256);
+        crate::map::shape::stamp_circle(&mut m, 128, 128, r, true);
+        let mut n = 0;
+        for y in 0..m.h as i32 {
+            n += m.count_run(y, 0, m.w as i32 - 1);
+        }
+        n
+    }
+
+    /// **R111: asteroid rock bites at half the radius, the rim at the full one.** The
+    /// same carve, radius 12, removes exactly a radius-6 disc from deep inside the
+    /// largest rock's body (clear of its core, so no hit is in play) and a radius-12
+    /// disc from inside the rim band — the rim is not hardened, so a rocket still
+    /// breaches it (T22.14D's `a_players_rocket_…` stays the end-to-end arm). The
+    /// control is that the two differ only in the rock: the same carve on the rock of
+    /// a map whose list forgot the rocks removes the full disc.
+    ///
+    /// Falsified at the live site: `ASTEROID_HARDNESS` 0.5 → 1.0 fails the rock arm.
+    #[test]
+    fn asteroid_rock_bites_at_half_the_radius_and_the_rim_at_the_full_one() {
+        let (map, _geo, (tx, ty)) = space();
+        let a = *map
+            .meta
+            .asteroids
+            .iter()
+            .filter(|a| !a.iron)
+            .max_by_key(|a| a.r)
+            .expect("rocks");
+        let r = 12;
+        let rh = hard_radius(r);
+        assert_eq!(rh, 6);
+        let d = a.core_r() + rh + 6;
+        assert!(
+            d + r < a.body_r(),
+            "premise: the disc is inside the round body"
+        );
+        let (px, py) = (a.x + d, a.y);
+
+        let mut m = map.clone();
+        let rock = m.carve_circle(px, py, r);
+        assert!(!rock.core_hit, "premise: the carve does not reach the core");
+        assert_eq!(rock.pixels_removed, raster(rh), "a carve in asteroid rock");
+
+        let mut m = map.clone();
+        let rim = m.carve_circle(tx, ty, r);
+        assert_eq!(
+            rim.pixels_removed,
+            raster(r),
+            "a carve in the rim is not hardened"
+        );
+
+        let mut m = map.clone();
+        m.meta.asteroids.clear();
+        let bare = m.carve_circle(px, py, r);
+        assert_eq!(
+            bare.pixels_removed,
+            raster(r),
+            "control: the list is the hardness"
+        );
+    }
+
+    /// **R113: an iron asteroid never loses a pixel** — a barrage of circles and
+    /// capsules of every size, all over it, a hundred of them. The presence control is
+    /// the same barrage on the largest ordinary rock, which loses most of itself; and
+    /// the barrage did carve the open space around the iron (its reach overhangs it).
+    #[test]
+    fn an_iron_asteroid_never_loses_a_pixel_under_a_barrage() {
+        let (map, _, _) = space();
+        let iron = *map.meta.asteroids.iter().find(|a| a.iron).expect("iron");
+        let rock = *map
+            .meta
+            .asteroids
+            .iter()
+            .filter(|a| !a.iron)
+            .max_by_key(|a| a.r)
+            .expect("rocks");
+        let solid_in = |m: &Map, a: &crate::map::meta::Asteroid| {
+            let r = a.r + 2;
+            (-r..=r)
+                .map(|dy| {
+                    let dx = isqrt(r * r - dy * dy);
+                    m.mask.count_run(a.y + dy, a.x - dx, a.x + dx)
+                })
+                .sum::<u32>()
+        };
+        let barrage = |m: &mut Map, a: &crate::map::meta::Asteroid| {
+            let mut removed = 0u32;
+            for k in 0..100i32 {
+                let ang = k as f32 * 2.399;
+                let d = (k * 7919 % (a.r + 1)) as f32;
+                let (x, y) = (a.x + (d * ang.cos()) as i32, a.y + (d * ang.sin()) as i32);
+                let r = 5 + (k * 13) % 56;
+                removed += if k % 3 == 0 {
+                    m.carve_capsule(x - a.r, y, x + a.r, y, r / 4 + 2)
+                        .pixels_removed
+                } else {
+                    m.carve_circle(x, y, r).pixels_removed
+                };
+            }
+            removed
+        };
+        let mut m = map.clone();
+        let before = solid_in(&m, &iron);
+        assert!(before > 0, "premise: the iron is stamped");
+        let _ = barrage(&mut m, &iron);
+        assert_eq!(solid_in(&m, &iron), before, "an iron pixel was carved");
+
+        let mut m = map.clone();
+        let before = solid_in(&m, &rock);
+        let removed = barrage(&mut m, &rock);
+        assert!(
+            removed > 0 && solid_in(&m, &rock) * 2 < before,
+            "control: rock barely dented"
+        );
     }
 }

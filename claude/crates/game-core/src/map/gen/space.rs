@@ -38,10 +38,10 @@
 use crate::constants::{
     MapGenerator, MapScale, JETPACK_CLIMB_BUDGET, MAX_GEN_ATTEMPTS, MAX_PLAYERS, PLAYER_H,
     PLAYER_W, SPACE_ASTEROID_GAP_MIN, SPACE_ASTEROID_MASS_MAX, SPACE_ASTEROID_R_MAX,
-    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX,
-    SPACE_LUMPS_MAX, SPACE_LUMPS_MIN, SPACE_LUMP_R_MAX_FRAC, SPACE_LUMP_R_MIN_FRAC,
-    SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE, SPACE_RIM_INSET, SPACE_RIM_THICKNESS,
-    SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
+    SPACE_ASTEROID_R_MIN, SPACE_ASTEROID_TRIES, SPACE_IRON_COUNT, SPACE_IRON_R_MAX_FRAC,
+    SPACE_IRON_R_MIN_FRAC, SPACE_LEVEL_JITTER, SPACE_LEVEL_MAX, SPACE_LUMPS_MAX, SPACE_LUMPS_MIN,
+    SPACE_LUMP_R_MAX_FRAC, SPACE_LUMP_R_MIN_FRAC, SPACE_OPEN_SPACE_TRIES, SPACE_RIM_CLEARANCE,
+    SPACE_RIM_INSET, SPACE_RIM_THICKNESS, SPACE_SPAWN_GRID, SPACE_VOID_GRACE, SPAWN_COUNT_MIN,
 };
 use crate::map::gen::silhouette::force_borders;
 use crate::map::gen::spawns::pick_separated;
@@ -243,6 +243,9 @@ pub struct SpaceParams {
     /// The most extra mass a rock draws (R103): `SPACE_ASTEROID_MASS_MAX`, or 0
     /// for the control that shows the draw is what grew the rocks.
     pub mass_max: f32,
+    /// Iron asteroids asked for (R113, T22.21): `SPACE_IRON_COUNT`, or 0 for the
+    /// control that shows the ordinary rocks do not move with it.
+    pub iron_count: u32,
     // **No `theme` field**, unlike `GenParams` and `V2Params`. Theme is carried
     // on those two because `objects::stamp_objects` weights its categories by
     // it — and this pipeline does not run `stamp_objects`, because there is no
@@ -258,6 +261,7 @@ impl SpaceParams {
             asteroid_count: scale.params().asteroid_count,
             gap_min: SPACE_ASTEROID_GAP_MIN,
             mass_max: SPACE_ASTEROID_MASS_MAX,
+            iron_count: SPACE_IRON_COUNT,
         }
     }
 
@@ -362,8 +366,18 @@ pub fn stamp_rim(mask: &mut Mask, geo: &SpaceGeometry) {
 /// clearance, spacing, the level, the stamp, the wire) sees the grown radius, so
 /// the lanes are measured between the rocks as they are drawn. The level is read
 /// off the grown radius too: *"a big rock with a weak pull reads as wrong"*.
+///
+/// **R113 (T22.21): around the iron.** The iron rocks ([`place_iron`]) are seated
+/// first — two rocks of up to 160 px do not fit on a Small arena after the ordinary
+/// ones (measured: 14 of 40 Small seeds seated both, 3 none) — and every ordinary
+/// candidate clashing with one is rejected like any clash. So the iron count does
+/// move ordinary rocks, and the draw is built to make that as small as it can be:
+/// **every candidate draws all of its numbers, level jitter included, whether or not
+/// it is seated**, so a rejection never shifts the stream under the candidates after
+/// it (the jitter used to be drawn on acceptance only). A rock the iron displaces is
+/// replaced by the next candidate that fits; the rest are where they would be.
 pub fn place_asteroids(seed: u64, geo: &SpaceGeometry, params: &SpaceParams) -> Vec<Asteroid> {
-    place_asteroids_drawn(seed, geo, params)
+    place_asteroids_drawn(seed, geo, params, &place_iron(seed, geo, params))
         .into_iter()
         .map(|(a, _)| a)
         .collect()
@@ -381,6 +395,7 @@ fn place_asteroids_drawn(
     seed: u64,
     geo: &SpaceGeometry,
     params: &SpaceParams,
+    iron: &[Asteroid],
 ) -> Vec<(Asteroid, f32)> {
     let mut rng = substream(seed, "asteroids");
     let mut mass_rng = substream(seed, "asteroid_mass");
@@ -395,6 +410,7 @@ fn place_asteroids_drawn(
         let x = range_f32(&mut rng, geo.cx - geo.rx, geo.cx + geo.rx);
         let y = range_f32(&mut rng, geo.cy - geo.ry, geo.cy + geo.ry);
         let m = range_f32(&mut mass_rng, 0.0, params.mass_max);
+        let jitter = range_f32(&mut rng, -SPACE_LEVEL_JITTER, SPACE_LEVEL_JITTER);
         let r = grown_radius(base, m);
 
         // Inside the rim, clear of it by the rock's own radius, the rim's half
@@ -410,18 +426,60 @@ fn place_asteroids_drawn(
         // centre to centre: `gap_min` is the width of the lane a player floats
         // down, and a centre distance would make that lane depend on the sizes
         // of the two rocks that happen to bound it.
-        let clash = out.iter().any(|(a, _)| {
+        let clash = out.iter().map(|(a, _)| a).chain(iron).any(|a| {
             let (dx, dy) = (a.x as f32 - x, a.y as f32 - y);
             (dx * dx + dy * dy).sqrt() < a.r as f32 + r as f32 + params.gap_min
         });
         if clash {
             continue;
         }
-        let level = level_for(r, &mut rng);
+        let level = level_for(r, jitter);
         out.push((
             Asteroid::round(x.round() as i32, y.round() as i32, r, level),
             m,
         ));
+    }
+    out
+}
+
+/// **R113 (T22.21): the iron asteroids**, seated **before** the ordinary rocks
+/// ([`place_asteroids`] says why) on their own sub-stream (`"iron_asteroids"`), by
+/// the ordinary rules: inside the rim and clear of it by the rock's radius, the rim's
+/// half thickness and a lane; `gap_min` surface to surface from each other. Radius
+/// uniform on `SPACE_IRON_R_{MIN,MAX}_FRAC × SPACE_ASTEROID_R_MAX`, no mass draw;
+/// level `SPACE_LEVEL_MAX`. A shared pool of `iron_count × SPACE_ASTEROID_TRIES`
+/// draws, as the ordinary rocks have — a map that cannot seat them ships fewer
+/// (`every_space_map_seats_its_iron…` says none does).
+pub fn place_iron(seed: u64, geo: &SpaceGeometry, params: &SpaceParams) -> Vec<Asteroid> {
+    let mut rng = substream(seed, "iron_asteroids");
+    let target = params.iron_count as usize;
+    let (r_min, r_max) = (
+        (SPACE_ASTEROID_R_MAX as f32 * SPACE_IRON_R_MIN_FRAC).round() as i32,
+        (SPACE_ASTEROID_R_MAX as f32 * SPACE_IRON_R_MAX_FRAC).round() as i32,
+    );
+    let mut out: Vec<Asteroid> = Vec::with_capacity(target);
+    for _ in 0..(params.iron_count * SPACE_ASTEROID_TRIES) {
+        if out.len() >= target {
+            break;
+        }
+        let r = range_i32(&mut rng, r_min, r_max);
+        let x = range_f32(&mut rng, geo.cx - geo.rx, geo.cx + geo.rx);
+        let y = range_f32(&mut rng, geo.cy - geo.ry, geo.cy + geo.ry);
+        if geo.norm(x, y) >= 1.0
+            || geo.distance_to_rim(x, y) < geo.thickness * 0.5 + SPACE_RIM_CLEARANCE + r as f32
+        {
+            continue;
+        }
+        let clash = out.iter().any(|a| {
+            let (dx, dy) = (a.x as f32 - x, a.y as f32 - y);
+            (dx * dx + dy * dy).sqrt() < a.r as f32 + r as f32 + params.gap_min
+        });
+        if clash {
+            continue;
+        }
+        let mut a = Asteroid::round(x.round() as i32, y.round() as i32, r, SPACE_LEVEL_MAX);
+        a.iron = true;
+        out.push(a);
     }
     out
 }
@@ -434,11 +492,10 @@ fn place_asteroids_drawn(
 /// a pure lookup makes level 5 mean nothing except "the biggest rock on this
 /// map"; `SPACE_LEVEL_JITTER` bounds the jitter at less than one level so the
 /// correlation survives it.
-fn level_for(r: i32, rng: &mut ChaCha8Rng) -> u8 {
+fn level_for(r: i32, jitter: f32) -> u8 {
     let span = (SPACE_ASTEROID_R_MAX - SPACE_ASTEROID_R_MIN) as f32;
     let t = ((r - SPACE_ASTEROID_R_MIN) as f32 / span).clamp(0.0, 1.0);
     let base = 1.0 + t * (SPACE_LEVEL_MAX - 1) as f32;
-    let jitter = range_f32(rng, -SPACE_LEVEL_JITTER, SPACE_LEVEL_JITTER);
     (base + jitter).round().clamp(1.0, SPACE_LEVEL_MAX as f32) as u8
 }
 
@@ -486,7 +543,13 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
 
     stamp_rim(&mut mask, &geo);
 
-    let mut asteroids = place_asteroids(seed, &geo, params);
+    // R113: the iron rocks are seated first and the ordinary ones around them
+    // (`place_asteroids`); the list ships ordinary first, iron after.
+    let mut iron = place_iron(seed, &geo, params);
+    let mut asteroids: Vec<Asteroid> = place_asteroids_drawn(seed, &geo, params, &iron)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
     // A second sub-stream for the silhouette, so tuning the lumps cannot move a
     // rock and re-roll the whole map. Each rock keeps the lumps it drew (T22.18B).
     let mut shape_rng = substream(seed, "asteroid_shape");
@@ -494,6 +557,13 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
         a.lumps = draw_lumps(a, &mut shape_rng);
         stamp_asteroid(&mut mask, a);
     }
+    // The iron's own shape stream, for the same reason.
+    let mut iron_shape_rng = substream(seed, "iron_shape");
+    for a in &mut iron {
+        a.lumps = draw_lumps(a, &mut iron_shape_rng);
+        stamp_asteroid(&mut mask, a);
+    }
+    asteroids.extend(iron);
 
     // The side bands and the floor crust, exactly as the other two generators
     // leave them, so `borders_hold` is true of a space map too.
@@ -1329,10 +1399,12 @@ mod tests {
                 assert!(!o.asteroids.is_empty(), "{scale:?} seed {seed}: no rocks");
                 counts.push(o.asteroids.len());
                 for (i, a) in o.asteroids.iter().enumerate() {
+                    // Iron (R113) has its own band, asserted in its own test.
                     assert!(
-                        (SPACE_ASTEROID_R_MIN
-                            ..=grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX))
-                            .contains(&a.r),
+                        a.iron
+                            || (SPACE_ASTEROID_R_MIN
+                                ..=grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX))
+                                .contains(&a.r),
                         "{scale:?} seed {seed}: radius {} is outside the band",
                         a.r
                     );
@@ -1461,6 +1533,8 @@ mod tests {
             r,
             level: 1,
             core_intact: true,
+            iron: false,
+            core_hits: 0,
             lumps: Default::default(),
         };
         let mut rng = substream(4242, "control");
@@ -1656,6 +1730,8 @@ mod tests {
             r: 32,
             level: 3,
             core_intact: true,
+            iron: false,
+            core_hits: 0,
             lumps: Default::default(),
         };
 
@@ -1766,6 +1842,7 @@ mod tests {
         let scale = MapScale::Small;
         let params = SpaceParams {
             asteroid_count: 0,
+            iron_count: 0,
             ..SpaceParams::default_for(scale)
         };
         let o = generate_once(4242, &params);
@@ -2344,7 +2421,9 @@ mod tests {
                 } else {
                     SpaceParams::default_for(scale)
                 };
-                for (a, m) in place_asteroids_drawn(o.seed, &geo, &params) {
+                for (a, m) in
+                    place_asteroids_drawn(o.seed, &geo, &params, &place_iron(o.seed, &geo, &params))
+                {
                     masses.push(m);
                     growth.push(a.r as f32);
                 }
@@ -2446,16 +2525,23 @@ mod tests {
         let grown_max = grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX);
         for scale in MapScale::ALL {
             let geo = SpaceGeometry::for_scale(scale);
-            let with = SpaceParams::default_for(scale);
+            // No iron in either arm (T22.21): the iron takes room first, and a
+            // crowded arena biases the seating against big rocks — a second effect
+            // on the mean area this test would misread as the mass draw's.
+            let with = SpaceParams {
+                iron_count: 0,
+                ..SpaceParams::default_for(scale)
+            };
             let without = SpaceParams {
                 mass_max: 0.0,
-                ..SpaceParams::default_for(scale)
+                ..with.clone()
             };
             let (mut lo, mut hi) = (f32::MAX, 0.0f32);
             let (mut area_with, mut area_without) = (0.0f64, 0.0f64);
             let (mut n_with, mut n_without) = (0usize, 0usize);
             for seed in seeds(8) {
-                let drawn = place_asteroids_drawn(seed, &geo, &with);
+                let drawn =
+                    place_asteroids_drawn(seed, &geo, &with, &place_iron(seed, &geo, &with));
                 let ms: Vec<f32> = drawn.iter().map(|(_, m)| *m).collect();
                 let (slo, shi) = ms
                     .iter()
@@ -2516,4 +2602,91 @@ mod tests {
             );
         }
     }
+
+    /// **R113 (T22.21): every space map seats its iron** — `SPACE_IRON_COUNT` rocks,
+    /// on every seed and scale, each of radius 1.5–2× the largest ordinary base,
+    /// level 5, clear of the rim and of every other rock by the ordinary rules, and
+    /// stamped (its centre is solid). **And the ordinary rocks do not move with the
+    /// count**: the same seed at `iron_count` 0 ships exactly the same ordinary rocks
+    /// (the control — iron on the shared stream would re-roll them).
+    #[test]
+    fn every_space_map_seats_its_iron_and_the_ordinary_rocks_do_not_move() {
+        let (r_min, r_max) = (
+            (SPACE_ASTEROID_R_MAX as f32 * SPACE_IRON_R_MIN_FRAC).round() as i32,
+            (SPACE_ASTEROID_R_MAX as f32 * SPACE_IRON_R_MAX_FRAC).round() as i32,
+        );
+        assert!(r_min > grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX));
+        let (mut kept, mut total) = (0usize, 0usize);
+        for scale in MapScale::ALL {
+            let geo = SpaceGeometry::for_scale(scale);
+            for seed in seeds(40) {
+                let o = generate_once(seed, &SpaceParams::default_for(scale));
+                let iron: Vec<&Asteroid> = o.asteroids.iter().filter(|a| a.iron).collect();
+                assert_eq!(
+                    iron.len(),
+                    SPACE_IRON_COUNT as usize,
+                    "{scale:?} seed {seed}: {} iron rocks",
+                    iron.len()
+                );
+                for a in &iron {
+                    assert!(
+                        (r_min..=r_max).contains(&a.r),
+                        "{scale:?} seed {seed}: r {}",
+                        a.r
+                    );
+                    assert_eq!(a.level, SPACE_LEVEL_MAX);
+                    assert_eq!(a.core_r(), 0, "iron has no core");
+                    assert!(
+                        o.mask.get(a.x, a.y),
+                        "{scale:?} seed {seed}: iron not stamped"
+                    );
+                    assert!(
+                        geo.distance_to_rim(a.x as f32, a.y as f32)
+                            >= geo.thickness * 0.5 + SPACE_RIM_CLEARANCE + a.r as f32 - 1.0
+                    );
+                }
+                for (i, a) in o.asteroids.iter().enumerate() {
+                    for b in &o.asteroids[i + 1..] {
+                        let d = (((a.x - b.x).pow(2) + (a.y - b.y).pow(2)) as f32).sqrt();
+                        assert!(
+                            d + 1.0 >= (a.r + b.r) as f32 + SPACE_ASTEROID_GAP_MIN,
+                            "{scale:?} seed {seed}: rocks {d:.0} apart"
+                        );
+                    }
+                }
+                let none = generate_once(
+                    seed,
+                    &SpaceParams {
+                        iron_count: 0,
+                        ..SpaceParams::default_for(scale)
+                    },
+                );
+                assert!(none.asteroids.iter().all(|a| !a.iron));
+                // Where the ordinary rocks sit, with and without the iron: the ones
+                // the iron displaced move, the rest must not.
+                let at = |v: &[Asteroid]| -> Vec<(i32, i32, i32)> {
+                    v.iter()
+                        .filter(|a| !a.iron)
+                        .map(|a| (a.x, a.y, a.r))
+                        .collect()
+                };
+                let (with, without) = (at(&o.asteroids), at(&none.asteroids));
+                kept += with.iter().filter(|p| without.contains(p)).count();
+                total += without.len();
+            }
+        }
+        let share = kept as f32 / total as f32;
+        println!("ordinary rocks where they are without iron: {kept} of {total} ({share:.3})");
+        assert!(
+            share > IRON_KEEPS_ROCKS_MIN,
+            "the iron moved {} of {total} ordinary rocks — the stream shifts under a rejection",
+            total - kept
+        );
+    }
+
+    /// The least share of ordinary rocks the iron may leave in place (measured
+    /// T22.21 over 40 seeds × 3 scales; see the print). With the level jitter drawn
+    /// on acceptance only, as before T22.21, a single displaced rock re-rolled every
+    /// rock after it.
+    const IRON_KEEPS_ROCKS_MIN: f32 = 0.5;
 }

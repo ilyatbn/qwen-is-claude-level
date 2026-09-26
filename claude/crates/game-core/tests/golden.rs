@@ -121,6 +121,9 @@ fn meta_digest(seed: u64, scale: MapScale, generator: MapGenerator) -> String {
             h.update(&a.y.to_le_bytes());
             h.update(&a.r.to_le_bytes());
             h.update(&[a.level]);
+            // T22.21 (R113): the substance. An iron rock refuses every carve, which
+            // nothing in the mask says.
+            h.update(&[a.iron as u8]);
         }
     }
     h.update(map.mask.hash_hex().as_bytes());

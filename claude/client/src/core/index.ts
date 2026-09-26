@@ -153,6 +153,10 @@ export interface Asteroid {
    * core stepped (`GameCore::sync_cores`) — a readback, not what the client acts on.
    */
   core_intact: boolean
+  /** T22.21 (R113): an iron rock — every carve refuses it; no core. */
+  iron: boolean
+  /** T22.21 (R112): carves that have hit its core, up to `CORE_HITS`. */
+  core_hits: number
   /** T22.18B: the lumps on its round body, every slot (radius 0 = empty). */
   lumps: { dx: number; dy: number; r: number }[]
 }
@@ -325,6 +329,8 @@ export interface Constants {
   MAP_GENERATOR_MAX: number
   /** T22.18B: lump slots per asteroid on `map_init` (`codec.ts::ASTEROID_LUMP_SLOTS`). */
   ASTEROID_LUMP_SLOTS: number
+  /** T22.21 (R112): hits a core takes before it breaks; the bake dims its glow per hit. */
+  CORE_HITS: number
   SNAPSHOT_PLAYER_BYTES: number
   SNAPSHOT_HEADER_BYTES: number
   SNAPSHOT_FOOTER_BYTES: number
@@ -916,11 +922,21 @@ export class Core {
   }
 
   /**
-   * T22.16 (R102): each asteroid's core disc, `[x, y, radius, …]`, radius from Rust
+   * T22.16 (R102): each ordinary asteroid's core disc and its hits (T22.21),
+   * `[x, y, radius, hits, …]`, radius from Rust
    * (`cores::core_radius`) — what the terrain bake paints in the core's colour.
    */
   coreDiscs(): Int32Array {
     return this.inner.core_discs()
+  }
+
+  /**
+   * T22.21 (R113): each iron asteroid, `[x, y, radius, …]` — the bounding radius plus
+   * the carve guard's margin (`GameCore::iron_discs`). What the bake and the minimap
+   * colour as iron.
+   */
+  ironDiscs(): Int32Array {
+    return this.inner.iron_discs()
   }
 
   setAsteroids(
@@ -935,6 +951,10 @@ export class Core {
        * which is not the server's rock — production passes `map_init`'s list whole.
        */
       lumps?: readonly { dx: number; dy: number; r: number }[]
+      /** T22.21 (R113): iron — the carve refuses it. Absent: ordinary rock. */
+      iron?: boolean
+      /** T22.21 (R112): the core's hits as `map_init` had them. Absent: 0. */
+      coreHits?: number
     }[],
   ): void {
     const xs = new Int32Array(rocks.map((a) => a.x))
@@ -949,7 +969,9 @@ export class Core {
         lumps.set([l.dx, l.dy, l.r], (i * slots + j) * 3)
       }),
     )
-    this.inner.set_asteroids(xs, ys, rs, levels, lumps)
+    const irons = new Uint8Array(rocks.map((a) => (a.iron ? 1 : 0)))
+    const hits = new Uint8Array(rocks.map((a) => a.coreHits ?? 0))
+    this.inner.set_asteroids(xs, ys, rs, levels, lumps, irons, hits)
     // `meta` is cached, and `meta.asteroids` is the readback — a caller that
     // installed rocks and then read the old table back would be told the call
     // had not happened.

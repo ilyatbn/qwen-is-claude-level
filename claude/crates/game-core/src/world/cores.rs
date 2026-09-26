@@ -5,11 +5,14 @@
 //! - **The core** is a disc at the rock's centre, [`core_radius`] =
 //!   `round(SPACE_CORE_FRAC · r)` — the generator stamps it solid (it is inside the
 //!   rock's round body, `SPACE_ASTEROID_CORE_FRAC · r`), the client draws it in its
-//!   own colour (`render/chunkBake.ts`), and it is carved like any rock.
-//! - **Destroyed** ([`core_destroyed`]) when at least `SPACE_CORE_DESTROYED_FRAC` of
-//!   its pixels are air — derived from the mask, the one truth both sides carve. The
-//!   constant's doc has refinement A's arithmetic: no body-sized cavity can hold the
-//!   centre while the well is on.
+//!   own colour (`render/chunkBake.ts`), and it refuses every carve until its
+//!   `CORE_HITS`-th hit.
+//! - **Destroyed** ([`core_destroyed`]) on its `CORE_HITS`-th hit (R112, T22.21): a
+//!   hit is one carve whose hardened disc overlaps the core, counted by the carve
+//!   itself (`Map::strike_cores`) — the one truth both sides carve. Until then the
+//!   core's pixels are uncarvable, so no cavity can hold the centre while the well
+//!   is on (refinement A, which `SPACE_CORE_DESTROYED_FRAC`'s arithmetic used to
+//!   buy; T22.16's carved-fraction rule is retired with that constant).
 //! - **Then, once, on the server** ([`World::step_cores`]): the rock's
 //!   `core_intact` goes false for the round (its well is gone — `asteroid_attractors`
 //!   skips it), `core_destroyed` goes out with the tick, what is left of the core
@@ -20,7 +23,7 @@
 //!   removes the rock from the list before it carves it, and this step only reads the
 //!   list.
 
-use crate::constants::{SPACE_CORE_DESTROYED_FRAC, SPACE_CORE_FRAC};
+use crate::constants::CORE_HITS;
 use crate::map::meta::Asteroid;
 use crate::map::Mask;
 use crate::math::{isqrt, Vec2};
@@ -29,7 +32,7 @@ use crate::world::{CarveKind, GameEvent, World};
 /// The core's radius, px: `round(SPACE_CORE_FRAC · r)` — 7 on the smallest rock, 21
 /// on the largest.
 pub fn core_radius(a: &Asteroid) -> i32 {
-    (SPACE_CORE_FRAC * a.r as f32).round() as i32
+    a.core_r()
 }
 
 /// `(solid, total)` pixels of `a`'s core disc — the raster `shape::stamp_circle` and
@@ -46,11 +49,10 @@ pub fn core_pixels(mask: &Mask, a: &Asteroid) -> (u32, u32) {
     (solid, total)
 }
 
-/// **Is `a`'s core destroyed?** At least [`SPACE_CORE_DESTROYED_FRAC`] of its pixels
-/// are air.
-pub fn core_destroyed(mask: &Mask, a: &Asteroid) -> bool {
-    let (solid, total) = core_pixels(mask, a);
-    (total - solid) as f32 >= SPACE_CORE_DESTROYED_FRAC * total as f32
+/// **Is `a`'s core destroyed?** It has taken [`CORE_HITS`] hits (R112). Never on an
+/// iron asteroid, which has no core (R113).
+pub fn core_destroyed(a: &Asteroid) -> bool {
+    !a.iron && a.core_hits >= CORE_HITS
 }
 
 /// **Where a destroyed core's battery floats** (T22.18, from T22.16's review): the
@@ -149,7 +151,7 @@ impl World {
     pub(super) fn step_cores(&mut self, now: f32) {
         for i in 0..self.map.meta.asteroids.len() {
             let a = self.map.meta.asteroids[i];
-            if !a.core_intact || !core_destroyed(&self.map.mask, &a) {
+            if !a.core_intact || !core_destroyed(&a) {
                 continue;
             }
             self.map.meta.asteroids[i].core_intact = false;
@@ -160,10 +162,11 @@ impl World {
                 y: a.y,
             });
             // The rest of it crumbles — the hole's carve kind, through the carve
-            // stream the client's mask already follows.
+            // stream the client's mask already follows. A destroyed core's disc is
+            // not hardened (R111), so this core-sized carve takes all of it.
             let r = core_radius(&a);
             let carve = self.map.carve_circle(a.x, a.y, r);
-            if carve.pixels_removed > 0 {
+            if carve.changed() {
                 self.carve_seq += 1;
                 let seq = self.carve_seq;
                 self.events.push(GameEvent::Carve {
@@ -189,11 +192,9 @@ mod tests {
     use super::*;
     use crate::constants::{
         GravityMode, MapScale, DEFAULT_MAP_GENERATOR, PLAYER_H, PLAYER_W, SIM_DT,
-        SPACE_ASTEROID_MASS_MAX, SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_R_MIN,
     };
     use crate::items::registry::BATTERY_PACK;
-    use crate::map::shape::stamp_circle;
-    use crate::world::attractors::{asteroid_attractors, well_reach, Attractor};
+    use crate::world::attractors::asteroid_attractors;
     use crate::world::RoundPhase;
 
     fn space_world(seed: u64) -> World {
@@ -216,6 +217,8 @@ mod tests {
             .iter()
             .copied()
             .enumerate()
+            // An iron rock (R113) is bigger and has no core.
+            .filter(|(_, a)| !a.iron)
             .max_by_key(|(_, a)| a.r)
             .expect("rocks")
     }
@@ -252,119 +255,64 @@ mod tests {
             .collect()
     }
 
-    /// **Refinement A, as arithmetic run on the real predicate.** For every rock radius
-    /// the generator can make (24 up to the largest grown, 70) and every pixel placement
-    /// of a `PLAYER_W` × `PLAYER_H` box that holds the rock's centre pixel, a core whose
-    /// box pixels are air (all a body there needs) is already [`core_destroyed`]. The
-    /// fraction that box covers is at least **22.58 %** (r = 69, c = 21: 310 of 1373),
-    /// and `SPACE_CORE_DESTROYED_FRAC` is 0.2.
+    /// **R112 (T22.21): the core takes exactly `CORE_HITS` hits, end to end.** On a
+    /// real space world the largest rock's core is struck at its centre by a carve
+    /// whose hardened disc (R111) is the core's own — through `World::step` after each:
+    /// - **before the last hit** (the absence arm): the hit is counted, the carve did
+    ///   bite (it removed rock around the core — the presence control in the same
+    ///   carve), but **every core pixel is still solid**, the flag is up, no event, no
+    ///   battery, and the well is still summed;
+    /// - **on the last hit**, on that tick: the flag goes false, one `core_destroyed`
+    ///   with the rock's centre, the core crumbles whole, **exactly one** battery pack
+    ///   where [`battery_site`] puts it, and the well is gone from the sum;
+    /// - and never again: more carving brings no second event or battery.
     ///
-    /// The control is that the minimum is real and near: a threshold over it (the
-    /// minimum plus a pixel's worth) leaves some placement standing — so the test can
-    /// see the constant being raised past the arithmetic.
+    /// Falsified at the live site: `CORE_HITS` 3 → 2 fails the absence arm at hit 2;
+    /// the locked-core guard removed from `map::carve` fails it at hit 1.
     #[test]
-    fn a_body_that_can_hold_the_centre_has_already_destroyed_the_core() {
-        let (bw, bh) = (PLAYER_W as i32, PLAYER_H as i32);
-        let r_max =
-            crate::map::gen::space::grown_radius(SPACE_ASTEROID_R_MAX, SPACE_ASTEROID_MASS_MAX);
-        let mut worst = (1.0f32, 0i32);
-        for r in SPACE_ASTEROID_R_MIN..=r_max {
-            let a = Asteroid {
-                x: 128,
-                y: 128,
-                r,
-                level: 1,
-                core_intact: true,
-                lumps: Default::default(),
-            };
-            let c = core_radius(&a);
-            let mut mask = Mask::new_empty(256, 256);
-            stamp_circle(&mut mask, a.x, a.y, c, true);
-            let (_, total) = core_pixels(&mask, &a);
-            for x0 in a.x - (bw - 1)..=a.x {
-                for y0 in a.y - (bh - 1)..=a.y {
-                    for y in y0..y0 + bh {
-                        mask.clear_run(y, x0, x0 + bw - 1);
-                    }
-                    let (solid, _) = core_pixels(&mask, &a);
-                    let frac = (total - solid) as f32 / total as f32;
-                    if frac < worst.0 {
-                        worst = (frac, r);
-                    }
-                    assert!(
-                        core_destroyed(&mask, &a),
-                        "r {r} (core {c}): a body box at ({x0}, {y0}) holds the centre with \
-                         only {:.1} % of the core carved — the well is still on",
-                        frac * 100.0
-                    );
-                    stamp_circle(&mut mask, a.x, a.y, c, true);
-                }
-            }
-        }
-        eprintln!(
-            "the least of a core a centre-holding body box carves: {:.2} % (r {})",
-            worst.0 * 100.0,
-            worst.1
-        );
-        assert!(
-            worst.0 < SPACE_CORE_DESTROYED_FRAC + 0.05,
-            "control: the minimum {:.3} is far above the threshold — this test would not see \
-             it raised",
-            worst.0
-        );
-    }
-
-    /// **R102 end to end, and the threshold at its live site.** On a real space world
-    /// the largest rock's core is carved from the centre out, one pixel of radius at a
-    /// time through `World::step`: while under `SPACE_CORE_DESTROYED_FRAC` is air
-    /// nothing happens (the absence arm, and its control is the next radius); at the
-    /// first radius over it, on that tick — the flag goes false, one `core_destroyed`
-    /// with the rock's centre, the rest of the core is carved away, **exactly one**
-    /// battery pack floats where [`battery_site`] puts it, and the rock's well is gone
-    /// from the sum. *T22.18: was "at the centre"* — this core is hollowed from the
-    /// inside, a cavity sealed all round, so no body can get to the centre and the
-    /// battery goes to the nearest place one can (the tunnel cases are
-    /// `a_core_shot_out_through_narrow_tunnels_leaves_its_battery_where_a_body_reaches`).
-    #[test]
-    fn a_carved_core_switches_the_well_off_crumbles_and_drops_one_battery() {
+    fn a_core_takes_exactly_core_hits_hits_and_the_last_destroys_it() {
         let mut w = space_world(4242);
         let (i, a) = largest(&w);
         let centre = Vec2::new(a.x as f32, a.y as f32);
-        let band = centre - Vec2::new(0.0, well_reach(&a, centre - Vec2::new(0.0, 1.0)) - 1.0);
         let wells = |w: &World| {
             asteroid_attractors(&w.map)
                 .filter(|x| x.pos == centre)
                 .count()
         };
         assert_eq!(wells(&w), 1, "premise: the rock's well is in the sum");
-        assert!(
-            Attractor::asteroid(&a).pull_at(band) != Vec2::ZERO,
-            "premise: the band pulls"
-        );
         let _ = w.drain_events();
         let c = core_radius(&a);
-        let mut at_k = None;
-        for k in 0..=c {
-            let _ = w.map.carve_circle(a.x, a.y, k);
-            let (solid, total) = core_pixels(&w.map.mask, &a);
-            let over = (total - solid) as f32 >= SPACE_CORE_DESTROYED_FRAC * total as f32;
+        let (solid0, total) = core_pixels(&w.map.mask, &a);
+        assert_eq!(solid0, total, "premise: the core is whole");
+        // A carve whose hardened disc is the core plus a ring of rock around it.
+        let r = 2 * (c + 4);
+        assert_eq!(crate::map::carve::hard_radius(r), c + 4);
+        for k in 1..=CORE_HITS {
+            let carve = w.map.carve_circle(a.x, a.y, r);
+            assert!(carve.core_hit, "hit {k}: not counted as a hit");
             w.step(SIM_DT);
             let ev = w.drain_events();
             let rock = w.map.meta.asteroids[i];
-            if !over {
-                assert!(rock.core_intact, "k {k}: destroyed under the threshold");
-                assert!(
-                    destroyed_events(&ev).is_empty(),
-                    "k {k}: an event under the threshold"
+            if k < CORE_HITS {
+                assert_eq!(rock.core_hits, k, "hit {k}: the count");
+                if k == 1 {
+                    assert!(
+                        carve.pixels_removed > 0,
+                        "control: the first hit removed no rock at all"
+                    );
+                }
+                assert_eq!(
+                    core_pixels(&w.map.mask, &a).0,
+                    total,
+                    "hit {k} of {CORE_HITS}: a core pixel was carved"
                 );
-                assert!(
-                    batteries(&ev).is_empty(),
-                    "k {k}: a battery under the threshold"
-                );
-                assert_eq!(wells(&w), 1, "k {k}: the well went under the threshold");
+                assert!(rock.core_intact, "hit {k}: destroyed early");
+                assert!(destroyed_events(&ev).is_empty(), "hit {k}: an event early");
+                assert!(batteries(&ev).is_empty(), "hit {k}: a battery early");
+                assert_eq!(wells(&w), 1, "hit {k}: the well went early");
                 continue;
             }
-            assert!(!rock.core_intact, "k {k}: over the threshold, still intact");
+            assert!(!rock.core_intact, "hit {k}: the last hit left it intact");
             assert_eq!(destroyed_events(&ev), vec![(a.x, a.y)]);
             assert_eq!(
                 batteries(&ev),
@@ -377,18 +325,49 @@ mod tests {
                 "the core did not crumble"
             );
             assert_eq!(wells(&w), 0, "the destroyed core's well is still summed");
-            at_k = Some(k);
-            break;
         }
-        let k = at_k.expect("the core was never destroyed");
-        assert!(k > 0, "control: destroyed with nothing carved");
-        // Once: more carving and more ticks bring no second battery or event.
-        let _ = w.map.carve_circle(a.x, a.y, c + 4);
+        let _ = w.map.carve_circle(a.x, a.y, r);
         for _ in 0..10 {
             w.step(SIM_DT);
         }
         let ev = w.drain_events();
         assert!(destroyed_events(&ev).is_empty() && batteries(&ev).is_empty());
+    }
+
+    /// **What a hit is** (R112): a carve whose hardened disc reaches the core's disc —
+    /// one pixel short is not a hit and one pixel nearer is. A capsule through the
+    /// core is **one** hit however many discs it stamps, and an iron rock (no core)
+    /// is never hit.
+    #[test]
+    fn a_hit_is_a_hardened_disc_that_reaches_the_core_and_a_capsule_is_one() {
+        let w = space_world(4242);
+        let (i, a) = largest(&w);
+        let c = core_radius(&a);
+        let r = 8;
+        let rh = crate::map::carve::hard_radius(r);
+        for (d, hit) in [(c + rh + 1, false), (c + rh, true)] {
+            let mut m = w.map.clone();
+            let res = m.carve_circle(a.x + d, a.y, r);
+            assert_eq!(res.core_hit, hit, "a carve {d} px from the centre");
+            assert_eq!(m.meta.asteroids[i].core_hits, u8::from(hit));
+        }
+        let mut m = w.map.clone();
+        let res = m.carve_capsule(a.x - a.r, a.y, a.x + a.r, a.y, r);
+        assert!(res.core_hit);
+        assert_eq!(
+            m.meta.asteroids[i].core_hits, 1,
+            "a capsule counted per stamp"
+        );
+        let mut iron = w.map.meta.asteroids[i];
+        iron.iron = true;
+        assert!(!core_destroyed(&Asteroid {
+            core_hits: CORE_HITS,
+            ..iron
+        }));
+        assert!(core_destroyed(&Asteroid {
+            core_hits: CORE_HITS,
+            ..a
+        }));
     }
 
     /// Every body centre connected to open air by body-fitting one-pixel moves, within
@@ -451,14 +430,19 @@ mod tests {
                 let centre = Vec2::new(a.x as f32, a.y as f32);
                 let half = a.r + PLAYER_H as i32;
                 let _ = w.drain_events();
+                // Rock bites at half the radius since R111 (T22.21), so the wide arm
+                // carves at twice a body-wide tunnel's radius to dig one.
                 let radius = if wide {
-                    (PLAYER_W / 2.0) as i32 + 1
+                    2 * ((PLAYER_W / 2.0) as i32 + 1)
                 } else {
                     SMG_BLAST_RADIUS.round() as i32
                 };
-                // Straight through the rock from just outside its bounding circle, a
-                // crater a tick, top to bottom and then left to right — one tunnel is
-                // ~10 % of the core, two crossing ones are past the threshold.
+                // Straight through the rock from just outside its bounding circle,
+                // top to bottom and then left to right. *Since R112 (T22.21)* the
+                // core refuses the craters until its third hit and is destroyed on
+                // it — when the first tunnel has only just reached it — so the whole
+                // of both tunnels is dug before the step that destroys it: the shape
+                // this test is about is the finished tunnels', not the third crater's.
                 let span = a.r + 2;
                 let path = (-span..=span)
                     .step_by(2)
@@ -467,6 +451,8 @@ mod tests {
                 let mut destroyed = false;
                 for (x, y) in path {
                     let _ = w.map.carve_circle(x, y, radius);
+                }
+                {
                     w.step(SIM_DT);
                     let ev = w.drain_events();
                     if !destroyed_events(&ev).is_empty() {
@@ -508,7 +494,6 @@ mod tests {
                                 (site - centre).len()
                             );
                         }
-                        break;
                     }
                 }
                 assert!(
@@ -556,7 +541,9 @@ mod tests {
         let run = || {
             let mut w = space_world(77);
             let (_, a) = largest(&w);
-            let _ = w.map.carve_circle(a.x, a.y, core_radius(&a));
+            for _ in 0..CORE_HITS {
+                let _ = w.map.carve_circle(a.x, a.y, core_radius(&a));
+            }
             for _ in 0..3 {
                 w.step(SIM_DT);
             }
@@ -567,5 +554,17 @@ mod tests {
         let (i, _) = largest(&one);
         one.map.meta.asteroids[i].core_intact = true;
         assert_ne!(one.state_hash(), two.state_hash(), "the flag is not hashed");
+        // R112/R113 (T22.21): the hit count and the substance are hashed too.
+        one.map.meta.asteroids[i].core_intact = false;
+        assert_eq!(one.state_hash(), two.state_hash(), "premise: restored");
+        one.map.meta.asteroids[i].core_hits -= 1;
+        assert_ne!(
+            one.state_hash(),
+            two.state_hash(),
+            "the hits are not hashed"
+        );
+        one.map.meta.asteroids[i].core_hits += 1;
+        one.map.meta.asteroids[i].iron = true;
+        assert_ne!(one.state_hash(), two.state_hash(), "iron is not hashed");
     }
 }

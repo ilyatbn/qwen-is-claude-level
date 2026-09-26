@@ -594,6 +594,15 @@ mod tests {
             let _ = w.drain_events();
             let geo = w.map.space_geometry().expect("space");
             let v = Vec2::new(geo.cx, geo.cy);
+            // Open ground about the centre, rocks and their wells gone from it: since
+            // T22.21 (R110, R113) this seed's centre is inside rock, and the claim is
+            // about the vortex's pull, not a rock's.
+            let clear = (VORTEX_REACH + 2.0 * PLAYER_H).ceil() as i32;
+            let _ = w.map.carve_unguarded(v.x as i32, v.y as i32, clear);
+            w.map
+                .meta
+                .asteroids
+                .retain(|a| (Vec2::new(a.x as f32, a.y as f32) - v).len() > (a.r + clear) as f32);
             if with_vortex {
                 let mut seq = 0;
                 let _ = crate::world::vortex::open(&mut w.vortices, &mut seq, v);
