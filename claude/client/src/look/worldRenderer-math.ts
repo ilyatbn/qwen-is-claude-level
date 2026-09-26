@@ -7,10 +7,10 @@
  */
 import type { ViewRect } from './scene'
 
-/** R14: the full tier is the pictures; the low tier halves the render target (and drops MSAA, as the mockup's `scale 2` does). */
+/** R14: the full tier is the pictures; the low tier renders the world canvas and its target at half resolution without MSAA (the mockup's `scale 2`). */
 export type QualityTier = 'full' | 'low'
 
-/** The render target's size as a fraction of the drawing buffer, per tier. */
+/** The world canvas's drawing buffer (and so its post target) as a fraction of the display, per tier. */
 export const TIER_SCALE: Record<QualityTier, number> = { full: 1, low: 0.5 }
 /** MSAA samples on the half-float target, per tier (`kit.js::post`: `samples: scale === 1 ? 4 : 0`). */
 export const TIER_SAMPLES: Record<QualityTier, number> = { full: 4, low: 0 }

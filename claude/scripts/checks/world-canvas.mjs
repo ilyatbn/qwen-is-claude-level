@@ -23,7 +23,8 @@
  *    marker must actually move (a pan that did not happen would pass the agreement trivially).
  *    Laying the ortho camera out one event too early (`prerender`, last frame's `worldView`)
  *    is the `living-sky` trap and shows up here as a gap of one frame's pan.
- * 4. **R14's tier plumbing:** low halves the target and drops MSAA, full is the buffer with 4×.
+ * 4. **R14's tier plumbing:** low renders the canvas and its target at half the display with no MSAA,
+ *    full at the display with 4×.
  * 5. **Control: `&world=off`** (the draw-nothing stub) must fail the marker measurement **by
  *    name** — "no marker in the three.js canvas".
  */
@@ -255,12 +256,14 @@ try {
     return out
   })
   const { low, full } = tiers
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1]
+  const half = (a) => [Math.round(a[0] / 2), Math.round(a[1] / 2)]
   if (
     low?.tier === 'low' && full?.tier === 'full' &&
-    low.target[0] === Math.round(low.buffer[0] / 2) && low.target[1] === Math.round(low.buffer[1] / 2) && low.samples === 0 &&
-    full.target[0] === full.buffer[0] && full.target[1] === full.buffer[1] && full.samples === 4
+    same(low.buffer, half(low.display)) && same(low.target, low.buffer) && low.samples === 0 &&
+    same(full.buffer, full.display) && same(full.target, full.buffer) && full.samples === 4
   ) {
-    t.ok(`tiers: low target ${low.target} of buffer ${low.buffer} (MSAA ${low.samples}), full ${full.target} (MSAA ${full.samples})`)
+    t.ok(`tiers: low canvas+target ${low.target} of display ${low.display} (MSAA ${low.samples}), full ${full.target} (MSAA ${full.samples})`)
   } else {
     t.fail(`tiers: ${JSON.stringify(tiers)}`)
   }

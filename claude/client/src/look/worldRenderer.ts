@@ -8,7 +8,7 @@
  * into an ortho camera in the mockup's y-up mask space (`worldRenderer-math.ts`).
  *
  * The post chain is the mockup's skeleton (`kit.js::post`): a half-float target with 4× MSAA
- * (full tier; the low tier halves it and drops MSAA) → `OutputPass` (ACES at `look.exposure`,
+ * (full tier; the low tier renders the whole canvas at half resolution and drops MSAA) → `OutputPass` (ACES at `look.exposure`,
  * then sRGB). Bloom and the grade come in T23.08.
  *
  * **What it draws today: one test layer**, a flat quad the colour of `look.bg.skyBottom` (read
@@ -136,7 +136,11 @@ export class WorldRenderer implements SceneRenderer {
     this.css = { w, h, dpr }
     s.width = `${w}px`
     s.height = `${h}px`
-    this.renderer.setPixelRatio(dpr)
+    // R14's low tier renders the **whole** world canvas at half resolution and lets CSS scale it
+    // up — the mockup's own `kit.js::makeRenderer({ scale: 2 })`. Measured on the checks'
+    // SwiftShader (sandbox, seed 4242): halving only the post target cost 60 → 47 fps and put the
+    // `birds` check's aim out (2/2 red, green with the renderer off); halving the canvas: 58.5–59.
+    this.renderer.setPixelRatio(dpr * TIER_SCALE[this.tier])
     this.renderer.setSize(w, h, false)
     this.composer.setPixelRatio(dpr * TIER_SCALE[this.tier])
     this.composer.setSize(w, h)
@@ -191,12 +195,22 @@ export class WorldRenderer implements SceneRenderer {
     this.scene3.add(m)
   }
 
-  info(): { tier: QualityTier; buffer: [number, number]; target: [number, number]; samples: number; exposure: number } {
+  /** `display`: Phaser's box in device px; `buffer`: this canvas's drawing buffer; `target`: the post chain's. */
+  info(): {
+    tier: QualityTier
+    display: [number, number]
+    buffer: [number, number]
+    target: [number, number]
+    samples: number
+    exposure: number
+  } {
     const rt = this.composer.renderTarget1
-    const b = bufferSize(this.css.w, this.css.h, this.css.dpr)
+    const d = bufferSize(this.css.w, this.css.h, this.css.dpr)
+    const gl = this.gl
     return {
       tier: this.tier,
-      buffer: [b.w, b.h],
+      display: [d.w, d.h],
+      buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
       target: [rt.width, rt.height],
       samples: rt.samples,
       exposure: this.renderer.toneMappingExposure,

@@ -7298,3 +7298,9 @@ test quad `skyBottom`. Check `world-canvas` (sandbox + match): paint order, test
 (sandbox 236 px pan, match 468 px via `__game.watch`). Controls/plants red: `&world=off` "no marker in the three.js canvas";
 `render`→`prerender` 34/12 px; exposure unset [144,131,150]; z-index 1 → paint order. Bundle +479 kB (gzip +121.6). Headed GPU 59.4 fps.
 Kept: `pixelArt`, `REQUIRE_WEBGL2=false`, tier default low (see task notes). Done-when EXIT=0 (vitest 1171/1171, 2/2).
+
+## T23.03 follow-up — low tier halves the whole world canvas (builder, 2026-09-26)
+Mapped suite on caaa3b8+split: 77/81 — fog-shader, thrusters, solar-flare green on a serial re-run; **birds red 2/2, green with the
+renderer forced off**. Cause measured: halving only the post target cost SwiftShader 60 → 47 fps (sandbox). Low tier now renders the
+whole world canvas at half resolution (mockup `makeRenderer({scale: 2})`): 58.5–59 fps, birds green (1 shot). `world-canvas` tier
+assertion now display/buffer/target; pan worst 0.5 px; trail plant still red (33.5 / 100.5 px).
