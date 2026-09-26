@@ -7308,3 +7308,5 @@ Then: 76/81 on dc556cb — birds still red 4/5 with the renderer on, 3/3 off. Ma
 `WorldRenderer.render` now skips a frame whose view, scene, box and tier are unchanged (the canvas keeps the last picture): match 60.3/60.3,
 birds 3/3 green. `__world.probe` carries a skipped frame's reading over (forcing a draw at probe start). Trail plant still red (31.5/100.5).
 **Animated layers (T23.04's stars) end the skip — the SwiftShader cost comes back then; T23.23's perf owns it.**
+Mapped browser suite after the skip commit (`node scripts/e2e.mjs`, main.ts → all): **81/81 passed**. `check.sh --changed 8b6bfdb --fast`
+earlier: "all affected checks passed" (Rust 1765 passed / 31 ignored, vitest 1171/1171; e2e skipped by --fast, hence the suite run).
