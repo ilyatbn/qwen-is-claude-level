@@ -847,19 +847,17 @@ pub const WELL_SURFACE_BAND: f32 = PLAYER_H;
 /// between rocks there is no chain of wells to run away along, so it now bounds
 /// stacked thrust and pulls rather than a well-to-well runaway.
 ///
-/// **T22.20 (R109) left it at 1350 too, and this is the basis restated against the
-/// halved thrust.** The value is not a function of the thrust: flight from rest
-/// tops out per axis at `JETPACK_MAX_SPEED` (`jetpack::apply_thrust`'s governor,
-/// untouched), and the thrust only sets how fast a body *already past* 260 — a
-/// push-off at `JUMP_VELOCITY`, a pull — climbs on to this clamp. Measured by
-/// `player::space::tests::space_flight_report`, rim to rim across a Medium arena:
-/// from rest **11.57 → 11.68 s**, from a push-off **2.50 → 2.78 s** (both still
-/// reach 1350), so flight still needs this clamp and it is still what the fastest
-/// crossing meets. What the halving moved is the other end — stopping from 1350 by
-/// counter-thrust takes **817 → 1646 px and 1.23 → 2.47 s** (from 260: 28 → 59 px,
-/// 0.25 → 0.48 s), and the dive bounds above fell with the pulls. A lower clamp is
-/// the lever on that stopping distance; it is a separate call, not R109's.
-pub const SPACE_MAX_SPEED: f32 = 1350.0;
+/// **R109b (T22.21) lowered it 1350 → 450: the owner's "inertia" is the top speed.**
+/// T22.20 halved the thrust and left this clamp at 1350, which *doubled* the
+/// stopping distance from top speed (817 → 1646 px, 1.23 → 2.47 s): flight from
+/// rest is governed at `JETPACK_MAX_SPEED` (260) per axis, but a push-off past 260
+/// keeps stacking thrust (`jetpack::apply_thrust`'s "never brake a rocket jump")
+/// up to this clamp. **Basis: ≈ 1.7 × the 260 per-axis cruise** — the smallest
+/// round value above the 367.7 px/s diagonal burn (R10's lower bound, asserted in
+/// `space_max_speed_carries_its_basis`) with room for a push-off to still feel
+/// fast. Measured by `player::space::tests::space_flight_report` (T22.21's file
+/// carries the before/after): stopping from here is what the owner feels.
+pub const SPACE_MAX_SPEED: f32 = 450.0;
 
 // ---------------------------------------------------------------------------
 // T22.10: the breach vortex, and R16's void outside the rim
@@ -1677,7 +1675,7 @@ pub const SNAPSHOT_PLAYER_BYTES: usize = 28;
 ///   `i32` spans ±268 435 455.875 px, which no map approaches (`dimensions_are_sane`
 ///   caps a side at 8192).
 /// - an `i16` of eighths of a px/s would span ±4095.875 px/s — above
-///   `SPACE_MAX_SPEED` (1350) and `MAX_FALL_SPEED` (900), but upward velocity is not
+///   `SPACE_MAX_SPEED` (450) and `MAX_FALL_SPEED` (900), but upward velocity is not
 ///   clamped (`apply_gravity`: knockback still launches) and knockback stacks, so a
 ///   velocity could clamp where the body did not. `i32` costs 4 bytes a player and
 ///   never clamps a velocity the simulation can produce.

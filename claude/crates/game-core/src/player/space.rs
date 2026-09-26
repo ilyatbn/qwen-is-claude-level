@@ -1294,6 +1294,34 @@ mod tests {
         assert_eq!(SPACE_THRUST_DOWN, weakest);
     }
 
+    /// **R109b (T22.21): the inertia is the top speed** — stopping from the fastest a
+    /// body flies in space, against the basis that does not move with the fix: T22.20
+    /// measured **1646 px and 2.47 s** to stop from the old 1350 by counter-thrust at
+    /// the halved push (literals, for the reason `the_space_thrust_is_half_what_it_was`
+    /// spells its basis out). The ruling's target — under 0.5 s and 100 px — is not
+    /// reachable by the top speed alone at `SPACE_THRUST_SCALE` 0.5 without undercutting
+    /// the 367.7 px/s diagonal burn (the counter-thrust decelerates ~550 px/s²), so this
+    /// pins what 450 buys: under a quarter of the distance and half the time. The
+    /// control is the governed cruise, 260 px/s, which this ruling did not touch.
+    ///
+    /// Falsified at the live site: `SPACE_MAX_SPEED` 450 → 1350 fails here.
+    #[test]
+    fn stopping_from_the_space_top_speed_is_short() {
+        let f = flight();
+        let (px, s, _) = f.stop_top;
+        assert!(
+            px < 0.25 * 1646.0 && s < 0.5 * 2.47,
+            "stopping from SPACE_MAX_SPEED takes {px:.1} px in {s:.2} s — T22.20 measured \
+             1646 px / 2.47 s from 1350, and R109b asked for far less"
+        );
+        assert!(
+            f.stop_cruise.0 < px && f.stop_cruise.0 > 0.0,
+            "control: stopping from the 260 cruise ({:.1} px) is not shorter than from \
+             the top speed ({px:.1}) — the instrument measured nothing",
+            f.stop_cruise.0
+        );
+    }
+
     /// The numbers T22.20's task file carries, printed: `cargo test -p game-core
     /// space_flight_report -- --ignored --nocapture`.
     #[test]

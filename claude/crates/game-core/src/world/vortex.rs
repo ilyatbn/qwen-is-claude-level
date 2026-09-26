@@ -460,15 +460,16 @@ mod world_tests {
     /// height further in, is not — the capture is a radius about the hole.
     #[test]
     fn the_capture_disc_spans_the_hole_and_its_mouth() {
-        use crate::constants::{
-            PLAYER_H, SPACE_RIM_THICKNESS, SPACE_VOID_GRACE, VORTEX_CAPTURE_R, VORTEX_REACH,
-        };
+        use crate::constants::{PLAYER_H, SPACE_RIM_THICKNESS, VORTEX_CAPTURE_R, VORTEX_REACH};
         let mouth = SPACE_RIM_THICKNESS as f32 / 2.0 + PLAYER_H / 2.0;
         assert!(
             VORTEX_CAPTURE_R >= mouth,
             "the disc ({VORTEX_CAPTURE_R}) does not reach a body at the hole's mouth ({mouth})"
         );
-        let old = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + SPACE_VOID_GRACE;
+        // The old basis as it stood at R105: the void band was 45 px then (two
+        // ticks at the 1350 px/s top speed). R109b's 450 narrowed the band to 15,
+        // and a basis that moved with it would pin R105 against itself.
+        let old = METEOR_CARVE_R + SPACE_RIM_THICKNESS as f32 + 2.0 * 1350.0 * SIM_DT;
         assert!(
             4.0 * VORTEX_CAPTURE_R <= old + 1.0 && 4.0 * VORTEX_REACH <= 4.0 * old + 4.0,
             "R105: capture {VORTEX_CAPTURE_R} / reach {VORTEX_REACH} are not a quarter of \

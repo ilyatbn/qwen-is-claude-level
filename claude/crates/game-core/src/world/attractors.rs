@@ -1241,17 +1241,24 @@ mod tests {
             crate::constants::BLACK_HOLE_HORIZON_R,
             f32::MAX,
         );
-        let worst = well.max(vortex).max(hole);
+        // *R109b (T22.21) split the margin.* The wells and a vortex are fallen
+        // toward and flown out of, so the clamp keeps 1.5x headroom over their
+        // dives (137.5 and 220.5: 331 < 450). The hole's dive (425.9) ends at its
+        // horizon, where the body dies: the clamp must not bind on that fall, and
+        // there is nothing after it for headroom to protect — so 1x there. At
+        // 1350 all three sat under the 1.5x line; at 450 the hole alone does not.
+        let fallen_and_left = well.max(vortex);
         assert!(
-            SPACE_MAX_SPEED > worst * 1.5,
-            "SPACE_MAX_SPEED {SPACE_MAX_SPEED} against the fastest honest dive \
-             {worst:.1} px/s (well {well:.1}, vortex {vortex:.1}, hole {hole:.1}): \
+            SPACE_MAX_SPEED > fallen_and_left * 1.5 && SPACE_MAX_SPEED > hole,
+            "SPACE_MAX_SPEED {SPACE_MAX_SPEED} against the fastest honest dives \
+             (well {well:.1}, vortex {vortex:.1} — 1.5x each; hole {hole:.1} — 1x): \
              the clamp would fire on a fall toward one attractor"
         );
         // *R101 retired the upper bound* (was: under 2.5x the single-well dive, 695.8
         // px/s): with no field between rocks there is no chain of wells to run away
         // along, so the clamp now bounds only stacked thrust and pulls. Left at 1350
-        // rather than retuned — T22.15 changes the field, not the speed.
+        // rather than retuned — T22.15 changes the field, not the speed. R109b
+        // (T22.21) lowered it to 450 against the stopping distance it bought.
 
         // R10's two named interactions, both computed here.
         let diagonal = (JETPACK_MAX_SPEED * JETPACK_MAX_SPEED * 2.0).sqrt();

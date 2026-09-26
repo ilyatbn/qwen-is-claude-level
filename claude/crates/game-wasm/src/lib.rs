@@ -3811,7 +3811,18 @@ mod tests {
     /// Big enough that `RECONCILE_EPSILON_PX` cannot swallow it and small enough
     /// that the drift stays clear of the arena's walls; it is the shape of a
     /// knockback, not a knockback constant, so it is local to the fixture.
-    const IMPULSE: f32 = 240.0;
+    ///
+    /// *R109b (T22.21): 240 → 120.* The body is mid-jump (`JUMP_VELOCITY` up, 430
+    /// px/s, undamped in space), and `hypot(240, 430)` is over the new 450 px/s
+    /// `SPACE_MAX_SPEED` — the magnitude clamp then bled the impulse, which is a
+    /// damping this fixture exists to show the mode does not have. `hypot(120,
+    /// 430)` = 446 stays under it; the assertion below keeps it there.
+    const IMPULSE: f32 = 120.0;
+    const _: () = assert!(
+        IMPULSE * IMPULSE
+            + game_core::constants::JUMP_VELOCITY * game_core::constants::JUMP_VELOCITY
+            < game_core::constants::SPACE_MAX_SPEED * game_core::constants::SPACE_MAX_SPEED
+    );
 
     /// What one run of [`diverge_then_reconcile`] measured, in pixels.
     struct Reconciled {
@@ -4014,11 +4025,14 @@ mod tests {
     ///
     /// | run | gap at 1 s | gap at 2 s | `dv` at 2 s | after reconcile | +1 s |
     /// |---|---|---|---|---|---|
-    /// | space | 240.0 | 480.0 | **240.0** | 0.00 | 0.00 |
-    /// | standard-gravity control | 207.4 | 207.4 | **0.0** | 0.00 | 0.00 |
-    /// | space, position-only reconcile | 240.0 | 480.0 | 240.0 | 0.00 | **240.00** |
+    /// | space | 120.0 | 240.0 | **120.0** | 0.00 | 0.00 |
+    /// | standard-gravity control | 35.6 | 35.6 | **0.0** | 0.00 | 0.00 |
+    /// | space, position-only reconcile | 120.0 | 240.0 | 120.0 | 0.00 | **120.00** |
     ///
-    /// The space gap is exactly `IMPULSE * t` — 240 px after one second, 480
+    /// (*R109b re-measured at `IMPULSE` 120; at 240 the rows read 240/480/240,
+    /// 207.4/207.4/0 and 240/480/240/240.*)
+    ///
+    /// The space gap is exactly `IMPULSE * t` — 120 px after one second, 240
     /// after two — which is the *"grows as `dv * t`"* sentence the neighbouring
     /// fixture's doc makes, measured rather than reasoned. The control's gap
     /// does **not** shrink; it plateaus, because a position error that has
@@ -4034,7 +4048,7 @@ mod tests {
         // the position gap is its integral, and under gravity that integral
         // keeps growing for a while after the error itself has gone. Asserting
         // on the gap alone would report the wrong answer for the control —
-        // measured, it grows 131.7 px → 207.4 px there.
+        // measured at 240, it grew 131.7 px → 207.4 px there.
         assert!(
             (space.vel_error_late - IMPULSE).abs() < 1.0,
             "space: two seconds after a {IMPULSE} px/s impulse the two sides \

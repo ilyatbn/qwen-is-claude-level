@@ -1103,8 +1103,10 @@ mod tests {
     ///
     /// The second half is the one with teeth: the cap is not merely a number this
     /// test compares against, it is a distance a body actually cannot exceed, so
-    /// the body below is driven at twice `SPACE_MAX_SPEED` with no clamp at all
-    /// and measured. Without it this is arithmetic about two constants.
+    /// the body below is driven at twice the cap with no clamp at all and
+    /// measured. Without it this is arithmetic about two constants. (*R109b: it
+    /// was twice `SPACE_MAX_SPEED`, which at 450 px/s travels 15 px a tick — far
+    /// under the cap, so the bound could not bind; the drive is the cap's now.*)
     #[test]
     fn the_space_terminal_speed_is_not_inert_against_the_substep_cap() {
         let per_tick = MAX_SUBSTEPS as f32 * MAX_SUBSTEP_PX;
@@ -1121,7 +1123,7 @@ mod tests {
         // unclamped body at twice the terminal speed still moves only `per_tick`.
         let map = test_map(W, H, |_| {});
         let mut b = Body::new(Vec2::new(200.0, 150.0));
-        b.vel = Vec2::new(2.0 * crate::constants::SPACE_MAX_SPEED, 0.0);
+        b.vel = Vec2::new(2.0 * cap, 0.0);
         let before = b.pos.x;
         integrate(&map, &mut b, Forces::gravity(0.0), SIM_DT);
         assert!(
@@ -1129,6 +1131,11 @@ mod tests {
             "an unclamped body at {} px/s travelled {} px in one tick, and the \
              sub-step cap says at most {per_tick}",
             b.vel.x,
+            b.pos.x - before
+        ); // The presence half: at twice the cap the bound is what stops it.
+        assert!(
+            (b.pos.x - before) >= per_tick - 0.001,
+            "the body moved {} px, under the {per_tick} px cap — the drive did not reach it",
             b.pos.x - before
         );
     }

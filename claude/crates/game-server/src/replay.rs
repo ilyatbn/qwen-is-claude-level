@@ -345,7 +345,11 @@ pub const HEADER_BYTES: usize = 46;
 /// space, and the wells' cap, the vortex's pull, the black hole's pull and the bots' brake
 /// halve with them — a v31 space recording diverges on the first tick anyone thrusts.
 /// No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 32;
+///
+/// Bumped to 33 by T22.21's R109b: `SPACE_MAX_SPEED` 1350 → 450 (and the void band,
+/// two ticks of it, 45 → 15 px) — a v32 space recording diverges on the first tick a
+/// body passes 450 px/s. No new tag, no layout change.
+pub const REPLAY_VERSION: u16 = 33;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///

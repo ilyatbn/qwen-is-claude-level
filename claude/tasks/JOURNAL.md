@@ -7218,3 +7218,9 @@ cap (337.5), vortex (900), hole edge (405) and `BOT_SPACE_BRAKE` (112.5). Peak a
 (plant 1.0 → red); caps planted back on 900 → 9 escape tests red. `SPACE_MAX_SPEED` kept 1350 (basis restated). **Stopping from
 1350 doubled, 817 → 1646 px** — flagged: may be the owner's "inertia". Bots: kills 4.6 → 3.5, no env/pin regressions; winged-pin
 bound already red at HEAD (4/6/4/4). REPLAY 32; `BELL_PLACE` 0.73. `--changed --fast` green after an ignored.sh line; 8/8 browser.
+
+## T22.21 job 1 — R109b, space top speed 1350 → 450 (builder, 2026-09-26)
+`SPACE_MAX_SPEED` 450 (≈1.7 × cruise), void band 45 → 15 px, REPLAY 33. Stop from top: 1646 px / 2.47 s → **180 px / 0.83 s**
+— the < 0.5 s / < 100 px target is unreachable by this lever at scale 0.5 (needs top < 273, under the 367.7 diagonal floor);
+flagged. New `stopping_from_the_space_top_speed_is_short` (literal basis; plant 1350 → red). Five fixtures that leaned on
+1350 fixed at cause (details in T22.20's R109b section). Bots unchanged (kills 3.3); `--changed --fast` green, 6/6 browser.

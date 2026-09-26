@@ -1064,7 +1064,16 @@ mod tests {
     #[test]
     fn at_ended_it_freezes_and_stays() {
         let (mut w, hole) = hole_world(9);
-        let at = hole + Vec2::new(0.0, crate::constants::BLACK_HOLE_REACH * 0.6);
+        // Sideways, where the arena is widest: straight down from this seed's hole
+        // it sat 19 px past the rim's outer edge — inside the void band once
+        // R109b's lower top speed narrowed `SPACE_VOID_GRACE` to 15 px, so the
+        // void killed the body and this read as the hole killing after the bell.
+        let at = hole + Vec2::new(crate::constants::BLACK_HOLE_REACH * 0.6, 0.0);
+        let geo = w.map.space_geometry().expect("space");
+        assert!(
+            geo.inside(at.x, at.y),
+            "fixture: {at:?} is outside the arena"
+        );
         assert!(pulls(RoundPhase::Playing));
         assert!(!pulls(RoundPhase::Ended));
         // Playing: pulled toward the hole (the control).
@@ -1073,7 +1082,7 @@ mod tests {
         step(&mut w, 0);
         let v_playing = w.player(0).expect("ana").body.vel;
         assert!(
-            v_playing.y < -1.0,
+            v_playing.x < -1.0,
             "control: the hole did not pull ({v_playing:?})"
         );
         // Ended: the same body, the same place — nothing pulls.
@@ -1090,10 +1099,8 @@ mod tests {
         let p = w.player_mut(0).expect("ana");
         p.body = crate::physics::body::Body::new(hole + Vec2::new(1.0, 0.0));
         step(&mut w, 0);
-        assert!(
-            deaths(&w.drain_events()).is_empty(),
-            "it killed after the bell"
-        );
+        let d = deaths(&w.drain_events());
+        assert!(d.is_empty(), "it killed after the bell: {d:?}");
         assert_eq!(w.black_hole(), Some(hole));
     }
 
