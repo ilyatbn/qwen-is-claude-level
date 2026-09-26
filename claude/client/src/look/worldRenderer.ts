@@ -15,7 +15,7 @@
  *
  * **What it draws: the sky** (T23.04, `skyMaterial.ts` — the mockup's `bgQuad`), its layers
  * moved per frame by their parallax offsets (`skyLayout.ts::skyOffsets`, from the same view the
- * ortho camera is laid out from). No sky in space (`look.bg` null): T22.06's backdrop draws there
+ * ortho camera is laid out from); baked once per sky and tier, composited per frame (T23.04B, R21). No sky in space (`look.bg` null): T22.06's backdrop draws there
  * until T23.20. `createWorldRenderer` is the single constructor the look-lab, `GameScene`,
  * `SandboxScene` and `TitleScene` call.
  */
@@ -227,8 +227,10 @@ export class WorldRenderer implements SceneRenderer {
     if (bg) {
       // The same view the camera was just laid out from, so the bands move in the frame they are drawn in.
       const frame: [number, number] = [this.phaserCanvas.width, this.phaserCanvas.height]
-      this.drawnOffsets = skyOffsets(bg, view, this.desc.world, frame[0])
-      this.sky.setOffsets(this.drawnOffsets.layers, this.drawnOffsets.horizon, frame)
+      // T23.04B (R21): shaded once per sky, tier and extent — a pan only moves the bakes, by
+      // whole baked texels.
+      const offsets = skyOffsets(bg, view, this.desc.world, frame[0])
+      this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
     this.composer.render()
     this.stats.frames++
@@ -238,6 +240,28 @@ export class WorldRenderer implements SceneRenderer {
   /** Redraw on the next frame even if nothing changed. */
   invalidate(): void {
     this.dirty = true
+  }
+
+  /**
+   * Dev (T23.04B): the GPU cost of one drawn frame, ms — `n` frames drawn back to back, each
+   * with the view moved 1 px (so nothing is skipped and the sky's offsets change as they do when
+   * the camera pans), each finished by a 1-px readback so the time includes the GPU's work.
+   */
+  timeDraws(n: number): { frames: number; ms: number; perFrame: number } | null {
+    const v = this.stats.view
+    if (!this.desc || !v) return null
+    const gl = this.gl
+    const px = new Uint8Array(4)
+    const t0 = performance.now()
+    for (let i = 0; i < n; i++) {
+      this.dirty = true
+      this.render({ ...v, x: v.x + ((i % 2) * 2 - 1) * (1 + i) })
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    }
+    const ms = performance.now() - t0
+    this.dirty = true
+    this.render(v)
+    return { frames: n, ms, perFrame: ms / n }
   }
 
   /** Dev: a flat magenta quad anchored in the world at mask px `x, y` (top-left), `w × h`. */
@@ -297,6 +321,9 @@ export class WorldRenderer implements SceneRenderer {
     animated: boolean
     /** T23.04: whether the sky is drawn (false on a space map). */
     sky: boolean
+    /** T23.04B (R21): sky bakes made so far, and the bytes the current bakes hold. */
+    skyBakes: number
+    skyBakeBytes: number
   } {
     const rt = this.composer.renderTarget1
     const gl = this.gl
@@ -310,6 +337,8 @@ export class WorldRenderer implements SceneRenderer {
       exposure: this.renderer.toneMappingExposure,
       animated: this.animated,
       sky: this.sky.mesh.visible,
+      skyBakes: this.sky.bakeStats.bakes,
+      skyBakeBytes: this.sky.bakeStats.bytes,
     }
   }
 

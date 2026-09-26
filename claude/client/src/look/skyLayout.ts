@@ -104,3 +104,66 @@ export function skyOffsets(
   const at = (f: number): Offset => [0 - dx * zoom * f, 0 - dy * zoom * f]
   return { layers: bg.layers.map((l) => at(l.parallax ?? 0)), horizon: at(bg.parallax ?? 0) }
 }
+
+/**
+ * T23.04B (R21): world px the camera's centre may sit past the map's clamp (`cameraRig`'s bounds)
+ * and still find baked sky — a margin for shake and a rig overshoot. Past it the bake's edge
+ * texel is repeated (clamp to edge), which reads as the band continuing, not as a hole.
+ */
+export const SKY_PAN_SLACK = 64
+
+/** A baked texture's footprint in its layer's own coordinates, frame px: top-left and size. */
+export interface Extent {
+  org: [number, number]
+  ext: [number, number]
+}
+
+/**
+ * T23.04B (R21): how much of each band to bake so that **every** camera in the map finds it —
+ * the frame plus, each side, the largest offset `skyOffsets` can give that band
+ * (`(world − view)/2 + SKY_PAN_SLACK` × zoom × factor) and one texel for the linear filter's
+ * neighbour. `texel` is frame px per baked texel (1 full, 2 low): origins and sizes are whole
+ * texels, so with no offset a screen pixel's centre lands on a texel's centre and the sample is
+ * the value the shader would have computed there. A layer with no parallax (the look-lab's) is
+ * baked at exactly the frame.
+ */
+export function bakeExtents(
+  bg: Background,
+  view: ViewRect,
+  world: { w: number; h: number },
+  frame: [number, number],
+  texel: number,
+): { layers: Extent[]; horizon: Extent } {
+  const zoom = frame[0] / view.w
+  const dx = Math.max(0, (world.w - view.w) / 2) + SKY_PAN_SLACK
+  const dy = Math.max(0, (world.h - view.h) / 2) + SKY_PAN_SLACK
+  const up = (v: number): number => Math.ceil(v / texel) * texel
+  const at = (f: number, clear = -Infinity): Extent => {
+    const mx = f ? up(dx * zoom * f + texel) : 0
+    const my = f ? up(dy * zoom * f + texel) : 0
+    const top = Math.max(0 - my, Math.floor(clear / texel) * texel)
+    return { org: [0 - mx, top + 0], ext: [frame[0] + 2 * mx, frame[1] + my - top] }
+  }
+  return { layers: bg.layers.map((l) => at(l.parallax ?? 0, clearAbove(l, texel))), horizon: at(bg.parallax ?? 0) }
+}
+
+/**
+ * The band-space row above which a layer is transparent: no copy's edge rises above its apex
+ * (`A.y`, less `APEX_JITTER` when repeated — every shape's edge is `≥` its apex, the staircase only
+ * rounds down-screen), and the edge's smoothstep starts `soft` above it; one texel more for the
+ * filter. The bake starts there and clamp-to-edge repeats that transparent row above it.
+ */
+export function clearAbove(l: BgLayer, texel: number): number {
+  return l.y - (l.period ? APEX_JITTER : 0) - (l.soft ?? 1) - texel
+}
+
+/**
+ * T23.04B (R21): the offsets a frame draws — `skyOffsets` rounded to whole baked texels (`texel`
+ * frame px: 1 full, 2 low). The bakes are sampled nearest, so a snapped frame is exactly
+ * `bgMaterial` evaluated at the snapped offset, texel for texel; a band moves in whole buffer
+ * pixels, as Phaser's `roundPixels` moves the terrain. `+ 0`: never `−0`.
+ */
+export function snapOffsets(o: { layers: Offset[]; horizon: Offset }, texel: number): { layers: Offset[]; horizon: Offset } {
+  const s = (v: number): number => Math.round(v / texel) * texel + 0
+  return { layers: o.layers.map(([x, y]) => [s(x), s(y)]), horizon: [s(o.horizon[0]), s(o.horizon[1])] }
+}

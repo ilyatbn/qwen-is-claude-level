@@ -7335,3 +7335,12 @@ cloud-rain, ambient-rain, canvas-renderer RETIRED (layer gone); world-canvas, sp
 REWRITTEN. Suite 71/75 → crates (race: mirror vs drawn, fixed), space-sky ×2 (day-sky controls, fixed/retired) green on rerun;
 **explosion-shader RED**: the blast's dark interior at R−1 now sits on F1's dark sky (peaks 10–22 < 24) — coordinator's call.
 SwiftShader match fps: still 60.1 (skip), camera moving 37.4 on vs 60.1 off (~34 ms per sky draw at 640×360).
+
+## T23.04B — the sky bakes (R21); the blast check stops reading the sky (builder, 2026-09-26)
+Sky split at its seams (exact algebra, `skyMaterial.ts` header), baked once per sky/tier into float32 targets, composited at
+offsets snapped to whole texels (nearest). SwiftShader match, panning: 20.6 → 59.0–59.6 fps, draw 38.4 → 6.2–6.4 ms (flat quad 4.5).
+Level A F1/F5 deltaE 0.00001 as unbaked (half float: F5 cave 0.011/0.0125; baked grain: 0.00012 — both measured, rejected).
+Memory (R21): low 34–43 MB, full 135–171 MB at zoom 2. look-sky: 0 rebakes over pans, 1 per seed/tier change; plant (camera in key) red.
+explosion-shader: painted = differs from the blast-hidden frame over any of {world canvas, black, white}; 12/12 ×3 (world alone 10/12);
+control re-photograph 0/12; plant half radius → 0/12 red. Plant run also showed linger-off 1.4 > 1 once (pre-existing margin, 0.3–0.8 green).
+vitest bakeExtents/snapOffsets (plants: no zoom, no slack → red). look-sky, look-lab, world-canvas, wasd, thrusters, breach-vortex green.

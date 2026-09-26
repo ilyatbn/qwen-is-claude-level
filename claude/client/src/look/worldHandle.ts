@@ -43,6 +43,8 @@ export interface WorldHandle {
   sky(): ReturnType<WorldRenderer['skyInfo']> | null
   /** T23.04: draw only the sky layers not listed (`look-sky` isolates one band). */
   hideSkyLayers(hide: number[]): void
+  /** T23.04B: ms per drawn frame over `n` forced draws, each finished on the GPU (`WorldRenderer.timeDraws`). */
+  drawCost(n: number): ReturnType<WorldRenderer['timeDraws']>
 }
 
 export interface ProbeSample {
@@ -201,6 +203,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     hideSkyLayers(hide) {
       three?.hideSkyLayers(hide)
     },
+    drawCost: (n) => three?.timeDraws(n) ?? null,
     phaserAlpha(points) {
       const game = scene.game
       const pgl = (game.renderer as { gl?: WebGLRenderingContext }).gl ?? null

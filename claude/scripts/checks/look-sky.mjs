@@ -220,6 +220,9 @@ export default async function ({ page, shot, log }) {
   // screen: pan pairs are tried from the map's centre outward until every band has been seen in
   // both frames of one pair (`MIN_COLS` columns of silhouette each).
   const MIN_COLS = 60
+  // T23.04B (R21): the sky is baked once per sky and tier — the pans and band isolations below
+  // must not rebake it.
+  const bakesBefore = await page.evaluate(() => window.__world.info().skyBakes)
   const shifts = new Array(n).fill(null)
   const seen = []
   let firstPair = null
@@ -252,11 +255,17 @@ export default async function ({ page, shot, log }) {
       seen.push(i)
       log(`band ${i} (parallax ${sky.layers[i].parallax}, camera x ${x0}): measured ${measured.toFixed(1)} px, want ${want.toFixed(1)} (pan ${pan} x zoom ${zoom} x factor), renderer applied ${applied.toFixed(1)}; ${got.n} columns, residual ${got.cost.toFixed(2)}`)
       if (Math.abs(measured - want) > TOL_PX) problems.push(`band ${i} moved ${measured.toFixed(1)} px, want ${want.toFixed(1)} ± ${TOL_PX}`)
-      if (Math.abs(applied - want) > 0.01) problems.push(`band ${i}: the renderer applied ${applied}, the layout says ${want}`)
+      // T23.04B: each offset is drawn snapped to a whole baked texel (`snapOffsets` — one buffer px,
+      // `cssPerBuf` frame px), so the two ends of a pan can each round by half of one.
+      if (Math.abs(applied - want) > cssPerBuf) problems.push(`band ${i}: the renderer applied ${applied}, the layout says ${want} (± one texel, ${cssPerBuf})`)
     }
   }
   await page.evaluate(() => window.__world.hideSkyLayers([]))
   await shot('look-sky-sandbox')
+  const bakesAfter = await page.evaluate(() => window.__world.info())
+  log(`bakes: ${bakesBefore} before the pans, ${bakesAfter.skyBakes} after ${seen.length} bands measured over pans and isolations; ${(bakesAfter.skyBakeBytes / 1e6).toFixed(1)} MB baked at the ${bakesAfter.tier} tier`)
+  if (!(bakesBefore >= 1)) problems.push(`the sky was drawn from ${bakesBefore} bakes — the bake counter is not counting`)
+  if (bakesAfter.skyBakes !== bakesBefore) problems.push(`panning and hiding bands rebaked the sky ${bakesAfter.skyBakes - bakesBefore} time(s)`)
   const unseen = shifts.map((v, i) => (v === null ? i : -1)).filter((i) => i >= 0)
   if (unseen.length) problems.push(`band(s) ${unseen.join(', ')} never on screen in both frames of any pan pair — not measured`)
   const [A, B] = firstPair
@@ -287,6 +296,19 @@ export default async function ({ page, shot, log }) {
   const dOther = differ(same, other)
   const dBack = differ(same, back)
   log(`seeded: another sky seed changes ${dOther} px of ${same.w * same.h}, the first again ${dBack}`)
+  // A new seed is a new sky: each change rebakes it (the frames above could not differ otherwise).
+  const bakesSeeded = await page.evaluate(() => window.__world.info().skyBakes)
+  if (bakesSeeded - bakesAfter.skyBakes !== 2) problems.push(`two seed changes made ${bakesSeeded - bakesAfter.skyBakes} bakes, want 2`)
+  // And a tier change: the texel halves, so the bake is rebuilt at four times the texels.
+  await page.evaluate(() => window.__game.setHighQuality(true))
+  const fullTier = await frame([])
+  const fullInfo = await page.evaluate(() => window.__world.info())
+  await page.evaluate(() => window.__game.setHighQuality(false))
+  await frame([])
+  const lowInfo = await page.evaluate(() => window.__world.info())
+  log(`tier: full ${fullInfo.skyBakeBytes / 1e6} MB (${fullTier.w}x${fullTier.h} buffer), low again ${lowInfo.skyBakeBytes / 1e6} MB; bakes ${bakesSeeded} → ${fullInfo.skyBakes} → ${lowInfo.skyBakes}`)
+  if (fullInfo.tier !== 'full' || fullInfo.skyBakes !== bakesSeeded + 1 || lowInfo.skyBakes !== bakesSeeded + 2) problems.push(`a tier change did not rebake exactly once each way: ${JSON.stringify([bakesSeeded, fullInfo.tier, fullInfo.skyBakes, lowInfo.skyBakes])}`)
+  if (!(fullInfo.skyBakeBytes > 3.5 * lowInfo.skyBakeBytes)) problems.push(`the full tier's bake (${fullInfo.skyBakeBytes} B) is not ~4x the low tier's (${lowInfo.skyBakeBytes} B)`)
   if (dOther < same.w * same.h * 0.05) problems.push(`another seed changed only ${dOther} px`)
   if (dBack !== 0) problems.push(`the first seed again differs in ${dBack} px`)
 

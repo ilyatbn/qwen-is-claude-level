@@ -127,6 +127,13 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   always wins. The stored setting gains an "unset" state (not a new flag), and auto-detection never writes it — it
   still gates today's Phaser shader layers. The browser checks name their tier explicitly (low).
   *Reverse it by:* `qualityTier()` ignoring the detected tier.
+- **R21 — the sky is baked, not re-shaded** (coordinator, 2026-09-26, answering T23.04's fps: 34 ms per sky
+  draw at 640×360, match fps 60 → 37 panning). The sky is static in world space, so each part is shaded once per
+  map and tier into float32 targets and composited per frame at offsets snapped to whole baked texels; rebaked on
+  a new sky (seed) or tier only (T23.04B). Output identical within `look-sky`'s thresholds (F1/F5 deltaE 0.00001).
+  **Memory** (float32 RGBA, today's zoom-2 view): low 34–43 MB, full 135–171 MB (Small→Large map); at R6's zoom 1,
+  low 30–34 MB, full 119–134 MB. Half float would halve it at F5 `deltaE_cave` 0.011 of 0.0125.
+  *Reverse it by:* `SkyQuad.place` rebaking every frame (or restoring T23.04's one-pass `bgMaterial`).
 
 ## Verification — what "exactly the same" means here
 

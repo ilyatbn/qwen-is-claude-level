@@ -22,7 +22,14 @@
  * - **Drawn, not blank**: painted blast against the same frame with the layer hidden.
  * - **The front reaches the blast radius** — the simulation's own number: posed at a
  *   quarter of its life, every point just inside the blast radius is painted. The flat
- *   flash at that instant is reported, not asserted.
+ *   flash at that instant is reported, not asserted. **"Painted" is background-independent**
+ *   (T23.04B, coordinator's ruling): a point is painted when it differs from the same camera's
+ *   frame with the blast hidden by more than `VISIBLE`, over **any** of three backdrops put under
+ *   Phaser's canvas — the world canvas as drawn, black, white. A layer of coverage `a` moves a
+ *   pixel by at least `a·255/2` over black or white whatever its colour, so the verdict is about
+ *   the blast, not about what it sits on: T23.04's sky is dark, the soot is dark, and on the sky
+ *   alone four of twelve points read unpainted at peaks of 10–22. Where the point is on terrain
+ *   (drawn by Phaser, in the same canvas) the backdrop is hidden and the three agree.
  * - **It lingers**: posed after the flat flash has ended, the painted blast is still on
  *   the screen, and with High Quality off nothing is.
  * - **Animates** while frozen and held: Phaser's clock stirs the noise; the flat flash
@@ -41,6 +48,11 @@ const { fail, ok, finish } = tally('explosion-shader')
 
 /** A point counts as painted when some channel moved by more than this. */
 const VISIBLE = 24
+/**
+ * What is under Phaser's (transparent) canvas while a ring point is photographed: the world canvas
+ * as drawn (`null`), or that canvas hidden and the page behind it one flat colour.
+ */
+const BACKDROPS = [null, '#000000', '#ffffff']
 const RING_POINTS = 12
 
 const stack = await startStack({
@@ -279,26 +291,68 @@ if (arrived) {
     const a = (i / RING_POINTS) * Math.PI * 2
     return { x: cx + Math.cos(a) * (R - 1), y: cy + Math.sin(a) * (R - 1) }
   })
+  /** Put `c` under Phaser's canvas (`null`: the world canvas as drawn). CSS only — nothing redraws. */
+  const backdrop = (c) =>
+    page.evaluate((c) => {
+      const world = document.querySelector('#game canvas[data-world]')
+      const game = document.getElementById('game')
+      if (world) world.style.visibility = c === null ? '' : 'hidden'
+      game.style.background = c === null ? '' : c
+      return { world: !!world, hidden: world?.style.visibility === 'hidden', under: getComputedStyle(game).backgroundColor }
+    }, c)
+  /** One photograph per backdrop of the frame as it stands. */
+  const overEach = async () => {
+    const shots = []
+    for (const c of BACKDROPS) {
+      const b = await backdrop(c)
+      if (c !== null && !(b.world && b.hidden)) fail(`backdrop ${c}: the world canvas was not hidden (${JSON.stringify(b)})`)
+      shots.push(await full())
+    }
+    await backdrop(null)
+    return shots
+  }
   await setHQ(true)
   await frame()
-  const qOn = await full()
+  const qOn = await overEach()
   await show(false)
   await frame()
-  const qNone = await full()
+  const qNone = await overEach()
+  const qNone2 = await overEach()
   await show(true)
   await setHQ(false)
   await frame()
-  const qOff = await full()
+  const qOff = await overEach()
   const cover = (r) => r.points.filter(Boolean).length
-  const qPainted = await compare(qOn, qNone, ring, VISIBLE)
-  const qFlat = await compare(qOff, qNone, ring, VISIBLE)
-  console.log(`  at a quarter of its life: blast-radius points painted ${cover(qPainted)}/${ring.length} on, ${cover(qFlat)}/${ring.length} flat (reported)`)
-  // The margin, every run: the faintest ring point against the threshold. Two reds while
-  // building this were peaks of 20 and 22 against 24, so a pass by one is worth seeing.
+  /** Per backdrop, then per point: painted over any backdrop, and its largest change. */
+  const across = async (a, b) => {
+    const per = []
+    for (let i = 0; i < BACKDROPS.length; i++) per.push(await compare(a[i], b[i], ring, VISIBLE))
+    return {
+      per,
+      points: ring.map((_, j) => per.some((r) => r.points[j])),
+      detail: ring.map((_, j) => {
+        const best = per.map((r) => r.detail[j]).reduce((m, d) => (d.peak > m.peak ? d : m))
+        return { ...best, over: BACKDROPS[per.findIndex((r) => r.detail[j] === best)] ?? 'world' }
+      }),
+    }
+  }
+  const qPainted = await across(qOn, qNone)
+  const qFlat = await across(qOff, qNone)
+  const label = (c) => c ?? 'world'
+  console.log(
+    `  at a quarter of its life: blast-radius points painted ${cover(qPainted)}/${ring.length} on, ${cover(qFlat)}/${ring.length} flat (reported); ` +
+      `per backdrop on: ${qPainted.per.map((r, i) => `${label(BACKDROPS[i])} ${cover(r)}/${ring.length}`).join(', ')}`,
+  )
+  // The margin, every run: the faintest ring point against the threshold (its best backdrop).
   const faintest = Math.min(...qPainted.detail.map((p) => p.peak))
-  console.log(`  faintest blast-radius point: peak ${faintest} (visible above ${VISIBLE})`)
+  console.log(`  faintest blast-radius point: peak ${faintest} (visible above ${VISIBLE}); per point ${qPainted.detail.map((p) => `${p.peak}@${label(p.over)}`).join(' ')}`)
   const dark = qPainted.detail.filter((_, i) => !qPainted.points[i])
   if (dark.length) console.log(`  unpainted: ${dark.map((p) => `(${p.x},${p.y}) peak ${p.peak} painted ${p.a} none ${p.b}`).join('; ')}`)
+  // Control: the blast-hidden frame photographed over the three backdrops a second time — a
+  // backdrop swap that did not settle, or leaked into the next photograph, would read as paint.
+  const idle = await across(qNone, qNone2)
+  if (cover(idle) !== 0) fail(`control: ${cover(idle)} ring points "painted" between two photographs of the same blast-hidden frame`)
+  else ok(`control: re-photographing the blast-hidden frame over the three backdrops paints 0/${ring.length}`)
   {
     // The pose, cropped, painted and hidden: what an unpainted point sits on.
     const crop = { x: Math.max(0, Math.round(cx - R * 1.6)), y: Math.max(0, Math.round(cy - R * 1.6)), width: Math.round(R * 3.2), height: Math.round(R * 3.2) }
