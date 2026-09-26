@@ -106,6 +106,15 @@ export function isHighQuality(): boolean {
 }
 
 /**
+ * R20: the stored choice itself — `null` when the player has never chosen. Only the options
+ * panel needs the third state (it shows "Auto (Full)" / "Auto (Low)" for it); every renderer
+ * asks `isHighQuality()` or `qualityTier()`.
+ */
+export function highQualityChoice(): boolean | null {
+  return highQuality
+}
+
+/**
  * Set it, persist it, and tell whoever is listening.
  *
  * Returns the value actually in force, read back rather than echoed: a setter

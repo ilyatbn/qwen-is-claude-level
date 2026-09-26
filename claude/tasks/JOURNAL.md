@@ -7319,3 +7319,9 @@ R20: `qualityTier(gl)` detects from three's context when never chosen; checks st
 Plants red: skip ignores y (both vertical legs), `sameView` ignores y, realloc not dirtied (tier switch, camera still), stale box, integer box,
 buffer ×DPR; vitest: animated ignored, viewOf rounded. Review's `resized` plant is moot under R18 (a resize never reallocates).
 Done-when 5/5 + vitest 1181 + look-compare 9/9 + render_fields 6/6; `--changed 73f2adb --fast` all affected passed; full browser suite **81/81**.
+
+## R20 follow-up — the options panel reads "Auto" (builder, 2026-09-26)
+Never chosen: the High Quality button reads "Auto (Full)" / "Auto (Low)" from the world renderer's detected tier
+(`GameWorld.detectedTier`, low until it loads); one click stores the other choice explicitly (Auto (Full) → '0', Auto (Low) → '1').
+`qualityRow(shaders, choice, detected)`; `settings.ts::highQualityChoice`. vitest drives the panel's click on a fake document (plant:
+old `!isHighQuality()` rule → red). escape-menu + fps-counter 2/2; `check.sh --changed HEAD --fast` EXIT 0 (vitest 1184/1184).

@@ -2787,6 +2787,9 @@ export class GameScene extends Phaser.Scene {
       storage: localStorage,
       // T21.33: on the Canvas renderer High Quality has nothing to run, so the row says so.
       shadersAvailable: hasWebGL(this),
+      // R20: "Auto (Full)" / "Auto (Low)" for a player who never chose — the world renderer's GPU;
+      // low until it has loaded (what `qualityTier(null)` answers too).
+      detectedTier: () => this.worldRenderer?.detectedTier() ?? 'low',
     })
     this.escapeMenu = new EscapeMenu({
       onResume: () => this.escapeMenu?.toggle(false),

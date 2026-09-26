@@ -12,7 +12,7 @@
  * switch the first effect can simply use.
  */
 
-import { isFpsCounter, isHighQuality, setFpsCounter, setHighQuality } from './settings'
+import { highQualityChoice, isFpsCounter, setFpsCounter, setHighQuality } from './settings'
 
 const PANEL =
   'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:46;' +
@@ -34,8 +34,8 @@ const BTN =
  * Shared rather than copied: the second toggle arrived and the first thing a
  * copy would have dropped is the `aria-pressed` the first one earned.
  */
-function paint(btn: HTMLButtonElement, on: boolean): void {
-  btn.textContent = on ? 'On' : 'Off'
+function paint(btn: HTMLButtonElement, on: boolean, label: string = on ? 'On' : 'Off'): void {
+  btn.textContent = label
   btn.setAttribute('aria-pressed', String(on))
   btn.style.borderColor = on ? 'rgba(120,220,255,.75)' : 'rgba(255,255,255,.25)'
 }
@@ -46,21 +46,31 @@ export const QUALITY_HINT = 'Nicer fog, smoke, fire and beams. Needs a newer gra
 export const QUALITY_HINT_NO_WEBGL = 'Needs WebGL, which this browser is not using.'
 
 /**
- * What the High Quality row shows (T21.33).
+ * What the High Quality row shows (T21.33; R20 for the never-chosen state).
  *
  * **With no WebGL the toggle is disabled and reads Off**, whatever is stored: every effect
  * it selects is a shader, a shader cannot run on the Canvas renderer, and each shader site
  * already falls back through `hasWebGL`. A button reading On there would be a setting the
  * player flips, sees nothing, and cannot explain. The stored value is left alone, so the
  * same player on a WebGL browser keeps their choice.
+ *
+ * **Never chosen (`choice === null`) reads "Auto (Full)" / "Auto (Low)"**, from the tier the
+ * world renderer detected on this machine (`settings.ts::detectTier`) — so the row says what
+ * the player is actually getting, where "Off" on a detected-full GPU said the opposite. `on` is
+ * the tier in force, and it is what a click flips: **one click stores the other choice
+ * explicitly** (Auto (Full) → Off, Auto (Low) → On), so the click always changes the picture.
  */
 export function qualityRow(
   shadersAvailable: boolean,
-  stored: boolean,
-): { on: boolean; disabled: boolean; hint: string } {
-  return shadersAvailable
-    ? { on: stored, disabled: false, hint: QUALITY_HINT }
-    : { on: false, disabled: true, hint: QUALITY_HINT_NO_WEBGL }
+  choice: boolean | null,
+  detected: 'full' | 'low',
+): { on: boolean; label: string; disabled: boolean; hint: string } {
+  if (!shadersAvailable) return { on: false, label: 'Off', disabled: true, hint: QUALITY_HINT_NO_WEBGL }
+  if (choice === null) {
+    const on = detected === 'full'
+    return { on, label: on ? 'Auto (Full)' : 'Auto (Low)', disabled: false, hint: QUALITY_HINT }
+  }
+  return { on: choice, label: choice ? 'On' : 'Off', disabled: false, hint: QUALITY_HINT }
 }
 
 export interface OptionsPanelDeps {
@@ -70,6 +80,11 @@ export interface OptionsPanelDeps {
   onClose(): void
   /** Where the setting is persisted. Injected so a test can supply its own. */
   storage: Pick<Storage, 'setItem'>
+  /**
+   * R20: the tier detected on this machine's GPU, for the never-chosen label — asked at each
+   * paint, because the world renderer (which owns the context it is read from) loads later.
+   */
+  detectedTier(): 'full' | 'low'
 }
 
 export class OptionsPanel {
@@ -108,10 +123,12 @@ export class OptionsPanel {
     this.quality.style.cssText = BTN
     this.quality.addEventListener('click', () => {
       // A disabled button fires no click, but the rule belongs to the row, not to the DOM.
-      if (qualityRow(this.deps.shadersAvailable, isHighQuality()).disabled) return
+      const q = this.row()
+      if (q.disabled) return
       // **Read the value back rather than tracking one here.** A panel with its
-      // own copy of the setting is a second answer to the same question.
-      setHighQuality(this.deps.storage, !isHighQuality())
+      // own copy of the setting is a second answer to the same question. R20: from
+      // "Auto" the click stores the opposite of the tier in force, explicitly.
+      setHighQuality(this.deps.storage, !q.on)
       this.refresh()
     })
 
@@ -156,9 +173,13 @@ export class OptionsPanel {
   }
 
   /** Paint the buttons from the settings, never from a local flag. */
+  private row(): ReturnType<typeof qualityRow> {
+    return qualityRow(this.deps.shadersAvailable, highQualityChoice(), this.deps.detectedTier())
+  }
+
   private refresh(): void {
-    const q = qualityRow(this.deps.shadersAvailable, isHighQuality())
-    paint(this.quality, q.on)
+    const q = this.row()
+    paint(this.quality, q.on, q.label)
     this.quality.disabled = q.disabled
     this.quality.style.opacity = q.disabled ? '.45' : '1'
     this.quality.style.cursor = q.disabled ? 'not-allowed' : 'pointer'

@@ -39,7 +39,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { devSurface } from '../dev'
-import { onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
+import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import type { SceneDescription, ViewRect } from './scene'
 import { F1 } from './scenes/F1'
@@ -341,6 +341,8 @@ export interface GameWorld {
   readonly renderer: SceneRenderer
   /** `map_init` / a regenerated sandbox map: describe the new size. */
   mapChanged(mapW: number, mapH: number): void
+  /** R20: the tier detected on this renderer's GPU (the options panel's "Auto (…)"); low where three did not start. */
+  detectedTier(): QualityTier
 }
 
 /**
@@ -349,7 +351,11 @@ export interface GameWorld {
  */
 export function createGameWorld(scene: Phaser.Scene, mapW: number, mapH: number): GameWorld {
   const renderer = createWorldRenderer(scene, gameDescription(mapW, mapH))
-  return { renderer, mapChanged: (w, h) => renderer.setScene(gameDescription(w, h)) }
+  return {
+    renderer,
+    mapChanged: (w, h) => renderer.setScene(gameDescription(w, h)),
+    detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
+  }
 }
 
 /**
