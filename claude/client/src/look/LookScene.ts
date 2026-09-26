@@ -11,7 +11,7 @@
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
-import { describeScene, type SceneDescription } from './scene'
+import { actorBoxes, describeScene, type Box, type SceneDescription } from './scene'
 import { SCENES } from './scenes'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 
@@ -28,6 +28,8 @@ export interface LookHandle {
   described: RenderStats['scene']
   rendered: RenderStats['scene']
   camera: SceneDescription['camera'] | null
+  /** T23.02: the actors' screen boxes from the description — look-compare's `actors` region. */
+  actorBoxes: Box[]
   /** The view the renderer was last asked to draw: Phaser's `worldView`. */
   view: RenderStats['view']
 }
@@ -49,6 +51,7 @@ export class LookScene extends Phaser.Scene {
       described: null,
       rendered: null,
       camera: null,
+      actorBoxes: [],
       view: null,
     }
     if (devSurface()) (window as unknown as { __look: LookHandle }).__look = handle
@@ -62,6 +65,7 @@ export class LookScene extends Phaser.Scene {
     const desc = describeScene(data)
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
+    handle.actorBoxes = actorBoxes(desc)
 
     // The mockup draws at zoom 1 on a 1280×720 strip; fit the scene's camera rect to the
     // viewport so `worldView` is exactly that rect.

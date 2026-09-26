@@ -7280,3 +7280,12 @@ control `?look=F9` must name F9 and stay not-ready. Plants: renderer gets `actor
 `ready = true` on error → control red. `no-dev-surface` (outside Touch-only, CLAUDE.md: every window handle belongs in it):
 +`LookScene`, `__look`, `?look=F1` lands on title — ok. Done-when EXIT=0 (vitest 1157/1157, look-lab 1/1); +no-dev-surface,
 sandbox, title, skins, webgl2 6/6. Full mapped suite (main.ts → all 80) deferred to T23.03's run, which covers this tree.
+
+## T23.02 remainder — actor boxes (builder, 2026-09-26)
+Boxes **measured**: `look/scenes/measure-boxes.mjs` runs the mockup's real `lit()`/`smoke()` per actor on a blank canvas in headless
+Chromium → alpha>0 bbox → `actor-boxes.json` (F1 15, F2 15, F3 11, F4 16, F5 15 = actor counts); `dump-mockup.mjs` merges them as
+`Actor.box` (additions only). `look-compare --actors F1` / `withActors` paints region 4; thresholds re-measured with actors excluded:
+sky rim-off .228→.127 (thr .06374), terrain .107→.0926 (.0463), cave fog-off .0242→.0250 (.01251), new `deltaE_actors` F0 39.4 /
+fog-off .124 (.06181); others unchanged. Boxes-on-actors test: rim-off ΔE actors 1.70 vs sky .127; boxes shifted +200 px → .307 vs
+.222 (control fails the 5× bound). `look-lab` asserts `__look.actorBoxes` == the JSON (plant x0+1 → red). Done-when `node --test`
+8/8 EXIT=0. Lab floor (two back-ends) owed by T23.08's gate (written as its step 4); T23.02 ticked.

@@ -6,12 +6,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compare, deltaE2000, failures, loadPng } from './look-compare.mjs'
+import { actorBoxes, compare, deltaE2000, failures, loadPng, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
 const th = JSON.parse(readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
-const regions = loadPng(ref('reference/controls/regions-F1.png'))
+// Sky / terrain / cave from the mask, with F1's actor boxes (measured from the mockup's drawing,
+// the numbers the scene description carries) painted over them as the fourth region.
+const boxes = actorBoxes('F1')
+const regions = withActors(loadPng(ref('reference/controls/regions-F1.png')), boxes)
 const f1 = loadPng(ref(th.reference))
 const file = c => th.controls[c].split(' ')[0]
 const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(file(c))), { regions })]))
@@ -65,4 +68,18 @@ test('the recorded floors and smallest controls are what the instrument measures
 test('FLIP is never reported uncomputed', () => {
   assert.equal(rows.F0.flip, null)
   assert.match(rows.F0.flipNote, /not computed/)
+})
+
+test('the actor boxes are where the actors are: rim-off lands inside them', () => {
+  // rim-off changes only what lit() paints — the actors (plus the bloom they feed). Measured:
+  // mean ΔE 1.70 inside the boxes against 0.127 in the sky. The same boxes shifted 200 px right
+  // (the control) sit mostly on empty sky and terrain and must lose that contrast.
+  const inside = m => m.deltaE_actors
+  const outside = m => Math.max(m.deltaE_sky, m.deltaE_terrain)
+  const rim = rows['rim-off']
+  assert.equal(boxes.length, 15, 'F1 has 15 actors (scenes.test.ts counts them against f_scene.js)')
+  assert.ok(inside(rim) > 5 * outside(rim), `rim-off: actors ${inside(rim)} vs outside ${outside(rim)}`)
+  const shifted = withActors(loadPng(ref('reference/controls/regions-F1.png')), boxes.map(([a, b, c, d]) => [a + 200, b, c + 200, d]))
+  const moved = compare(f1, loadPng(ref(file('rim-off'))), { regions: shifted })
+  assert.ok(!(inside(moved) > 5 * outside(moved)), `control: shifted boxes still concentrate rim-off (${inside(moved)} vs ${outside(moved)})`)
 })

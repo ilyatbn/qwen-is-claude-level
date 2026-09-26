@@ -247,12 +247,21 @@ export interface ActorOpts {
   grow?: number
 }
 
+/** A half-open pixel rect `[x0, y0, x1, y1]`, mask px, y down. */
+export type Box = [number, number, number, number]
+
 export interface Actor {
   kind: ActorKind
   x: number
   y: number
   opts: ActorOpts
   lit: LitOpts | null
+  /**
+   * T23.02: every pixel this actor paints (halo, shadow, rim passes, marker, flame), measured
+   * from the mockup's own drawing (`scenes/measure-boxes.mjs`); `null` if it paints nothing on
+   * screen. The look-compare `actors` region is the union of these.
+   */
+  box: Box | null
 }
 
 export type Fx =
@@ -335,4 +344,9 @@ export function describeScene(d: SceneData): SceneDescription {
     labels: d.labels,
     hud: d.hud,
   }
+}
+
+/** T23.02: the screen boxes of a scene's actors, in draw order — the look-compare `actors` region. */
+export function actorBoxes(d: Pick<SceneDescription, 'actors'>): Box[] {
+  return d.actors.flatMap((a) => (a.box ? [a.box] : []))
 }

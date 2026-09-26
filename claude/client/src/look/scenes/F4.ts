@@ -212,7 +212,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    67,
+    474,
+    164,
+    614
+   ]
   },
   {
    "kind": "stick",
@@ -228,7 +234,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    250,
+    502,
+    351,
+    621
+   ]
   },
   {
    "kind": "stick",
@@ -302,7 +314,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    430,
+    494,
+    669,
+    612
+   ]
   },
   {
    "kind": "stick",
@@ -320,7 +338,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    646,
+    411,
+    746,
+    520
+   ]
   },
   {
    "kind": "turret",
@@ -336,7 +360,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    815,
+    520,
+    954,
+    623
+   ]
   },
   {
    "kind": "gate",
@@ -351,7 +381,13 @@ export const F4: SceneData = {
     "size": 3,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    1058,
+    485,
+    1162,
+    603
+   ]
   },
   {
    "kind": "beetle",
@@ -364,7 +400,13 @@ export const F4: SceneData = {
     "size": 2,
     "halo": "120,120,170",
     "shadow": false
-   }
+   },
+   "box": [
+    51,
+    163,
+    169,
+    281
+   ]
   },
   {
    "kind": "spider",
@@ -377,7 +419,13 @@ export const F4: SceneData = {
     "size": 2,
     "halo": "120,120,170",
     "shadow": false
-   }
+   },
+   "box": [
+    211,
+    163,
+    329,
+    281
+   ]
   },
   {
    "kind": "bird",
@@ -391,7 +439,13 @@ export const F4: SceneData = {
     "size": 1.5,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    393,
+    196,
+    451,
+    217
+   ]
   },
   {
    "kind": "bird",
@@ -405,7 +459,13 @@ export const F4: SceneData = {
     "size": 1.2,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    478,
+    220,
+    525,
+    238
+   ]
   },
   {
    "kind": "crystals",
@@ -418,7 +478,13 @@ export const F4: SceneData = {
     "size": 2,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    578,
+    177,
+    682,
+    287
+   ]
   },
   {
    "kind": "smoke",
@@ -488,7 +554,13 @@ export const F4: SceneData = {
     "size": 9,
     "grow": 1.5
    },
-   "lit": null
+   "lit": null,
+   "box": [
+    718,
+    185,
+    878,
+    236
+   ]
   },
   {
    "kind": "rocket",
@@ -502,7 +574,13 @@ export const F4: SceneData = {
     "size": 2,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    851,
+    173,
+    908,
+    220
+   ]
   },
   {
    "kind": "stick",
@@ -518,7 +596,13 @@ export const F4: SceneData = {
     "size": 1.8,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    1009,
+    373,
+    1052,
+    443
+   ]
   },
   {
    "kind": "stick",
@@ -534,7 +618,13 @@ export const F4: SceneData = {
     "size": 1.8,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    1099,
+    380,
+    1150,
+    443
+   ]
   },
   {
    "kind": "stick",
@@ -550,7 +640,13 @@ export const F4: SceneData = {
     "size": 1.8,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    1189,
+    380,
+    1241,
+    443
+   ]
   }
  ],
  "fx": [

@@ -6,11 +6,14 @@
  * data (`__look.described`) against what the renderer received (`__look.rendered`) — actors,
  * lights, fx, labels and the mask's rock pixel count — and the view the renderer was asked to
  * draw (Phaser's `worldView`) against the scene's own camera rect. `ready` must mean a frame
- * was drawn: `frames ≥ 1`.
+ * was drawn: `frames ≥ 1`. T23.02: the actor boxes the page describes are the ones
+ * `look-compare` paints as its `actors` region (`actorBoxes(id)`), one per actor.
  *
  * Control: an unknown scene id must be reported by name and **never** become ready — a page
  * that set `ready` unconditionally would pass every positive assertion above.
  */
+import { actorBoxes } from '../lib/look-compare.mjs'
+
 const SCENES = ['F1', 'F2', 'F3', 'F4', 'F5']
 
 export default async function ({ page, shot, log }) {
@@ -46,6 +49,10 @@ export default async function ({ page, shot, log }) {
     if (!v || v.x !== c.x || v.y !== c.y || v.w !== c.w || v.h !== c.h) {
       fail(`the renderer was asked for view ${JSON.stringify(v)}, the scene's camera is ${JSON.stringify(c)}`)
     }
+    // T23.02: the actor region look-compare paints is the one this scene describes.
+    const want = JSON.stringify(actorBoxes(id))
+    if (JSON.stringify(h.actorBoxes) !== want) fail(`actor boxes differ from look-compare's: ${JSON.stringify(h.actorBoxes)} vs ${want}`)
+    if (h.actorBoxes.length !== d.actors) fail(`${h.actorBoxes.length} actor boxes for ${d.actors} actors`)
     log(`${id}: ${h.backend}, ${h.frames} frame(s), ${d.actors} actors, ${d.lights} lights, ${d.fx} fx, ${d.solidPx} rock px, view ${v.w}x${v.h}`)
     await shot(`look-lab-${id}`)
   }

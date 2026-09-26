@@ -3,7 +3,7 @@
  * renderer receives of it, counted at both ends.
  */
 import { describe, expect, it } from 'vitest'
-import { decodeMask, describeScene } from './scene'
+import { actorBoxes, decodeMask, describeScene } from './scene'
 import { SCENES } from './scenes'
 import { StubRenderer, sceneCounts } from './renderer'
 
@@ -45,4 +45,18 @@ describe('StubRenderer', () => {
     const d = { ...describeScene(SCENES.F1!), masks: null }
     expect(sceneCounts(d).solidPx).toBeNull()
   })
+})
+
+describe('actor boxes (T23.02)', () => {
+  for (const [id, data] of Object.entries(SCENES)) {
+    it(`${id}: one measured box per actor, each holding its actor's anchor`, () => {
+      expect(actorBoxes(describeScene(data)).length).toBe(data.actors.length)
+      for (const a of data.actors) {
+        const [x0, y0, x1, y1] = a.box!
+        // The anchor is where the mockup drew from: feet, body centre, the smoke's first puff.
+        expect(x0 <= a.x && a.x <= x1 && y0 <= a.y && a.y <= y1, `${id} ${a.kind} at ${a.x},${a.y} box ${a.box}`).toBe(true)
+        expect(x1 > x0 && y1 > y0).toBe(true)
+      }
+    })
+  }
 })

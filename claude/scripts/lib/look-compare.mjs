@@ -1,6 +1,6 @@
 // T23.02 — `look-compare`: how far a rendered frame is from an M23 reference picture.
 //
-//   node scripts/lib/look-compare.mjs <reference.png> <candidate.png> [--regions map.png] [--json]
+//   node scripts/lib/look-compare.mjs <reference.png> <candidate.png> [--regions map.png [--actors F1]] [--json]
 //
 // Every metric is a **distance** (0 = identical, larger = further), so every threshold in
 // `look-thresholds.json` is a maximum. Thresholds are measured, never picked (M23-art.md
@@ -30,6 +30,30 @@ export const REGIONS = { 1: 'sky', 2: 'terrain', 3: 'cave', 4: 'actors' }
 export const BLOOM_LUMA = 196
 /** Sobel magnitude (luma levels) above which a pixel counts as an edge. */
 export const EDGE_SOBEL = 48
+
+/**
+ * T23.02: a reference scene's actor boxes (`[x0, y0, x1, y1]`, half-open, mask px), measured from
+ * the mockup's own drawing by `client/src/look/scenes/measure-boxes.mjs`. The same file is merged
+ * into the scene description the look-lab hands the renderer (`Actor.box`), and `look-lab`
+ * asserts the two agree — so the region this compares is the one the scene describes.
+ */
+export function actorBoxes(id) {
+  const all = JSON.parse(readFileSync(join(root, 'client/src/look/scenes/actor-boxes.json'), 'utf8'))
+  if (!all[id]) throw new Error(`no actor boxes for ${id}`)
+  return all[id].filter(Boolean)
+}
+
+/** A copy of region map `regions` with every px inside a box set to the actors id: actors win. */
+export function withActors(regions, boxes) {
+  const id = Number(Object.keys(REGIONS).find(k => REGIONS[k] === 'actors'))
+  const out = { width: regions.width, height: regions.height, data: Uint8Array.from(regions.data) }
+  for (const [x0, y0, x1, y1] of boxes) {
+    for (let y = Math.max(0, y0); y < Math.min(out.height, y1); y++) {
+      for (let x = Math.max(0, x0); x < Math.min(out.width, x1); x++) out.data[(y * out.width + x) * 4] = id
+    }
+  }
+  return out
+}
 
 export function loadPng(path) {
   const p = PNG.sync.read(readFileSync(path))
@@ -223,7 +247,14 @@ export function failures(metrics, thresholds) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   const ri = args.indexOf('--regions')
-  const regions = ri >= 0 ? loadPng(args.splice(ri, 2)[1]) : null
+  let regions = ri >= 0 ? loadPng(args.splice(ri, 2)[1]) : null
+  // `--actors F1`: paint that scene's actor boxes over the region map (needs `--regions`).
+  const ai = args.indexOf('--actors')
+  if (ai >= 0) {
+    const id = args.splice(ai, 2)[1]
+    if (!regions) throw new Error('--actors needs --regions')
+    regions = withActors(regions, actorBoxes(id))
+  }
   const json = args.includes('--json')
   const [ra, rb] = args.filter(x => !x.startsWith('--'))
   const m = compare(loadPng(ra), loadPng(rb), { regions })

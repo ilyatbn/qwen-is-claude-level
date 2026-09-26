@@ -340,7 +340,13 @@ export const F3: SceneData = {
     "size": 5,
     "grow": 1.4
    },
-   "lit": null
+   "lit": null,
+   "box": [
+    437,
+    161,
+    739,
+    276
+   ]
   },
   {
    "kind": "stick",
@@ -359,7 +365,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    688,
+    293,
+    722,
+    333
+   ]
   },
   {
    "kind": "stick",
@@ -375,7 +387,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    416,
+    265,
+    449,
+    312
+   ]
   },
   {
    "kind": "stick",
@@ -394,7 +412,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    1150,
+    326,
+    1184,
+    364
+   ]
   },
   {
    "kind": "rocket",
@@ -407,7 +431,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    732,
+    154,
+    757,
+    173
+   ]
   },
   {
    "kind": "turret",
@@ -422,7 +452,13 @@ export const F3: SceneData = {
     "size": 1.2,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    1032,
+    132,
+    1078,
+    168
+   ]
   },
   {
    "kind": "spider",
@@ -436,7 +472,13 @@ export const F3: SceneData = {
     "size": 0.6,
     "halo": "110,120,190",
     "shadow": false
-   }
+   },
+   "box": [
+    942,
+    319,
+    978,
+    358
+   ]
   },
   {
    "kind": "beetle",
@@ -449,7 +491,13 @@ export const F3: SceneData = {
     "size": 0.6,
     "halo": "110,120,190",
     "shadow": true
-   }
+   },
+   "box": [
+    992,
+    485,
+    1028,
+    521
+   ]
   },
   {
    "kind": "gate",
@@ -464,7 +512,13 @@ export const F3: SceneData = {
     "size": 1.4,
     "halo": null,
     "shadow": true
-   }
+   },
+   "box": [
+    1076,
+    452,
+    1124,
+    506
+   ]
   },
   {
    "kind": "crystals",
@@ -477,7 +531,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    228,
+    251,
+    272,
+    297
+   ]
   },
   {
    "kind": "crystals",
@@ -493,7 +553,13 @@ export const F3: SceneData = {
     "size": 1,
     "halo": null,
     "shadow": false
-   }
+   },
+   "box": [
+    635,
+    101,
+    665,
+    134
+   ]
   }
  ],
  "fx": [
