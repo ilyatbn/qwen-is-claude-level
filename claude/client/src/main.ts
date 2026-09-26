@@ -156,8 +156,9 @@ function rendererType(): number {
 
 async function main(): Promise<Phaser.Game | null> {
   // T23.00 / R2: **before anything boots**, a machine without WebGL2 gets a plain full-screen
-  // message rather than a broken game. Not enforced until T23.03 flips `REQUIRE_WEBGL2`: the
-  // world is still drawn by Phaser, which runs on Canvas (see `webgl2.ts`).
+  // message rather than a broken game. **Still not enforced after T23.03** (`REQUIRE_WEBGL2`
+  // false): three.js draws only a test layer, the world is still Phaser's and still runs on
+  // Canvas; R2 retires that path when three.js draws the world (see `webgl2.ts`).
   if (!gateOnWebgl2<HTMLElement>(document.createElement('canvas'), document)) return null
 
   const core = await Core.init()
@@ -184,7 +185,14 @@ async function main(): Promise<Phaser.Game | null> {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
     },
+    // T23.03 / R1: transparent, so the three.js world canvas under it shows through wherever
+    // Phaser draws nothing (`look/worldRenderer.ts`). The page behind both is `#0b1020` too, so a
+    // scene without a world renderer looks as before.
+    transparent: true,
     render: {
+      // T23.03 step 4: kept. `pixelArt` (nearest filtering + `roundPixels`) and `antialias: false`
+      // still serve every world layer Phaser draws today — the atlases, the chunk tiles, the
+      // ordnance and item sprites. They go when the last of those moves to three.js (R15).
       pixelArt: true,
       antialias: false,
     },

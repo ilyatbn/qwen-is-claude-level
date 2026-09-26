@@ -101,6 +101,19 @@ export function setHighQuality(store: Pick<Storage, 'setItem'>, on: boolean): bo
   return highQuality
 }
 
+/**
+ * T23.03 / R14: High Quality picks the world renderer's **tier**, not whether shaders exist —
+ * full is the pictures, low halves the render target (`look/worldRenderer-math.ts::TIER_SCALE`).
+ *
+ * Derived from the one High Quality flag, not a second setting (CLAUDE.md: derive, do not add a
+ * flag). **Default: the flag's default, off → low**, although R14 says full: flipping the stored
+ * default now would also switch today's Phaser shader layers on for every player and check that
+ * has never set it. The default moves to full when those readers retire (R15, T23.23).
+ */
+export function qualityTier(): 'full' | 'low' {
+  return highQuality ? 'full' : 'low'
+}
+
 type Listener = (on: boolean) => void
 const listeners = new Set<Listener>()
 

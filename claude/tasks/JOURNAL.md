@@ -7289,3 +7289,12 @@ sky rim-off .228→.127 (thr .06374), terrain .107→.0926 (.0463), cave fog-off
 fog-off .124 (.06181); others unchanged. Boxes-on-actors test: rim-off ΔE actors 1.70 vs sky .127; boxes shifted +200 px → .307 vs
 .222 (control fails the 5× bound). `look-lab` asserts `__look.actorBoxes` == the JSON (plant x0+1 → red). Done-when `node --test`
 8/8 EXIT=0. Lab floor (two back-ends) owed by T23.08's gate (written as its step 4); T23.02 ticked.
+
+## T23.03 — three.js under Phaser (builder, 2026-09-26)
+`createWorldRenderer` (look-lab, GameScene, SandboxScene): three canvas after Phaser's in DOM, painted under it (z −1 in an isolated
+`#game`; 32 checks read `querySelector('canvas')`), Phaser `transparent: true`, half-float+MSAA → OutputPass ACES at `look.exposure`,
+test quad `skyBottom`. Check `world-canvas` (sandbox + match): paint order, test layer [151,138,157] at 28/28 Phaser-clear points
+(sky-on control 0/28), tiers low 640×360/MSAA 0 · full 1280×720/4, plus-sign marker read back from both canvases per frame: worst 0 px
+(sandbox 236 px pan, match 468 px via `__game.watch`). Controls/plants red: `&world=off` "no marker in the three.js canvas";
+`render`→`prerender` 34/12 px; exposure unset [144,131,150]; z-index 1 → paint order. Bundle +479 kB (gzip +121.6). Headed GPU 59.4 fps.
+Kept: `pixelArt`, `REQUIRE_WEBGL2=false`, tier default low (see task notes). Done-when EXIT=0 (vitest 1171/1171, 2/2).

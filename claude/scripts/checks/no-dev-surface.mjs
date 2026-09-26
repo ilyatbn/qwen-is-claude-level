@@ -67,6 +67,8 @@ const FORBIDDEN = [
   // T23.01: the look-lab (`?look=F1`) — its scene class and its window handle.
   'LookScene',
   '__look',
+  // T23.03: the world renderer's dev handle (markers, same-frame readback).
+  '__world',
   // The FPS readout's element id — §C17's deliverable names the debug overlays
   // and the FPS counter alongside the scenes.
   'debug-fps',

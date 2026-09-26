@@ -31,6 +31,8 @@ import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { SkyLayer } from '../render/sky'
+import type { SceneRenderer } from '../look/renderer'
+import { createWorldRenderer, gameDescription } from '../look/worldRenderer'
 import type { SpaceSkyPart } from '../render/spaceSky'
 import type { SkyGround } from '../render/parallax'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -75,6 +77,8 @@ export class SandboxScene extends Phaser.Scene {
   private carveRadius = 42
 
   private sky!: SkyLayer
+  /** T23.03 (R1): three.js draws the world under the transparent Phaser canvas; one test layer today. */
+  private worldRenderer: SceneRenderer | null = null
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
@@ -196,6 +200,7 @@ export class SandboxScene extends Phaser.Scene {
     this.regenerate()
 
     this.sky = new SkyLayer(this, this.core.meta.seed, this.core.meta.theme)
+    this.worldRenderer = createWorldRenderer(this, gameDescription(this.core.width, this.core.height))
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
@@ -389,6 +394,8 @@ export class SandboxScene extends Phaser.Scene {
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, undefined, undefined, this.gravity === SPACE_GRAVITY)
+    // `worldRenderer` is null on the first call: `create()` regenerates before it builds it.
+    this.worldRenderer?.setScene(gameDescription(mapW, mapH))
     this.timings.buildAllMs = this.world.timings.buildAllMs
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
@@ -1170,6 +1177,14 @@ export class SandboxScene extends Phaser.Scene {
         self.sky?.parallax.setVisible(on)
       },
       /** T22.06: hide the space sky's bodies, one or all — `space-sky`'s control frames. */
+      /**
+       * T23.03: hide Phaser's whole sky, so `world-canvas` can see the three.js layer under it
+       * where Phaser then draws nothing. Returns whether the sky is shown.
+       */
+      skyVisible(on: boolean) {
+        self.sky?.setVisible(on)
+        return on
+      },
       setSpaceBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all') {
         self.sky?.space.setBodiesVisible(on, which)
         return self.sky?.spaceDebug ?? null

@@ -20,6 +20,7 @@ describe('describeScene', () => {
       expect(d.actors).toBe(data.actors)
       expect(d.look).toBe(data.look)
       expect(d.camera).toEqual(data.camera)
+      expect(d.world).toEqual({ w: data.mask.w, h: data.mask.h })
     })
   }
 })

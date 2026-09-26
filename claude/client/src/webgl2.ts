@@ -11,7 +11,12 @@
  * it**, in the same commit that retires the Canvas world path.
  */
 
-/** Flipped to `true` by T23.03, when three.js draws the world and Canvas can no longer. */
+/**
+ * Flipped to `true` when three.js draws the world and Canvas can no longer (R2). **Not at T23.03**,
+ * which the T23.00 note named: T23.03 puts three.js under Phaser with one test layer, the world is
+ * still Phaser's and a machine without WebGL2 still plays (the world renderer falls back to a stub).
+ * The first task whose layer a Canvas-only machine would miss — the sky, T23.04 — is the earliest.
+ */
 export const REQUIRE_WEBGL2 = false
 
 /** Id of the message element, for anything that needs to find it. */

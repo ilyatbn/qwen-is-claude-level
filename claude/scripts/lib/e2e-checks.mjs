@@ -54,6 +54,10 @@ export const CHECKS = [
     url: '?look=F1',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.03: three.js under Phaser — canvas order, the test layer where Phaser draws nothing,
+  // one camera (a marker read back from both canvases in the same frame while panning), the
+  // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
+  { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // T21.28: rock in the rendered pixels under both ends of every gate's drawn base,
   // against the open air above the arch as the control. Seed 7, not 4242: on 4242

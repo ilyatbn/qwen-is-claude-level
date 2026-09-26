@@ -2,9 +2,10 @@
  * T23.01 step 3: the look-lab — `?look=F1` … `?look=F5`, a dev surface like `?sandbox=1`.
  *
  * Builds the scene description of a reference scene (`scenes/F*.ts`, the mockup's own data)
- * and hands it to the world renderer, with Phaser's camera set to the scene's camera rect so
- * the renderer is driven exactly as the game drives it (`renderer.ts::driveFromScene`). Phaser
- * draws nothing here: whatever is on screen is the renderer's.
+ * and hands it to the world renderer (`worldRenderer.ts::createWorldRenderer`, the constructor
+ * the game scenes use), with Phaser's camera set to the scene's camera rect so the renderer is
+ * driven exactly as the game drives it. Phaser draws nothing here: what is on screen is the
+ * renderer's (`?world=off` swaps in the draw-nothing stub — the checks' control).
  *
  * `window.__look.ready` flips after the renderer has drawn a frame of the scene. An unknown id
  * is reported by name in `__look.error` and never becomes ready — the look-lab check's control.
@@ -13,7 +14,8 @@ import Phaser from 'phaser'
 import { devSurface } from '../dev'
 import { actorBoxes, describeScene, type Box, type SceneDescription } from './scene'
 import { SCENES } from './scenes'
-import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
+import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
+import { createWorldRenderer } from './worldRenderer'
 
 export interface LookHandle {
   ready: boolean
@@ -73,15 +75,16 @@ export class LookScene extends Phaser.Scene {
     cam.setZoom(this.scale.width / desc.camera.w)
     cam.centerOn(desc.camera.x + desc.camera.w / 2, desc.camera.y + desc.camera.h / 2)
 
-    const renderer = new StubRenderer()
+    // T23.03: the game's world renderer, through the same constructor the game scenes use.
+    const renderer = createWorldRenderer(this, desc)
+    const stats = (renderer as { stats?: RenderStats }).stats
     handle.backend = renderer.backend
-    renderer.setScene(desc)
-    handle.rendered = renderer.stats.scene
-    driveFromScene(this, renderer, () => {
-      handle.frames = renderer.stats.frames
-      handle.view = renderer.stats.view
-      handle.ready = true
+    handle.rendered = stats?.scene ?? null
+    // After the renderer's own `render` listener (registered first, so it runs first).
+    this.events.on('render', () => {
+      handle.frames = stats?.frames ?? 0
+      handle.view = stats?.view ?? null
+      handle.ready = handle.frames > 0
     })
-    this.events.once('shutdown', () => renderer.destroy())
   }
 }

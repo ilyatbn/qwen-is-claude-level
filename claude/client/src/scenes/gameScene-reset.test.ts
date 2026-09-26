@@ -51,6 +51,7 @@ const EXEMPT: Record<string, string> = {
   interp: 'new RemoteInterpolator, every create()',
   clock: 'new ClockSync, every create()',
   sky: 'new SkyLayer, every create()',
+  worldRenderer: 'createWorldRenderer, every create(); destroyed by its own SHUTDOWN hook (T23.03)',
   lightmap: 'new Lightmap, every create()',
   fx: 'new OrdnanceFxLayer, every create()',
   localInput: 'new LocalInput, every create()',

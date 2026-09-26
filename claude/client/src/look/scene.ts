@@ -322,6 +322,8 @@ export interface ViewRect {
 export interface SceneDescription {
   id: string
   camera: ViewRect
+  /** The mask's size in px — known even while `masks` is null; the renderer's y flip reads `h`. */
+  world: { w: number; h: number }
   masks: Masks | null
   look: FrameLook
   palette: CombatPalette | null
@@ -336,6 +338,7 @@ export function describeScene(d: SceneData): SceneDescription {
   return {
     id: d.id,
     camera: { ...d.camera },
+    world: { w: d.mask.w, h: d.mask.h },
     masks: decodeMask(d.mask),
     look: d.look,
     palette: d.palette,
