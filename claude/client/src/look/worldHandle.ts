@@ -47,6 +47,18 @@ export interface WorldHandle {
   hideSkyLayers(hide: number[]): void
   /** T23.04B: ms per drawn frame over `n` forced draws, each finished on the GPU (`WorldRenderer.timeDraws`). */
   drawCost(n: number): ReturnType<WorldRenderer['timeDraws']>
+  /** T23.06: the terrain fields/albedo state (`WorldRenderer.terrainInfo`). */
+  terrain(): ReturnType<WorldRenderer['terrainInfo']> | null
+  /** T23.06: albedo RGBA over a world rect, rows top-down, base64 (null before the GPU side exists). */
+  readAlbedo(x: number, y: number, w: number, h: number): string | null
+  /** T23.06: the GLSL hash's 10k words, index order (`albedo.ts::probeInput`). */
+  hashProbe(): number[] | null
+  /** T23.06: draw the albedo flat instead of the world. */
+  showAlbedo(on: boolean): void
+  /** T23.06: the albedo rects repainted since the last call (and, `measure`, time dirty updates to GPU completion). */
+  albedoPaints(measure?: boolean): { x: number; y: number; w: number; h: number }[]
+  /** T23.06: repaint the whole albedo from the fields now — the full pass an incremental one must equal. */
+  repaintAlbedo(): void
 }
 
 export interface ProbeSample {
@@ -207,6 +219,25 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three?.hideSkyLayers(hide)
     },
     drawCost: (n) => three?.timeDraws(n) ?? null,
+    terrain: () => three?.terrainInfo() ?? null,
+    readAlbedo(x, y, w, h) {
+      const px = three?.readAlbedo({ x, y, w, h })
+      if (!px) return null
+      let bin = ''
+      for (let i = 0; i < px.length; i += 0x8000) bin += String.fromCharCode(...px.subarray(i, i + 0x8000))
+      return btoa(bin)
+    },
+    hashProbe: () => (three ? Array.from(three.hashProbe()) : null),
+    showAlbedo(on) {
+      three?.showAlbedo(on)
+    },
+    repaintAlbedo() {
+      three?.repaintAlbedo()
+    },
+    albedoPaints(measure) {
+      if (three && measure !== undefined) three.measureTerrain = measure
+      return three?.takeAlbedoPaints() ?? []
+    },
     phaserAlpha(points) {
       const game = scene.game
       const pgl = (game.renderer as { gl?: WebGLRenderingContext }).gl ?? null

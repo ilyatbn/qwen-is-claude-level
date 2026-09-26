@@ -32,6 +32,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { ventLights } from '../render/weather-math'
@@ -81,6 +82,8 @@ export class SandboxScene extends Phaser.Scene {
   private spaceSky!: SpaceSky
   /** T23.03 (R1): three.js under Phaser's canvas — the sky since T23.04; `null` until its chunk has loaded (T23.03B, F10). */
   private worldRenderer: GameWorld | null = null
+  /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
+  private terrainFields: TerrainFields | null = null
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
@@ -205,6 +208,7 @@ export class SandboxScene extends Phaser.Scene {
     this.worldRenderer = null
     void loadWorldRenderer(this).then((m) => {
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
+      this.worldRenderer?.setTerrain(this.terrainFields)
     })
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
@@ -241,6 +245,8 @@ export class SandboxScene extends Phaser.Scene {
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.terrainFields?.dispose()
+      this.terrainFields = null
       this.ui.remove()
       this.hud?.remove()
       this.feel?.destroy()
@@ -406,6 +412,12 @@ export class SandboxScene extends Phaser.Scene {
     // and until its chunk loads; it is then described from the core as it stands.
     this.worldRenderer?.mapChanged(this.gameMap())
     this.timings.buildAllMs = this.world.timings.buildAllMs
+    // T23.06: the fields for this map, off the frame; every carve the terrain hears of reaches them.
+    this.terrainFields?.dispose()
+    const fields = new TerrainFields(this.core, this.core.renderFieldsOwnKey())
+    this.terrainFields = fields
+    this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids, C().CHUNK_SIZE)
+    this.worldRenderer?.setTerrain(fields)
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
     // Spawn points are feet positions; the body is positioned by its centre.
@@ -1453,6 +1465,7 @@ export class SandboxScene extends Phaser.Scene {
       const e = ev.explosion
       this.world.ordnance.removeProjectile(e.id)
       this.world.ordnance.addImpact(e.x, e.y, e.r)
+      this.terrainFields?.blast(e.x, e.y, e.r)
       this.cue('explode', e.x, e.y)
             this.world.onCarve(e.x, e.y, e.r)
     this.minimap?.setTerrainDirty()

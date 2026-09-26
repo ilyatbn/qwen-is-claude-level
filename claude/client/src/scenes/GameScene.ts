@@ -70,6 +70,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
@@ -289,6 +290,8 @@ export class GameScene extends Phaser.Scene {
    * `createWorldRenderer` itself. `null` until its chunk has loaded (T23.03B, F10).
    */
   private worldRenderer: GameWorld | null = null
+  /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
+  private terrainFields: TerrainFields | null = null
   /** T22.06's space backdrop, shown only on a space map (T23.04: `SkyLayer`, which owned it, is retired). */
   private spaceSky!: SpaceSky
   /** The map seed from `welcome` (its low 32 bits): the skies' seed, so every client of a round agrees. */
@@ -647,6 +650,9 @@ export class GameScene extends Phaser.Scene {
     // `update`'s three guards, and the view they drive.
     this.ready = false
     this.world = null
+    // T23.06: last map's fields; a late worker result must not install into this round's core.
+    this.terrainFields?.dispose()
+    this.terrainFields = null
     this.predictor = null
     this.localView = null
 
@@ -815,6 +821,7 @@ export class GameScene extends Phaser.Scene {
     this.worldRenderer = null
     void loadWorldRenderer(this).then((m) => {
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
+      this.worldRenderer?.setTerrain(this.terrainFields)
     })
     this.lightmap = new Lightmap(this)
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
@@ -1299,6 +1306,7 @@ export class GameScene extends Phaser.Scene {
       const r = Number(p['r'] ?? 0)
       this.observed.explosions++
       this.world?.ordnance.addImpact(x, y, r, 'blast')
+      this.terrainFields?.blast(x, y, r)
       // A meteor is a different, heavier sound from a rocket: the kind is on the
       // event already (`docs/40` §3), so nothing new has to be sent for it.
       const kind = String(p['kind'] ?? '')
@@ -1436,6 +1444,8 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.terrainFields?.dispose()
+      this.terrainFields = null
       this.conn.close()
       this.audio.stopAll()
       this.results?.destroy()
@@ -1625,6 +1635,15 @@ export class GameScene extends Phaser.Scene {
     // T23.04: the sky is keyed on the generator that made the map (`MapGenerator::to_u8`, off the wire).
     this.onSpaceMap = init.generator === MapGenerator.Space
     this.worldRenderer?.mapChanged(this.gameMap())
+    // T23.06: the fields for this map, named by `map_init`'s own fields (T23.05B: its seed is the
+    // one that reproduces the map) and computed off the frame; every carve the terrain hears of reaches them.
+    this.terrainFields?.dispose()
+    const seedLo = Number(init.seed & 0xffffffffn) >>> 0
+    const seedHi = Number((init.seed >> 32n) & 0xffffffffn) >>> 0
+    const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme])
+    this.terrainFields = fields
+    this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids, C().CHUNK_SIZE)
+    this.worldRenderer?.setTerrain(fields)
 
     // T22.06's space backdrop, seeded off the same wire seed (the ground sky's seed goes in above).
     this.spaceSky.setSeed(this.mapSeed)

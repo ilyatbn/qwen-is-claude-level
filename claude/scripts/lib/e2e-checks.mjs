@@ -64,6 +64,15 @@ export const CHECKS = [
     url: '?look=F1&only=sky',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.06: the rock's albedo painted on the GPU — the look-lab's F1 albedo (lighting flat) against
+  // the mockup's (fields = T23.05's dump, GLSL hash = world.js's, Level A), and live: a sandbox blast
+  // changes only the repainted rects and scorches only its circle (pre-blast frame as the control).
+  {
+    name: 'look-albedo',
+    file: 'scripts/checks/look-albedo.mjs',
+    url: '?look=F1&only=albedo',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.

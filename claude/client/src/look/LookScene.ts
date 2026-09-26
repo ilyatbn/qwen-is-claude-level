@@ -14,6 +14,11 @@
  * `look-sky` can compare the sky layer with the mockup's sky rendered alone
  * (`reference/controls/F1-sky.png`). Hidden in the data, not in the renderer: what is left is
  * exactly what the renderer draws of the full scene's sky.
+ *
+ * T23.06: `&only=albedo` draws the scene's terrain albedo flat (`WorldRenderer.showAlbedo`) — its
+ * masks through the Rust fields (`labFields.ts`) and the GPU albedo pass, with the scene's scorch
+ * list as blasts — for `look-albedo` to compare with the mockup's own albedo
+ * (`reference/controls/F1-albedo.png`). `ready` waits for every albedo tile.
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
@@ -21,6 +26,8 @@ import { actorBoxes, describeScene, type Box, type SceneDescription } from './sc
 import { SCENES } from './scenes'
 import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
+import { Core } from '../core'
+import { LabFields } from './labFields'
 
 export interface LookHandle {
   ready: boolean
@@ -39,6 +46,8 @@ export interface LookHandle {
   actorBoxes: Box[]
   /** The view the renderer was last asked to draw: Phaser's `worldView`. */
   view: RenderStats['view']
+  /** T23.06 (`only=albedo`): FNV-1a-32 of each field channel over the scene's rows — against T23.05's mockup dump. */
+  fields: ReturnType<LabFields['channelFnv']> | null
 }
 
 export class LookScene extends Phaser.Scene {
@@ -60,6 +69,7 @@ export class LookScene extends Phaser.Scene {
       camera: null,
       actorBoxes: [],
       view: null,
+      fields: null,
     }
     if (devSurface()) (window as unknown as { __look: LookHandle }).__look = handle
 
@@ -70,10 +80,8 @@ export class LookScene extends Phaser.Scene {
       return
     }
     const full = describeScene(data)
-    const desc =
-      new URLSearchParams(location.search).get('only') === 'sky'
-        ? { ...full, masks: null, actors: [], fx: [], labels: [], hud: null }
-        : full
+    const only = new URLSearchParams(location.search).get('only')
+    const desc = only === 'sky' ? { ...full, masks: null, actors: [], fx: [], labels: [], hud: null } : full
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)
@@ -86,17 +94,33 @@ export class LookScene extends Phaser.Scene {
 
     // T23.03: the game's world renderer, through the same constructor the game scenes use —
     // loaded on demand like theirs (T23.03B, F10), so the lab measures the same path.
-    void loadWorldRenderer(this).then((m) => {
+    void Promise.all([loadWorldRenderer(this), only === 'albedo' ? Core.init() : null]).then(([m, core]) => {
       if (!m) return
       const renderer = m.createWorldRenderer(this, desc)
       const stats = (renderer as { stats?: RenderStats }).stats
       handle.backend = renderer.backend
       handle.rendered = stats?.scene ?? null
+      let albedoDone = (): boolean => true
+      if (core && desc.masks && renderer instanceof m.WorldRenderer) {
+        try {
+          const lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
+          handle.fields = lab.channelFnv(desc.masks.h)
+          renderer.setTerrain(lab, Infinity)
+          renderer.showAlbedo(true)
+          albedoDone = () => {
+            const t = renderer.terrainInfo()
+            return t.gpu && t.pending === 0
+          }
+        } catch (e) {
+          handle.error = String(e)
+          return
+        }
+      }
       // After the renderer's own `render` listener (registered first, so it runs first).
       this.events.on('render', () => {
         handle.frames = stats?.frames ?? 0
         handle.view = stats?.view ?? null
-        handle.ready = handle.frames > 0
+        handle.ready = handle.frames > 0 && albedoDone()
       })
     })
   }

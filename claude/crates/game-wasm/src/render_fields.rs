@@ -195,6 +195,8 @@ pub enum FieldsError {
     /// `dirty` before any full pass, or after the map changed size: nothing to update.
     /// Call a full pass (round start) first.
     NoSnapshot,
+    /// T23.06: an installed field buffer is not `w * h * 4` bytes: `(got, want)`.
+    FieldSize(usize, usize),
 }
 
 impl std::fmt::Display for FieldsError {
@@ -207,6 +209,9 @@ impl std::fmt::Display for FieldsError {
                 f,
                 "render_fields: dirty() before a full pass for this map — call render_fields_full first"
             ),
+            FieldsError::FieldSize(got, want) => {
+                write!(f, "render_fields: installed buffer has {got} bytes, the map {want}")
+            }
         }
     }
 }
@@ -217,6 +222,10 @@ pub struct RenderFields {
     w: u32,
     h: u32,
     rgba: Vec<u8>,
+    /// T23.06: `dIn²` exactly (an integer ≤ 65², so `u16`), 0 in air — the albedo reads `dIn`
+    /// unquantised, as `world.js::derive` does (the RGBA's ×4-in-8-bits moved its soil and grass
+    /// bands: 97.4 % of F1's albedo px exact with it, see `look-albedo`).
+    din2: Vec<u16>,
     wall: Option<BitGrid>,
     /// T23.05B: the last generator landform derived, keyed by what derived it, so a
     /// resync of the same map (a second `map_init`) costs no second generation.
@@ -279,6 +288,8 @@ impl RenderFields {
         self.h = h;
         self.rgba.clear();
         self.rgba.resize(w as usize * h as usize * 4, 0);
+        self.din2.clear();
+        self.din2.resize(w as usize * h as usize, 0);
         let all = Rect { x: 0, y: 0, w, h };
         self.compute(mask, all, all, all);
         all
@@ -329,14 +340,71 @@ impl RenderFields {
         &self.rgba
     }
 
+    /// T23.06: `dIn²` per px, exact (see the field).
+    pub fn din2(&self) -> &[u16] {
+        &self.din2
+    }
+
+    /// T23.06: the "was rock" mask the last full pass used, one byte per px (1 = rock) —
+    /// what a worker that ran the full pass hands back with [`rgba`](Self::rgba).
+    pub fn wall_bytes(&self) -> Vec<u8> {
+        let Some(p) = &self.wall else {
+            return Vec::new();
+        };
+        let (w, h) = p.dims();
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| u8::from(p.solid(x, y)))
+            .collect()
+    }
+
+    /// T23.06: take a full pass computed elsewhere (a worker's copy of this map, so the
+    /// ~1 s of a Large map's derive + full pass never runs on the frame) — its "was rock"
+    /// mask and its field buffer, verbatim. Afterwards [`dirty`](Self::dirty) works as
+    /// after [`full_with_wall`](Self::full_with_wall); a carve made on this mask since the
+    /// worker's copy was taken is **not** in the buffer, so the caller replays those
+    /// carves' rectangles through `dirty` (incremental == full makes that exact). Wrong
+    /// sizes are refused, writing nothing.
+    pub fn install(
+        &mut self,
+        mask: &impl Solid,
+        wall: BitGrid,
+        rgba: &[u8],
+        din2: &[u16],
+    ) -> Result<Rect, FieldsError> {
+        let (w, h) = mask.dims();
+        let px = w as usize * h as usize;
+        if wall.dims() != (w, h) {
+            let (ww, wh) = wall.dims();
+            return Err(FieldsError::WallSize(ww as usize * wh as usize, px));
+        }
+        if rgba.len() != px * 4 {
+            return Err(FieldsError::FieldSize(rgba.len(), px * 4));
+        }
+        if din2.len() != px {
+            return Err(FieldsError::FieldSize(din2.len() * 2, px * 2));
+        }
+        self.w = w;
+        self.h = h;
+        self.rgba.clear();
+        self.rgba.extend_from_slice(rgba);
+        self.din2.clear();
+        self.din2.extend_from_slice(din2);
+        self.wall = Some(wall);
+        Ok(Rect { x: 0, y: 0, w, h })
+    }
+
     /// Distances and `back` over `write` (reading `read`); relief over `relief` ⊆ `write`.
     fn compute(&mut self, mask: &impl Solid, read: Rect, write: Rect, relief: Rect) {
         let ww = self.w as usize;
         let rgba = &mut self.rgba;
+        let din2 = &mut self.din2;
         // R + relief: distance from solid to air.
         distance_pass(mask, true, read, write, |x, y, d| {
             let o = (y as usize * ww + x as usize) * 4;
             rgba[o] = encode_dist(d);
+            // `d` is √ of an integer ≤ 65² in f32: squaring and rounding gives it back exactly.
+            din2[y as usize * ww + x as usize] = (d as f64 * d as f64).round() as u16;
             if relief.contains(x, y) {
                 let rel = if mask.solid(x, y) {
                     relief_at(x, y, d)
@@ -621,6 +689,21 @@ impl GameCore {
         )
     }
 
+    /// T23.06: what names this core's own map to `render_fields_full_landform` —
+    /// `[seed_lo, seed_hi, scale, generator, theme]` from its meta. **Only for a map this core
+    /// generated** (sandbox, preview): after `load_mask` the meta is the startup map's, and a
+    /// networked client names its map from `map_init` instead.
+    pub fn render_fields_own_key(&self) -> Vec<u32> {
+        let m = &self.map.meta;
+        vec![
+            m.seed as u32,
+            (m.seed >> 32) as u32,
+            m.scale.as_u8() as u32,
+            m.generator.to_u8() as u32,
+            m.theme as u32,
+        ]
+    }
+
     /// After a carve with bounds `(x, y, w, h)` (world px, may overhang the map).
     /// Returns the rect written, `[x, y, w, h]` — upload exactly that. Throws, writing
     /// nothing, before a full pass for this map.
@@ -635,6 +718,53 @@ impl GameCore {
             .dirty(&self.map.mask, x, y, w, h)
             .map(Rect::to_vec)
             .map_err(|e| e.to_string())
+    }
+
+    /// T23.06: the last full pass's "was rock" mask, one byte per px — a worker returns it
+    /// with the field buffer for [`render_fields_install`](Self::render_fields_install).
+    pub fn render_fields_wall(&self) -> Vec<u8> {
+        self.render_fields.wall_bytes()
+    }
+
+    /// T23.06: install a full pass a worker computed on a copy of this map (`wall` one byte
+    /// per px, `rgba` the field buffer). Then replay, through `render_fields_dirty`, every
+    /// carve made here since the copy was taken. Wrong sizes throw, writing nothing.
+    pub fn render_fields_install(
+        &mut self,
+        wall: &[u8],
+        rgba: &[u8],
+        din2: &[u16],
+    ) -> Result<Vec<u32>, String> {
+        let (w, h) = (self.map.mask.w, self.map.mask.h);
+        if wall.len() != w as usize * h as usize {
+            return Err(FieldsError::WallSize(wall.len(), w as usize * h as usize).to_string());
+        }
+        let mut g = BitGrid::new(w, h);
+        for (i, &b) in wall.iter().enumerate() {
+            if b != 0 {
+                g.put(i as u32 % w, i as u32 / w, true);
+            }
+        }
+        self.render_fields
+            .install(&self.map.mask, g, rgba, din2)
+            .map(Rect::to_vec)
+            .map_err(|e| e.to_string())
+    }
+
+    /// T23.06: a copy of the field buffer (a worker transfers it; the main thread reads the
+    /// buffer in place through `render_fields_ptr`).
+    pub fn render_fields_rgba_copy(&self) -> Vec<u8> {
+        self.render_fields.rgba().to_vec()
+    }
+
+    /// T23.06: a copy of the exact `dIn²` buffer (a worker transfers it).
+    pub fn render_fields_din2_copy(&self) -> Vec<u16> {
+        self.render_fields.din2().to_vec()
+    }
+
+    /// T23.06: address of the `dIn²` buffer, `width * height` `u16`s, row-major.
+    pub fn render_fields_din2_ptr(&self) -> *const u16 {
+        self.render_fields.din2().as_ptr()
     }
 
     /// Address of the RGBA8 field buffer, `width * height * 4` bytes, row-major.
@@ -800,7 +930,7 @@ mod tests {
             };
             fresh.full_against_snapshot(&g);
             changed += channel(&fresh, 2).iter().filter(|&&b| b == 255).count();
-            if f.rgba() != fresh.rgba() {
+            if f.rgba() != fresh.rgba() || f.din2() != fresh.din2() {
                 bad_seeds += 1;
             }
         }
@@ -932,6 +1062,105 @@ mod tests {
         assert!(c
             .render_fields_full_landform(1, 0, 9, 1, 0)
             .is_err_and(|e| e.contains("scale byte 9")));
+    }
+
+    /// T23.06: `din2` is the exact squared distance to the nearest air px (capped at 65²), 0 in
+    /// air — against a brute-force search, on random grids of several seeds.
+    #[test]
+    fn din2_is_the_exact_squared_distance() {
+        for seed in 0..4u64 {
+            let g = random_grid(seed, 96, 80);
+            let mut f = RenderFields::default();
+            f.full(&g);
+            let (w, h) = g.dims();
+            let mut solid = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    let want = if !g.solid(x, y) {
+                        0
+                    } else {
+                        solid += 1;
+                        let mut best = u32::MAX;
+                        for yy in 0..h {
+                            for xx in 0..w {
+                                if !g.solid(xx, yy) {
+                                    let (dx, dy) = (x.abs_diff(xx), y.abs_diff(yy));
+                                    best = best.min(dx * dx + dy * dy);
+                                }
+                            }
+                        }
+                        best.min(CAP_SQ)
+                    };
+                    assert_eq!(
+                        f.din2()[(y * w + x) as usize] as u32,
+                        want,
+                        "seed {seed} ({x}, {y})"
+                    );
+                }
+            }
+            assert!(solid > 100);
+        }
+    }
+
+    /// T23.06: the worker path — a full pass on a copy, installed, then a carve made on
+    /// the main copy meanwhile replayed through `dirty` — is byte-identical to a full pass
+    /// on the carved map. Control: without the replay the crater is missing (bytes differ).
+    #[test]
+    fn an_installed_worker_pass_plus_replayed_carves_equals_a_full_pass() {
+        let mut main = GameCore::new();
+        main.generate_with(4242, 0, 0, 1);
+        let mut worker = GameCore::new();
+        worker.set_map_generator(1);
+        assert!(worker.load_mask(main.width(), main.height(), &main.mask_rle()));
+        let m = &main.map.meta;
+        let (seed, scale, gen, theme) = (m.seed, m.scale.as_u8(), m.generator.to_u8(), m.theme);
+        worker
+            .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme)
+            .unwrap();
+        let (wall, rgba, din2) = (
+            worker.render_fields_wall(),
+            worker.render_fields.rgba().to_vec(),
+            worker.render_fields_din2_copy(),
+        );
+        // Meanwhile, on the main copy: a crater, in the ground under the first spawn.
+        let sp = main.map.meta.spawn_points[0];
+        let (cx, cy, r) = (sp.x, sp.y + 30, 60);
+        main.carve(cx, cy, r);
+        main.render_fields_install(&wall, &rgba, &din2).unwrap();
+        let stale = main.render_fields.rgba().to_vec();
+        main.render_fields_dirty(cx - r, cy - r, 2 * r + 1, 2 * r + 1)
+            .unwrap();
+        let mut truth = GameCore::new();
+        truth.generate_with(4242, 0, 0, 1);
+        truth.carve(cx, cy, r);
+        let n = (truth.width() * truth.height()) as usize;
+        // The truth's "was rock" is the landform ∪ the mask **before** the carve.
+        let mut pre = GameCore::new();
+        pre.generate_with(4242, 0, 0, 1);
+        let wall_pre: Vec<u8> = {
+            pre.render_fields_full_own_landform().unwrap();
+            pre.render_fields_wall()
+        };
+        truth.render_fields_full_with_wall(&wall_pre).unwrap();
+        assert_eq!(main.render_fields.rgba().len(), n * 4);
+        assert!(
+            main.render_fields.rgba() == truth.render_fields.rgba(),
+            "installed + replayed ≠ full"
+        );
+        assert!(
+            main.render_fields.din2() == truth.render_fields.din2(),
+            "dIn² installed + replayed ≠ full"
+        );
+        assert!(
+            stale != truth.render_fields.rgba(),
+            "control: the un-replayed install already matched"
+        );
+        assert!(main
+            .render_fields_install(&wall[1..], &rgba, &din2)
+            .is_err_and(|e| e.contains("wall has")));
+        assert!(main
+            .render_fields_install(&wall, &rgba[4..], &din2)
+            .is_err_and(|e| e.contains("installed buffer")));
     }
 
     /// F9: the two calls that used to degrade silently now refuse, write nothing and say

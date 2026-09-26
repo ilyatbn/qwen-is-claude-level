@@ -1437,4 +1437,49 @@ export class Core {
   maskRle(): Uint8Array {
     return this.inner.mask_rle()
   }
+
+  // ---- T23.05/T23.06: the M23 terrain fields (`game-wasm/src/render_fields.rs`) ----
+  // Every call can grow wasm memory; `renderFieldsView()` is rebuilt per call (F9), never kept.
+
+  /** R17: the full pass, "was rock" = the generator's landform for these `map_init` fields ∪ the mask now. */
+  renderFieldsFullLandform(seed: bigint, scale: number, generator: number, theme: number): number[] {
+    const lo = Number(seed & 0xffffffffn) >>> 0
+    const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
+    return Array.from(this.inner.render_fields_full_landform(lo, hi, scale, generator, theme))
+  }
+
+  /** The full pass against an explicit "was rock" mask, one byte per px (the look-lab's scene `back`). */
+  renderFieldsFullWithWall(wall: Uint8Array): number[] {
+    return Array.from(this.inner.render_fields_full_with_wall(wall))
+  }
+
+  /** After a carve with bounds `(x, y, w, h)`: the rect rewritten, `[x, y, w, h]`. Throws before a full pass. */
+  renderFieldsDirty(x: number, y: number, w: number, h: number): number[] {
+    return Array.from(this.inner.render_fields_dirty(x, y, w, h))
+  }
+
+  /** The last full pass's "was rock" mask, one byte per px (a worker hands it back). */
+  renderFieldsWall(): Uint8Array {
+    return this.inner.render_fields_wall()
+  }
+
+  /** Install a worker's full pass; then replay carves made since through `renderFieldsDirty`. */
+  renderFieldsInstall(wall: Uint8Array, rgba: Uint8Array, din2: Uint16Array): number[] {
+    return Array.from(this.inner.render_fields_install(wall, rgba, din2))
+  }
+
+  /** T23.06: a fresh view of the exact `dIn²` buffer (`w * h` u16, row-major); empty before a full pass. */
+  renderFieldsDin2View(): Uint16Array {
+    return new Uint16Array(this.memory.buffer, this.inner.render_fields_din2_ptr(), this.inner.render_fields_len() / 4)
+  }
+
+  /** `[seed_lo, seed_hi, scale, generator, theme]` naming a map **this core generated** (not after `loadMask`). */
+  renderFieldsOwnKey(): number[] {
+    return Array.from(this.inner.render_fields_own_key())
+  }
+
+  /** A fresh view of the RGBA8 field buffer (`w * h * 4`, row-major, row 0 = mask row 0); empty before a full pass. */
+  renderFieldsView(): Uint8Array {
+    return new Uint8Array(this.memory.buffer, this.inner.render_fields_ptr(), this.inner.render_fields_len())
+  }
 }

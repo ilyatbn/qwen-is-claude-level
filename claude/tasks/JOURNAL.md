@@ -7367,3 +7367,12 @@ Plants: rederive ignores theme → mask ≠ server (red); v2 snapshot after carv
 Client test: generated cave px == wall px (312k on Small v1), networked == local bytes; control: round-start-only pass has 0 wall.
 Derive cost (wasm release, L): v2 ≈ 410 ms, v1 ≈ 1.1 s; full field pass 0.7–0.95 s. golden.rs diff empty.
 Done-when EXIT 0 (game-core 1235, game-wasm 65); check.sh --changed HEAD --fast EXIT 0; clippy clean. Browser checks: none mapped beyond the wasm; run with T23.06.
+
+## T23.06 — albedo and scorch on the GPU (builder, 2026-09-27)
+look-albedo: lab fields = T23.05's mockup dump (4/4 FNV); GLSL hash 10000/10000 = world.js; lab floor 0; vs mockup 99.63 % px exact, 100 % ≤2, all kept metrics within R19-rule thresholds (controls meadow, no-scorch).
+Live sandbox: blast changes 15.4k texels, 0 outside repainted rects; incremental == full repaint (0); scorch 0→1207 px in circle, 0→0 elsewhere.
+Plants: GLSL hash const → 9952 words + 9 metrics red; blasts unscorched → red (no scorch); dIn² not uploaded on carves → 5628 stale red; ALBEDO_REACH 0 / scorch paint unreported → green (fields' 64 px margin already covers — the reach is conservative).
+Exact dIn² (R16UI) added to render_fields: 97.4 → 99.63 % exact. Worker full pass: M 0.95 s, L 1.9 s off-frame; install 10–31 ms; L install frame 121 ms. Tiles 3.2 ms (SwiftShader).
+Carve update 4.2 ms CPU + ~20 ms GPU on SwiftShader (> CHUNK_REBAKE_MS 4, reported). In game: computed, not drawn (Phaser terrain until T23.07).
+context-budget went red 1/78 (title textures 10 vs 11 = 1 vs 2 composer frames); fixed by allocating both composer targets; 20/20 stable.
+Done-when EXIT 0 (vitest 1153, look-albedo ok); check.sh --changed HEAD --fast EXIT 0; full browser suite 77/78 (context-budget, since fixed; 10 renderer checks rerun ok).

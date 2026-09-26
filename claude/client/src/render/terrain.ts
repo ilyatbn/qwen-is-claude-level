@@ -354,8 +354,15 @@ export class TerrainRenderer {
     this.stats.pending = this.pending.size
   }
 
+  /**
+   * T23.06: told of every dirty chunk as it is queued — the M23 terrain fields' carve hook
+   * (`look/terrainFields.ts`). Here because this is the one place every carve reaches the renderer.
+   */
+  onDirty: ((chunkIds: ArrayLike<number>) => void) | null = null
+
   /** Queue chunks the core reported dirty. Out-of-range ids are ignored. */
   markDirty(chunkIds: ArrayLike<number>): void {
+    if (chunkIds.length) this.onDirty?.(chunkIds)
     const max = this.chunksX * this.chunksY
     for (let i = 0; i < chunkIds.length; i++) {
       const id = chunkIds[i]!
