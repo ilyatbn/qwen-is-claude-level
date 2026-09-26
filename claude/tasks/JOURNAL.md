@@ -7310,3 +7310,12 @@ birds 3/3 green. `__world.probe` carries a skipped frame's reading over (forcing
 **Animated layers (T23.04's stars) end the skip — the SwiftShader cost comes back then; T23.23's perf owns it.**
 Mapped browser suite after the skip commit (`node scripts/e2e.mjs`, main.ts → all): **81/81 passed**. `check.sh --changed 8b6bfdb --fast`
 earlier: "all affected checks passed" (Rust 1765 passed / 31 ignored, vitest 1171/1171; e2e skipped by --fast, hence the suite run).
+
+## T23.03B — what the renderer review found (builder, 2026-09-26)
+R18–R20 in M23-art.md. R18: buffer = Phaser's 1280×720 × tier (never DPR); ~111 MB full / 7.4 MB low at any screen, 4K included.
+R19: thresholds re-derived against {F0, exp±10, bloom-off, fog-off} (`deriveThresholds`, test re-derives); rim-off, F2 reported only; p50 now retained.
+R20: `qualityTier(gl)` detects from three's context when never chosen; checks store '0' (`lib/check-tier.mjs`). F9: `render_fields` refusals are
+`Result`s (throw in JS); wasm32 V8: crater 2.7 ms, Large full 827 ms. F10: index 2,302 → 1,825 kB, three.js chunk 479 kB.
+Plants red: skip ignores y (both vertical legs), `sameView` ignores y, realloc not dirtied (tier switch, camera still), stale box, integer box,
+buffer ×DPR; vitest: animated ignored, viewOf rounded. Review's `resized` plant is moot under R18 (a resize never reallocates).
+Done-when 5/5 + vitest 1181 + look-compare 9/9 + render_fields 6/6; `--changed 73f2adb --fast` all affected passed; full browser suite **81/81**.
