@@ -1,7 +1,7 @@
 {
-  "about": "T23.02: look-compare thresholds, each a maximum distance. Measured, not picked: threshold = midpoint of the floor (F1 rendered twice) and the smallest must-fail control. Regenerate with the recipe below; scripts/lib/look-compare.test.mjs re-measures every number here from the PNGs and fails if one drifts.",
+  "about": "T23.02, re-derived by T23.03B under R19: look-compare thresholds, each a maximum distance. Measured, not picked: threshold = midpoint of the floor and the SMALLEST control of the must-fail set (mustFail: F0 vs F1, exposure +/-10 %, bloom off, fog off). rim-off and F2 are sensitivity lines: their failures are listed under `sensitivity`, they do not place a threshold. `node scripts/lib/look-compare.mjs --derive` rewrites metrics/dropped/sensitivity (look-compare.mjs::deriveThresholds); scripts/lib/look-compare.test.mjs re-derives them from the PNGs and fails if the file differs.",
   "measured": "2026-09-25, mockup-src harness, three 0.170.0, headless Chromium swiftshader (render.mjs), 1280x720",
-  "floor": "F1 re-rendered is byte-identical to reference/F1-night-combat.png (cmp), so every floor is exactly 0. OWED BY T23.08's GATE: the look-lab floor (the lab on two back-ends) — not measurable until the renderer draws the scene; it will raise these floors, and metrics it pushes past their smallest control are dropped then.",
+  "floor": "F1 re-rendered is byte-identical to reference/F1-night-combat.png (cmp), so every floor is exactly 0 (re-derived 2026-09-26 from that zero floor). OWED BY T23.08's GATE: the look-lab floor (the lab on two back-ends) — not measurable until the renderer draws the scene; T23.08 re-derives with it (deriveThresholds(rows, floor)), and metrics it pushes past their smallest must-fail control are dropped then.",
   "reference": "reference/F1-night-combat.png",
   "regions": "reference/controls/regions-F1.png (red: 1 sky, 2 terrain, 3 cave = carved; from world.js buildMask(ARENA_E)), with F1's actor boxes (id 4) painted over it at compare time: look-compare.mjs::withActors(regions, actorBoxes('F1')), the boxes measured from the mockup's drawing (client/src/look/scenes/actor-boxes.json, the same numbers the scene description carries as Actor.box). Region px: sky 495772, terrain 360050, cave 27602, actors 38176. Re-measured 2026-09-26 (T23.02 remainder): excluding the actors moved sky/terrain/cave's smallest controls (sky rim-off 0.228 -> 0.127).",
   "controls": {
@@ -18,30 +18,37 @@
   "metrics": {
     "dssim": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.004832571871724145,
-      "threshold": 0.002416,
+      "smallestControl": "exposure+10",
+      "smallest": 0.005385368104515065,
+      "threshold": 0.002693,
       "F0": 0.8234319245411659
     },
     "deltaE": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.1765177655277497,
-      "threshold": 0.08826,
+      "smallestControl": "fog-off",
+      "smallest": 0.6008611226741402,
+      "threshold": 0.3004,
       "F0": 47.1035399275717
     },
     "lumaW1": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.000977244906955108,
-      "threshold": 0.0004886,
+      "smallestControl": "fog-off",
+      "smallest": 0.0055925369262696525,
+      "threshold": 0.002796,
       "F0": 0.49121292961968344
+    },
+    "p50": {
+      "floor": 0,
+      "smallestControl": "exposure+10",
+      "smallest": 2,
+      "threshold": 1,
+      "F0": 134
     },
     "p95": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 1,
-      "threshold": 0.5,
+      "smallestControl": "exposure+10",
+      "smallest": 5,
+      "threshold": 2.5,
       "F0": 90
     },
     "paletteDE": {
@@ -53,9 +60,9 @@
     },
     "satW1": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.000540805392795192,
-      "threshold": 0.0002704,
+      "smallestControl": "exposure+10",
+      "smallest": 0.004282735188802097,
+      "threshold": 0.002141,
       "F0": 0.23873267279730906
     },
     "edgeDensity": {
@@ -67,16 +74,16 @@
     },
     "deltaE_sky": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.1274885360222396,
-      "threshold": 0.06374,
+      "smallestControl": "fog-off",
+      "smallest": 0.2432977909019891,
+      "threshold": 0.1216,
       "F0": 51.061247544122196
     },
     "deltaE_terrain": {
       "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0.09260081074426783,
-      "threshold": 0.0463,
+      "smallestControl": "exposure+10",
+      "smallest": 0.944069145478233,
+      "threshold": 0.472,
       "F0": 42.80833351042933
     },
     "deltaE_cave": {
@@ -101,17 +108,42 @@
       "smallest": 0,
       "reason": "exposure+10 does not move it off the floor"
     },
-    "p50": {
-      "floor": 0,
-      "smallestControl": "rim-off",
-      "smallest": 0,
-      "reason": "rim-off does not move it off the floor"
-    },
     "bloomFrac": {
       "floor": 0,
       "smallestControl": "fog-off",
       "smallest": 0,
       "reason": "fog-off does not move it off the floor"
     }
+  },
+  "mustFail": [
+    "F0",
+    "exposure+10",
+    "exposure-10",
+    "bloom-off",
+    "fog-off"
+  ],
+  "sensitivity": {
+    "rim-off": [
+      "dssim",
+      "paletteDE",
+      "edgeDensity",
+      "deltaE_sky",
+      "deltaE_cave",
+      "deltaE_actors"
+    ],
+    "F2": [
+      "dssim",
+      "deltaE",
+      "lumaW1",
+      "p50",
+      "p95",
+      "paletteDE",
+      "satW1",
+      "edgeDensity",
+      "deltaE_sky",
+      "deltaE_terrain",
+      "deltaE_cave",
+      "deltaE_actors"
+    ]
   }
 }

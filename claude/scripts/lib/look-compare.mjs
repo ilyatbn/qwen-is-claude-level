@@ -1,18 +1,19 @@
 // T23.02 — `look-compare`: how far a rendered frame is from an M23 reference picture.
 //
 //   node scripts/lib/look-compare.mjs <reference.png> <candidate.png> [--regions map.png [--actors F1]] [--json]
+//   node scripts/lib/look-compare.mjs --derive      (rewrite look-thresholds.json by R19's rule)
 //
 // Every metric is a **distance** (0 = identical, larger = further), so every threshold in
 // `look-thresholds.json` is a maximum. Thresholds are measured, never picked (M23-art.md
 // § Verification): each sits between the noise floor (the mockup rendered twice) and the
-// smallest must-fail control, and both numbers are written beside it.
+// smallest must-fail control (R19: `MUST_FAIL`), and both numbers are written beside it.
 //
 // FLIP: wrapped only if `python3 -c "import flip_evaluator"` succeeds. It does not on this box
 // (2026-09-25), so the report says "not computed" — a FLIP number is never printed that was
 // not computed.
 
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -239,12 +240,63 @@ export function compare(a, b, { regions = null } = {}) {
   return m
 }
 
+/**
+ * R19 (coordinator, 2026-09-26): the controls a threshold is placed against. Each threshold sits
+ * between the floor and the **smallest of these**. Every other control in `look-thresholds.json`
+ * (rim-off; F2's palette) is a sensitivity line — reported, never gating: a rim-only change is
+ * below what the whole-frame metrics are for, and the actor-box region carries it.
+ */
+export const MUST_FAIL = ['F0', 'exposure+10', 'exposure-10', 'bloom-off', 'fog-off']
+
+/** Four significant figures: the threshold is a midpoint, not a measurement, so more digits claim nothing. */
+const sig4 = v => Number(v.toPrecision(4))
+
+/**
+ * R19's rule, as code so the JSON cannot drift from it: for every numeric metric in `rows`
+ * (`{ control: compare(...) }`), the smallest must-fail control; a metric is **retained** iff that
+ * smallest sits above `floor`, with its threshold at the midpoint, and **dropped** otherwise.
+ * `sensitivity` is each non-gating control's retained-metric failures, for the report.
+ */
+export function deriveThresholds(rows, floor = 0) {
+  const names = Object.keys(rows.F0).filter(k => typeof rows.F0[k] === 'number')
+  const metrics = {}
+  const dropped = {}
+  for (const m of names) {
+    const [smallestControl, smallest] = MUST_FAIL.map(c => [c, rows[c][m]]).sort((a, b) => a[1] - b[1])[0]
+    if (smallest > floor) metrics[m] = { floor, smallestControl, smallest, threshold: sig4((floor + smallest) / 2), F0: rows.F0[m] }
+    else dropped[m] = { floor, smallestControl, smallest, reason: `${smallestControl} does not move it off the floor` }
+  }
+  const sensitivity = {}
+  for (const c of Object.keys(rows).filter(c => !MUST_FAIL.includes(c))) {
+    sensitivity[c] = failures(rows[c], { metrics })
+  }
+  return { metrics, dropped, sensitivity }
+}
+
 /** Which retained metrics exceed their threshold. `thresholds.metrics[name].threshold` is a max. */
 export function failures(metrics, thresholds) {
   return Object.entries(thresholds.metrics).filter(([k, t]) => metrics[k] > t.threshold).map(([k]) => k)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+/**
+ * `--derive`: re-measure every control against the reference and rewrite the thresholds file's
+ * `metrics`, `dropped` and `sensitivity` by R19's rule (`deriveThresholds`); the prose fields stay.
+ */
+function derive() {
+  const path = join(root, 'scripts/lib/look-thresholds.json')
+  const th = JSON.parse(readFileSync(path, 'utf8'))
+  const ref = p => join(root, 'tasks/M23', p)
+  const regions = withActors(loadPng(ref('reference/controls/regions-F1.png')), actorBoxes('F1'))
+  const f1 = loadPng(ref(th.reference))
+  const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(th.controls[c].split(' ')[0])), { regions })]))
+  const d = deriveThresholds(rows, 0)
+  writeFileSync(path, JSON.stringify({ ...th, mustFail: MUST_FAIL, ...d }, null, 2) + '\n')
+  console.log(`wrote ${path}: ${Object.keys(d.metrics).length} retained, ${Object.keys(d.dropped).length} dropped`)
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes('--derive')) {
+  derive()
+} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   const ri = args.indexOf('--regions')
   let regions = ri >= 0 ? loadPng(args.splice(ri, 2)[1]) : null

@@ -138,10 +138,11 @@ Two levels (`M23-RESEARCH.md` § 7):
 - **Level B, live.** A staged sandbox frame (fixed seed, frozen sim time, scripted actors firing, zoom 1) over several
   seeds, compared by distribution: luminance histogram, p5/p50/p95 luminance, an 8-colour palette's mean ΔE to the
   reference, saturation histogram, edge density, fraction of pixels above the bloom threshold.
-- **Thresholds are measured, never picked.** Floor = the mockup rendered twice. Must-fail controls = F0 vs F1, and
-  single-knob changes (exposure ±10 %, bloom off, rim off, fog off, F2's palette swapped in). Each threshold sits
-  between the floor and the smallest failing control, **and both numbers are written in the check** — CLAUDE.md's
-  "a metric with no control is a number, not evidence".
+- **Thresholds are measured, never picked.** Floor = the mockup rendered twice. Must-fail controls (**R19**) = F0 vs
+  F1, exposure ±10 %, bloom off, fog off; rim off and F2's palette are rendered and **reported as sensitivity lines**,
+  not gating. Each threshold sits between the floor and the smallest must-fail control, **and both numbers are written
+  in the check** — CLAUDE.md's "a metric with no control is a number, not evidence". `look-compare.mjs --derive`
+  applies the rule; the node test re-derives and compares.
 - **And look at it.** Every task that changes a picture screenshots it next to the reference and a person-readable
   side-by-side goes in `shots/`. CLAUDE.md: a fix that changes the code without changing the picture looks exactly
   like a fix that worked.

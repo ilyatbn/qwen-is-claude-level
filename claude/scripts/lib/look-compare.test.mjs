@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { actorBoxes, compare, deltaE2000, failures, loadPng, withActors } from './look-compare.mjs'
+import { MUST_FAIL, actorBoxes, compare, deltaE2000, deriveThresholds, failures, loadPng, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
@@ -20,14 +20,19 @@ const file = c => th.controls[c].split(' ')[0]
 const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(file(c))), { regions })]))
 const single = Object.keys(th.controls).filter(c => c !== 'F0')
 const retained = Object.keys(th.metrics)
+// R19: the controls that place a threshold, and the ones only reported.
+const gating = single.filter(c => MUST_FAIL.includes(c))
+const sensitivity = single.filter(c => !MUST_FAIL.includes(c))
 
 test('the table', () => {
-  const cols = ['F0', ...single]
-  const lines = [['metric', 'floor', ...cols, 'threshold'].map(s => s.padStart(12)).join('')]
+  const cols = ['F0', ...gating, ...sensitivity]
+  const head = ['metric', 'floor', ...cols.map(c => (MUST_FAIL.includes(c) ? c : `(${c})`)), 'threshold']
+  const lines = [head.map(s => s.padStart(13)).join('')]
   for (const m of [...retained, ...Object.keys(th.dropped)]) {
     const t = th.metrics[m]
-    lines.push([m.padStart(12), '0'.padStart(12), ...cols.map(c => rows[c][m].toPrecision(3).padStart(12)), (t ? String(t.threshold) : 'DROPPED').padStart(12)].join(''))
+    lines.push([m.padStart(13), '0'.padStart(13), ...cols.map(c => rows[c][m].toPrecision(3).padStart(13)), (t ? String(t.threshold) : 'DROPPED').padStart(13)].join(''))
   }
+  lines.push('(sensitivity, not gating — R19) ' + sensitivity.map(c => `${c} fails ${failures(rows[c], th).length}/${retained.length}`).join('; '))
   console.log(lines.join('\n'))
 })
 
@@ -47,22 +52,35 @@ test('F0 against F1 fails every retained metric', () => {
   assert.deepEqual(failures(rows.F0, th), retained)
 })
 
-test('every single-knob control fails at least one retained metric', () => {
-  for (const c of single) {
+test('every must-fail single-knob control fails at least one retained metric', () => {
+  assert.deepEqual(gating, ['exposure+10', 'exposure-10', 'bloom-off', 'fog-off'], 'R19 names these four')
+  for (const c of gating) {
     const bad = failures(rows[c], th)
     assert.ok(bad.length > 0, `${c} passed every metric`)
   }
 })
 
-test('the recorded floors and smallest controls are what the instrument measures now', () => {
+test('the thresholds file is R19\'s rule applied to what the instrument measures now', () => {
+  // Re-derived from the PNGs: a hand-edited threshold, a control moved in or out of the must-fail
+  // set, or an instrument change all show up here as a difference.
+  const d = deriveThresholds(rows, 0)
+  assert.deepEqual(th.mustFail, MUST_FAIL)
+  assert.deepEqual(th.metrics, d.metrics)
+  assert.deepEqual(th.dropped, d.dropped)
+  assert.deepEqual(th.sensitivity, d.sensitivity)
   for (const [m, t] of Object.entries(th.metrics)) {
-    const per = single.map(c => [c, rows[c][m]]).sort((a, b) => a[1] - b[1])
-    assert.equal(per[0][0], t.smallestControl, `${m}: smallest control`)
-    assert.ok(Math.abs(per[0][1] - t.smallest) <= 1e-9 * Math.max(1, t.smallest), `${m}: ${per[0][1]} vs recorded ${t.smallest}`)
     assert.ok(t.floor < t.threshold && t.threshold < t.smallest, `${m}: threshold not between floor and control`)
+    assert.ok(MUST_FAIL.includes(t.smallestControl), `${m}: placed against ${t.smallestControl}, not a must-fail control`)
   }
-  // A dropped metric really could not separate: some control leaves it on the floor.
-  for (const [m, d] of Object.entries(th.dropped)) assert.ok(Math.min(...single.map(c => rows[c][m])) <= d.floor, `${m} was dropped but separates`)
+  // A dropped metric really could not separate: some must-fail control leaves it on the floor.
+  for (const [m, d] of Object.entries(th.dropped)) assert.ok(Math.min(...MUST_FAIL.map(c => rows[c][m])) <= d.floor, `${m} was dropped but separates`)
+})
+
+test('control: with rim-off gating, the rule would place tighter thresholds (R19 is what moved them)', () => {
+  // The sensitivity line is not decoration: rim-off is the smallest control on metrics R19 now
+  // places elsewhere, so a derivation that silently included it would differ.
+  const moved = Object.keys(th.metrics).filter(m => rows['rim-off'][m] < th.metrics[m].smallest)
+  assert.ok(moved.length > 0, 'rim-off is smaller than no must-fail control — R19 changed nothing')
 })
 
 test('FLIP is never reported uncomputed', () => {
