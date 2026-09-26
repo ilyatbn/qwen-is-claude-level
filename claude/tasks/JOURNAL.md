@@ -7325,3 +7325,13 @@ Never chosen: the High Quality button reads "Auto (Full)" / "Auto (Low)" from th
 (`GameWorld.detectedTier`, low until it loads); one click stores the other choice explicitly (Auto (Full) → '0', Auto (Low) → '1').
 `qualityRow(shaders, choice, detected)`; `settings.ts::highQualityChoice`. vitest drives the panel's click on a fake document (plant:
 old `!isHighQuality()` rule → red). escape-menu + fps-counter 2/2; `check.sh --changed HEAD --fast` EXIT 0 (vitest 1184/1184).
+
+## T23.04 — the hazy stepped sky (builder, 2026-09-26)
+`look/skyMaterial.ts` (bgMaterial verbatim + per-band offsets) + `skyLayout.ts` (seeded parallax bands, moons at 0); static → skip stays.
+look-sky: lab F1/F5 sky vs mockup sky-only controls (new `controls/F1-sky.png`, `F5-sky.png`, floor 0) all 12 metrics ≈0 at full tier;
+F5 as wrong-sky control fails 12/12; live pan shifts 16/28/44/70 px vs 16/28/44/68 wanted, moon 0.00; seeded; none in space.
+Plants red: bands ignore offset, moon on a band, lin off, sky drawn in space. Fates: sky, living-sky, clouds, clouds-canvas,
+cloud-rain, ambient-rain, canvas-renderer RETIRED (layer gone); world-canvas, space-sky(-match), beams-shader, skins-ingame, 11 clock pins
+REWRITTEN. Suite 71/75 → crates (race: mirror vs drawn, fixed), space-sky ×2 (day-sky controls, fixed/retired) green on rerun;
+**explosion-shader RED**: the blast's dark interior at R−1 now sits on F1's dark sky (peaks 10–22 < 24) — coordinator's call.
+SwiftShader match fps: still 60.1 (skip), camera moving 37.4 on vs 60.1 off (~34 ms per sky draw at 640×360).

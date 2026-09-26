@@ -505,8 +505,10 @@ export default async function ({ page, shot, log }) {
     polling: 'raf',
     timeout: 60_000,
   })
-  // The top of the map: open sky.
-  const top = await g(() => ({ x: window.__game.core.width / 2, y: 200 }))
+  // Where the player stands: rock and air, so night's darkening has terrain to fall on. (It
+  // was the top of the map, for the retired clouds and rain; the new sky is F1's night at every
+  // hour until T23.11's blend, so a frame of sky alone no longer darkens at night.)
+  const top = await g(() => window.__game.debug().player)
   await g(([x, y]) => window.__game.watch(x, y), [top.x, top.y])
   const std = async (t) => {
     await g((tt) => window.__game.setTime(tt), t)
@@ -524,7 +526,9 @@ export default async function ({ page, shot, log }) {
   if (groundUp !== true) problems.push(`the ground's sky is not drawn on the standard map (world renderer sky: ${groundUp})`)
   if (!(night.d.darkness > 0.5 * k.NIGHT_DARKNESS)) problems.push(`night darkness ${night.d.darkness}`)
   if (!(dm.mean - nm.mean > 15)) problems.push(`night darkened the frame by only ${(dm.mean - nm.mean).toFixed(1)}`)
-  if (!(dm.stars.length < STAR_FLOOR / 4)) problems.push(`the daytime sky counts as ${dm.stars.length} star pixels — the star instrument is not discriminating`)
+  // (Retired in T23.04: "the daytime sky counts < STAR_FLOOR / 4 star pixels". The ground sky is
+  // F1's night — stars included — at every hour until T23.11 blends in the moonlit day, which
+  // brings the control back. The star instrument keeps its drift control above.)
   if (problems.length) throw new Error(`presence controls (standard gravity) failed: ${problems.join('; ')}`)
   log(
     `standard control: ground sky drawn, night darkness ${night.d.darkness.toFixed(2)}, ` +

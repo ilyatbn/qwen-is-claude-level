@@ -503,12 +503,20 @@ if (!seen) {
         await shot('crate-falling')
 
         // Let the crate fall clear of the rect, then re-pin the SAME point.
+        //
+        // **Cleared on the DRAWN crate, not the mirror's** (T23.04). The photograph above is
+        // of what was drawn at the freeze, and the mirror runs ahead of the drawing: measured,
+        // the mirror said 441 while the frozen frame drew the crate at 307, and on the next
+        // run the loop saw the mirror clear 80 px and froze again before one scene update had
+        // moved the drawing (drawn 307 → 307 across the window) — the canopy "moved 0.0" for
+        // a parachute that never left its rect. Green before T23.04 on timing alone.
+        const drawnAtShot = (await crateNow()).drawn?.y ?? cur.drawn?.y ?? cur.mirror.y
         await page.evaluate(() => window.__game.freeze(false))
         let cleared = false
-        for (let w = 0; w < 200 && !cleared; w++) {
+        for (let w = 0; w < 400 && !cleared; w++) {
           const c2 = await crateNow()
           if (!c2.mirror) break // taken or landed already
-          cleared = c2.mirror.y > cur.mirror.y + fellBy
+          cleared = (c2.drawn?.y ?? -Infinity) > drawnAtShot + fellBy
           // No sleep: the evaluate round trip is already the poll interval, and
           // every millisecond spent here is scene motion the noise control has to
           // absorb.
