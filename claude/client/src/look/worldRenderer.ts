@@ -58,6 +58,65 @@ interface Layer {
   readonly animated: boolean
 }
 
+/**
+ * **R22: one three.js renderer for the page's lifetime** (T23.04C). Every scene that draws the world
+ * — the title since T23.04, every match and rematch, the sandbox, the look-lab — used to build its
+ * own `WebGLRenderer`, and `destroy()` never released the context: the review measured live
+ * contexts 5 → 16 and GPU memory 343 → 933 MB over ten title ↔ match cycles, and at 17 Chrome
+ * dropped the oldest context — Phaser's, a white page. So the renderer, its canvas and its context
+ * are made once, by the first scene that asks, and never torn down; a `WorldRenderer` borrows them
+ * (`owner`), re-parents the canvas under its scene's Phaser canvas, and on shutdown disposes only what
+ * it created (bakes, post targets, materials, geometries) and takes the canvas off the page.
+ */
+interface PageRenderer {
+  readonly renderer: WebGLRenderer
+  readonly canvas: HTMLCanvasElement
+  /** The scene's renderer drawing into it now; a displaced one draws nothing. */
+  owner: WorldRenderer | null
+}
+let pageRenderer: PageRenderer | null = null
+/** Why the page cannot have one (no WebGL2): asked once, so a machine without it is told once. */
+let pageUnavailable: string | null = null
+
+/**
+ * The page's renderer, made on first use. The context is asked for here, with the attributes three
+ * 0.170 asks for with these options, so a machine without WebGL2 gets one plain error instead of
+ * three's `console.error` on every scene start (T23.04C F8); three is then handed that context.
+ */
+function thePageRenderer(): PageRenderer {
+  if (pageRenderer) return pageRenderer
+  if (pageUnavailable !== null) throw new Error(pageUnavailable)
+  const canvas = document.createElement('canvas')
+  canvas.dataset['world'] = 'three'
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    depth: true,
+    stencil: false,
+    antialias: false,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance',
+    failIfMajorPerformanceCaveat: false,
+  })
+  if (!gl) {
+    pageUnavailable = 'no WebGL2 context for the world canvas'
+    throw new Error(pageUnavailable)
+  }
+  let renderer: WebGLRenderer
+  try {
+    renderer = new WebGLRenderer({ canvas, context: gl, antialias: false, alpha: false, powerPreference: 'high-performance' })
+  } catch (e) {
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    pageUnavailable = String(e)
+    throw e
+  }
+  renderer.toneMapping = ACESFilmicToneMapping
+  renderer.outputColorSpace = SRGBColorSpace
+  renderer.setPixelRatio(1)
+  pageRenderer = { renderer, canvas, owner: null }
+  return pageRenderer
+}
+
 export class WorldRenderer implements SceneRenderer {
   readonly backend = 'three' as const
   readonly stats: RenderStats & { skipped: number } = { frames: 0, view: null, scene: null, skipped: 0 }
@@ -85,13 +144,14 @@ export class WorldRenderer implements SceneRenderer {
   /**
    * @param phaserCanvas the canvas this one goes under — same parent, same box.
    * Throws where WebGL2 is missing (three 0.170 has no other path); `createWorldRenderer` catches.
+   * Takes the page's one renderer (R22) from whichever scene had it.
    */
   constructor(private readonly phaserCanvas: HTMLCanvasElement) {
-    this.canvas = document.createElement('canvas')
-    this.canvas.dataset['world'] = 'three'
-    this.renderer = new WebGLRenderer({ canvas: this.canvas, antialias: false, alpha: false, powerPreference: 'high-performance' })
-    this.renderer.toneMapping = ACESFilmicToneMapping
-    this.renderer.outputColorSpace = SRGBColorSpace
+    const page = thePageRenderer()
+    if (page.owner) console.warn('WorldRenderer: a second scene took the world canvas before the first shut down')
+    page.owner = this
+    this.canvas = page.canvas
+    this.renderer = page.renderer
     this.camera.position.z = 1000
     // Static: `bgMaterial` has no clock (stars a hash grid, rays a function of angle), so an
     // unchanged view is an unchanged sky and the redraw skip stands (skyMaterial.ts).
@@ -154,6 +214,8 @@ export class WorldRenderer implements SceneRenderer {
    * (sandbox, seed 4242): halving only the post target cost 60 → 47 fps and put `birds`' aim out.
    */
   private syncBox(): void {
+    // The canvas and its buffer are the page's (R22): only the scene drawing into them sizes them.
+    if (!this.owns) return
     const p = this.phaserCanvas
     const parent = p.parentElement
     const r = p.getBoundingClientRect()
@@ -172,7 +234,6 @@ export class WorldRenderer implements SceneRenderer {
     const buf = bufferFor(p.width, p.height, this.tier)
     if (buf.w === this.buf.w && buf.h === this.buf.h) return
     this.buf = buf
-    this.renderer.setPixelRatio(1)
     this.renderer.setSize(buf.w, buf.h, false)
     this.composer.setPixelRatio(1)
     this.composer.setSize(buf.w, buf.h)
@@ -187,11 +248,22 @@ export class WorldRenderer implements SceneRenderer {
     return c
   }
 
+  /** R22: this scene's composer — its two targets, its copy pass **and** its passes (`EffectComposer.dispose` leaves those). */
+  private disposeComposer(): void {
+    for (const p of this.composer.passes) p.dispose()
+    this.composer.dispose()
+  }
+
+  /** R22: whether this scene is the one drawing into the page's canvas. */
+  private get owns(): boolean {
+    return pageRenderer?.owner === this
+  }
+
   /** R14: switch tier live — rebuild the target (MSAA samples are fixed at creation) and resize. */
   setTier(tier: QualityTier): void {
     if (tier === this.tier) return
     this.tier = tier
-    this.composer.dispose()
+    this.disposeComposer()
     this.composer = this.buildComposer()
     this.buf = { w: 0, h: 0 }
     this.syncBox()
@@ -202,11 +274,10 @@ export class WorldRenderer implements SceneRenderer {
     this.dirty = true
     this.stats.scene = sceneCounts(desc)
     this.sky.setSky(desc.look.bg)
-    this.renderer.toneMappingExposure = desc.look.exposure
   }
 
   render(view: ViewRect): void {
-    if (!this.desc) return
+    if (!this.desc || !this.owns) return
     this.syncBox()
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
@@ -217,6 +288,8 @@ export class WorldRenderer implements SceneRenderer {
       return
     }
     this.dirty = false
+    // The renderer is the page's (R22): this scene's exposure is set on it every frame it draws.
+    this.renderer.toneMappingExposure = this.desc.look.exposure
     const o = orthoFromView(view, this.desc.world.h)
     this.camera.left = o.left
     this.camera.right = o.right
@@ -324,6 +397,8 @@ export class WorldRenderer implements SceneRenderer {
     /** T23.04B (R21): sky bakes made so far, and the bytes the current bakes hold. */
     skyBakes: number
     skyBakeBytes: number
+    /** T23.04C (R22): what three holds on the page's one context — the same at every title and every match, or a scene leaked. */
+    memory: { geometries: number; textures: number; programs: number }
   } {
     const rt = this.composer.renderTarget1
     const gl = this.gl
@@ -334,11 +409,16 @@ export class WorldRenderer implements SceneRenderer {
       buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
       target: [rt.width, rt.height],
       samples: rt.samples,
-      exposure: this.renderer.toneMappingExposure,
+      exposure: this.desc?.look.exposure ?? this.renderer.toneMappingExposure,
       animated: this.animated,
       sky: this.sky.mesh.visible,
       skyBakes: this.sky.bakeStats.bakes,
       skyBakeBytes: this.sky.bakeStats.bytes,
+      memory: {
+        geometries: this.renderer.info.memory.geometries,
+        textures: this.renderer.info.memory.textures,
+        programs: this.renderer.info.programs?.length ?? 0,
+      },
     }
   }
 
@@ -354,9 +434,15 @@ export class WorldRenderer implements SceneRenderer {
       ;(m.material as MeshBasicMaterial).dispose()
     }
     this.sky.dispose()
-    this.composer.dispose()
-    this.renderer.dispose()
-    this.canvas.remove()
+    this.disposeComposer()
+    // R22: the renderer and its context are the page's and outlive this scene. Its canvas leaves
+    // the page cleared, so the next scene never shows this one's last picture before it draws.
+    if (this.owns && pageRenderer) {
+      this.renderer.setRenderTarget(null)
+      this.renderer.clear()
+      this.canvas.remove()
+      pageRenderer.owner = null
+    }
   }
 }
 

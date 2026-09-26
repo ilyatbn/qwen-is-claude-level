@@ -73,6 +73,13 @@ export default async function ({ page, shot, log }) {
 
   await page.waitForFunction('window.__title.debug().frames > 0', { timeout: 60_000 })
   const d = () => page.evaluate('window.__title.debug()')
+  // T23.04C: the backdrop is the world renderer, loaded on demand after the title has painted
+  // (T23.03B F10) — so it arrives some frames later, later still on a loaded box (the suite read
+  // "no backdrop was built" 2.7 s in, green alone ×2). Wait for it or for a tripped guard; the
+  // assertion below still reads the state and names the reason.
+  await page
+    .waitForFunction(() => window.__title.debug().backdrop || !window.__title.debug().backdropOk, null, { timeout: 60_000 })
+    .catch(() => {})
 
   // --- the backdrop draws something (§C2) ---------------------------------
   //

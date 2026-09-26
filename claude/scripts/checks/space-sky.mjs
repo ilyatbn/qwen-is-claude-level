@@ -35,7 +35,7 @@
  * Every wait counts drawn frames; the clock is pinned with `setTime`, never waited on.
  */
 
-import { toScreen } from './pixels.mjs'
+import { toScreen, underPhaser } from './pixels.mjs'
 import { drawnFrames } from './harness.mjs'
 
 /** Frames drawn after a state change before photographing it. */
@@ -69,6 +69,8 @@ const POSITION_TOL = 6
 const SETTLE_TRIES = 60
 /** Point lights on the dark that make a star field, in the measured region. */
 const STAR_FLOOR = 60
+/** T23.04C F4: the flat day sky put under Phaser for the star counter's negative control. */
+const DAY_SKY = '#9ec9ff'
 
 export default async function ({ page, shot, log }) {
   const g = (fn, arg) => page.evaluate(fn, arg)
@@ -526,13 +528,29 @@ export default async function ({ page, shot, log }) {
   if (groundUp !== true) problems.push(`the ground's sky is not drawn on the standard map (world renderer sky: ${groundUp})`)
   if (!(night.d.darkness > 0.5 * k.NIGHT_DARKNESS)) problems.push(`night darkness ${night.d.darkness}`)
   if (!(dm.mean - nm.mean > 15)) problems.push(`night darkened the frame by only ${(dm.mean - nm.mean).toFixed(1)}`)
-  // (Retired in T23.04: "the daytime sky counts < STAR_FLOOR / 4 star pixels". The ground sky is
-  // F1's night — stars included — at every hour until T23.11 blends in the moonlit day, which
-  // brings the control back. The star instrument keeps its drift control above.)
+  // T23.04C F4: the star counter's negative control, back. (Retired in T23.04: "the daytime sky
+  // counts < STAR_FLOOR / 4" — the ground sky is F1's night, stars included, at every hour until
+  // T23.11.) So the day sky is supplied without the world renderer: at the top of the map, open
+  // sky, the world canvas hidden under Phaser and the page behind it one flat, bright day-sky colour
+  // — bright everywhere, so the counter's "dark around it" half must reject all of it, as it
+  // rejected the old daytime sky. It proves the counter counts stars, not any bright pixel.
+  // By day: night's darkening is Phaser's own layer, over the backdrop as over the sky.
+  await g(() => window.__game.watch(window.__game.core.width / 2, 200))
+  await g((tt) => window.__game.setTime(tt), DAY_T)
+  await frames(SETTLE_FRAMES)
+  const hid = await underPhaser(page, DAY_SKY)
+  const flatDay = await photo()
+  await underPhaser(page, null)
+  const fm = await measure({ kind: 'stars', a: flatDay, exclude })
+  const flatMean = fm.mean
+  if (hid.world && !hid.hidden) problems.push('control: the world canvas would not hide for the flat day sky')
+  if (!(flatMean > 100)) problems.push(`control: the flat day sky photographed at mean luminance ${flatMean.toFixed(1)} — it is not a bright sky`)
+  if (!(fm.stars.length < STAR_FLOOR / 4)) problems.push(`control: a flat bright day sky counts as ${fm.stars.length} star pixels (want < ${STAR_FLOOR / 4}) — the star instrument is not discriminating`)
   if (problems.length) throw new Error(`presence controls (standard gravity) failed: ${problems.join('; ')}`)
   log(
     `standard control: ground sky drawn, night darkness ${night.d.darkness.toFixed(2)}, ` +
-      `frame darkened ${(dm.mean - nm.mean).toFixed(1)}, ${dm.stars.length} star pixels by day`,
+      `frame darkened ${(dm.mean - nm.mean).toFixed(1)}, ${dm.stars.length} star pixels by day; ` +
+      `control: a flat day sky (${DAY_SKY}, mean luminance ${flatMean.toFixed(1)}) counts ${fm.stars.length} (< ${STAR_FLOOR / 4})`,
   )
   await g(() => {
     window.__game.watch(null)

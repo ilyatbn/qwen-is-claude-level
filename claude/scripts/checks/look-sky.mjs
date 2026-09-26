@@ -59,6 +59,8 @@ const PAN = 200
 const TOL_PX = 3
 /** A band pixel differs from the all-hidden frame by more than this (max channel). */
 const BAND_DIFF = 6
+/** T23.04C F6: steps of the slow pan, one world px each. */
+const SLOW_STEPS = 16
 
 const decode = (f) => ({ ...f, data: Buffer.from(f.rgba, 'base64') })
 
@@ -224,6 +226,8 @@ export default async function ({ page, shot, log }) {
   // must not rebake it.
   const bakesBefore = await page.evaluate(() => window.__world.info().skyBakes)
   const shifts = new Array(n).fill(null)
+  /** The camera x each band was measured at — somewhere it is on screen. */
+  const seenAt = new Array(n).fill(null)
   const seen = []
   let firstPair = null
   for (let k = 0; k < 8 && shifts.some((v) => v === null); k++) {
@@ -252,14 +256,51 @@ export default async function ({ page, shot, log }) {
       // What the renderer says it applied, from the two frames' own offsets.
       const applied = B.info.offsets[i][0] - A.info.offsets[i][0]
       shifts[i] = measured
+      seenAt[i] = x0
       seen.push(i)
       log(`band ${i} (parallax ${sky.layers[i].parallax}, camera x ${x0}): measured ${measured.toFixed(1)} px, want ${want.toFixed(1)} (pan ${pan} x zoom ${zoom} x factor), renderer applied ${applied.toFixed(1)}; ${got.n} columns, residual ${got.cost.toFixed(2)}`)
       if (Math.abs(measured - want) > TOL_PX) problems.push(`band ${i} moved ${measured.toFixed(1)} px, want ${want.toFixed(1)} ± ${TOL_PX}`)
-      // T23.04B: each offset is drawn snapped to a whole baked texel (`snapOffsets` — one buffer px,
-      // `cssPerBuf` frame px), so the two ends of a pan can each round by half of one.
+      // T23.04C F6: the bands are drawn unsnapped (linear bakes), so applied is the layout's offset;
+      // the tolerance stays one texel (`cssPerBuf` frame px), which a snapped offset would also meet.
       if (Math.abs(applied - want) > cssPerBuf) problems.push(`band ${i}: the renderer applied ${applied}, the layout says ${want} (± one texel, ${cssPerBuf})`)
     }
   }
+  // T23.04C F6: a slow pan slides every band — no still frames between jumps. One world px a frame
+  // (the slowest pan a camera makes), the nearest band alone: each step its drawn offset must move
+  // by the same non-zero amount (monotone, even), and its pixels must change on **every** step. With
+  // R21's snapped offsets it moved one texel (2 px low, 1 px full) every few steps and not at all
+  // between — measured with the snap planted back: offsets [0,0,-2,0,0,0,0,0,-2,…], pixels unchanged
+  // on 12 of 16 steps.
+  const near = n - 1
+  if (seenAt[near] !== null) {
+    const hideAllBut = all.filter((j) => j !== near)
+    const steps = []
+    for (let k = 0; k <= SLOW_STEPS; k++) {
+      await at(seenAt[near] + k, cy)
+      const f = await frame(hideAllBut)
+      steps.push({ f, off: (await page.evaluate(() => window.__world.sky())).offsets[near][0] })
+    }
+    const moves = []
+    const changed = []
+    const camera = []
+    for (let k = 1; k < steps.length; k++) {
+      moves.push(+(steps[k].off - steps[k - 1].off).toFixed(3))
+      camera.push(steps[k].f.view.x - steps[k - 1].f.view.x)
+      const a = steps[k - 1].f.data
+      const b = steps[k].f.data
+      let c = 0
+      for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) c++
+      changed.push(c)
+    }
+    log(`slow pan, band ${near}, 1 world px a step: camera moved ${JSON.stringify(camera)}; offset moved ${JSON.stringify(moves)} px; pixels changed ${JSON.stringify(changed)}`)
+    const nonUnit = camera.filter((d) => Math.abs(d) !== 1).length
+    const still = changed.filter((c) => c === 0).length
+    const sign = Math.sign(moves[0])
+    const uneven = moves.filter((m) => Math.sign(m) !== sign || m === 0 || Math.abs(m) > 1.5 * Math.abs(moves[0]) || Math.abs(m) < Math.abs(moves[0]) / 1.5).length
+    if (nonUnit > SLOW_STEPS / 4) problems.push(`slow pan: the camera did not step one world px a frame (${JSON.stringify(camera)})`)
+    if (uneven) problems.push(`slow pan: band ${near}'s offset moved unevenly on ${uneven} of ${moves.length} steps: ${JSON.stringify(moves)}`)
+    if (still) problems.push(`slow pan: band ${near}'s pixels did not move on ${still} of ${changed.length} steps — it steps, not slides`)
+  } else problems.push(`slow pan: band ${near} was never measured on screen — no place to pan it slowly`)
   await page.evaluate(() => window.__world.hideSkyLayers([]))
   await shot('look-sky-sandbox')
   const bakesAfter = await page.evaluate(() => window.__world.info())

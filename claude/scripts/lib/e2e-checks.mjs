@@ -69,6 +69,12 @@ export const CHECKS = [
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
   { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
+  // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
+  // GPU process's memory, which other checks' pages would move.
+  { name: 'context-budget', file: 'scripts/checks/context-budget.mjs', standalone: true, serial: true },
+  // T23.04C F8: no WebGL2 — title and sandbox boot on the stub renderer, no page errors, flat backdrop.
+  { name: 'no-webgl2', file: 'scripts/checks/no-webgl2.mjs', url: '?e2e=1', ready: '!!window.__title' },
   // T21.28: rock in the rendered pixels under both ends of every gate's drawn base,
   // against the open air above the arch as the control. Seed 7, not 4242: on 4242
   // no asserted pad has an end the fill changes at the sampled rows, so the check

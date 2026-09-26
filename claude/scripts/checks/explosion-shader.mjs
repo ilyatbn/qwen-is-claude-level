@@ -29,7 +29,9 @@
  *   pixel by at least `a·255/2` over black or white whatever its colour, so the verdict is about
  *   the blast, not about what it sits on: T23.04's sky is dark, the soot is dark, and on the sky
  *   alone four of twelve points read unpainted at peaks of 10–22. Where the point is on terrain
- *   (drawn by Phaser, in the same canvas) the backdrop is hidden and the three agree.
+ *   (drawn by Phaser, in the same canvas) the backdrop is hidden and the three agree. **And over the
+ *   world canvas alone at least `WORLD_FLOOR` of them** (T23.04C F2): "any backdrop" alone passed a
+ *   blast faded to 20 %.
  * - **It lingers**: posed after the flat flash has ended, the painted blast is still on
  *   the screen, and with High Quality off nothing is.
  * - **Animates** while frozen and held: Phaser's clock stirs the noise; the flat flash
@@ -54,6 +56,15 @@ const VISIBLE = 24
  */
 const BACKDROPS = [null, '#000000', '#ffffff']
 const RING_POINTS = 12
+/**
+ * T23.04C F2: the blast must also read **on the sky it is actually drawn over** — the world canvas as
+ * drawn — not only over black or white. Black and white stay as coverage diagnostics (a layer of
+ * coverage `a` moves one of them by ≥ a·255/2 whatever its colour), but "painted over any backdrop"
+ * passed a blast faded to 20 % (the review's plant: 10/12 over white, 1/12 over the world canvas).
+ * Basis, measured on this pose after T23.04C: 7, 8, 8 of 12 over the world canvas (T23.04B's pose:
+ * 10); the 20 % plant: 1. The floor sits one point under the lowest unplanted run.
+ */
+const WORLD_FLOOR = 6
 
 const stack = await startStack({
   port: PORT,
@@ -363,6 +374,9 @@ if (arrived) {
     await setHQ(false)
     await frame()
   }
+  const onWorld = cover(qPainted.per[BACKDROPS.indexOf(null)])
+  if (onWorld < WORLD_FLOOR) fail(`only ${onWorld} of ${ring.length} blast-radius points are painted over the world canvas as drawn (floor ${WORLD_FLOOR}) — the blast does not read on the sky it is drawn over`)
+  else ok(`over the world canvas as drawn, ${onWorld}/${ring.length} blast-radius points are painted (floor ${WORLD_FLOOR})`)
   if (cover(qPainted) !== ring.length) fail(`${ring.length - cover(qPainted)} of ${ring.length} points just inside the blast radius are unpainted — the front never reaches the crater's edge`)
   else ok(`the painted front covers the blast radius (${ring.length}/${ring.length})`)
 

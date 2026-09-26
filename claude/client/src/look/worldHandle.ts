@@ -13,6 +13,8 @@ import { sameView } from './worldRenderer-math'
 /** What a dev check can reach: `window.__world` (dev surface only). */
 export interface WorldHandle {
   backend: SceneRenderer['backend']
+  /** T23.04C: the Phaser scene this handle belongs to — a check crossing scenes must not read the last scene's. */
+  scene: string
   frames(): number
   view(): ViewRect | null
   info(): ReturnType<WorldRenderer['info']> | null
@@ -117,6 +119,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
   const rects: Phaser.GameObjects.Rectangle[] = []
   const handle: WorldHandle = {
     backend: r.backend,
+    scene: scene.scene.key,
     frames: () => stats?.frames ?? 0,
     view: () => stats?.view ?? null,
     info: () => three?.info() ?? null,

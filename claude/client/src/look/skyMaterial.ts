@@ -45,6 +45,7 @@
 import {
   FloatType,
   HalfFloatType,
+  LinearFilter,
   Mesh,
   NearestFilter,
   OrthographicCamera,
@@ -216,20 +217,23 @@ ${bandMix}
 type U = Record<string, { value: unknown }>
 
 /**
- * A bake target, RGBA, **nearest**-sampled, **float32**. Nearest, because every read lands on a
- * texel centre (`snapOffsets`), and measured on SwiftShader linear filtering cost ~0.7 ms a frame
- * more. Float32, because half float's 11 bits flip the last bit of a few per cent of pixels:
+ * A bake target, RGBA, **float32**; **nearest**-sampled except the bands. Nearest, because every
+ * screen-fixed and gradient read lands on a texel centre (`snapOffsets`), and measured on SwiftShader
+ * linear filtering cost ~0.7 ms a frame more. **The bands are linear at unsnapped offsets**
+ * (T23.04C F6): snapped to whole texels, a slow pan moved them in 2-px (low) / 1-px (full) jumps with
+ * still frames between — a band now slides by its exact parallax offset every frame; at a zero
+ * offset (the look-lab) each read is still a texel centre, so Level A is the same picture. Float32, because half float's 11 bits flip the last bit of a few per cent of pixels:
  * measured on `look-sky`, half-float bands and gradient put F5's `deltaE_cave` at 0.011 of its
  * 0.0125 and half-float screen parts moved F5's `paletteDE` 0.000 → 0.089; float32 gives 0.00000,
  * as unbaked (and on SwiftShader it is the faster of the two). Where a float32 colour buffer is
  * not renderable (no `EXT_color_buffer_float`), half float.
  */
-const target = (w: number, h: number, float32: boolean): WebGLRenderTarget =>
+const target = (w: number, h: number, float32: boolean, linear: boolean): WebGLRenderTarget =>
   new WebGLRenderTarget(w, h, {
     type: float32 ? FloatType : HalfFloatType,
     format: RGBAFormat,
-    minFilter: NearestFilter,
-    magFilter: NearestFilter,
+    minFilter: linear ? LinearFilter : NearestFilter,
+    magFilter: linear ? LinearFilter : NearestFilter,
     depthBuffer: false,
     generateMipmaps: false,
   })
@@ -251,6 +255,7 @@ export class SkyQuad {
   private skyId = 0
   private hidden = new Set<number>()
   private readonly bakeMat: ShaderMaterial
+  private readonly bakeQuad: Mesh<PlaneGeometry, ShaderMaterial>
   private readonly bakeScene = new Scene()
   private readonly bakeCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1)
   private targets: WebGLRenderTarget[] = []
@@ -290,9 +295,9 @@ export class SkyQuad {
       depthTest: false,
       depthWrite: false,
     })
-    const quad = new Mesh(new PlaneGeometry(2, 2), this.bakeMat)
-    quad.frustumCulled = false
-    this.bakeScene.add(quad)
+    this.bakeQuad = new Mesh(new PlaneGeometry(2, 2), this.bakeMat)
+    this.bakeQuad.frustumCulled = false
+    this.bakeScene.add(this.bakeQuad)
     const mat = new ShaderMaterial({
       uniforms: {
         P1: { value: null },
@@ -413,7 +418,8 @@ export class SkyQuad {
     if (!bg) return offsets
     const texel = frame[0] / buffer[0]
     this.bake(renderer, bg, view, world, frame, texel)
-    const drawn = snapOffsets(offsets, texel)
+    // The gradient, glow and haze move snapped (nearest bakes); the bands slide unsnapped (F6).
+    const drawn = { layers: offsets.layers, horizon: snapOffsets(offsets, texel).horizon }
     const E = this.u['E']!.value as Vector2[]
     for (let i = 0; i < N; i++) E[i]!.set(drawn.layers[i]?.[0] ?? 0, drawn.layers[i]?.[1] ?? 0)
     ;(this.u['skyOff']!.value as Vector2).set(drawn.horizon[0], drawn.horizon[1])
@@ -432,9 +438,13 @@ export class SkyQuad {
     const bake = (mode: number, e: Extent, li = 0): Texture => {
       // The glow and haze weight read `ps.y` alone: one column, which every x reads (clamp to edge).
       const w = mode === MODE.post ? 1 : Math.max(1, Math.round(e.ext[0] / texel))
-      const rt = target(w, Math.max(1, Math.round(e.ext[1] / texel)), float32)
+      const band = mode === MODE.layer
+      // A linear float32 read needs `OES_texture_float_linear`; without it a band bakes half float,
+      // which is always filterable (measured on look-sky: F5 deltaE_cave 0.011 of 0.0125, T23.04B).
+      const f32 = band ? float32Linear : float32
+      const rt = target(w, Math.max(1, Math.round(e.ext[1] / texel)), f32, band)
       this.targets.push(rt)
-      this.bakeStats.bytes += rt.width * rt.height * texelBytes(float32)
+      this.bakeStats.bytes += rt.width * rt.height * texelBytes(f32)
       this.bu['mode']!.value = mode
       this.bu['li']!.value = li
       ;(this.bu['org']!.value as Vector2).set(e.org[0], e.org[1])
@@ -444,6 +454,7 @@ export class SkyQuad {
       return rt.texture
     }
     const float32 = renderer.extensions.has('EXT_color_buffer_float')
+    const float32Linear = float32 && renderer.extensions.has('OES_texture_float_linear')
     const prev = renderer.getRenderTarget()
     const u = this.u
     u['P1']!.value = bake(MODE.base, screen)
@@ -480,6 +491,8 @@ export class SkyQuad {
   dispose(): void {
     this.freeTargets()
     this.bakeScene.clear()
+    // T23.04C (R22): the renderer outlives this sky now, so everything it was given goes back.
+    this.bakeQuad.geometry.dispose()
     this.bakeMat.dispose()
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()

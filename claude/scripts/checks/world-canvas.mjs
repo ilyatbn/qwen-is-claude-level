@@ -297,6 +297,18 @@ async function worldShows(page, where) {
 }
 
 /** Hold the camera where it is (the e2e `watch` hook), so nothing but the step under test changes the picture. */
+/**
+ * T23.04C F3: the world renderer is up and has drawn. `__world.frames()` counts **drawn** frames, and
+ * the redraw skip draws none while the camera is still — a match spawn with a still camera starved
+ * the old `frames() > 2` wait for its whole 30 s (T23.04B's suite run). So force one drawn frame
+ * (`readFrame`: invalidate, resolve on the frame the world canvas drew), then wait on Phaser's frames.
+ */
+async function worldReady(page, timeout) {
+  await page.waitForFunction(() => !!window.__world && !!window.__world.backend, null, { timeout })
+  await page.evaluate(() => window.__world.readFrame())
+  await drawnFrames(page, 2)
+}
+
 const holdStill = (page) =>
   page.evaluate(() => {
     const v = window.__world.view()
@@ -321,7 +333,8 @@ try {
   page.on('pageerror', (e) => errors.push(String(e)))
   const openSandbox = async (extra = '') => {
     await page.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242${extra}`)
-    await page.waitForFunction('!!window.__game && !!window.__world && window.__world.frames() > 2', null, { timeout: 60_000 })
+    await page.waitForFunction('!!window.__game', null, { timeout: 60_000 })
+    await worldReady(page, 60_000)
   }
   await openSandbox()
   const backend = await page.evaluate(() => window.__world.backend)
@@ -427,7 +440,8 @@ try {
   const hi = await stack.browser.newContext({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2 })
   const hp = await hi.newPage()
   await hp.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242`)
-  await hp.waitForFunction('!!window.__game && !!window.__world && window.__world.frames() > 2', null, { timeout: 60_000 })
+  await hp.waitForFunction('!!window.__game', null, { timeout: 60_000 })
+  await worldReady(hp, 60_000)
   await assertOrder(hp, 'DPR 2, 1100x900')
   const hiTiers = await readTiers(hp)
   if (hiTiers.dpr === 2 && tiersOk(hiTiers)) {
@@ -440,7 +454,7 @@ try {
   // ---------------------------------------------------------------- networked match
   const { page: gp, shot, pageErrors } = await stack.openClient({ name: 'ana' })
   await enterBattle(gp, { label: 'world-canvas', waitPlaying: true })
-  await gp.waitForFunction('!!window.__world && window.__world.frames() > 2', null, { timeout: 30_000 })
+  await worldReady(gp, 30_000)
   await assertOrder(gp, 'match')
   // Pan through the match's own camera path: `__game.watch` points the rig (the §C2 e2e
   // affordance), stepped 6 world px a frame toward the map's middle for 45 frames. Walking and

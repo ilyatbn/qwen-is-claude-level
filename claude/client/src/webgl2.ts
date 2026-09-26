@@ -49,7 +49,17 @@ export function probeWebgl2(canvas: ProbeCanvas): Webgl2Probe {
     reason = reason ?? String(e)
   }
   canvas.removeEventListener('webglcontextcreationerror', onError)
+  // T23.04C (R22): the probe's context is released at once. Left to the collector it stays live
+  // beside Phaser's and three's, and Chrome drops the oldest past sixteen — it once dropped Phaser's.
+  releaseContext(ctx)
   return ctx ? { ok: true } : { ok: false, reason }
+}
+
+/** `WEBGL_lose_context.loseContext()` on a context, if it is one that has it. */
+export function releaseContext(ctx: unknown): void {
+  const gl = ctx as { getExtension?: (name: string) => unknown } | null
+  const ext = gl?.getExtension?.('WEBGL_lose_context') as { loseContext?: () => void } | null | undefined
+  ext?.loseContext?.()
 }
 
 /** The words a player reads. Plain, and says what to try. */

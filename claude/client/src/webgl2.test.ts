@@ -54,6 +54,21 @@ describe('probeWebgl2', () => {
   it('reports WebGL2 when getContext returns a context (presence control)', () => {
     expect(probeWebgl2(stubCanvas({}))).toEqual({ ok: true })
   })
+
+  // T23.04C (R22): a probe context left to the collector stays live beside Phaser's and three's.
+  it('releases the context it made (WEBGL_lose_context), once', () => {
+    let lost = 0
+    const asked: string[] = []
+    const gl = {
+      getExtension(name: string) {
+        asked.push(name)
+        return name === 'WEBGL_lose_context' ? { loseContext: () => lost++ } : null
+      },
+    }
+    expect(probeWebgl2(stubCanvas(gl))).toEqual({ ok: true })
+    expect(asked).toEqual(['WEBGL_lose_context'])
+    expect(lost).toBe(1)
+  })
 })
 
 describe('gateOnWebgl2', () => {
