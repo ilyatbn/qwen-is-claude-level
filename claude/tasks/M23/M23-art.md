@@ -111,6 +111,22 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   input (`RenderFields::full_with_wall`); today only the round-start half is fed, and **`T23.05B`** supplies the
   generator half to the client. `chunkBake-math.ts::BackdropMask`'s enclosure heuristic is not used.
   *Reverse it by:* feeding only the round-start snapshot (`RenderFields::full`).
+- **R18 — the world renders at Phaser's game resolution, never `devicePixelRatio`** (coordinator, 2026-09-26, answering
+  the T23.03 review). Pixel ratio = Phaser game width / canvas CSS width × the tier's scale: the drawing buffer is the
+  game's 1280×720 (full) or 640×360 (low) at any window size or screen density, CSS-scaled like Phaser's own canvas —
+  the mockup's `setPixelRatio(1)` at 1280×720, so every effect sized in buffer pixels (bloom radius, MSAA, blur taps)
+  matches the references. Memory is therefore the same at 4K as at 720p (T23.03B states it).
+  *Reverse it by:* multiplying the ratio by `devicePixelRatio` in `worldRenderer.ts::syncBox`.
+- **R19 — look-compare's must-fail set is {F0 vs F1, exposure ±10 %, bloom off, fog off}.** Each threshold sits between
+  the measured floor and the **smallest of that set**. Rim-off is reported beside it as a sensitivity line and does not
+  gate (a rim-only change is below what the whole-frame metrics are for; the actor-box region carries it).
+  `look-thresholds.json` is re-derived from the zero floor now and again by T23.08 once the two-back-end floor exists.
+  *Reverse it by:* adding rim-off back to the set in `look-compare.mjs::MUST_FAIL`.
+- **R20 — the quality tier auto-detects until the player chooses.** Never chosen: full on a real GPU's renderer string,
+  low on swiftshader / llvmpipe / a software renderer, read from three's own context. An explicit High Quality toggle
+  always wins. The stored setting gains an "unset" state (not a new flag), and auto-detection never writes it — it
+  still gates today's Phaser shader layers. The browser checks name their tier explicitly (low).
+  *Reverse it by:* `qualityTier()` ignoring the detected tier.
 
 ## Verification — what "exactly the same" means here
 
