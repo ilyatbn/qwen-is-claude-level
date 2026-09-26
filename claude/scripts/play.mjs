@@ -49,22 +49,20 @@ const child = spawn(
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-session-crashed-bubble',
-    // **The gate gets WebGL and this window did not.** `scripts/lib/browser-args.mjs`
-    // passes these to the headless Chrome every browser check runs in, so every
-    // shader effect (fog, fire, smoke, beams, explosions) is verified under WebGL —
-    // while the window a person actually plays in fell back to Phaser CANVAS, where
-    // `optionsPanel.ts::QUALITY_HINT_NO_WEBGL` disables High Quality outright. The
-    // effects were therefore tested in a browser nobody played in. Measured on this
-    // box: without these flags a fresh canvas returns no WebGL context at all; with
-    // them, `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader
-    // driver)`. There is no GPU under WSLg, so software rendering is the only WebGL
-    // available and Chrome now refuses it unless asked twice.
-    '--use-gl=swiftshader',
-    '--enable-unsafe-swiftshader',
+    // T23.00: **the real GPU, not a software renderer.** Measured with the owner at this
+    // machine (Chrome 151, WSLg, 2026-09-26; table in tasks/M23/T23.00-*.md): as-is Chrome
+    // gets no WebGL at all; `--ignore-gpu-blocklist` alone gets llvmpipe (CPU, ~10 fps on a
+    // heavy shader); adding `GALLIUM_DRIVER=d3d12` (env, below) routes Mesa to the host GPU
+    // through WSL's D3D12 — `D3D12 (Intel Arc B390)`, WebGL2, half/float targets, ~535 fps
+    // uncapped. The old `--use-gl=swiftshader` pair is gone: it *forces* SwiftShader and
+    // would override the GPU. M23's three.js renderer needs WebGL2; the headless checks keep
+    // swiftshader (`lib/browser-args.mjs`, R14's low tier). `make probe` prints which one
+    // this window got; `node scripts/webgl2-probe.mjs --all` re-measures the table.
+    '--ignore-gpu-blocklist',
     '--new-window',
     url,
   ],
-  { detached: true, stdio: ['ignore', log, log] },
+  { detached: true, stdio: ['ignore', log, log], env: { ...process.env, GALLIUM_DRIVER: 'd3d12' } },
 )
 child.unref()
 
@@ -72,3 +70,6 @@ console.log(`chrome  pid ${child.pid}`)
 console.log(`window  ${url}`)
 console.log(`cdp     http://localhost:${port}`)
 console.log(`attach  node scripts/probe.mjs`)
+// Chrome hands a URL to a browser already running on this profile and exits — that one keeps
+// whatever flags and env it was started with. Close it first if `make probe` says CPU.
+console.log(`gpu     GALLIUM_DRIVER=d3d12 --ignore-gpu-blocklist (an already-open window keeps its own)`)

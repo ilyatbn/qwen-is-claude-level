@@ -6,6 +6,7 @@ import { MenuScene } from './scenes/MenuScene'
 import { SkinsScene } from './scenes/SkinsScene'
 import { C, Core } from './core'
 import { devSurface } from './dev'
+import { gateOnWebgl2 } from './webgl2'
 
 // No constants are declared here. VIEWPORT_W/H used to be literals in this file —
 // a second source of truth for numbers that live in game-core/src/constants.rs.
@@ -149,7 +150,12 @@ function rendererType(): number {
   return Phaser.AUTO
 }
 
-async function main(): Promise<Phaser.Game> {
+async function main(): Promise<Phaser.Game | null> {
+  // T23.00 / R2: **before anything boots**, a machine without WebGL2 gets a plain full-screen
+  // message rather than a broken game. Not enforced until T23.03 flips `REQUIRE_WEBGL2`: the
+  // world is still drawn by Phaser, which runs on Canvas (see `webgl2.ts`).
+  if (!gateOnWebgl2<HTMLElement>(document.createElement('canvas'), document)) return null
+
   const core = await Core.init()
   const c = C()
 

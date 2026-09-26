@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "phaser": "3.90.0",
-    "socket.io-client": "^4.7.0"
+    "socket.io-client": "^4.7.0",
+    "three": "0.170.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

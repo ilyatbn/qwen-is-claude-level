@@ -14,6 +14,7 @@ import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { describe, webglInfo } from './lib/webgl-info.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // playwright-core is a *client* devDependency and there is no node_modules at the
@@ -38,6 +39,10 @@ async function once(browser) {
   const out = join(root, 'shots', 'probe.png')
   await page.screenshot({ path: out })
   console.log(new Date().toISOString(), page.url())
+  // T23.00: GPU or CPU at a glance — a fresh canvas in the same window, so it reads what this
+  // browser offers, not what the game's current renderer happened to pick.
+  const gl = await page.evaluate(webglInfo).catch((e) => ({ error: String(e) }))
+  console.log('error' in gl ? `webgl   probe failed: ${gl.error}` : describe(gl))
   console.log(JSON.stringify(state, null, 1))
   console.log(`shot  ${out}`)
 }

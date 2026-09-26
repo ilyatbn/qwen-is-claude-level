@@ -59,7 +59,8 @@ export const NOTHING = [
   [/^scripts\/check\.sh$/, 'the gate itself — `check.sh --changed` exercises it'],
   [/^scripts\/(affected\.mjs|lib\/affected(\.test)?\.mjs)$/, 'its own test runs in every gate mode'],
   [/^scripts\/lib\/stack-router\.test\.mjs$/, 'runs in every gate mode; the router itself maps through its importers'],
-  [/^scripts\/(play|probe|shot|drive)\.mjs$/, 'interactive dev tools'],
+  // T23.00: `webgl2-probe` opens headed Chrome windows; no test runs it.
+  [/^scripts\/(play|probe|shot|drive|webgl2-probe)\.mjs$/, 'interactive dev tools'],
   [/^scripts\/(build-atlas|build-audio|catalogue-sprites)\.mjs$|^scripts\/fetch-assets\.sh$/,
     'generators: their output lands in assets/, which is what is tested'],
   [/^scripts\/(verify-repo\.mjs|ignored\.sh)$/, 'repo guards, which always run'],

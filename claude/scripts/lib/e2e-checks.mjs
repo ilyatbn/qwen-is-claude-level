@@ -43,6 +43,9 @@ export const CHECKS = [
   // The pixel harness self-test. It runs on a synthetic page — it is proving the
   // *harness* can detect a change and, more importantly, can FAIL to detect one.
   { name: 'pixels', file: 'scripts/checks/pixels.mjs', url: '', ready: '!!document.body' },
+  // T23.00: WebGL2 + half-float colour buffers in this browser. Every M23 renderer check
+  // depends on both, so this fails by name before any of them photographs a black canvas.
+  { name: 'webgl2', file: 'scripts/checks/webgl2.mjs', url: '', ready: '!!document.body' },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // T21.28: rock in the rendered pixels under both ends of every gate's drawn base,
   // against the open air above the arch as the control. Seed 7, not 4242: on 4242

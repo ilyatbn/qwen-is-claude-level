@@ -7262,3 +7262,11 @@ Small 1.125, Medium 1.364, Large 1.375. Sweep 999/999 first attempt; 4 space-sma
 Full `./scripts/check.sh` on `1be6085` (T22.20 gentler thrusters + R109b top speed 450 + R109c brake 1.1, T22.21 sturdier/bigger/iron
 asteroids, T22.22/22B/22C): **EXIT=0, 1209 s** — browser **78/78**, vitest 1144/1144, Rust 1765 passed / 0 failed / 31 ignored.
 Owner decision pending: the battery economy (pickups 4.5 → 0.8 per bot round since R112b; radiation deaths 0.16 → 0.17).
+
+## T23.00 — WebGL2 on the owner's machine (builder, 2026-09-26)
+Headed `make play` Chrome (`node scripts/webgl2-probe.mjs --all`): as-is `NONE — Could not create a WebGL context … llvmpipe … BindToCurrentSequence failed`; blocklist `webgl2 CPU llvmpipe`, heavy 48 fps; **d3d12+blocklist `webgl2 GPU ANGLE (Microsoft Corporation, D3D12 (Intel(R) Arc(TM) B390 GPU), OpenGL 4.6)`, half-float 2.0→2, light 612 / heavy 319 fps uncapped**; swiftshader heavy 26.
+Headless checks' Chromium (`--checks`): `webgl2 CPU ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)`, EXT_color_buffer_float/half_float true, RGBA16F 2.0→2, RGBA8 control →1.
+`make play` = `GALLIUM_DRIVER=d3d12 --ignore-gpu-blocklist` (swiftshader flags removed); probe.mjs prints GPU/CPU line; the game in that window now runs Phaser WebGL at 60 fps.
+Client: `webgl2.ts` probe + full-screen message, gated by `REQUIRE_WEBGL2 = false` until T23.03 flips it. three@0.170.0 pinned, 0 bytes in the bundle.
+Check `webgl2` registered; falsified with `--disable-webgl2` in browser-args → FAILED "no WebGL2 context (disabled by enterprise policy or commandline switch)", restored. Done-when EXIT=0 (vitest 1150/1150, webgl2 1/1).
+Gate: `check.sh --changed HEAD --fast` "all affected checks passed" (vitest 1150/1150); mapped browser suite `node scripts/e2e.mjs` 79/79 (main.ts maps to all).
