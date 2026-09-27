@@ -7424,10 +7424,20 @@ Done-when EXIT 0 (vitest 1116, game-wasm 70, look-terrain/terrain-seed/gate-grou
 
 ## T23.08 — fog, foreground, post chain; the first picture gate (builder, 2026-09-27)
 Gate (look-gate-f1, full tier) lab F1 world vs mockup `controls/F1-world.png` (no cast): all within — dssim .00004/.00501, deltaE .0088/.3613, lumaW1 0/.00281, p50 0/1, p95 0/2.5, paletteDE .0054/.8239, satW1 .00001/.002186, edge .00002/.000945, dE_sky .0056/.2151, dE_terrain .0134/.4862, dE_cave .0050/.01517, bloomBox .008/.866.
-vs F1 picture, actor boxes excluded: misses 11/11 (dssim .0703, deltaE 2.26, p95 17, dE_sky 2.15, dE_terrain 1.88, dE_cave 12.19) = the mockup's own world vs F1 within every threshold (max |Δ| paletteDE .0068): layer = the cast/fx (T23.12+/T23.18), none the lab's.
+vs F1 picture, actor boxes excluded: misses 11/11 (dssim .0703, deltaE 2.26, p95 17, dE_sky 2.15, dE_terrain 1.88, dE_cave 12.19) = the mockup's own world vs F1 within every threshold (max |Δ| paletteDE 0.539, not .0068 — corrected by T23.08C: paletteDE's k-means is not additive, it no longer attributes): layer = the cast/fx (T23.12+/T23.18), none the lab's.
 Controls (lab knobs) red: fog-off 11/12, exposure-up 10/12, -down 12/12, bloom-off bloomBox 1.21 > .866, fg-off 3/12, grade-off 12/12. Leaf over a player alpha .200 (≤.25; control .961), pixels 12.13 → 2.86.
 Plants red: front-fog seed ignored (4), grain cell 640 (6), fade off (alpha .96), low bloom full-size. Green: bloom radius 0 (moon box .27 < floor .52 — limit, stated).
 Lab floor SwiftShader vs D3D12 Arc B390: dssim .0046, dE_sky .187, dE_actors .242 (stars/grain) → thresholds re-derived, deltaE_actors dropped; look-compare.test 10/10.
 fps panning a Medium match: SwiftShader low 56.8 (control 60.2), draw 12.9 ms: bloom 3.3, fog 1.2, grade 0.2; D3D12 full 60.1 (vsync), +1.25 ms (bloom .95, fog .27). Lab full: SwiftShader bloom 56, fg 12 ms; GPU 1.1/1.0.
-Game: fog+bloom+grade, no leaves (T23.08B: needs players' boxes from the scenes). explosion-shader world count 9/12 (was 10/12 at T23.04C) — reported.
+Game: fog+bloom+grade, no leaves (T23.08B: needs players' boxes from the scenes). explosion-shader world count 9/12 (was 10/12 at T23.04C) — reported. [T23.08C: this pose's spread is 7–11/12 — 9 is not a drop.]
 Browser 26/26 (look-*, world-canvas, context-budget, sandbox, gate-ground, fog/weather, shaders, animals, birds, rematch…); check.sh --changed HEAD --fast EXIT 0; e2e --only ignores unknown names (finding).
+
+## T23.08C — what the post review found (2026-09-27)
+F4: `e2e.mjs --only` exits 2 on any unregistered name (was 0 with look-lab,no-such-check — watched first); T23.06B's `objects` → `look-terrain`.
+R25: `look-thresholds.json` `sets.swiftshader` (floor = 2 SwiftShader renders, 0) / `sets.gpu` (SwiftShader vs D3D12 Arc; both re-rendered this task, byte-equal to T23.08's); `thresholdsFor(renderer)`, unknown/llvmpipe throws. deltaE_actors DEFERRED to T23.12 (note added there and in T23.13).
+Swift vs gpu max: dssim .002693/.00501, deltaE .3004/.3613, dE_sky .1216/.2151, dE_cave .01251/.01517, bloomBox .6057/.8661, bloomHalo (new ring r 4–16 round the moon) 1.232/1.42; rim-off fails 5/11 swift, 3/11 gpu.
+F1: §3 paletteDE |lab−mockup| 0.53947 → reported, not attributed; direct pasted compare gates (0/10, its paletteDE 1.090). Node test: worldonly = frame − cast (plant red).
+F6 enclosed term deleted; F7 exceptions photograph the scanned run, key has both ends; F8 terrainWarning==='' in 3 checks + got/want + vitest; F9 `look-match` (fog band 19.14, grade 3.42, rock 2691/4096 differ).
+Plants red: bloom radius 0 (halo 2.464>1.232), run +5 px (39>36), single-length worker (3 checks + look-match warn), fog-off in match (band 0), offset 0 (0/4096).
+Parked `world-canvas` (unpinned match map, marker 313.5 px mismatch; red 3/5 new, 1/5 with old render_fields). affected.mjs: reference PNGs map to "everything" — no rule for tasks/M23/reference/**.
+

@@ -820,7 +820,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.07C](M23/T23.07B-what-the-lit-terrain-review-found.md) — R24 final form: hard wall = closing(48) ∪ enclosed, the rest fades; seed 9's runs named; chamber guard (as built in T23.07B's file)
 - [x] [T23.08](M23/T23.08-fog-depth-and-post.md) — Fog, foreground depth and the post chain — **the first picture gate**: nothing after it starts until F1's numbers are in — gate numbers in the journal 2026-09-27; lab floor (SwiftShader vs D3D12) measured, thresholds re-derived
 - [ ] [T23.08B](M23/T23.08-fog-depth-and-post.md) — The foreground leaves in the game: world-anchored clusters per map + the scenes hand over their players' boxes (`setOccluders`) (filed by T23.08, see its As built)
-- [ ] [T23.08C](M23/T23.08C-what-the-post-review-found.md) — What the post review found — thresholds per back end (R25), `--only` exits 2 on an unknown name, bloom halo box, R24 term deleted, exceptions that can fail, loud worker guard, fog/seed live check
+- [x] [T23.08C](M23/T23.08C-what-the-post-review-found.md) — What the post review found — thresholds per back end (R25), `--only` exits 2 on an unknown name, bloom halo box, R24 term deleted, exceptions that can fail, loud worker guard, fog/seed live check
 - [ ] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller
 - [ ] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
 - [ ] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move

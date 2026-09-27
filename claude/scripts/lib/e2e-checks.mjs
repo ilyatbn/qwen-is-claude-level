@@ -94,7 +94,8 @@ export const CHECKS = [
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
-  { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
+  // Parked by T23.08C: its unpinned match map reads the pan markers 313.5 px apart on some maps (tasks/flaky-test.md).
+  { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true, flaky: true },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
