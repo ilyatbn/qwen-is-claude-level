@@ -833,10 +833,12 @@ look up and see the earth, moved since the round began.
 - [x] [T23.14](M23/T23.14-the-stick-figure.md) — The stick figure — poses, run cycle, continuous aim, scarf, space helmet; boots and wings redrawn, not removed
 - [x] [T23.14B](M23/T23.14B-the-jetpack-look.md) — The jetpack's look — flame + space plume on the stick figure, lit (owner priority, out of T23.18)
 - [ ] [T23.14C](M23/T23.14C-what-the-character-batch-gate-found.md) — What the character batch gate found — context-budget's 8/9 geometry flip, thrusters-standard's missing body
+- [ ] [T23.14D](M23/T23.14D-what-the-character-review-found.md) — What the character review found — remote space flames, one flame length for everyone, feet that don't pop, remote swings, per-box flame gate, atlas cells reused (fps)
 - [ ] [T23.15](M23/T23.15-no-themes-no-wearables.md) — No themes, no wearables — client only: the theme stamps collision and the join JSON still carries skins
 - [ ] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — **21 of 24 holdable weapons draw nothing in the hand today**; one design per weapon for hand, ground and inventory
 - [ ] [T23.17](M23/T23.17-melee-and-thrown-remodelled.md) — Melee and thrown weapons remodelled — all 23 holdables, silhouettes measured apart
 - [ ] [T23.18](M23/T23.18-effects-in-the-new-renderer.md) — Effects in the new renderer — HDR tracers, beams, blasts, fire, smoke, plumes; the simulation halves keep their coverage assertions
+- [ ] [T23.19A](M23/T23.19A-the-gunner-is-visible.md) — The gunner is visible — turrets, gates, pickups, tombstones drawn behind the figures in the new renderer (review F3, pulled forward)
 - [ ] [T23.19](M23/T23.19-the-world-furniture.md) — The world's furniture — gates, platforms, crystals, crates, animals, birds, hazards; every gameplay signal re-asserted on pixels
 - [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
