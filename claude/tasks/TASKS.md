@@ -840,5 +840,6 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
 - [ ] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
+- [ ] [T23.24](M23/T23.24-fireflies.md) — Fireflies at night — small drifting lights that glow and light the rock nearby (owner ask, after T23.11)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
