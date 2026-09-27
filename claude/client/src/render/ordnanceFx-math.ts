@@ -73,13 +73,6 @@ export interface Hazard {
 /** Why a mine left the world. Each looks different (§B6). */
 export type MineEnd = 'detonated' | 'destroyed' | 'expired'
 
-export interface FxLight {
-  x: number
-  y: number
-  r: number
-  a: number
-}
-
 /**
  * The server sends `kind` as a Rust `Debug` string (`ToxicZone`, `Smoke`…).
  * Match on substrings rather than exact values: the
@@ -180,33 +173,6 @@ export class OrdnanceFxState {
       h.ttl -= dt
       if (h.ttl <= 0) this.hazards.delete(id)
     }
-  }
-
-  /**
-   * Light sources, fed to the lightmap like every other emitter (§A3).
-   *
-   * Fire and flame jets emit; toxic glows faintly; smoke and mines emit
-   * nothing — a mine that lit itself up at night would defeat the point of
-   * hiding it, and smoke is the opposite of a light.
-   */
-  lights(): FxLight[] {
-    const out: FxLight[] = []
-    for (const j of this.jets) {
-      out.push({
-        x: j.x + Math.cos(j.aim) * j.range * 0.4,
-        y: j.y + Math.sin(j.aim) * j.range * 0.4,
-        r: j.range * 0.7,
-        a: 0.8 * fade(j.ttl, j.life),
-      })
-    }
-    for (const h of this.hazards.values()) {
-      // §F10.2 took the fire zone's light with the fire zone. What lit the
-      // ground around a molotov now is the flames themselves, through
-      // `OrdnanceState.lights()` — one light per burning object rather than one
-      // per announced rectangle of rule.
-      if (h.kind === 'toxic') out.push({ x: h.x, y: h.y, r: h.r * 1.4, a: 0.28 })
-    }
-    return out
   }
 
   /** How visible a mine should be: unmissable close up, nearly nothing far off.

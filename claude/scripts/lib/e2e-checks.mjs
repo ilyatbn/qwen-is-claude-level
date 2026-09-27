@@ -97,6 +97,10 @@ export const CHECKS = [
   // Parked by T23.08C: its unpinned match map reads the pan markers 313.5 px apart on some maps (tasks/flaky-test.md).
   { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true, flaky: true },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.09: the effects are the lights — a real bazooka blast, laser beam and jetpack burn each raise the
+  // lit terrain's luminance near them (the frozen frame read with and without the terrain's point lights)
+  // and leave rock beyond the light's radius unchanged (control region); the blast's light decays.
+  { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
   // GPU process's memory, which other checks' pages would move.

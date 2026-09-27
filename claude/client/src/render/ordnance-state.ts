@@ -1,16 +1,12 @@
 /**
- * The pure half of visible ordnance (§A8): tracer, trail and impact bookkeeping,
- * and the light sources they contribute.
+ * The pure half of visible ordnance (§A8): tracer, trail and impact bookkeeping.
  *
  * §A3 is a headline requirement — **every shot is visible and every shot digs**.
  * The SMG stays hitscan; what makes it visible is a tracer drawn along the
- * `hitscan` event's segment. At night these are the light sources that make combat
- * readable at all, which is why `lights()` lives here and is tested.
+ * `hitscan` event's segment. **T23.09: the lights these records cast are built from
+ * them in `look/effectLights.ts`** (F's point lights on the lit terrain); the lightmap
+ * light list that lived here (`lights()`, `GLOW`) retired with the lightmap's effect role.
  */
-
-/** Light samples along a tracer's path. Enough to read as a beam, few enough
- * that 10 shots/s does not flood the lightmap. */
-const TRACER_LIGHT_SAMPLES = 6
 
 export interface Tracer {
   x0: number
@@ -243,40 +239,6 @@ export interface Blast {
   ttl: number
 }
 
-export interface Light {
-  x: number
-  y: number
-  r: number
-  a: number
-}
-
-/** How brightly each kind glows, and how far. */
-const GLOW: Record<ProjectileKind, { r: number; a: number }> = {
-  // Bright and small: a round has to be findable at night (§A3) without a
-  // sustained burst turning the map into daylight — twenty can be in the air.
-  bullet: { r: 40, a: 0.6 },
-  bazooka: { r: 90, a: 0.85 },
-  grenade: { r: 45, a: 0.5 },
-  meteor: { r: 150, a: 1 },
-  fragment: { r: 60, a: 0.7 },
-  // Energy ordnance reads cooler and brighter than ballistic, because what it
-  // does to a shield is different and the player has to be able to tell (§B5).
-  airburst: { r: 70, a: 0.7 },
-  pellet: { r: 40, a: 0.6 },
-  // Smoke denies sight; a bright glow on it would defeat its own purpose.
-  smoke: { r: 20, a: 0.15 },
-  molotov: { r: 80, a: 0.8 },
-  toxic: { r: 70, a: 0.6 },
-  // Rain, not ordnance: enough to catch the eye falling through a dark sky and
-  // no more. A drop that lit the ground like a rocket would make a toxic storm
-  // brighter than daylight — twenty of them are in the air at once.
-  drop: { r: 24, a: 0.35 },
-  // §F10.3: "a fire lights the ground around it at night". Modest per flame and
-  // dim, because `FLAME_MAX_LIVE` is 160 and a molotov alone puts 24 down at
-  // once — a rocket's 90/0.85 repeated two dozen times would be daylight.
-  flame: { r: 44, a: 0.4 },
-}
-
 export class OrdnanceState {
   readonly tracers: Tracer[] = []
   /**
@@ -364,54 +326,6 @@ export class OrdnanceState {
       b.age += dt
       if (b.age >= b.ttl) this.blasts.splice(i, 1)
     }
-  }
-
-  /**
-   * Everything currently emitting light, for the lightmap to erase around.
-   *
-   * Shooting in the dark tells everyone where you are — that is intentional
-   * (`docs/14-daynight-visibility.md` §2), and it only works if ordnance actually
-   * feeds the lightmap.
-   */
-  lights(): Light[] {
-    const out: Light[] = []
-    for (const p of this.projectiles.values()) {
-      const g = GLOW[p.kind]
-      out.push({ x: p.x, y: p.y, r: g.r, a: g.a })
-    }
-    for (const t of this.tracers) {
-      const k = t.life / t.ttl
-      // A tracer LIGHTS ITS OWN PATH, not just its ends.
-      //
-      // Drawing it was never the problem: it renders at DEPTH.particles (40),
-      // above terrain — but the lightmap multiplies at depth 50, so at full
-      // darkness a white line became roughly RGB 46 against RGB 20 terrain and
-      // was, as reported, nearly invisible. §A3 requires every shot to be
-      // visible, so the beam has to carve its own hole in the dark rather than
-      // be dimmed by it.
-      //
-      // Sampling the segment rather than adding one huge radial keeps the lit
-      // region the shape of the beam.
-      for (let i = 0; i <= TRACER_LIGHT_SAMPLES; i++) {
-        const f = i / TRACER_LIGHT_SAMPLES
-        out.push({
-          x: t.x0 + (t.x1 - t.x0) * f,
-          y: t.y0 + (t.y1 - t.y0) * f,
-          r: 46,
-          a: 0.75 * k,
-        })
-      }
-      // The muzzle is brighter and wider: firing at night must give away the
-      // shooter, not only the target ("shooting in the dark tells everyone where
-      // you are", `docs/14-daynight-visibility.md` §2).
-      out.push({ x: t.x0, y: t.y0, r: 80, a: 0.9 * k })
-    }
-    for (const im of this.impacts) {
-      // A bright, fast decay: the flash of the blast, not a lingering lamp.
-      const k = im.life / im.ttl
-      out.push({ x: im.x, y: im.y, r: im.r * 2.5, a: Math.min(1, k * 1.4) })
-    }
-    return out
   }
 
   get counts(): { tracers: number; projectiles: number; impacts: number } {

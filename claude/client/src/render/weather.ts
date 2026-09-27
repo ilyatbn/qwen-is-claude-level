@@ -342,15 +342,6 @@ export class WeatherLayer {
     }
   }
 
-  /** Feed the lightmap: fire is a light source at night (§A3). */
-  lights(): Array<{ x: number; y: number; r: number; a: number }> {
-    const out: Array<{ x: number; y: number; r: number; a: number }> = []
-    for (const e of this.embers.embers) {
-      out.push({ x: e.x, y: e.y, r: 40, a: 0.35 * Math.max(0, e.life / e.ttl) })
-    }
-    return out
-  }
-
   destroy(): void {
     this.embers.clear()
     this.rainGfx.destroy()

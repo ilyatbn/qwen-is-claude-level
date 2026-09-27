@@ -292,40 +292,6 @@ export class LavaClock {
   }
 }
 
-/**
- * The lights a lava vent casts, by phase.
- *
- * **One function because there are now two callers** (T19.24). `SandboxScene`
- * has had these five numbers inline since the effect was built; `GameScene`
- * needs the same ones now that a networked client finally has vents to light,
- * and a second copy is a second place for the jet's offset or the burn's radius
- * to drift. `docs/14` §A3 — fire is a light source at night — is the claim both
- * of them are keeping, so it should be kept once.
- *
- * The jet is lit **above** the mouth because that is where the column of lava
- * is; the afterburn is lit at the mouth itself and dimmer, because what is left
- * is glowing ground rather than a jet.
- *
- * Returned structurally rather than as `lightmap.ts`'s `LightSource` so this
- * file stays free of the render layer and testable without a canvas.
- */
-export function ventLights(
-  vents: readonly { x: number; y: number; jetting: boolean; burning: boolean }[],
-): { x: number; y: number; radius: number; intensity: number }[] {
-  const out: { x: number; y: number; radius: number; intensity: number }[] = []
-  for (const v of vents) {
-    if (v.jetting) out.push({ x: v.x, y: v.y - JET_LIGHT_RISE, radius: JET_LIGHT_R, intensity: JET_LIGHT_A })
-    else if (v.burning) out.push({ x: v.x, y: v.y, radius: BURN_LIGHT_R, intensity: BURN_LIGHT_A })
-  }
-  return out
-}
-
-/** How far above the mouth the jet's light sits — the column, not the hole. */
-const JET_LIGHT_RISE = 60
-const JET_LIGHT_R = 150
-const JET_LIGHT_A = 0.9
-const BURN_LIGHT_R = 90
-const BURN_LIGHT_A = 0.6
 
 /**
  * Which solar flare is running, from when, and with what seed — the networked

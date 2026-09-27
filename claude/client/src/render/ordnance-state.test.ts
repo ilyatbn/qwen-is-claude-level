@@ -44,26 +44,6 @@ describe('OrdnanceState', () => {
     expect(o.counts.projectiles).toBe(0)
   })
 
-  it('lights every live projectile and drops expired impacts', () => {
-    const o = new OrdnanceState(LIFE, TRAIL)
-    o.addProjectile(1, 'bazooka', 10, 20)
-    o.addProjectile(2, 'grenade', 30, 40)
-    o.addImpact(50, 60, 42, 'blast', 0.2)
-
-    let lights = o.lights()
-    expect(lights.some((l) => l.x === 10 && l.y === 20)).toBe(true)
-    expect(lights.some((l) => l.x === 30 && l.y === 40)).toBe(true)
-    expect(lights.some((l) => l.x === 50 && l.y === 60)).toBe(true)
-
-    o.update(0.25)
-    lights = o.lights()
-    expect(lights.some((l) => l.x === 50 && l.y === 60)).toBe(false)
-    expect(lights.length).toBe(2)
-
-    o.removeProjectile(1)
-    expect(o.lights().length).toBe(1)
-  })
-
   it('keeps a blast after its flash, and holds both when asked (T21.18)', () => {
     const BLAST = 1.1
     const FLASH = 0.2
@@ -88,43 +68,6 @@ describe('OrdnanceState', () => {
     o.update(BLAST)
     expect(o.blasts.length).toBe(0)
   })
-
-  it('makes a rocket a brighter light than a grenade', () => {
-    // Night combat is readable because ordnance lights the map; a rocket is the
-    // brightest thing most rounds will see.
-    const o = new OrdnanceState(LIFE, TRAIL)
-    o.addProjectile(1, 'bazooka', 0, 0)
-    o.addProjectile(2, 'grenade', 0, 0)
-    const [rocket, grenade] = o.lights()
-    expect(rocket!.r).toBeGreaterThan(grenade!.r)
-    expect(rocket!.a).toBeGreaterThan(grenade!.a)
-  })
-
-  it('fades a tracer light as the tracer fades', () => {
-    const o = new OrdnanceState(LIFE, TRAIL)
-    o.addTracer(0, 0, 100, 0)
-    const first = o.lights()[0]!.a
-    o.update(LIFE / 2)
-    expect(o.lights()[0]!.a).toBeLessThan(first)
-  })
-})
-
-it('a tracer lights its muzzle as well as its impact', () => {
-  // Firing at night must give away the shooter's position, not only the target's
-  // (`docs/14-daynight-visibility.md` §2). Lighting only the far end inverts the
-  // trade the whole night design rests on.
-  const s = new OrdnanceState(0.09, 12)
-  s.addTracer(100, 100, 500, 300)
-  const lights = s.lights()
-  const muzzle = lights.find((l) => l.x === 100 && l.y === 100)
-  const impact = lights.find((l) => l.x === 500 && l.y === 300)
-  expect(muzzle, 'no light at the muzzle').toBeDefined()
-  expect(impact, 'no light at the impact').toBeDefined()
-  expect(muzzle!.a).toBeGreaterThan(0)
-
-  // And both fade with the tracer rather than lingering.
-  s.update(0.09)
-  expect(s.lights().filter((l) => l.x === 100 || l.x === 500)).toHaveLength(0)
 })
 
 // ------------------------------------------------------------------ §C4 tables

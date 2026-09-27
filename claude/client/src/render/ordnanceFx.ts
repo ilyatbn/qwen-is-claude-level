@@ -21,7 +21,7 @@
 import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
-import { OrdnanceFxState, fade, type FxLight, type HazardKind } from './ordnanceFx-math'
+import { OrdnanceFxState, fade, type HazardKind } from './ordnanceFx-math'
 import { SMOKE_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
@@ -120,10 +120,6 @@ export class OrdnanceFxLayer {
 
   get hazardCount(): number {
     return this.state.hazards.size
-  }
-
-  lights(): FxLight[] {
-    return this.state.lights()
   }
 
   /** `eye` is the local player: mine visibility is a function of distance to

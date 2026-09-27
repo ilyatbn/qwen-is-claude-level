@@ -108,33 +108,6 @@ describe('OrdnanceFxState', () => {
     expect(s.hazards.size).toBe(0)
   })
 
-  it('lights toxic, and never smoke or mines', () => {
-    // A mine that lit itself up at night would defeat the point of hiding it,
-    // and smoke is the opposite of a light.
-    const s = st()
-    s.addHazard(1, 'smoke', 0, 0, 110, 8)
-    s.addMine(5, 0, 10, 10)
-    expect(s.lights()).toHaveLength(0)
-
-    // The control for the absence above: a hazard that *does* light.
-    s.addHazard(3, 'toxic', 70, 80, 90, 8)
-    const lights = s.lights()
-    expect(lights).toHaveLength(1)
-    expect(lights[0]!.x).toBe(70)
-    expect(lights[0]!.a).toBeGreaterThan(0)
-  })
-
-  it('puts a flame jet light along the aim, not at the muzzle', () => {
-    const s = st()
-    s.addJet(0, 0, 0, 150, 0.55)
-    const [l] = s.lights()
-    expect(l!.x).toBeGreaterThan(0)
-    expect(l!.a).toBeGreaterThan(0)
-    // ...and it dims as the jet dies.
-    s.update(0.06)
-    expect(s.lights()[0]!.a).toBeLessThan(l!.a)
-  })
-
   it('makes a mine unmissable close up and invisible far off (§B6)', () => {
     expect(OrdnanceFxState.mineAlpha(0, 40, 300)).toBe(1)
     expect(OrdnanceFxState.mineAlpha(40, 40, 300)).toBe(1)

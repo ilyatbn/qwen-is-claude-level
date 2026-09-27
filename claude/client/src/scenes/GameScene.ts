@@ -69,6 +69,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { EffectLights, gateLights, jetFeet, viewRect, type EffectSources } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
@@ -108,7 +109,7 @@ import { artFor } from '../render/itemSprites-math'
 import { traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
-import { FlareClock, FogClock, LavaClock, ServerClock, ventLights } from '../render/weather-math'
+import { FlareClock, FogClock, LavaClock, ServerClock } from '../render/weather-math'
 import { FlareFx, type FlareBody } from '../render/flareFx'
 import { VortexFx } from '../render/vortexFx'
 import { BlackHoleFx } from '../render/blackHoleFx'
@@ -502,6 +503,8 @@ export class GameScene extends Phaser.Scene {
   private readonly flareBodies: FlareBody[] = []
   /** This frame's vents, derived once and read by both the layer and the lights. */
   private vents: VentSpec[] = []
+  /** T23.09: the per-frame effect-light list (`effectLights.ts`), handed to the world renderer. */
+  private effectLights = new EffectLights()
   private seq = 0
   private acc = 0
   /** `performance.now()` at the last fixed-step update — see `update`'s clock (T22.10F). */
@@ -654,6 +657,8 @@ export class GameScene extends Phaser.Scene {
     this.terrainFields = null
     this.predictor = null
     this.localView = null
+    // T23.09: last round's gates and muzzle bookkeeping; this map's gates arrive with `map_init`.
+    this.effectLights = new EffectLights()
 
     // Who is in the room. `remotes` holds `PlayerView`s, so it is emptied rather
     // than dropped — the sprites belong to a scene that is going away.
@@ -1634,6 +1639,8 @@ export class GameScene extends Phaser.Scene {
     // renderer reading it would draw nothing while looking correct.
     this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.pads.build(this.padViews, imagePortal(GATE_KEY))
+    // T23.09: the gates are static lights, placed once per map.
+    this.effectLights.statics.set(gateLights(this.padViews))
     // T21.11's platforms, rebuilt from the wire beside the pads. The index is
     // the id on both sides — `map_init` does not send one (§B16: two registries
     // assumed a positional relationship without asserting it and a laser
@@ -2395,26 +2402,10 @@ export class GameScene extends Phaser.Scene {
       this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
     }
 
-    const lights: LightSource[] = [
-      // The player's own field of view is a light like any other.
-      { x: rp.x, y: rp.y, radius: fov, intensity: 1 },
-      ...(this.world?.ordnance
-        .lights()
-        .map((l) => ({ x: l.x, y: l.y, radius: l.r, intensity: l.a })) ??
-        []),
-      // Fire and flame jets emit like every other emitter (§A3). Smoke and
-      // mines deliberately do not: a mine that lit itself up at night would
-      // defeat the point of hiding it.
-      ...this.fx
-        .lights()
-        .map((l) => ({ x: l.x, y: l.y, radius: l.r, intensity: l.a })),
-      // T19.24: **the lava vents light the ground.** Until the vents above were
-      // derived, this list had nothing to add here — a networked player took
-      // `LAVA_JET_DPS` from a column of lava that emitted no light at all, in the
-      // one phase that damages you. Shared with `SandboxScene`, which had these
-      // numbers to itself.
-      ...ventLights(this.vents),
-    ]
+    // T23.09: the lightmap keeps its **vision** role only (the player's field of view; T23.10 moves it
+    // into the night view). Its effect lights — ordnance, fire, lava — are the lit terrain's now: the
+    // same effects, as F's point lights (`effectLights.ts`), handed to the world renderer below.
+    const lights: LightSource[] = [{ x: rp.x, y: rp.y, radius: fov, intensity: 1 }]
     this.debugHud.update(performance.now(), {
       rttMs: this.clock.rtt,
       pendingInputs: this.predictor.stats.pending,
@@ -2439,7 +2430,25 @@ export class GameScene extends Phaser.Scene {
       fps: this.game.loop.actualFps,
     })
     this.lightmap.render(this.cameras.main, darkness, lights)
+    this.worldRenderer?.setLights(this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView)))
     this.refreshHud()
+  }
+
+  /**
+   * T23.09: what this frame's effect lights are made of — the ordnance layer's records, every drawn
+   * body that is jetting (the local view and the remotes the dark did not cull: a hidden body casts
+   * no light, or its plume would show where the seeing rule hid it), and the vents drawn this frame.
+   */
+  private effectSources(): EffectSources {
+    const o = this.world?.ordnance.state
+    const views = [this.localView, ...[...this.remotes.values()].map((r) => r.view)]
+    return {
+      projectiles: o?.projectiles.values() ?? [],
+      tracers: o?.tracers ?? [],
+      impacts: o?.impacts ?? [],
+      jets: views.flatMap((v) => jetFeet(v, C().PLAYER_H / 2)),
+      vents: this.vents,
+    }
   }
 
   /**
@@ -3402,6 +3411,8 @@ export class GameScene extends Phaser.Scene {
             ...(self.localView ? [[self.me, self.localView.skin] as const] : []),
             ...[...self.remotes].map(([id, r]) => [id, r.view.skin] as const),
           ]),
+          /** T23.09: the kinds of the last effect-light list handed to the world renderer, in order. */
+          effectLights: [...self.effectLights.lastKinds],
           /**
            * T22.04B: what each body's thruster plume drew last frame, keyed by
            * seat — read off the **views**, as `drawnSkins` is, so there is no

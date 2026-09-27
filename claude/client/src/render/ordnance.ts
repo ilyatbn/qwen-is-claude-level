@@ -1,9 +1,8 @@
 /**
  * Drawing for §A3: tracers, projectile trails and impact flashes.
  *
- * All the bookkeeping is in `ordnance-state.ts` (§A8); this file only draws, and
- * feeds `lights()` straight into the lightmap so ordnance is what makes night
- * combat readable.
+ * All the bookkeeping is in `ordnance-state.ts` (§A8); this file only draws. The
+ * light it casts is built from the same records by `look/effectLights.ts` (T23.09).
  */
 
 import Phaser from 'phaser'
@@ -15,7 +14,6 @@ import {
   flameFlicker,
   LOOK,
   OrdnanceState,
-  type Light,
   type ProjectileKind,
 } from './ordnance-state'
 import { DEPTH } from './backdrop'
@@ -122,10 +120,6 @@ export class OrdnanceLayer {
 
   addImpact(x: number, y: number, r: number, kind = 'blast'): void {
     this.state.addImpact(x, y, r, kind)
-  }
-
-  lights(): Light[] {
-    return this.state.lights()
   }
 
   /**

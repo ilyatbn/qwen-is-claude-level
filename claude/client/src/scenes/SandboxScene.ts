@@ -32,10 +32,10 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { EffectLights, gateLights, jetFeet, viewRect } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
-import { ventLights } from '../render/weather-math'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
@@ -82,6 +82,8 @@ export class SandboxScene extends Phaser.Scene {
   private spaceSky!: SpaceSky
   /** T23.03 (R1): three.js under Phaser's canvas — the sky since T23.04; `null` until its chunk has loaded (T23.03B, F10). */
   private worldRenderer: GameWorld | null = null
+  /** T23.09: the per-frame effect-light list (`effectLights.ts`), handed to the world renderer. */
+  private readonly effectLights = new EffectLights()
   /** T23.07: the world renderer's chunk has loaded (or failed to) — until then a lit-terrain swap may be coming. */
   private worldSettled = false
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
@@ -422,6 +424,8 @@ export class SandboxScene extends Phaser.Scene {
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, this.gravity === SPACE_GRAVITY)
+    // T23.09: this map's gates are static lights, from the pads the world view just built.
+    this.effectLights.statics.set(gateLights(this.core.meta.teleport_pads.map((p) => p.pos)))
     // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
     // and until its chunk loads; it is then described from the core as it stands.
     this.worldRenderer?.mapChanged(this.gameMap())
@@ -777,6 +781,8 @@ export class SandboxScene extends Phaser.Scene {
       debug() {
         return {
           ...self.timings,
+          // T23.09: the kinds of the last effect-light list handed to the world renderer, in order.
+          effectLights: [...self.effectLights.lastKinds],
           seed: self.core.meta.seed,
           scale: self.core.meta.scale,
           attempts: self.core.meta.attempts,
@@ -1061,7 +1067,14 @@ export class SandboxScene extends Phaser.Scene {
         return self.invOpen
       },
       ordnance() {
-        return { ...self.world.ordnance.state.counts, lights: self.world.ordnance.lights().length }
+        // T23.09: `lights` counts the effect lights the ordnance records made last frame (explosions,
+        // laser impacts, muzzle flashes, rocket motors, fires) — what reaches the lit terrain.
+        const fromOrdnance: ReadonlySet<string> = new Set(['explosion', 'laser', 'muzzle', 'rocket', 'flame'])
+        return { ...self.world.ordnance.state.counts, lights: self.effectLights.lastKinds.filter((k) => fromOrdnance.has(k)).length }
+      },
+      /** T23.09: the last effect-light list handed to the world renderer, each with its source's kind. */
+      effectLights() {
+        return self.effectLights.last.map((l, k) => ({ kind: self.effectLights.lastKinds[k], ...l }))
       },
       setFov(r: number | null) {
         self.fovOverride = r
@@ -1324,6 +1337,17 @@ export class SandboxScene extends Phaser.Scene {
        * Returns the **effect** read back through the Rust rule
        * (`move_mod_bits`), not a confirmation that the ask happened.
        */
+      /**
+       * T23.09, e2e only: a laser pistol in the bag (the sandbox loadout has no hitscan weapon), so
+       * `effect-lights` can fire a real beam at rock. Returns the slot it landed in (-1: refused).
+       */
+      giveLaser() {
+        self.core.give(0, 7 /* LASER_PISTOL */, 1)
+        // An energy weapon spends battery (§B5), and the sandbox player's is empty.
+        self.core.addBattery(0, C().BATTERY_MAX)
+        const inv = self.core.inventory(0)
+        return inv?.slots.findIndex((s) => s && s.key === 'laser_pistol') ?? -1
+      },
       giveBoots() {
         self.core.give(0, 26 /* IRONMAN_BOOTS */, 1)
         self.refreshHud()
@@ -1630,17 +1654,22 @@ export class SandboxScene extends Phaser.Scene {
       // No black hole either: it is a networked round's (T22.12C R93).
       this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov, [], this.roundTime, null)
     }
-    // Ordnance lights the map. Shooting in the dark tells everyone where you are,
-    // and it is most of what makes night combat readable at all.
-    for (const l of this.world.ordnance.lights()) {
-      lights.push({ x: l.x, y: l.y, radius: l.r, intensity: l.a })
-    }
-    // Lava lights the map, exactly as ordnance does — a vent at night is a
-    // beacon and that is the point of digging yourself a hole being punished.
-    // T19.24: shared with `GameScene`, which now has vents of its own. The five
-    // numbers lived here alone until a networked client could light them too.
-    lights.push(...ventLights(weather.vents))
+    // T23.09: the lightmap keeps its vision role only (the field of view above; T23.10 moves it into
+    // the night view). Ordnance and lava light the lit terrain now, as F's point lights (`effectLights.ts`).
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
+    const o = this.world.ordnance.state
+    this.worldRenderer?.setLights(
+      this.effectLights.frame(
+        {
+          projectiles: o.projectiles.values(),
+          tracers: o.tracers,
+          impacts: o.impacts,
+          jets: jetFeet(this.player, C().PLAYER_H / 2),
+          vents: weather.vents,
+        },
+        viewRect(this.cameras.main.worldView),
+      ),
+    )
 
     this.overlay.update(
       this.cameras.main,

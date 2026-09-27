@@ -41,7 +41,7 @@ import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectCom
 import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import type { Background, Box, SceneDescription, ViewRect } from './scene'
+import type { Background, Box, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere } from './atmosphere'
 import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
@@ -421,6 +421,22 @@ export class WorldRenderer implements SceneRenderer {
     return [...sticks, ...this.occluders]
   }
 
+  /**
+   * T23.09: this frame's point lights (mask px, `effectLights.ts`), culled and capped when drawn
+   * (`pickLights`). A list that differs from the drawn one is a new picture — it ends the redraw skip —
+   * and an unchanged one (two empty lists: no blast on the map) keeps it.
+   */
+  setLights(lights: Light[]): void {
+    if (!this.desc || sameLights(this.desc.look.lights, lights)) return
+    this.desc.look.lights = lights
+    this.dirty = true
+  }
+
+  /** Dev (T23.09): the point lights held now, before the cull. */
+  heldLights(): Light[] {
+    return [...(this.desc?.look.lights ?? [])]
+  }
+
   /** T23.08: player boxes, mask px `[x0, y0, x1, y1]`, the foreground leaves fade over (≤ 0.25 alpha). */
   setOccluders(boxes: Box[]): void {
     if (JSON.stringify(boxes) === JSON.stringify(this.occluders)) return
@@ -754,6 +770,15 @@ export class WorldRenderer implements SceneRenderer {
   }
 }
 
+/** Two light lists with the same lights in the same order (field by field; they are rebuilt every frame). */
+export function sameLights(a: readonly Light[], b: readonly Light[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((l, k) => {
+    const m = b[k]!
+    return l.x === m.x && l.y === m.y && l.z === m.z && l.r === m.r && l.i === m.i && l.rgb === m.rgb
+  })
+}
+
 /** What the game scenes tell the world renderer about the map (T23.04: its seed and whether it is space). */
 export interface GameMap {
   w: number
@@ -779,7 +804,7 @@ export function gameDescription(map: GameMap): SceneDescription {
     masks: null,
     // T23.07: the lit terrain draws the rock — not on a space map, whose cores and iron are drawn into
     // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
-    // this map's (the game's own are T23.09's): none.
+    // this map's: none here — the scenes hand over their effect lights each frame (T23.09, `setLights`).
     litTerrain: !map.space,
     // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
@@ -819,6 +844,8 @@ export interface GameWorld {
    * its picture is not whole yet) — a check that photographs the world waits this out.
    */
   terrainSwapPending(): boolean
+  /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
+  setLights(lights: Light[]): void
 }
 
 /**
@@ -850,6 +877,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
     },
     terrainReady: () => renderer instanceof WorldRenderer && renderer.drawsTerrain,
     terrainSwapPending: () => renderer instanceof WorldRenderer && renderer.litTerrainWanted && !renderer.drawsTerrain,
+    setLights: (lights) => {
+      if (renderer instanceof WorldRenderer) renderer.setLights(lights)
+    },
     detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
   }
 }

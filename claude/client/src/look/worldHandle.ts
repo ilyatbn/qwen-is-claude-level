@@ -6,7 +6,7 @@
  */
 import type Phaser from 'phaser'
 import type { RenderStats, SceneRenderer } from './renderer'
-import type { ViewRect } from './scene'
+import type { Light, ViewRect } from './scene'
 import type { WorldRenderer } from './worldRenderer'
 import { sameView } from './worldRenderer-math'
 import { hashProbe, readAlbedo, repaintAlbedo, scorchOnly, takeAlbedoPaints, terrainInfo } from './terrainDev'
@@ -80,6 +80,13 @@ export interface WorldHandle {
   hideWall(hide: boolean): void
   /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`); `[]` restores. */
   hideLayers(names: string[]): void
+  /** T23.09: the point lights the renderer holds now (before `pickLights`); `null` without three.js. */
+  lights(): Light[] | null
+  /**
+   * T23.09: replace them. A frozen scene hands over no new list, so this holds until it resumes — a
+   * check draws the same frame with one light removed (`effect-lights`' control frame).
+   */
+  setLights(lights: Light[]): void
   /** T23.08: player boxes (mask px) the foreground leaves fade over. */
   setOccluders(boxes: [number, number, number, number][]): void
   /** T23.08: what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
@@ -280,6 +287,10 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     hideLayers(names) {
       three?.hideLayers(names)
+    },
+    lights: () => (three ? three.heldLights() : null),
+    setLights(lights) {
+      three?.setLights(lights)
     },
     setOccluders(boxes) {
       three?.setOccluders(boxes)
