@@ -133,10 +133,11 @@ try {
   const sample = async (where, scene) => {
     const w = await worldOf(scene)
     const ctxs = await page.evaluate(() => window.__contexts())
-    return { where, frame: w.frame, memory: w.info?.memory ?? null, bakeMB: (w.info?.skyBakeBytes ?? 0) / 1e6, ctxs, live: ctxs.filter((c) => c.live).length, rss: await gpuRssMb(cdp) }
+    const glows = await page.evaluate(() => window.__world.actors?.()?.glows ?? null)
+    return { where, frame: w.frame, memory: w.info?.memory ?? null, names: w.info?.programNames ?? [], glows, bakeMB: (w.info?.skyBakeBytes ?? 0) / 1e6, ctxs, live: ctxs.filter((c) => c.live).length, rss: await gpuRssMb(cdp) }
   }
   const line = (s) =>
-    `${s.where}: live ${s.live} of ${s.ctxs.length} made (${s.ctxs.filter((c) => c.live).map((c) => (c.phaser ? 'phaser' : c.world ? 'three' : `#${c.id}`)).join(',')}); three ${J(s.memory)}; bake ${s.bakeMB.toFixed(1)} MB; gpu rss ${s.rss === null ? '?' : s.rss.toFixed(0)} MB`
+    `${s.where}: live ${s.live} of ${s.ctxs.length} made (${s.ctxs.filter((c) => c.live).map((c) => (c.phaser ? 'phaser' : c.world ? 'three' : `#${c.id}`)).join(',')}); three ${J(s.memory)}; named ${J(s.names.filter((n) => n !== '?'))}; glows ${s.glows}; bake ${s.bakeMB.toFixed(1)} MB; gpu rss ${s.rss === null ? '?' : s.rss.toFixed(0)} MB`
 
   const titles = []
   const matches = []
@@ -220,7 +221,15 @@ try {
   for (const [name, list] of [['title', titles], ['match', matches], ['match with the terrain installed', installed]]) {
     const kinds = new Set(list.map((s) => J(s.memory)))
     if (list.some((s) => !s.memory)) t.fail(`${name}: __world.info().memory missing — the instrument reads nothing`)
-    else if (kinds.size !== 1) t.fail(`three's memory differs between ${name}s: ${[...kinds].join(' / ')}`)
+    else if (kinds.size !== 1) {
+      // T23.14C: name what differs — the programs one sample has and another lacks (by `material.name`).
+      const count = (s) => s.names.reduce((m, n) => m.set(n, (m.get(n) ?? 0) + 1), new Map())
+      const a = count(list[0])
+      const odd = list.find((s) => J(s.memory) !== J(list[0].memory))
+      const b = count(odd)
+      const diff = [...new Set([...a.keys(), ...b.keys()])].filter((n) => a.get(n) !== b.get(n)).map((n) => `${n} ${a.get(n) ?? 0}→${b.get(n) ?? 0}`)
+      t.fail(`three's memory differs between ${name}s: ${[...kinds].join(' / ')}; programs ${list[0].where} → ${odd.where}: ${diff.join(', ') || 'same names'}`)
+    }
     else ok(`three holds ${[...kinds][0]} at every ${name} (${list.length})`)
   }
   // 4. GPU-process memory.

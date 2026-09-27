@@ -216,6 +216,8 @@ export class WorldRenderer implements SceneRenderer {
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
     this.composer = this.buildComposer()
+    // T23.14C: the glow's program and geometry exist from scene start, not from the first jet.
+    this.glowLayer.warm(this.renderer, this.composer.readBuffer)
     this.mount()
     this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
   }
@@ -786,6 +788,8 @@ export class WorldRenderer implements SceneRenderer {
     skyBakeBytes: number
     /** T23.04C (R22): what three holds on the page's one context — the same at every title and every match, or a scene leaked. */
     memory: { geometries: number; textures: number; programs: number }
+    /** T23.14C: the programs' names (`material.name`, '?' unnamed), sorted — which one a memory difference is. */
+    programNames: string[]
   } {
     const rt = this.composer.renderTarget1
     const gl = this.gl
@@ -806,6 +810,7 @@ export class WorldRenderer implements SceneRenderer {
         textures: this.renderer.info.memory.textures,
         programs: this.renderer.info.programs?.length ?? 0,
       },
+      programNames: (this.renderer.info.programs ?? []).map((p) => p.name || '?').sort(),
     }
   }
 

@@ -124,7 +124,15 @@ export default async function ({ page, shot, log }) {
       [a1[0] + d[1] * w, a1[1] - d[0] * w],
     ]
     const s = await Promise.all(pts.map(([x, y]) => toScreen(page, x, y)))
-    if (!s.every((p) => p.onScreen)) throw new Error('the body is not on screen')
+    if (!s.every((p) => p.onScreen)) {
+      // T23.14C: say where — the body, the camera's view and the strip's corners — not only that.
+      const v = await page.evaluate(() => {
+        const d = window.__game.debug()
+        const w = d.worldView
+        return { player: [Math.round(d.player.x), Math.round(d.player.y)], view: [Math.round(w.x), Math.round(w.y), Math.round(w.width ?? w.w), Math.round(w.height ?? w.h)] }
+      })
+      throw new Error(`the body is not on screen: body ${JSON.stringify(v.player)}, view ${JSON.stringify(v.view)} (x, y, w, h), strip corners ${JSON.stringify(pts.map((q) => q.map(Math.round)))}`)
+    }
     const x = Math.round(Math.min(...s.map((p) => p.x)))
     const y = Math.round(Math.min(...s.map((p) => p.y)))
     return { x, y, w: Math.max(2, Math.round(Math.max(...s.map((p) => p.x)) - x)), h: Math.max(2, Math.round(Math.max(...s.map((p) => p.y)) - y)) }
@@ -132,6 +140,11 @@ export default async function ({ page, shot, log }) {
 
   /** The frozen burn photographed with and without the flame: the exhaust side brightens, the other does not move. */
   const photograph = async (label, p, d, len, name) => {
+    // T23.14C: frame the frozen body, not the spot. `placeAt` pinned the camera at the spot, and the body keeps
+    // moving while the check waits wall-clock for the pack — measured under load: frozen 338 px below the spot, off
+    // the bottom of a 360-px view ("the body is not on screen", the gate's red at 28 fps).
+    await page.evaluate(([x, y]) => window.__game.watch(x, y), [p.x, p.y])
+    await frames(2)
     const subjectRect = await strip(p.x, p.y, d, len)
     const controlRect = await strip(p.x, p.y, [-d[0], -d[1]], len)
     const sOn = await samplePatch(page, subjectRect)
@@ -190,6 +203,7 @@ export default async function ({ page, shot, log }) {
       if (d.player.moveState !== 2) throw new Error(`${label}: frozen after the pack stopped (moveState ${d.player.moveState})`)
       if (!(d.player.fuel < fuel0)) throw new Error(`${label}: the tank did not fall while burning (${fuel0} -> ${d.player.fuel})`)
       if (!d.flame?.drawn) throw new Error(`${label}: the pack is firing and the view drew no flame: ${JSON.stringify(d.flame)}`)
+      log(`${label}: frozen at (${d.player.x.toFixed(0)}, ${d.player.y.toFixed(0)}), ${(spot.y - d.player.y).toFixed(0)} px above the spot, vy ${d.player.vy.toFixed(0)}`)
       await photograph(label, d.player, [0, 1], F.standard, `thrusters-${tag}-standard`)
     } finally {
       await page.evaluate(() => window.__game.freeze(false))

@@ -8,7 +8,8 @@
  * `MeshBasicMaterial` with it, `color` and `opacity`, additively blended (`SrcAlpha, One`), adds
  * `color × opacity × alpha(r)` — which is what this shader adds, per quad, from the actor's `fx` list.
  */
-import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, ShaderMaterial } from 'three'
+import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, OrthographicCamera, ShaderMaterial } from 'three'
+import type { WebGLRenderer, WebGLRenderTarget } from 'three'
 import type { Actor, ActorGlow } from '../scene'
 import { toWorld } from '../worldRenderer-math'
 
@@ -41,6 +42,7 @@ export class GlowLayer {
 
   constructor() {
     this.material = new ShaderMaterial({
+      name: 'glow',
       vertexShader: VS,
       fragmentShader: FS,
       transparent: true,
@@ -92,6 +94,33 @@ export class GlowLayer {
     this.geometry.setDrawRange(0, glows.length * 6)
     this.drawn = glows.length
     this.mesh.visible = glows.length > 0
+  }
+
+  /**
+   * T23.14C: build the glow's program and upload its geometry now, at scene start, as `TerrainGpu.warm` does —
+   * drawn nothing (an empty draw range) into 1 px of `target`. Without it the program and geometry appeared the
+   * first time any jet fired, so a match held 8 geometries / 18 programs or 9 / 19 depending on whether the bot had
+   * jetted before `context-budget` sampled it (named by the check's program list: `glow 0→1`).
+   */
+  warm(r: WebGLRenderer, target: WebGLRenderTarget): void {
+    const prev = r.getRenderTarget()
+    const autoClear = r.autoClear
+    const vis = this.mesh.visible
+    const range = { ...this.geometry.drawRange }
+    const cam = new OrthographicCamera(0, 1, 1, 0, -1, 1)
+    r.autoClear = false
+    target.scissor.set(0, 0, 1, 1)
+    target.scissorTest = true
+    r.setRenderTarget(target)
+    this.mesh.visible = true
+    this.geometry.setDrawRange(0, 0)
+    r.render(this.mesh, cam)
+    this.geometry.setDrawRange(range.start, range.count)
+    this.mesh.visible = vis
+    target.scissor.set(0, 0, target.width, target.height)
+    target.scissorTest = false
+    r.setRenderTarget(prev)
+    r.autoClear = autoClear
   }
 
   dispose(): void {
