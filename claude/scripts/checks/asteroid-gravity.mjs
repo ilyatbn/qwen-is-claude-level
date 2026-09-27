@@ -154,7 +154,7 @@ export default async function ({ page, shot, log }) {
    * is the ruling. **`place(x, y)` puts the body's centre at `(x, y)`**
    * (`GameCore::add_player` → `Body::new`), which is where `apply_input` reads the
    * field, so the field is read there and the clearance box is `(x, y)` ± half a
-   * body; the drawn sprite hangs half a body higher (`PlayerView`), which is what
+   * body; the drawn figure stands on it (T23.14; the sprite hung half a body higher), which is what
    * the patches below follow. With a band a body deep, reading the field half a
    * body off is the whole band — the first run of this version did, and the body
    * it placed sat just outside the band it had measured.
@@ -282,7 +282,7 @@ export default async function ({ page, shot, log }) {
   // refuses the whole measurement.
   await page.evaluate(
     ([x, y]) => window.__game.watch(x, y),
-    [spot.x + (spot.ux * travel) / 2, spot.y - k.PLAYER_H / 2 + (spot.uy * travel) / 2],
+    [spot.x + (spot.ux * travel) / 2, spot.y + (spot.uy * travel) / 2],
   )
 
   // **Pin the sky, or the control frame is not one.** §C2 asks for the same
@@ -311,27 +311,27 @@ export default async function ({ page, shot, log }) {
   /**
    * The two patches, in screen space, through the live camera.
    *
-   * Centred on the **drawn** body rather than on the feet line: `PlayerView` puts
-   * the sprite at `y - PLAYER_H / 2`, and a patch hung off the feet line is half
-   * ground.
+   * Centred on the **drawn** body rather than on the feet line: the body's centre (T23.14 — the sandbox hung
+   * its sprite half a body up before; the stick figure stands on its feet), and a patch hung off the feet line
+   * is half ground.
    */
   const patches = async () => {
-    const mid = await toScreen(page, spot.x, spot.y - k.PLAYER_H / 2)
+    const mid = await toScreen(page, spot.x, spot.y)
     const down = await toScreen(
       page,
       spot.x + spot.ux * travel,
-      spot.y - k.PLAYER_H / 2 + spot.uy * travel,
+      spot.y + spot.uy * travel,
     )
     const up = await toScreen(
       page,
       spot.x - spot.ux * travel,
-      spot.y - k.PLAYER_H / 2 - spot.uy * travel,
+      spot.y - spot.uy * travel,
     )
     if (!mid.onScreen || !down.onScreen || !up.onScreen) {
       throw new Error('the run does not fit in the frame — the camera is not where it was put')
     }
     // Screen-space size from a world-space span, so the zoom cannot shrink it.
-    const edge = await toScreen(page, spot.x + k.PLAYER_H, spot.y - k.PLAYER_H / 2)
+    const edge = await toScreen(page, spot.x + k.PLAYER_H, spot.y)
     const unit = Math.max(4, Math.hypot(edge.x - mid.x, edge.y - mid.y)) // one body height
     const side = Math.max(4, Math.round(unit * PATCH_BODIES))
     const rect = (p) => ({
@@ -344,7 +344,7 @@ export default async function ({ page, shot, log }) {
   }
   const watchedAt = {
     x: spot.x + (spot.ux * travel) / 2,
-    y: spot.y - k.PLAYER_H / 2 + (spot.uy * travel) / 2,
+    y: spot.y + (spot.uy * travel) / 2,
   }
   const cam = (await dbg()).camera
   if (Math.hypot(cam.x - watchedAt.x, cam.y - watchedAt.y) > 1) {
@@ -406,7 +406,7 @@ export default async function ({ page, shot, log }) {
   // nothing to do with the well. Aimed perpendicular to the field, where
   // neither patch is.
   {
-    const body = await toScreen(page, spot.x, spot.y - k.PLAYER_H / 2)
+    const body = await toScreen(page, spot.x, spot.y)
     await page.mouse.move(
       Math.max(1, Math.min(1279, Math.round(body.x - spot.uy * 200))),
       Math.max(1, Math.min(719, Math.round(body.y + spot.ux * 200))),

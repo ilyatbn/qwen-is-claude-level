@@ -44,6 +44,7 @@ import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type Scene
 import type { Actor, Background, Box, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere } from './atmosphere'
 import { ActorLayer } from './actors/layer'
+import { castOf } from './actors/cast'
 import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
@@ -555,7 +556,25 @@ export class WorldRenderer implements SceneRenderer {
 
   /** T23.13/T23.14: this frame's actors (the scenes' cast); a changed list is a new picture. */
   setActors(actors: Actor[]): void {
+    this.sceneActors = actors
+    this.applyActors()
+  }
+
+  /**
+   * Dev (a check): draw exactly `actors` instead of the scene's cast until released with `null` — so a check can
+   * pose a figure beside a light, or draw the live one without its boots, while the scene goes on gathering its own.
+   */
+  setDevActors(actors: Actor[] | null): void {
+    this.devActors = actors
+    this.applyActors()
+  }
+
+  private sceneActors: Actor[] = []
+  private devActors: Actor[] | null = null
+
+  private applyActors(): void {
     if (!this.desc) return
+    const actors = this.devActors ?? this.sceneActors
     if (JSON.stringify(actors) === JSON.stringify(this.desc.actors)) return
     this.desc.actors = actors
     this.dirty = true
@@ -920,6 +939,14 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   // T23.09A: the cave wall's switch, from the URL at first, carried across map changes.
   let caveWall = caveWallFromUrl(location.search)
   const renderer = createWorldRenderer(scene, gameDescription(map, caveWall))
+  // T23.14: the scene's cast (its players' figures, `actors/cast.ts`), gathered before every render — not after
+  // the update: a paused scene still renders, and a figure hidden or re-posed while it is paused (a check's control
+  // frame, `stand-on-asteroid`'s actors-hidden instant) must reach the frame drawn next.
+  if (renderer instanceof WorldRenderer) {
+    const gather = (): void => renderer.setActors(castOf(scene))
+    scene.events.on('prerender', gather)
+    scene.events.once('shutdown', () => scene.events.off('prerender', gather))
+  }
   // T23.06B F11: where three did not start, nothing takes the feed's rects and blasts — drain them
   // per frame so they do not pile up for a whole match.
   let undrawn: TerrainFeed | null = null

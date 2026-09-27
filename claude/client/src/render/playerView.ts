@@ -1,52 +1,29 @@
 /**
- * One player on screen: body, weapon and overlays in a container
- * (`docs/50-sprites-skins.md` §3).
+ * One player on screen (`docs/50-sprites-skins.md` §3), **as M23's stick figure** (T23.14): the body is an actor in
+ * the world renderer — `look/actors/figure.ts`, posed per frame by `look/actors/pose.ts` from what this view is
+ * told (velocity, aim, flags, the held item) and drawn by code into the actor atlas, rim-lit by the scene's lights.
+ * The sprite body, its skins, hats and glasses are gone (R8: wearables are ignored client-side; R15: their art
+ * retires with this, its last reader). Boots and wings are items and are drawn on the figure.
  *
- * **Every texture lookup falls back to a generated placeholder** (§8). There is no
- * art until M7, so a hard failure on a missing key would make M3–M6 unrunnable.
- * The fallback logs once per key, so missing art is obvious without being noisy.
+ * What stays in Phaser, in the container: the shield bubble, the name tag and the thruster plume (T23.14B).
+ * The figure turns with the scene's tilt about its feet like the old body did (T22.19, R107).
  */
 
-import Phaser from 'phaser'
+import type Phaser from 'phaser'
 import { C } from '../core'
-import {
-  deriveAnimState,
-  facingLeft,
-  walkFrameMs,
-  type AnimInputs,
-  type AnimState,
-} from './playerView-math'
-import { skins } from './assets'
-import { ensureWeaponTextures, weaponArt } from './weaponTextures'
-import {
-  accessoryScale,
-  accessoryY,
-  animKey,
-  BOOT_WIDTH_FRACTION,
-  WING_WIDTH_FRACTION,
-  GLASSES_WIDTH_FRACTION,
-  HAT_WIDTH_FRACTION,
-  framesFor,
-  parseTint,
-  resolveSkin,
-  spriteScale,
-  type SkinDef,
-} from './skins-math'
-import {
-  bootArt,
-  ensureAccessoryTextures,
-  ensureBootTexture,
-  ensureWingTexture,
-  glassesArt,
-  hatArt,
-  wingArt,
-} from './accessoryTextures'
+import { deriveAnimState, facingLeft, type AnimInputs, type AnimState } from './playerView-math'
 import type { Appearance } from '../ui/skins'
-import { bakeTintedAtlas } from './canvasTint'
 import { hasWebGL } from './shaders'
 import { ThrusterPlume } from './thrusterPlume'
 import { plumeOn } from './thrusterPlume-math'
 import { feetOffset, toLocal, uprightLocal } from './standTilt-math'
+import type { Actor } from '../look/scene'
+import { joinCast, groundDyAt } from '../look/actors/cast'
+import { FIGURE_SCALE, newFigureState, stepFigure, trigger, type Action } from '../look/actors/pose'
+import { WEAPONS } from '../look/actors/weapons'
+import { actorRect, cellKey, drawBaked, type Lighting } from '../look/actors/cell'
+import { passes } from '../look/actors/lit'
+import { Flat } from '../look/actors/flat'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -57,500 +34,241 @@ export interface PlayerFlags {
   jetpack: boolean
   shield: boolean
   iframes: boolean
-  /**
-   * T21.02's ironman boots.
-   *
-   * **A per-frame flag rather than a constructor field, deliberately.** T20.12's
-   * accessories are `readonly` with no setter because a skin is chosen once, and
-   * `GameScene` destroys and rebuilds a `PlayerView` whenever a remote leaves
-   * the sampled set — which is why a hat has to be passed in at construction.
-   * Boots are picked up and dropped mid-round, so a constructor field would be
-   * stale the moment either happened *and* would vanish on the next rebuild.
-   * Going through `setState` means it is re-read every frame from the snapshot
-   * byte, and the rebuild problem cannot arise.
-   */
+  /** T21.02's ironman boots — per frame, off the move-mods byte (a remote's too). Drawn on the figure's feet. */
   boots: boolean
-  /**
-   * T21.03's unicorn wings, drawn since T21.34. Per frame for the boots' reason,
-   * and off the same move-mods byte, so a remote's wings show as well as yours.
-   */
+  /** T21.03's unicorn wings — per frame, off the same byte. Drawn on the figure's back. */
   wings: boolean
-  /**
-   * T22.04: the match is zero-g. **Required**, for `hatId`'s reason: a scene that
-   * forgot it would compile and never draw a plume. With `jetpack` it decides the
-   * thruster plume (`thrusterPlume-math.ts::plumeOn`) — there is no thrusting bit
-   * on the wire, because bit 2 already is one in space.
-   */
+  /** T22.04: the match is zero-g (the helmet, the space pose, the plume). Required: a forgotten one would compile. */
   space: boolean
-  /**
-   * T22.04C: the thrust being applied, px/s², when the scene knows it — **the local
-   * player's**, off `Core.thrustAt` (the input the mirror stepped with) — or `null`:
-   * a remote's input is not on the wire, so its plume stays on velocity. Required
-   * for `space`'s reason: a scene that forgot it would compile and point the local
-   * plume off velocity again.
-   */
+  /** T22.04C: the local player's applied thrust (`Core.thrustAt`), or null — a remote's input is not on the wire. */
   thrust: { x: number; y: number } | null
-  /**
-   * T22.19 (R107): the figure's rotation, radians — 0 upright, π feet-up — the scene's
-   * smoothed `standTilt-math.ts::trackTilt` of the pull the body stands against. **Visual
-   * only**: the body turns about its feet where the box meets the rock (T22.19B F3) and so do its boots, wings, hat and bubble;
-   * the **weapon and the plume ride with it but point in screen space** (the aim and
-   * the thrust are the controls' directions, R107: controls stay screen-relative); the
-   * **name tag stays upright** above the body. Required, for `space`'s reason: a scene
-   * that forgot it would compile and never turn anyone.
-   */
+  /** T22.19 (R107): the figure's turn about its feet, radians, visual only. */
   tilt: number
 }
 
-/** Skin id → placeholder tint, until `skins.json` lands in T7.03. */
-const SKIN_TINTS = [0xff30c0, 0x36c2f0, 0x7ae04a, 0xf0b429, 0xa46bf5, 0xf05a4a]
-
-const warned = new Set<string>()
+/**
+ * R10: the scarf is the player's colour, one per seat (`MAX_PLAYERS` = 6) — F's two (`f_scene.js` teamA/teamB, F4's
+ * A/B) first, then four more apart from them in hue and from every effect colour (fire orange, laser teal, the
+ * moon's lavender): gold, violet, green, rose. Rim light never tints it (T23.13).
+ */
+export const SCARF_COLOURS = ['#e8482c', '#18c2b8', '#e8b52c', '#9b6cf0', '#5fd34a', '#f06cb4'] as const
+/** F1's `P.halo` — the dark halo a figure gets on the cave wall (T23.13). */
+export const DARK_HALO = '120,120,170'
 
 /**
- * A texture key that is guaranteed to exist. Generates a `PLAYER_W × PLAYER_H`
- * rectangle the first time a key is missing and logs once.
+ * **Space draws the figure in Phaser** (T23.14, until T23.20). A space map keeps T22.06's opaque Phaser backdrop and
+ * Phaser's rock (the lit terrain and F's sky are not drawn there yet), and the world canvas lies *under* Phaser's —
+ * so a figure in the world renderer is hidden in space (seen: `stand-on-asteroid`, 0 figure px). There the figure is
+ * drawn by the same code (`cell.ts::drawBaked`, the whole `lit()`) into a canvas texture on the container, keyed on the
+ * light by F's moon (`f_scene.js` P.moon; effect lights reach it with T23.20).
  */
-export function placeholderTexture(
-  textures: Phaser.Textures.TextureManager,
-  skinId: number,
-  wantedKey: string,
-): string {
-  if (textures.exists(wantedKey)) return wantedKey
-
-  if (!warned.has(wantedKey)) {
-    warned.add(wantedKey)
-    console.warn(`[skins] missing frame "${wantedKey}" — using a placeholder`)
-  }
-
-  const key = `__placeholder_player_${skinId}`
-  if (!textures.exists(key)) {
-    const c = C()
-    const tint = SKIN_TINTS[skinId % SKIN_TINTS.length] ?? 0xff30c0
-    const tex = textures.createCanvas(key, c.PLAYER_W, c.PLAYER_H)
-    const ctx = tex?.getContext()
-    if (ctx) {
-      ctx.fillStyle = `#${tint.toString(16).padStart(6, '0')}`
-      ctx.fillRect(0, 0, c.PLAYER_W, c.PLAYER_H)
-      // A darker band at the feet, so facing and ground contact are legible even
-      // as a flat rectangle.
-      ctx.fillStyle = 'rgba(0,0,0,.35)'
-      ctx.fillRect(0, c.PLAYER_H - 4, c.PLAYER_W, 4)
-      tex?.refresh()
-    }
-  }
-  return key
-}
-
-/** Test seam: the placeholder warning is once *per process*, not per instance. */
-export function resetPlaceholderWarnings(): void {
-  warned.clear()
-}
-
-/**
- * Register one Phaser animation per (skin, state), once per scene.
- *
- * Animations are global to the scene's anim manager, so creating them per
- * PlayerView would either warn on every join or silently keep the first one.
- * The key is derived from the skin id, so two players on the same skin share.
- */
-function ensureAnims(scene: Phaser.Scene, skin: SkinDef, atlas: string): void {
-  const states: AnimState[] = ['idle', 'walk', 'jump', 'fall', 'jetpack', 'hurt', 'dead']
-  for (const state of states) {
-    const key = animKey(skin, state)
-    if (scene.anims.exists(key)) continue
-    const names = framesFor(skin, state)
-    if (names.length === 0) continue
-    scene.anims.create({
-      key,
-      // `atlas`, not `skin.atlas` (T21.37): on Canvas a tinted skin plays its baked copy. The anim
-      // key is per skin id and the renderer is fixed for the game, so the two never mix.
-      frames: names.map((frame) => ({ key: atlas, frame })),
-      frameRate: state === 'walk' ? 9 : state === 'jetpack' ? 12 : 1,
-      repeat: names.length > 1 ? -1 : 0,
-    })
-  }
-}
+const SPACE_MOON = { dx: 0.6, dy: -0.8, rgb: '185,195,245', w: 0.75, fill: '90,80,110' }
+/** The space figure's canvas, px, and where its feet sit in it. */
+const SPACE_CANVAS = 192
+const SPACE_FEET: [number, number] = [96, 132]
+let spaceTextures = 0
 
 export class PlayerView {
   readonly container: Phaser.GameObjects.Container
-  private readonly body: Phaser.GameObjects.Sprite
-  private weapon: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
-  private weaponKey = ''
   private readonly shieldBubble: Phaser.GameObjects.Arc
-  /** T21.02. Built always, shown per frame — see `PlayerFlags.boots`. */
-  private readonly boots: Phaser.GameObjects.Image | null
-  /** T21.34. Built always, shown per frame — see `PlayerFlags.wings`. */
-  private readonly wings: Phaser.GameObjects.Image | null
-  /** T22.04. Built always, shown per frame — see `ThrusterPlume`. */
   private readonly plume: ThrusterPlume
-  /** The drawn body's centre, in container units — where the plume's nozzle is measured from. */
-  private readonly bodyCentreY: number
   private readonly nameLabel: Phaser.GameObjects.Text
+  /** The figure's animation state (`pose.ts`) and what it was last posed as. */
+  private readonly fig = newFigureState()
+  private drawn: Actor | null = null
+  private weaponKey = ''
+  private seat = 0
+  private readonly leave: () => void
+  private lastT = 0
   /** T22.19: the last `setState`, so an e2e pose can redraw the same instant at another tilt. */
   private last: Parameters<PlayerView['setState']> | null = null
-  /** T22.19: the rotation the last `setState` drew. */
   private drawnTilt = 0
+  private animState: AnimState = 'idle'
   private readonly skinId: number
-  /** §T20.12's accessories. `readonly` like `skinId`, for the same reason. */
   private readonly hatId: number
   private readonly glassesId: number
-  private readonly hat: Phaser.GameObjects.Image | null
-  private readonly glasses: Phaser.GameObjects.Image | null
-  private animState: AnimState = 'idle'
-  private readonly skinDef: SkinDef | null
-  /** Null when running on placeholders — every draw path checks it. */
-  private readonly usingAtlas: boolean
-
-  /** Fallback anchor when no registry says otherwise. */
-  private static readonly ANCHOR_Y = 0.9
-
-  /**
-   * Is this drawing real art, or the placeholder box?
-   *
-   * Exposed because §B12 was exactly this distinction being invisible: the
-   * attract bots were routed through this class and still drew rectangles,
-   * because the atlas was never loaded. A check that asserts on the picture
-   * needs to be able to ask.
-   */
-  get usesAtlas(): boolean {
-    return this.usingAtlas
-  }
-
-  /**
-   * The atlas frame on screen right now.
-   *
-   * For the same reason as `usesAtlas`: §B3 asks the skins preview to run the
-   * *walk* cycle, because a still frame hides skins that differ only by palette
-   * — and "is it animating" is not answerable from the outside without this.
-   */
-  get currentFrame(): string {
-    return String(this.body.frame?.name ?? '')
-  }
-
   private readonly scene: Phaser.Scene
+  /** Space only (above): the figure as a Phaser image over a canvas texture, and the key it was last drawn at. */
+  private space: { img: Phaser.GameObjects.Image; tex: Phaser.Textures.CanvasTexture; flat: Flat; key: string } | null = null
 
   /**
-   * `hatId` and `glassesId` are **required**, not optional, and that is the guard
-   * (T20.12).
-   *
-   * They inherit `skinId`'s whole problem: this class is destroyed and rebuilt
-   * repeatedly during a round — `GameScene` drops every remote absent from the
-   * sampled set and reconstructs it on return — and every appearance field is
-   * `readonly` with no setter, so a rebuild reads whatever the caller passes at
-   * that moment. Optional parameters would let every existing call site compile
-   * unchanged and draw a bare head, which is the same defect §B9 already cost a
-   * milestone. Required means the compiler names the caller that forgot.
+   * The appearance ids are still taken (the rebuild guard compares them, `look`) and drawn as nothing (R8).
    */
   constructor(scene: Phaser.Scene, skinId: number, hatId: number, glassesId: number) {
     const c = C()
+    this.scene = scene
     this.skinId = skinId
     this.hatId = hatId
     this.glassesId = glassesId
-    this.skinDef = resolveSkin(skins(), skinId)
-
-    // The registry can resolve while the atlas never loaded — a 404, or a
-    // checkout that has not run build-atlas. Both must reach the placeholder,
-    // so the test is "is the texture actually here", not "did the JSON parse".
-    this.usingAtlas = !!this.skinDef && scene.textures.exists(this.skinDef.atlas)
-
-    const anchorY = this.skinDef?.anchor.y ?? PlayerView.ANCHOR_Y
-    if (this.usingAtlas && this.skinDef) {
-      // T21.37: a skin's tint is its identity (skin 5 is skin 0's frames in red). WebGL tints in
-      // the shader; **Canvas has no sprite tint**, so there the frames come from a copy baked in
-      // the tint, or the red Recruit draws as the plain one.
-      const tint = parseTint(this.skinDef.tint)
-      const webgl = hasWebGL(scene)
-      const atlas =
-        tint !== undefined && !webgl ? bakeTintedAtlas(scene.textures, this.skinDef.atlas, tint) : this.skinDef.atlas
-      ensureAnims(scene, this.skinDef, atlas)
-      const first = framesFor(this.skinDef, 'idle')[0]
-      this.body = scene.add.sprite(0, 0, atlas, first).setOrigin(0.5, anchorY)
-      const h = this.body.height || c.PLAYER_H
-      this.body.setScale(spriteScale(h, c.PLAYER_H))
-      if (tint !== undefined && webgl) this.body.setTint(tint)
-      this.body.play(animKey(this.skinDef, 'idle'), true)
-    } else {
-      const key = placeholderTexture(scene.textures, skinId, `char_${skinId}_idle`)
-      this.body = scene.add.sprite(0, 0, key).setOrigin(0.5, anchorY)
-    }
-
-    ensureWeaponTextures(scene.textures)
-    // Starts as the generic bar and is replaced by `setWeapon` the moment the
-    // HUD knows what is selected — a player holding nothing still needs a hand.
-    // **The placeholder bar is gone** (owner, 2026-09-16, from play: *"still
-    // seeing the black bar coming out of the character. if irrelevant for your
-    // debugging purposes remove it."*). It was never a debug aid — it was the
-    // stand-in for a weapon with no art, and since only three weapons have any
-    // (`weaponTextures.ts`), it is what every player held all the time.
-    //
-    // An empty, zero-sized rectangle rather than a `null` weapon: `setState`
-    // rotates and scales this every frame and `setWeapon` swaps it by index, so
-    // keeping the slot filled is what stops both of them growing a null check
-    // each. It draws nothing because it has no size and no fill alpha.
-    this.weapon = scene.add.rectangle(0, -c.PLAYER_H * 0.35, 0, 0, 0, 0).setOrigin(0, 0.5)
-    this.scene = scene
-
-    this.shieldBubble = scene.add
-      .circle(0, -c.PLAYER_H * 0.4, c.PLAYER_H * 0.75, 0x54b6ff, 0.18)
-      .setVisible(false)
-
-    this.nameLabel = scene.add
-      .text(0, -c.PLAYER_H - 6, '', { fontSize: '9px', color: '#dfe6ee' })
-      .setOrigin(0.5, 1)
-
-    // Accessories, over the body and under the label (T20.12). Positioned from
-    // the **drawn** height through `accessoryY`, which lives beside
-    // `spriteScale` because the two answer the same question — see its comment.
-    ensureAccessoryTextures(scene.textures)
-    const drawn = this.body.displayHeight || c.PLAYER_H
-    const hatDef = hatArt(hatId)
-    const glassesDef = glassesArt(glassesId)
-    // A hat is anchored by its **bottom** so it perches above the head; the
-    // glasses are centred across the face. See `accessoryY` for why the two must
-    // not share a band.
-    this.hat = hatDef.key
-      ? scene.add
-          .image(0, accessoryY(drawn, anchorY, 'hat'), hatDef.key)
-          .setOrigin(0.5, 1)
-          .setScale(accessoryScale(hatDef.w, c.PLAYER_W, HAT_WIDTH_FRACTION))
-      : null
-    this.glasses = glassesDef.key
-      ? scene.add
-          .image(0, accessoryY(drawn, anchorY, 'glasses'), glassesDef.key)
-          .setOrigin(0.5, 0.5)
-          .setScale(accessoryScale(glassesDef.w, c.PLAYER_W, GLASSES_WIDTH_FRACTION))
-      : null
-
-    // T21.02's boots, at the feet. Built unconditionally like `shieldBubble`
-    // and toggled in `setState`, so picking a pair up mid-round shows them
-    // without a rebuild.
-    ensureBootTexture(scene.textures)
-    const bootDef = bootArt()
-    this.boots = bootDef.key
-      ? scene.add
-          .image(0, accessoryY(drawn, anchorY, 'boots'), bootDef.key)
-          .setOrigin(0.5, 1)
-          .setScale(accessoryScale(bootDef.w, this.body.displayWidth || c.PLAYER_W, BOOT_WIDTH_FRACTION))
-          .setVisible(false)
-      : null
-
-    // T21.34's wings, at the shoulders and **behind** the body: the torso covers
-    // the middle of the canvas and only the tips past it show, which is what
-    // makes them wings on a back rather than a sticker on a chest.
-    ensureWingTexture(scene.textures)
-    const wingDef = wingArt()
-    this.wings = wingDef.key
-      ? scene.add
-          .image(0, accessoryY(drawn, anchorY, 'wings'), wingDef.key)
-          .setOrigin(0.5, 0.5)
-          .setScale(accessoryScale(wingDef.w, this.body.displayWidth || c.PLAYER_W, WING_WIDTH_FRACTION))
-          .setVisible(false)
-      : null
-
-    this.container = scene.add.container(0, 0, [
-      this.shieldBubble,
-      ...(this.wings ? [this.wings] : []),
-      this.body,
-      ...(this.boots ? [this.boots] : []),
-      ...(this.hat ? [this.hat] : []),
-      ...(this.glasses ? [this.glasses] : []),
-      this.weapon,
-      this.nameLabel,
-    ])
-    // The sprite hangs from `anchorY`, so its centre is that far above the origin.
-    this.bodyCentreY = (0.5 - anchorY) * drawn
+    this.shieldBubble = scene.add.circle(0, -c.PLAYER_H * 0.4, c.PLAYER_H * 0.75, 0x54b6ff, 0.18).setVisible(false)
+    this.nameLabel = scene.add.text(0, -c.PLAYER_H - 6, '', { fontSize: '9px', color: '#dfe6ee' }).setOrigin(0.5, 1)
+    this.container = scene.add.container(0, 0, [this.shieldBubble, this.nameLabel])
     this.plume = new ThrusterPlume(scene, this.container, hasWebGL(scene))
+    this.leave = joinCast(scene, { actor: () => (this.container.visible ? this.drawn : null) })
   }
 
-  setState(
-    x: number,
-    y: number,
-    vx: number,
-    vy: number,
-    aim: number,
-    flags: PlayerFlags,
-  ): void {
+  /** R10: which seat's scarf colour this player wears. */
+  setSeat(seat: number): void {
+    this.seat = ((seat % SCARF_COLOURS.length) + SCARF_COLOURS.length) % SCARF_COLOURS.length
+  }
+
+  /** T23.14: play an action over the pose — a melee swing, a throw, a hit reaction. */
+  act(kind: Action): void {
+    trigger(this.fig, kind)
+  }
+
+  /** T23.14: this player used item `key` — a melee weapon swings, a thrown one is thrown; a gun changes nothing. */
+  firedWith(key: string | null | undefined): void {
+    const W = key ? WEAPONS[key] : undefined
+    if (W?.melee) this.act('melee')
+    else if (W?.thrown) this.act('throw')
+  }
+
+  setState(x: number, y: number, vx: number, vy: number, aim: number, flags: PlayerFlags): void {
     const c = C()
     this.last = [x, y, vx, vy, aim, flags]
-    // T22.19 (R107): turned about the feet, which stand where the body's box meets the
-    // rock (T22.19B F3, `feetOffset`); upright this is the old `(x, y + PLAYER_H / 2)`.
     const tilt = flags.tilt
     this.drawnTilt = tilt
+    // T22.19 (R107): turned about the feet, where the body's box meets the rock (T22.19B F3).
     const feet = feetOffset(tilt, c.PLAYER_W, c.PLAYER_H)
-    this.container.setPosition(x + feet.x, y + feet.y)
+    const fx = x + feet.x
+    const fy = y + feet.y
+    this.container.setPosition(fx, fy)
     this.container.setRotation(tilt)
-    // The tag stays upright, above the body's box on screen (`-PLAYER_H - 6` from
-    // the feet when upright — the constructor's spot).
     const tag = uprightLocal(tilt, feet, 0, -c.PLAYER_H / 2 - 6)
     this.nameLabel.setPosition(tag.x, tag.y).setRotation(-tilt)
+    this.animState = deriveAnimState({ alive: flags.alive, grounded: flags.grounded, jetpack: flags.jetpack, vx, vy })
+    this.shieldBubble.setVisible(flags.shield)
 
-    const inputs: AnimInputs = {
+    // The figure: posed from the frame's state, in the figure's own frame (aim and motion turned by the tilt).
+    const now = this.scene.time.now
+    const dt = this.lastT ? Math.min(0.1, Math.max(0, (now - this.lastT) / 1000)) : 1 / 60
+    this.lastT = now
+    const localAim = aim - tilt
+    const vel = toLocal(tilt, vx, vy)
+    const upright = Math.abs(tilt) < 1e-3
+    const d = stepFigure(this.fig, {
+      dt,
+      vx: vel.x,
+      vy: vel.y,
+      aim: localAim,
       alive: flags.alive,
       grounded: flags.grounded,
       jetpack: flags.jetpack,
-      vx,
-      vy,
+      space: flags.space,
+      thrust: flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null,
+      weapon: this.weaponKey || null,
+      boots: flags.boots,
+      wings: flags.wings,
+      walkSpeed: c.WALK_SPEED,
+      s: FIGURE_SCALE,
+      ...(upright ? { x: fx, groundDy: (dx: number) => groundDyAt(this.scene, fx + dx, fy) } : {}),
+    })
+    const accent = SCARF_COLOURS[this.seat]!
+    const fig: Actor = {
+      kind: 'figure',
+      x: fx,
+      y: fy,
+      opts: { J: d.J, s: FIGURE_SCALE, face: d.face, rot: tilt + d.rot, accent, visor: accent },
+      lit: { size: 1, halo: null, shadow: d.shadow && upright, darkHalo: DARK_HALO },
+      box: null,
     }
-    const next = deriveAnimState(inputs)
-    if (next !== this.animState) {
-      this.animState = next
-      if (this.usingAtlas && this.skinDef) this.body.play(animKey(this.skinDef, next), true)
-    }
+    this.drawn = flags.space ? null : fig
+    this.drawSpace(flags.space ? { ...fig, x: SPACE_FEET[0], y: SPACE_FEET[1], opts: { ...fig.opts, rot: d.rot } } : null)
 
-    // The walk cycle tracks speed, so a slowed player visibly trudges rather
-    // than moon-walking (`docs/50` §3).
-    if (this.usingAtlas && this.animState === 'walk' && this.body.anims.currentAnim) {
-      const ms = walkFrameMs(vx, C().WALK_SPEED)
-      this.body.anims.msPerFrame = ms
-    }
-
-    // T22.19: facing and the weapon are judged in the figure's own frame, so the weapon
-    // points at the aim on screen (`aim − tilt` inside a container turned by `tilt`) and
-    // a feet-up figure faces the way it aims.
-    const localAim = aim - tilt
-    const left = facingLeft(localAim)
-    this.body.setFlipX(left)
-    // **The accessories flip with the head** (T20.12). The cap's brim and the
-    // crown's points are asymmetric on purpose — that asymmetry is what makes a
-    // turn readable — and a hat that kept facing right on a body facing left
-    // would be the one thing on screen that never turns around.
-    this.hat?.setFlipX(left)
-    this.glasses?.setFlipX(left)
-
-    // The weapon rotates to the aim angle and is flipped **vertically** when
-    // pointing left, not horizontally — the standard trick for a side-view aimed
-    // weapon, otherwise it hangs upside down (`docs/50-sprites-skins.md` §4).
-    this.weapon.setRotation(localAim)
-    this.weapon.setScale(1, left ? -1 : 1)
-
-    this.shieldBubble.setVisible(flags.shield)
-    // T21.02. Toggled, never rebuilt.
-    this.boots?.setVisible(flags.boots)
-    this.boots?.setFlipX(left)
-    // T21.34. Toggled, never rebuilt.
-    this.wings?.setVisible(flags.wings)
-    this.wings?.setFlipX(left)
-    // T22.04. Toggled, never rebuilt — against the thrust when the scene knows it
-    // (the local player, T22.04C), else off velocity, so it turns with the body.
-    // T22.19: the thrust and the travel are screen directions; carried into the turned
-    // frame so the plume still points against them on screen.
+    // T22.04 plume, T22.19 turned into the figure's frame (T23.14B moves it into the world renderer).
     const thrust = flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null
-    const vel = toLocal(tilt, vx, vy)
-    this.plume.update(
-      plumeOn(flags.alive, flags.jetpack, flags.space),
-      thrust,
-      vel.x,
-      vel.y,
-      0,
-      this.bodyCentreY,
-      c.PLAYER_W / 2,
-      c.PLAYER_H / 2,
-    )
-
-    // i-frames flash; dead is drawn faded rather than removed, so the corpse still
-    // reads as a player during the respawn delay.
-    const alpha = !flags.alive ? 0.35 : flags.iframes ? (Date.now() % 200 < 100 ? 0.4 : 1) : 1
-    this.body.setAlpha(alpha)
-    // The accessories fade with the body, or a corpse wears a solid hat.
-    this.hat?.setAlpha(alpha)
-    this.glasses?.setAlpha(alpha)
-    this.boots?.setAlpha(alpha)
-    this.wings?.setAlpha(alpha)
+    this.plume.update(plumeOn(flags.alive, flags.jetpack, flags.space), thrust, vel.x, vel.y, 0, -c.PLAYER_H / 2, c.PLAYER_W / 2, c.PLAYER_H / 2)
   }
 
-  /**
-   * Swap the held weapon sprite.
-   *
-   * `docs/50` §4: the sprite rotates around its `pivot` to the aim angle, and
-   * `muzzle` is where the flash is drawn — cosmetic, and deliberately
-   * independent of the server's `MUZZLE_OFFSET`, so art can be adjusted without
-   * touching gameplay.
-   */
-  setWeapon(key: string): void {
-    if (key === this.weaponKey) return
-    this.weaponKey = key
-    const art = weaponArt(key)
-    const c = C()
-    const idx = this.container.getIndex(this.weapon)
-    this.weapon.destroy()
-    if (art && this.scene.textures.exists(art.key)) {
-      this.weapon = this.scene.add
-        .image(0, -c.PLAYER_H * 0.35, art.key)
-        .setOrigin(art.pivot.x, art.pivot.y)
-    } else {
-      // Same as the constructor: a weapon with no art draws nothing at all,
-      // rather than the black bar the owner asked to be rid of.
-      this.weapon = this.scene.add.rectangle(0, -c.PLAYER_H * 0.35, 0, 0, 0, 0).setOrigin(0, 0.5)
+  /** Space (above): draw `a` (feet at `SPACE_FEET`, turned only by its pose — the container carries the tilt) or hide it. */
+  private drawSpace(a: Actor | null): void {
+    if (!a) {
+      this.space?.img.setVisible(false)
+      return
     }
-    this.container.addAt(this.weapon, Math.max(0, idx))
+    if (!this.space) {
+      const key = `__figure_space_${++spaceTextures}`
+      const tex = this.scene.textures.createCanvas(key, SPACE_CANVAS, SPACE_CANVAS)
+      if (!tex) return
+      const img = this.scene.add.image(0, 0, key).setOrigin(SPACE_FEET[0] / SPACE_CANVAS, SPACE_FEET[1] / SPACE_CANVAS)
+      this.container.addAt(img, 1)
+      this.space = { img, tex, flat: new Flat(tex.getContext()), key: '' }
+    }
+    const s = this.space
+    s.img.setVisible(true)
+    const ps = passes([], SPACE_MOON, a.x, a.y, a.lit?.size ?? 1)
+    const L: Lighting = { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: true }
+    const key = cellKey(a, L)
+    if (key === s.key) return
+    s.key = key
+    const g = s.tex.getContext()
+    g.clearRect(0, 0, SPACE_CANVAS, SPACE_CANVAS)
+    const r = actorRect(a)
+    // `drawBaked` draws from the cell rect's corner (`actorRect`): move that corner to the rect's own place, so the
+    // feet land on (a.x, a.y) = SPACE_FEET.
+    s.flat.save()
+    s.flat.translate(r[0], r[1])
+    drawBaked(s.flat, a, L)
+    s.flat.restore()
+    s.tex.refresh()
+  }
+
+  /** The held item (a registry key; '' for none): the figure holds its `weapons.ts` model, or nothing. */
+  setWeapon(key: string): void {
+    this.weaponKey = key
+  }
+
+  /** T23.14, e2e: the actor this view hands the world renderer this frame (null before the first `setState`). */
+  get figure(): Actor | null {
+    return this.drawn
   }
 
   get state(): AnimState {
     return this.animState
   }
 
-  /** T22.19: the rotation the last frame drew, radians (0 upright, π feet-up). */
   get tilt(): number {
     return this.drawnTilt
   }
 
-  /** T22.19: the body centre the last frame drew about (world px) — the rotation's pivot. */
   get drawnAt(): { x: number; y: number } | null {
     return this.last ? { x: this.last[0], y: this.last[1] } : null
   }
 
-  /**
-   * T22.19, e2e only (§C2): redraw the last `setState` at another tilt — the same
-   * instant, for a frozen photograph to compare the drawn figure against itself upright.
-   */
+  /** T22.19, e2e only: redraw the last `setState` at another tilt (and aim). */
   poseTilt(tilt: number, aim?: number): void {
     if (!this.last) return
     const [x, y, vx, vy, lastAim, flags] = this.last
-    // T22.19B F1: `aim` lets the check pose the reference *facing the way the drawn figure
-    // faces* — upright with the aim in the figure's frame (`aim − tilt`) — instead of
-    // the screen aim, which turned 180° faces away.
     this.setState(x, y, vx, vy, aim ?? lastAim, { ...flags, tilt })
   }
 
-  /** T22.19B: the feet the last frame drew at (world px) — the container's origin, the pivot. */
   get drawnFeet(): { x: number; y: number } {
     return { x: this.container.x, y: this.container.y }
   }
 
-  /** T22.19B: the screen aim the last frame drew with, radians. */
   get drawnAim(): number | null {
     return this.last ? this.last[4] : null
   }
 
-  /** T22.19B F6, e2e only: show or hide the name tag; returns the tag's visibility now. */
   setNameVisible(on: boolean): boolean {
     this.nameLabel.setVisible(on)
     return this.nameLabel.visible
   }
 
-  /** T22.04: what the plume drew last frame, for a check to count at both ends. */
   get plumeState(): { drawn: boolean; shader: boolean; dir: { x: number; y: number } } {
     return this.plume.state
   }
 
-  /** T22.04, e2e only (§C2): hide the plume for a same-instant control frame. */
   setPlumeHidden(on: boolean): void {
     this.plume.setHidden(on)
   }
 
-  /**
-   * The name tag's text. **T22.19B F6: called every frame by `GameScene`** for the local
-   * player and every remote, from `scores` (the lobby's names) — it had no caller from
-   * T3.08 until then, so no name ever showed in a match. Phaser's `setText` is a no-op
-   * when the text is unchanged. The tag is a child of `container`, so it hides whenever
-   * the body is hidden (a remote culled by the dark, a dead one) — the same rule.
-   */
+  /** The name tag's text — called every frame by `GameScene` (T22.19B F6). */
   setName(name: string): void {
     this.nameLabel.setText(name)
   }
 
-  /** T22.19B F6, for a check: the tag's text and where it is drawn (world px, its bottom centre). */
   get nameTag(): { text: string; x: number; y: number; visible: boolean } {
     const m = this.nameLabel.getWorldTransformMatrix()
     return { text: this.nameLabel.text, x: m.tx, y: m.ty, visible: this.container.visible && this.nameLabel.visible }
@@ -561,8 +279,8 @@ export class PlayerView {
   }
 
   destroy(): void {
-    // `true` destroys the children too; without it the body, weapon and label leak
-    // for every player who ever joined.
+    this.leave()
+    if (this.space) this.scene.textures.remove(this.space.tex)
     this.container.destroy(true)
   }
 
@@ -570,44 +288,8 @@ export class PlayerView {
     return this.skinId
   }
 
-  /**
-   * Everything about how this player looks, as one value (T20.12).
-   *
-   * **The rebuild guard reads this, not three fields.** `GameScene` compares what
-   * a view is drawing against what `scores` now says and rebuilds on a mismatch;
-   * with three separate comparisons the next accessory is added to the map, to
-   * the constructor, and forgotten in the `if` — and the symptom is a hat that is
-   * correct on first draw and reverts on the next rebuild, which is exactly the
-   * failure this task was told to expect.
-   */
+  /** The appearance the room says (T20.12's rebuild guard) — drawn as nothing since M23 (R8). */
   get look(): Appearance {
     return { skinId: this.skinId, hatId: this.hatId, glassesId: this.glassesId }
-  }
-
-  /**
-   * Where the accessories actually landed, in container units (T20.12).
-   *
-   * **For a check to aim a patch with, and it has to come from here.** `skins.mjs`
-   * samples the band a hat occupies; a rect typed into the check would expire the
-   * next time `overshoot`, `anchor.y` or the art size moved, and — worse — would
-   * go on passing while sampling the wrong strip of a correct picture.
-   */
-  get accessoryBands(): {
-    drawnH: number
-    anchorY: number
-    hatBottom: number
-    hatH: number
-    glassesMid: number
-    glassesH: number
-  } {
-    const drawnH = this.body.displayHeight || C().PLAYER_H
-    return {
-      drawnH,
-      anchorY: this.skinDef?.anchor.y ?? PlayerView.ANCHOR_Y,
-      hatBottom: this.hat?.y ?? 0,
-      hatH: this.hat?.displayHeight ?? 0,
-      glassesMid: this.glasses?.y ?? 0,
-      glassesH: this.glasses?.displayHeight ?? 0,
-    }
   }
 }

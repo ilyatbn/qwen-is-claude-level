@@ -830,7 +830,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
 - [x] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels
 - [ ] [T23.13B](M23/T23.13B-the-sky-port-on-d3d12.md) — The sky/terrain port on D3D12 — find the layer that differs from the mockup on the owner's GPU and fix it
-- [ ] [T23.14](M23/T23.14-the-stick-figure.md) — The stick figure — poses, run cycle, continuous aim, scarf, space helmet; boots and wings redrawn, not removed
+- [x] [T23.14](M23/T23.14-the-stick-figure.md) — The stick figure — poses, run cycle, continuous aim, scarf, space helmet; boots and wings redrawn, not removed
 - [ ] [T23.14B](M23/T23.14B-the-jetpack-look.md) — The jetpack's look — flame + space plume on the stick figure, lit (owner priority, out of T23.18)
 - [ ] [T23.15](M23/T23.15-no-themes-no-wearables.md) — No themes, no wearables — client only: the theme stamps collision and the join JSON still carries skins
 - [ ] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — **21 of 24 holdable weapons draw nothing in the hand today**; one design per weapon for hand, ground and inventory

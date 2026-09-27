@@ -40,8 +40,8 @@ void main(){ vLocal = aLocal; vSlot = aSlot; vRim = aRim; vFill = aFill;
 const FS = /* glsl */ `
 uniform sampler2D atlas; uniform vec2 atlasSize; uniform float rimOn;
 varying vec2 vLocal; varying vec4 vSlot; varying vec4 vRim; varying vec4 vFill;
-// One of the cell's images (0 under, 1 ink, then mask/extras pairs for the fill, rim and far-rim passes: 2/3, 4/5,
-// 6/7 — each already drawn at its pass's offset) at local px p, clamped to its rect.
+// One of the cell's images (0 under, 1 ink, then the fill, rim and far-rim masks 2, 3, 4 — each already drawn at its
+// pass's offset) at local px p, clamped to its rect.
 vec4 img(float k, vec2 p){
   vec2 at = vec2(mod(k, 2.), floor(k / 2.)) * vSlot.zw;
   vec2 q = clamp(p, vec2(0.5), vSlot.zw - 0.5);
@@ -59,9 +59,8 @@ float passAlpha(vec2 m, float ai, float aa){
   float ta = powN(1. - aa, floor(n.y)) * (1. - aa * fract(n.y));
   return 1. - ti * ta;
 }
-// One flat pass (mask image k, its extras k + 1): the extras, then the silhouette in the pass's colour.
+// One flat pass (mask image k, drawn at the pass's offset): the silhouette in the pass's colour.
 vec4 pass(vec4 c, vec2 p, float k, vec3 rgb, float ai, float aa){
-  c = over(img(k + 1., p), c);
   float a = passAlpha(img(k, p).rg, ai, aa);
   return over(vec4(rgb * a, a), c);
 }
@@ -71,8 +70,8 @@ void main(){
   vec4 c = img(0., p);
   if (vFill.a > 0.5) {
     if (rimOn > 0.5) {
-      c = pass(c, p, 6., vRim.rgb, vRim.a * 0.35, vRim.a * 0.3);
-      c = pass(c, p, 4., vRim.rgb, vRim.a, vRim.a);
+      c = pass(c, p, 4., vRim.rgb, vRim.a * 0.35, vRim.a * 0.3);
+      c = pass(c, p, 3., vRim.rgb, vRim.a, vRim.a);
     }
     c = pass(c, p, 2., vFill.rgb, 0.35, 0.35);
   }

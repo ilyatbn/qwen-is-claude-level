@@ -1,11 +1,6 @@
 {
   "atlases": [
     {
-      "key": "chars",
-      "png": "atlas/chars.png",
-      "json": "atlas/chars.json"
-    },
-    {
       "key": "items",
       "png": "atlas/items.png",
       "json": "atlas/items.json"

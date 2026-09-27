@@ -14,7 +14,7 @@ column is what nobody is checking while it sits here.
 | test | kind | evidence | guards |
 |---|---|---|---|
 | `terrain-render` | browser | **RETIRED by T23.07** (2026-09-27): it photographed Phaser's rock, which the lit terrain replaced; its guard (§C0, a crater changes the picture) moved to `look-terrain`'s live half, which reads the crater in the frame it is carved against a from-scratch repaint. History: red in the T21.18 laser gate (camera motion), stale layer pin fixed in T22.08D | — |
-| `boots-visible` | browser | same gate: control region changed by 12.8; T21.23 measured it **2-in-3 red on an idle box** at HEAD, camera ease moving a screen-space band | ironman boots are visible on the player |
+| `boots-visible` | browser | **UNPARKED by T23.14** (2026-09-27): rewritten on the stick figure's world-canvas pixels with the scene frozen (no camera ease between its frames — the cause below); green in 4 runs incl. two parallel subsets. Was: same gate: control region changed by 12.8; T21.23 measured it **2-in-3 red on an idle box** at HEAD, camera ease moving a screen-space band | ironman boots are visible on the player |
 | `two-clients` | browser | red in a T21.26 gate (2026-09-14); a gun-platform flake that T21.22b was meant to close | the M6 checkpoint — two clients, one server, one round |
 | `bullets-visible` | browser | carried on the known-flaky list since M19 (`HANDOFF-M19.md`) | a bullet is drawn while it flies (§F2) |
 | `hud-timer` | browser | carried on the known-flaky list since M19 | the round timer and event banner (§C8) |

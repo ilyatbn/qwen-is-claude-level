@@ -55,7 +55,10 @@ describe('actor boxes (T23.02)', () => {
       for (const a of data.actors) {
         const [x0, y0, x1, y1] = a.box!
         // The anchor is where the mockup drew from: feet, body centre, the smoke's first puff.
-        expect(x0 <= a.x && a.x <= x1 && y0 <= a.y && a.y <= y1, `${id} ${a.kind} at ${a.x},${a.y} box ${a.box}`).toBe(true)
+        // T23.14: F7's figures stand on their feet line, and an airborne pose (jump, fall) tucks its feet above it —
+        // the anchor is then under the box, by less than a leg (TH + SH = 13.8 figure units at F7's 3.45).
+        const below = a.kind === 'figure' ? 13.8 * 3.45 : 0
+        expect(x0 <= a.x && a.x <= x1 && y0 <= a.y && a.y <= y1 + below, `${id} ${a.kind} at ${a.x},${a.y} box ${a.box}`).toBe(true)
         expect(x1 > x0 && y1 > y0).toBe(true)
       }
     })

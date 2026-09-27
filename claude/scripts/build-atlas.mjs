@@ -87,19 +87,7 @@ function downscale(png, maxEdge) {
   return out
 }
 
-/** Expand the `chars` shorthand (variants × poses) into flat frame → path. */
-function expandChars(spec) {
-  const out = {}
-  for (const [variant, prefix] of Object.entries(spec._variants)) {
-    for (const [pose, file] of Object.entries(spec._poses)) {
-      out[`character_${variant}_${pose}`] = prefix + file
-    }
-  }
-  return out
-}
-
 function framesOf(name, spec) {
-  if (name === 'chars') return expandChars(spec)
   const out = {}
   for (const [frame, path] of Object.entries(spec)) {
     if (frame.startsWith('_')) continue

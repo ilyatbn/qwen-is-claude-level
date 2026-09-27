@@ -123,13 +123,14 @@ export default async function ({ page, shot, log }) {
   /**
    * The strip just past the drawn body on one side, in screen space.
    *
-   * Centred on the **drawn** body — `PlayerView` hangs the sprite at
-   * `y - PLAYER_H / 2` in this scene (`asteroid-gravity` records it) — and running
+   * Centred on the **drawn** body — the body itself since T23.14 (the sandbox hung its sprite half a body up
+   * before; the stick figure stands on its feet) — and running
    * from a tenth to three fifths of a plume length past the body's edge, which is
    * where the plume is brightest and the body never reaches.
    */
   const strip = async (px, py, side) => {
-    const cy = py - k.PLAYER_H / 2
+    // T23.14: the sandbox draws the body at the body now (the stick figure stands on its feet), not half a body up.
+    const cy = py
     const near = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
     const far = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
     const a = await toScreen(page, px - k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * near)
@@ -222,7 +223,8 @@ export default async function ({ page, shot, log }) {
    * three fifths of a plume length past the body's side.
    */
   const hstrip = async (px, py, side) => {
-    const cy = py - k.PLAYER_H / 2
+    // T23.14: centred on the body itself (see `strip`).
+    const cy = py
     const near = k.PLAYER_W / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
     const far = k.PLAYER_W / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
     const a = await toScreen(page, px + side * near, cy - k.THRUSTER_PLUME_WIDTH * 0.3)
@@ -359,12 +361,13 @@ async function standardArm({ page, shot, log, k, dbg, waitFor, frames, isCanvas 
     window.__game.setTime(0)
   })
   const strip = async (px, py, side) => {
-    const cy = py - k.PLAYER_H / 2
+    // T23.14: centred on the body itself (the first `strip` says why).
+    const cy = py
     const near = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.1
     const far = k.PLAYER_H / 2 + k.THRUSTER_PLUME_LENGTH * 0.6
     const a = await toScreen(page, px - k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * near)
     const b = await toScreen(page, px + k.THRUSTER_PLUME_WIDTH * 0.3, cy + side * far)
-    if (!a.onScreen || !b.onScreen) throw new Error('the body is not on screen')
+    if (!a.onScreen || !b.onScreen) throw new Error(`the body is not on screen (${px.toFixed(0)}, ${py.toFixed(0)}: ${JSON.stringify([a, b])})`)
     const x = Math.round(Math.min(a.x, b.x))
     const y = Math.round(Math.min(a.y, b.y))
     return { x, y, w: Math.max(2, Math.round(Math.abs(b.x - a.x))), h: Math.max(2, Math.round(Math.abs(b.y - a.y))) }

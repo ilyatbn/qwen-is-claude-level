@@ -3,8 +3,8 @@
  * only when its drawing changes (`cell.ts::cellKey`: the light is not in it — the shader applies that).
  *
  * The texture is `ATLAS_SIZE`² RGBA8, premultiplied, in **64-px base cells**; an actor's cell spans as many as
- * its images need (`cell.ts`, each its box's size, two to a row: under | ink, then mask | extras for the fill, rim
- * and far-rim passes — those three rows only for a lit actor), first-fit on an
+ * its images need (`cell.ts`, each its box's size, two to a row: under | ink, fill mask | rim mask, far-rim mask —
+ * the masks only for a lit actor that is not baked), first-fit on an
  * occupancy grid. A cell unused for `EVICT_FRAMES` frames is freed when room is needed; if there is still none,
  * the atlas is cleared and this frame's cells drawn again (counted: `stats.resets`).
  *
@@ -19,8 +19,12 @@ import type { G } from './draw'
 export const ATLAS_SIZE = 2048
 /** The allocation grain, px (the research's 64×64 cell; a bigger actor spans several). */
 export const BASE_CELL = 64
-/** Frames a cell survives unused before its room may be taken. */
-export const EVICT_FRAMES = 120
+/**
+ * Frames a cell survives unused before its room may be taken. Short: a moving figure makes a new cell every frame
+ * and never looks its old ones up again — at 120 a 6-player match filled the atlas and reset it 186 times in 6 s
+ * (measured, T23.14); a cell still in use is looked up every frame and never ages.
+ */
+export const EVICT_FRAMES = 3
 
 const GRID = ATLAS_SIZE / BASE_CELL
 
@@ -42,11 +46,8 @@ export const IMAGES: readonly { role: Role; pass?: number }[] = [
   { role: 'under' },
   { role: 'ink' },
   { role: 'mask', pass: 0 },
-  { role: 'extras', pass: 0 },
   { role: 'mask', pass: 1 },
-  { role: 'extras', pass: 1 },
   { role: 'mask', pass: 2 },
-  { role: 'extras', pass: 2 },
 ]
 
 /** What draws a cell and puts it on the GPU (the browser's: `layer.ts::canvasPainter`). */
@@ -84,8 +85,11 @@ export class ActorAtlas {
     const r = actorRect(a)
     const w = r[2] - r[0]
     const h = r[3] - r[1]
-    // Baked (extras) and unlit actors: under | ink alone. The rest: and a mask | extras row per pass.
-    const rows = a.lit && L && !hasExtras(a) ? 4 : 1
+    // Baked (extras) and unlit actors: under | ink alone. The rest: and the three pass masks (T23.14: five images,
+    // three rows — the per-pass extras images went when extras-bearing actors were baked whole, T23.13; measured
+    // in a 6-player match, the fourth row of every running figure's cell was a quarter of the atlas's uploads).
+    const images = a.lit && L && !hasExtras(a) ? IMAGES.length : 2
+    const rows = Math.ceil(images / 2)
     const gw = Math.ceil((2 * w) / BASE_CELL)
     const gh = Math.ceil((rows * h) / BASE_CELL)
     if (gw > GRID || gh > GRID) return null
@@ -105,15 +109,15 @@ export class ActorAtlas {
     const cell: Cell = { x: at[0] * BASE_CELL, y: at[1] * BASE_CELL, w, h, gw, gh, lastUsed: this.frame }
     this.mark(at[0], at[1], gw, gh, 1)
     this.cells.set(key, cell)
-    this.draw(a, cell, rows, L ? { ...L, offs: snapOffsets(L.offs) } : null)
+    this.draw(a, cell, rows, images, L ? { ...L, offs: snapOffsets(L.offs) } : null)
     this.stats.cells = this.cells.size
     return cell
   }
 
-  private draw(a: Actor, c: Cell, rows: number, L: Lighting | null): void {
+  private draw(a: Actor, c: Cell, rows: number, images: number, L: Lighting | null): void {
     const g = this.painter.begin(2 * c.w, rows * c.h)
     const offs: PassOffsets | null = L?.offs ?? null
-    IMAGES.slice(0, 2 * rows).forEach(({ role, pass }, k) => {
+    IMAGES.slice(0, images).forEach(({ role, pass }, k) => {
       const i = k % 2
       const j = Math.floor(k / 2)
       g.save()
@@ -121,7 +125,6 @@ export class ActorAtlas {
       g.rect(i * c.w, j * c.h, c.w, c.h)
       g.clip()
       g.translate(i * c.w, j * c.h)
-      if (role === 'extras' && !hasExtras(a)) return g.restore()
       if (role === 'ink' && L && a.lit && hasExtras(a)) drawBaked(g, a, L)
       else if (!(role === 'under' && L && a.lit && hasExtras(a))) drawRole(g, a, role, pass !== undefined && offs ? offs[pass] : [0, 0])
       g.restore()

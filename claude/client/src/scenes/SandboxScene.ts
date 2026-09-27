@@ -18,6 +18,7 @@ import { MOVE_MOD } from '../net/codec'
 import { WorldView } from '../render/worldView'
 import { setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
+import { setGroundProbe } from '../look/actors/cast'
 import { standTarget, stepTilt } from '../render/standTilt-math'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
@@ -196,6 +197,8 @@ export class SandboxScene extends Phaser.Scene {
 
     const params = new URLSearchParams(location.search)
     this.core = this.registry.get('core') as Core
+    // T23.14: the ground the stick figures plant their feet on (`look/actors/cast.ts`).
+    setGroundProbe(this, (x, y) => this.core.solidAt(x, y))
 
     const seedParam = params.get('seed')
     this.seed = seedParam ? BigInt(seedParam) : randomSeed()
@@ -295,6 +298,7 @@ export class SandboxScene extends Phaser.Scene {
       if (inv) {
         const ev = this.core.fire(0, this.simTime)
         const sel = inv.slots[inv.selected]
+        this.player?.firedWith(sel?.key)
         if (ev.hitscan?.length) {
           const first = ev.hitscan[0]
           if (first) this.cue('fire_smg', first.x0, first.y0)
@@ -796,6 +800,8 @@ export class SandboxScene extends Phaser.Scene {
           effectLights: [...self.effectLights.lastKinds],
           // T23.09A: whether the lit terrain draws its cave wall (the renderer's own state; null before it loads).
           caveWall: self.worldRenderer?.caveWall() ?? null,
+          // T23.14: the player's stick figure as last handed to the world renderer (its pose, boots, wings, weapon).
+          figure: self.player?.figure ?? null,
           seed: self.core.meta.seed,
           scale: self.core.meta.scale,
           attempts: self.core.meta.attempts,
@@ -1053,6 +1059,7 @@ export class SandboxScene extends Phaser.Scene {
         const inv = self.core.inventory(0)
         const sel = inv?.slots[inv.selected]
         const ev = self.core.fire(0, self.simTime)
+        self.player?.firedWith(sel?.key)
         if (ev.hitscan?.length) {
           for (const s of ev.hitscan) self.world.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
           const first = ev.hitscan[0]
@@ -1244,6 +1251,7 @@ export class SandboxScene extends Phaser.Scene {
         for (const v of self.skinLineup) v.destroy()
         self.skinLineup = (list ?? []).map(({ skin, x, y }) => {
           const v = new PlayerView(self, skin, 0, 0)
+          v.setSeat(skin)
           v.container.setDepth(DEPTH.actors)
           v.setState(x, y, 0, 0, 0, {
             alive: true,
@@ -1484,11 +1492,12 @@ export class SandboxScene extends Phaser.Scene {
         this.localInput.sample(this.seq, { x: body.x, y: body.y }, this.cameras.main).aim,
       )
       // T22.19 (R107): the same pull and smoothing as the match, at the body's centre
-      // (where `apply_input` reads the field). Drawn about the sprite's centre, which the
-      // sandbox has always hung half a body above the body (see `asteroid-gravity.mjs`).
+      // (where `apply_input` reads the field). T23.14: drawn at the body, as the match draws it — the sandbox hung
+      // its sprite half a body above the body (the old sprite's anchor hid it); the stick figure stands its feet
+      // on the rock, so half a body up was a figure floating 14 px over the ground (seen in the first strips).
       const pull = this.core.standPullAt(body.x, body.y, body.moveMods)
       this.tilt = stepTilt(this.tilt, standTarget(pull[0]!, pull[1]!), dt)
-      this.player.setState(body.x, body.y - C().PLAYER_H / 2, body.vx, body.vy, aim, {
+      this.player.setState(body.x, body.y, body.vx, body.vy, aim, {
         tilt: this.tilt,
         alive: true,
         grounded: body.grounded,

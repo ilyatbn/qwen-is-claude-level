@@ -60,10 +60,18 @@ const EXPECTED: Record<string, Expected & { file: string }> = {
     labels: 14,
     file: 'variant_F4.js',
   },
+  // T23.14: F7, the pose sheet — 23 figures (idle, 8 run, jump, jet, space, fall, land, melee, throw, hit, dead,
+  // 5 aims) and the landing's dust; labels: one per figure + the caption = 24.
+  F7: {
+    actors: { figure: 23, smoke: 1 },
+    fx: {},
+    labels: 24,
+    file: 'variant_F7.js',
+  },
 }
 
 describe('the ported reference scenes', () => {
-  it('ports exactly F1–F5', () => {
+  it('ports exactly F1–F5 and F7', () => {
     expect(Object.keys(SCENES).sort()).toEqual(Object.keys(EXPECTED).sort())
   })
 
@@ -77,7 +85,8 @@ describe('the ported reference scenes', () => {
       })
       it('has as many lights as the mockup’s source declares', () => {
         // Every `L(` call in the file (the helper's definition, `const L = (`, has a space).
-        const declared = (src(want.file).match(/\bL\(/g) ?? []).length
+        // F7's run() names its leg helper L too (`L(f)`, twice): its light calls are the ones with a number first.
+        const declared = (src(want.file).match(id === 'F7' ? /\bL\(\d/g : /\bL\(/g) ?? []).length
         expect(s.look.lights.length).toBe(declared)
         expect(declared).toBeGreaterThan(0)
       })
@@ -89,7 +98,7 @@ describe('the ported reference scenes', () => {
       it('stands its standing figures on the mask they came with', () => {
         // The mockup placed them with `groundAt`: rock under the feet, air above them.
         const m = decodeMask(s.mask)
-        const standing = s.actors.filter(a => a.kind === 'stick' && !a.opts.jet && a.lit?.shadow)
+        const standing = s.actors.filter(a => (a.kind === 'stick' || a.kind === 'figure') && !a.opts.jet && !a.opts.rot && a.lit?.shadow)
         expect(standing.length).toBeGreaterThan(0)
         for (const a of standing) {
           expect(m.solid[a.y * m.w + a.x], `${id} stick at ${a.x},${a.y}`).toBe(1)

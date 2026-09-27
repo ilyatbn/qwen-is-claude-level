@@ -231,7 +231,7 @@ export default async function ({ page, shot, log }) {
     await shot('rim-light-halo')
   }
   await page.evaluate(() => {
-    window.__world.setActors([])
+    window.__world.setActors(null)
     window.__game.freeze(false)
   })
   if (problems.length) throw new Error(`rim-light: ${problems.join('; ')}`)

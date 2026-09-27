@@ -10,6 +10,8 @@
  * cast, `0xRRGGBB` for the background, `[r, g, b]` linear triples for terrain and fog.
  */
 
+import type { Pose } from './actors/figure'
+
 export type Rgb = [number, number, number]
 /** `'r,g,b'`, 0–255 sRGB — what `lit()` and the 2D cast read. */
 export type RgbString = string
@@ -234,7 +236,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -255,6 +257,9 @@ export interface ActorOpts {
   seed?: number
   eye?: string
   flap?: number
+  /** T23.14 figure: its pose (`actors/figure.ts::Pose`, `poses.js`'s J) and visor colour (space). */
+  J?: Pose
+  visor?: string
   /** rocket: heading, radians. */
   ang?: number
   /** smoke: the trail, mask px. */

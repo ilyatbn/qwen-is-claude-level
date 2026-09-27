@@ -85,6 +85,10 @@ export const rocket = (g, x, y, ang, o = {}) => put('rocket', x, y, { ang, ...o 
 export const smoke = (g, pts, o = {}) => rec.actors.push({ kind: 'smoke', x: pts[0][0], y: pts[0][1], opts: { pts, ...o }, lit: null })
 export const hudE = o => { rec.hud = o }
 `)
+// T23.14: F7's figures (poses.js::figure), recorded like the rest of the cast; its pass flag rim is the renderer's.
+writeFileSync(join(tmp, 'poses.js'), `import { rec } from './rec.js'
+export function figure(g, x, y, J, o = {}) { const { rim, ...opts } = o; void rim; rec.actors.push({ kind: 'figure', x, y, opts: { J, ...opts }, lit: rec.lit }) }
+`)
 
 // ---- run each scene ---------------------------------------------------------
 const imp = f => import(pathToFileURL(join(tmp, f)).href)
@@ -98,6 +102,7 @@ const SCENES = [
   { id: 'F3', file: 'variant_F3.js', map: 'space', title: 'space' },
   { id: 'F4', file: 'variant_F4.js', map: 'cast', title: 'cast sheet' },
   { id: 'F5', file: 'variant_F5.js', map: 'arenaE', title: 'moonlit day' },
+  { id: 'F7', file: 'variant_F7.js', map: 'poses', title: 'pose sheet' },
 ]
 const masks = {}
 // T23.02: each actor's screen box, measured from the mockup's drawing by `measure-boxes.mjs`

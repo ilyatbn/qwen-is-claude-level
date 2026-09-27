@@ -75,7 +75,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r))
 const browser = await chromium.launch({ headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] })
 const out = {}
 try {
-  for (const id of ['F1', 'F2', 'F3', 'F4', 'F5']) {
+  for (const id of ['F1', 'F2', 'F3', 'F4', 'F5', 'F7']) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
     page.on('pageerror', e => console.log(`[${id}] PAGEERROR`, e.message))
     await page.goto(`http://127.0.0.1:${server.address().port}/measure.html?v=${id}`)

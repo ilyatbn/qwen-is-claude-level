@@ -73,6 +73,7 @@ import { EffectLights, gateLights, jetFeet, viewRect, type EffectSources } from 
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
+import { setGroundProbe } from '../look/actors/cast'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
@@ -657,6 +658,8 @@ export class GameScene extends Phaser.Scene {
     this.terrainFields = null
     this.predictor = null
     this.localView = null
+    // T23.14: re-read from the next round's core (the same build's registry, but the core is the round's).
+    this.itemKeysMap = null
     // T23.09: last round's gates and muzzle bookkeeping; this map's gates arrive with `map_init`.
     this.effectLights = new EffectLights()
 
@@ -802,6 +805,8 @@ export class GameScene extends Phaser.Scene {
     await runLoader(this)
 
     this.core = this.registry.get('core') as Core
+    // T23.14: the ground the stick figures plant their feet on (`look/actors/cast.ts`).
+    setGroundProbe(this, (x, y) => this.core.solidAt(x, y))
     const params = new URLSearchParams(location.search)
 
     this.mirror = new WorldMirror(this.core)
@@ -1319,6 +1324,8 @@ export class GameScene extends Phaser.Scene {
       const y = Number(p['y'] ?? at.y)
       if (victim === this.me) this.feel.damageTaken(x, y, amount)
       else this.feel.damageDealt(x, y, amount, false)
+      // T23.14: the hit reaction, on whoever was hit (F7 'hit').
+      ;(victim === this.me ? this.localView : this.remotes.get(victim)?.view)?.act('hit')
       // T22.08D F3: the server's word that you are burning — scoped to you, so it is
       // yours. During a flare it confirms your flames, or lights them when your own
       // contact test missed. **The flare's own word** (T22.08E F9): a meteor fragment
@@ -1385,8 +1392,12 @@ export class GameScene extends Phaser.Scene {
         return
       }
       this.conn.sendFire()
+      this.localView?.firedWith(this.slots[this.selectedSlot]?.key)
     })
-    this.input.keyboard?.on('keydown-F', () => this.conn.sendFire())
+    this.input.keyboard?.on('keydown-F', () => {
+      this.conn.sendFire()
+      this.localView?.firedWith(this.slots[this.selectedSlot]?.key)
+    })
 
     // Slot selection and item use. `Connection` has had `sendSelectSlot` and
     // `sendUseItem` since T6.08 and nothing called them, so in the real game a
@@ -2070,6 +2081,8 @@ export class GameScene extends Phaser.Scene {
     )
     const shots = this.repeatFire.update({ dt, held, ...source })
     for (let i = 0; i < shots; i++) this.conn.sendFire()
+    // T23.14: a held melee weapon swings its figure (the first request is the press's, above).
+    if (shots > 0) this.localView?.firedWith(sel?.key)
   }
 
   override update(_time: number, delta: number): void {
@@ -2192,6 +2205,7 @@ export class GameScene extends Phaser.Scene {
       this.localTrack = trackTilt(this.localTrack, rp.x, rp.y, body.vx, body.vy, pull ? standTarget(pull[0]!, pull[1]!) : null, dt)
       // T22.19B F6: the name tag, off the lobby's names — it had no caller before.
       this.localView.setName(this.scores.get(this.me)?.name ?? '')
+      this.localView.setWeapon(this.slots[this.selectedSlot]?.key ?? '')
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         tilt: this.localTilt,
         alive: true,
@@ -2522,10 +2536,22 @@ export class GameScene extends Phaser.Scene {
     return { skinId: s.skinId, hatId: s.hatId, glassesId: s.glassesId }
   }
 
+  /** T23.14: item id → registry key (`item_registry_json`), parsed once — what a remote's figure holds. */
+  private itemKeysMap: Map<number, string> | null = null
+  private itemKeys(): Map<number, string> {
+    if (!this.itemKeysMap) {
+      const defs = JSON.parse(this.core.itemRegistryJson()) as { id: number; key: string }[]
+      this.itemKeysMap = new Map(defs.map((d) => [d.id, d.key]))
+    }
+    return this.itemKeysMap
+  }
+
   private buildLocalView(): void {
     this.localView?.destroy()
     const look = this.lookOf(this.me)
     this.localView = new PlayerView(this, look.skinId, look.hatId, look.glassesId)
+    // T23.14 (R10): the scarf is the seat's colour.
+    this.localView.setSeat(this.me)
     this.localView.container.setDepth(DEPTH.actors)
   }
 
@@ -2589,6 +2615,7 @@ export class GameScene extends Phaser.Scene {
       }
       if (!r) {
         r = { view: new PlayerView(this, want.skinId, want.hatId, want.glassesId), lastSeen: now }
+        r.view.setSeat(id)
         r.view.container.setDepth(DEPTH.actors)
         this.remotes.set(id, r)
       }
@@ -2629,6 +2656,9 @@ export class GameScene extends Phaser.Scene {
       // T22.19B F6: the name tag. A child of the container, so it hides with the body
       // above (the dark's cull, a dead remote) — the same visibility rule.
       r.view.setName(this.scores.get(id)?.name ?? '')
+      // T23.14: the held item, off the snapshot's selected-item byte (every player's is on the wire).
+      const sel = this.mirror.players.get(id)?.selectedItem ?? null
+      r.view.setWeapon(sel === null ? '' : (this.itemKeys().get(sel) ?? ''))
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
         tilt: rtrack.theta,
         alive: flag(p.flags, FLAG.alive),

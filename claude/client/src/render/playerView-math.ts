@@ -40,13 +40,3 @@ export function deriveAnimState(p: AnimInputs): AnimState {
 export function facingLeft(aim: number): boolean {
   return Math.cos(aim) < 0
 }
-
-/**
- * Walk cycle period, so a slowed player visibly trudges instead of moon-walking.
- * Clamped at both ends: without the ceiling, a nearly-stopped player's cycle
- * period goes to infinity and the legs freeze mid-stride.
- */
-export function walkFrameMs(vx: number, walkSpeed: number, baseMs = 110): number {
-  const speed = Math.max(Math.abs(vx), 1)
-  return Math.min(400, Math.max(40, baseMs * (walkSpeed / speed)))
-}

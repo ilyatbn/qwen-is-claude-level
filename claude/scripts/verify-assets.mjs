@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Validates that every path referenced by assets/manifest.json exists, and that
- * every atlas frame referenced by assets/skins.json exists in that atlas's JSON.
+ * every atlas frame a weapon skin in assets/skins.json names exists in that atlas's JSON.
  *
  * Written now, before there are any assets, so that M7 finds it already in the
  * gate rather than having to remember it. Until then a missing file is a SKIP,
@@ -69,18 +69,13 @@ if (existsSync(skinsPath) && manifest) {
     atlasFrames.set(atlas.key, names)
   }
 
+  // T23.14 (R15): the `chars` atlas retired with the sprite body, its last reader (the stick figure is drawn by code),
+  // and the check that every player skin's frames exist in it with it. The ids stay unique: the skins screen reads
+  // the registry until T23.15 removes it (R8).
   const seenIds = new Set()
   for (const skin of skins?.players ?? []) {
     if (seenIds.has(skin.id)) problems.push(`skin id ${skin.id} is duplicated`)
     seenIds.add(skin.id)
-    const frames = atlasFrames.get(skin.atlas)
-    if (!frames) { problems.push(`skin ${skin.id}: unknown atlas "${skin.atlas}"`); continue }
-    for (const [state, list] of Object.entries(skin.frames ?? {})) {
-      for (const frame of list) {
-        const full = `${skin.prefix ?? ''}${frame}`
-        if (!frames.has(full)) problems.push(`skin ${skin.id} ${state}: frame "${full}" not in atlas ${skin.atlas}`)
-      }
-    }
   }
 
   // (T23.07: the `decor` atlas retired with its reader, and its "a prop, not a tile" check with it.)

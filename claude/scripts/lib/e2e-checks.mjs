@@ -34,11 +34,14 @@ export const CHECKS = [
   },
   // Reached through the menu, not at `?skins=1`: the Skins button was a caller
   // with no callee (§A39), and a check that types the URL would not have noticed.
+  // T23.14: the skins screen's preview is the stick figure now — no atlas frame, no hat or glasses band to aim at
+  // (R8: wearables are drawn as nothing). The screen itself goes with T23.15, which retires this with it.
   {
     name: 'skins',
     file: 'scripts/checks/skins.mjs',
     url: '?menu=1&e2e=1',
     ready: '!!window.__menu',
+    disabled: 'T23.15',
   },
   // The pixel harness self-test. It runs on a synthetic page — it is proving the
   // *harness* can detect a change and, more importantly, can FAIL to detect one.
@@ -139,7 +142,11 @@ export const CHECKS = [
   // T21.02: the boots have to be visible on the player. In the sandbox
   // because it is the one scene that can supply a **control frame** — the
   // same body, in the same place, before and after picking them up.
-  { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242', flaky: true },
+  // T23.14: rewritten on the stick figure's world-canvas pixels, the scene frozen (no camera ease between the two
+  // frames — the cause it was parked for); unparked.
+  { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.14: the stick figure — Level A on F7's pose boxes; running redraws and moves the legs, standing does not.
+  { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
   // T22.11C / R63: an asteroid's gravity well on **rendered pixels**, with the
   // patch the body moves away from as its control region and the same map with
   // `setAsteroids([])` as its control frame. `?gravity=space` is R22's parameter
@@ -238,13 +245,9 @@ export const CHECKS = [
   // T23.04 retired `sky` (the §A4 keyframe gradient's phases), `living-sky` (the ridges) and
   // `canvas-renderer` (every region of it was the ridge band: foot, tint, wrap seam) with the
   // sky they photographed; `look-sky` is the new sky's check. The night/moonlit-day look is T23.11's.
-  // T21.37: the red Recruit is red on Canvas too, against the plain Recruit in the same frame.
-  {
-    name: 'canvas-tinted-skin',
-    file: 'scripts/checks/canvas-tinted-skin.mjs',
-    url: '?sandbox=1&seed=4242&renderer=canvas',
-    serial: true,
-  },
+  // T23.14 retired `canvas-tinted-skin` (the red Recruit red on Canvas — the tinted sprite atlas, `canvasTint.ts`,
+  // retired with the sprite body; R2 retired Canvas for the world) and `skins-ingame` (two skins told apart in a
+  // match — R8: skins are drawn as nothing; the scarf's seat colour is the identity now, `stick-figure`).
   // `disabled: 'T23.11'` (T23.07): both photograph night as Phaser's MULTIPLY lightmap darkening Phaser's
   // rock. The rock is the lit terrain on the world canvas now, F1's night at every hour, and that layer
   // cannot darken it; R7 replaces the lightmap with the night/moonlit-day blend, which T23.11 builds
@@ -468,11 +471,6 @@ export const CHECKS = [
   // Standalone: it needs a real round on a fixed seed with no bots, because a
   // bot's stray rocket killing one changes the counts it compares.
   { name: 'animals', file: 'scripts/checks/animals.mjs', standalone: true },
-  // §B9's gate, and the only assertion in the tree about a **rendered** player's
-  // skin (T20.04). Standalone: two clients on two different skins, in one frame,
-  // on a real server — `skins.mjs` never enters a game, which is why everybody
-  // was a Recruit for four milestones with a green suite.
-  { name: 'skins-ingame', file: 'scripts/checks/skins-ingame.mjs', standalone: true },
   // The M6 checkpoint: two browser contexts, one server, one round. Standalone
   // because it needs a real game-server and two clients rather than the sandbox.
   { name: 'two-clients', file: 'scripts/e2e-two-clients.mjs', standalone: true, flaky: true },

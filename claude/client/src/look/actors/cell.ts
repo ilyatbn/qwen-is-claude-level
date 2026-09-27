@@ -4,17 +4,18 @@
  *
  * `lit()` paints, in order: the halo, the contact shadow, a far rim pass, a rim pass, a cool fill pass (each
  * the actor again, offset, in one flat colour — the **rim opts**: accent recoloured, marker/flame/muzzle
- * dropped, as the scene's lambdas do it), then the ink pass. A cell is four images of the actor's box:
+ * dropped, as the scene's lambdas do it), then the ink pass. A cell is five images of the actor's box:
  *
  *   under  — halo + shadow, in colour (they do not depend on the light's direction);
  *   mask   — the rim opts' silhouette: R = ink strokes, G = accent strokes, each call adding 64/255 with
  *            `lighter`, so a texel holds the **number** of strokes over it (a translucent pass darkens
  *            where strokes overlap: α = 1 − (1 − a)^n, which a coverage mask cannot give);
- *   ink    — the ink pass exactly as the mockup draws it (`DARK_INK`, the real accent, marker, flame);
- *   extras — the fixed-colour parts every pass draws in their own colours (jet flame, crystal glow, rocket motor,
- *            spider eye: `draw.ts::setExtras`), with the rim opts; empty for an actor without (`hasExtras`).
+ *   ink    — the ink pass exactly as the mockup draws it (`DARK_INK`, the real accent, marker, flame).
  *
- * **Mask and extras are drawn once per pass, at that pass's offset** (fill, rim, far rim) — the shader (`layer.ts`)
+ * The fixed-colour parts every pass draws in their own colours (jet flame, crystal glow, rocket motor, spider eye:
+ * `draw.ts::setExtras`) are left out of the masks; an actor that has them is baked (below).
+ *
+ * **The mask is drawn once per pass, at that pass's offset** (fill, rim, far rim) — the shader (`layer.ts`)
  * composites them with the pass's colour and alpha, which stay uniforms. Resampling one mask at the offsets
  * instead was measured and is not the same picture: the canvas re-rasterises each pass, and a bilinear shift of a
  * thin shape's edge is not that (F4, rim passes on: mean ΔE 0.37 on the actor boxes resampled — past the actor
@@ -31,6 +32,8 @@
  */
 import type { Actor, ActorOpts, Box } from '../scene'
 import * as D from './draw'
+import * as F from './figure'
+import { WEAPONS } from './weapons'
 
 /** `f_kit.js::DARK_INK` — the ink pass's colour. */
 export const DARK_INK = '#07060a'
@@ -42,9 +45,9 @@ export const CELL_PAD = 2
 const SHADOW_R = 11
 const HALO_R = 30
 
-export type Role = 'under' | 'mask' | 'ink' | 'extras'
+export type Role = 'under' | 'mask' | 'ink'
 
-/** The three pass offsets (px): fill, rim, far rim — the order of the extras images. */
+/** The three pass offsets (px): fill, rim, far rim — the order of the mask images. */
 export type PassOffsets = [[number, number], [number, number], [number, number]]
 
 /** One lit actor's passes this frame (`lit.ts::passes`): what a cell may depend on. */
@@ -75,6 +78,9 @@ function rimOpts(a: Actor, accent: string): ActorOpts {
       return { ...o, muzzle: false }
     case 'gate':
       return { ...o, accent: 'rgba(0,0,0,0)', inner: 'rgba(0,0,0,0)' }
+    case 'figure':
+      // `variant_F7.js`: `accent: rc ?? o.accent, rim: !!rc` — `figure` drops the visor, weapon accents and flame.
+      return { ...o, accent }
     default:
       return o
   }
@@ -106,6 +112,9 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
       return
     case 'rocket':
       D.rocket(g, x, y, o.ang ?? 0, o)
+      return
+    case 'figure':
+      if (o.J) F.figure(g, x, y, o.J, { s: o.s ?? 1.15, face: o.face ?? 1, rot: o.rot ?? 0, accent: o.accent ?? '#e8482c', rim: o.accent?.startsWith('rgba(') ?? false, visor: o.visor ?? null })
       return
     case 'smoke': {
       // Unlit; its points are mask px — moved by the same offset as (x, y).
@@ -139,6 +148,16 @@ export function estimateBox(a: Actor): Box {
   // Longest reach of any kind from its anchor, in figure units (the whip's tip is 36.5 from the shoulder).
   const reach = 44 * s + 2 * 1.15 * size + 2
   let b: Box = [a.x - reach, a.y - reach - 6 * s, a.x + reach, a.y + 6 * s + 2]
+  if (a.kind === 'figure') {
+    // A figure, from its middle (the hip, 13 up): the head and a helmet within 20, feet within 16, wings 22, and its
+    // weapon's muzzle from the shoulder (8.5 above the hip) — the whip's 36.5 is the longest. A square of that
+    // radius covers any turn (space thrust, a ragdoll). T23.14: sized per weapon because a 44-unit square for every
+    // figure filled the atlas in a 6-player match (resets every few frames, measured).
+    const W = a.opts.J?.weapon ? WEAPONS[a.opts.J.weapon] : undefined
+    const R = (Math.max(22, W ? Math.hypot(W.muzzle[0], W.muzzle[1]) + 10 : 0) + 2) * s + 2 * 1.15 * size + 2
+    const cy = a.y - 13 * s
+    b = [a.x - R, cy - R, a.x + R, cy + R]
+  }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size
     const r = HALO_R * size
@@ -182,16 +201,16 @@ export function drawBaked(g: D.G, a: Actor, L: Lighting): void {
   drawRole(g, a, 'ink')
 }
 
-/** The offsets an extras image is drawn at: `cellKey`'s 1/8 px, so the key and the drawing agree. */
+/** The offsets a pass is drawn at: `cellKey`'s 1/8 px, so the key and the drawing agree. */
 export function snapOffsets(offs: PassOffsets): PassOffsets {
   const q = (v: number): number => Math.round(v * 8) / 8
   return offs.map(([x, y]) => [q(x), q(y)]) as PassOffsets
 }
 
-/** Draw image `role` of `a` into `g`, whose (0, 0) is the cell rect's top-left; a pass's mask or extras at `off`. */
+/** Draw image `role` of `a` into `g`, whose (0, 0) is the cell rect's top-left; a pass's mask at `off`. */
 export function drawRole(g: D.G, a: Actor, role: Role, off: [number, number] = [0, 0]): void {
   const r = actorRect(a)
-  const shifted = role === 'extras' || role === 'mask'
+  const shifted = role === 'mask'
   const x = a.x - r[0] + (shifted ? off[0] : 0)
   const y = a.y - r[1] + (shifted ? off[1] : 0)
   const lit = a.lit
@@ -223,12 +242,6 @@ export function drawRole(g: D.G, a: Actor, role: Role, off: [number, number] = [
       D.setExtras(false)
       D.setInk(`rgb(${MASK_STEP},0,0)`)
       drawKind(g, a, rimOpts(a, `rgba(0,${MASK_STEP},0,1)`), x, y)
-      return
-    }
-    if (role === 'extras') {
-      if (!lit) return
-      D.setInk('rgba(0,0,0,0)')
-      drawKind(g, a, rimOpts(a, 'rgba(0,0,0,0)'), x, y)
       return
     }
     D.setInk(DARK_INK)

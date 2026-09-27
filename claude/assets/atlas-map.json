@@ -10,28 +10,6 @@
     "and skipped \u2014 the atlas still builds, and the frame falls back to a",
     "procedural placeholder at runtime (docs/50 \u00a78)."
   ],
-  "chars": {
-    "_note": "Five colour/character variants of one rig, which is exactly the prefix scheme in docs/50 \u00a72. Kenney gives a 2-frame walk cycle, so walk is a/b rather than a..d.",
-    "_variants": {
-      "adventurer": "platformer-characters/PNG/Adventurer/Poses/adventurer_",
-      "female": "platformer-characters/PNG/Female/Poses/female_",
-      "soldier": "platformer-characters/PNG/Soldier/Poses/soldier_",
-      "player": "platformer-characters/PNG/Player/Poses/player_",
-      "zombie": "platformer-characters/PNG/Zombie/Poses/zombie_"
-    },
-    "_poses": {
-      "idle": "idle.png",
-      "walk_a": "walk1.png",
-      "walk_b": "walk2.png",
-      "jump": "jump.png",
-      "fall": "fall.png",
-      "jetpack_a": "climb1.png",
-      "jetpack_b": "climb2.png",
-      "hurt": "hurt.png",
-      "dead": "duck.png",
-      "stand": "stand.png"
-    }
-  },
   "items": {
     "_note": "Frames named for ItemDef.sprite (crates/game-core/src/items/registry.rs), which has been populated since T4.01 and unreadable by the client until item_registry_json() exported it. A missing frame falls back to a tinted box and logs once (docs/50 \u00a78).",
     "item_medkit": "pixel-platformer/Tiles/tile_0044.png",

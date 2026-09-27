@@ -49,6 +49,11 @@ export interface WorldHandle {
    * the first frame drawn after it (`look-terrain`: a crater lit in the frame it is carved).
    */
   readNextFrame(): Promise<{ w: number; h: number; view: ViewRect | null; rgba: string; loopFrame: number } | null>
+  /**
+   * T23.14, dev: `n` crops of `size` buffer px round `track()` (mask px, read each frame), one every `every` drawn
+   * frames, read back in their own frames — an animation strip of a moving figure without a whole-frame round trip.
+   */
+  recordCrops(n: number, every: number, size: number, track: () => { x: number; y: number }): Promise<{ rgba: string; at: { x: number; y: number } }[]>
   /** T23.07: Phaser's frame counter now (`game.loop.frame`). */
   loopFrame(): number
   /** T23.04: the sky as last drawn — layers' parallax factors, periods and the offsets used. */
@@ -88,8 +93,8 @@ export interface WorldHandle {
    * check draws the same frame with one light removed (`effect-lights`' control frame).
    */
   setLights(lights: Light[]): void
-  /** T23.13: replace the scene's cast (a check places a figure beside a light). */
-  setActors(actors: Actor[]): void
+  /** T23.13: draw these actors instead of the scene's cast (a check places a figure beside a light); `null` releases. */
+  setActors(actors: Actor[] | null): void
   /** T23.13: the terrain's `back` field at mask px (x, y) — where the dark halo turns on. */
   backAt(x: number, y: number): boolean
   /** T23.08: player boxes (mask px) the foreground leaves fade over. */
@@ -255,6 +260,47 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       return handle.readNextFrame()
     },
     loopFrame: () => scene.game.loop.frame,
+    recordCrops(n, every, size, track) {
+      if (!three) return Promise.resolve([])
+      const game = scene.game
+      const out: { rgba: string; at: { x: number; y: number } }[] = []
+      let k = 0
+      let last = stats?.frames ?? 0
+      three.invalidate()
+      return new Promise((resolve) => {
+        const onPost = (): void => {
+          // Every frame is drawn while recording (an unchanged scene would otherwise skip — `mustDraw`).
+          three.invalidate()
+          if ((stats?.frames ?? 0) === last) return
+          last = stats?.frames ?? 0
+          if (k++ % every) return
+          const gl = three.gl
+          const v = stats?.view
+          if (!v) return
+          const w = gl.drawingBufferWidth
+          const h = gl.drawingBufferHeight
+          const at = track()
+          const sc = w / v.w
+          const x0 = Math.max(0, Math.min(w - size, Math.round((at.x - v.x) * sc - size / 2)))
+          const y0 = Math.max(0, Math.min(h - size, Math.round((at.y - v.y) * sc - size * 0.6)))
+          const raw = new Uint8Array(size * size * 4)
+          const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          gl.readPixels(x0, h - y0 - size, size, size, gl.RGBA, gl.UNSIGNED_BYTE, raw)
+          gl.bindFramebuffer(gl.FRAMEBUFFER, prev)
+          const img = new Uint8Array(size * size * 4)
+          for (let y = 0; y < size; y++) img.set(raw.subarray((size - 1 - y) * size * 4, (size - y) * size * 4), y * size * 4)
+          let bin = ''
+          for (let i = 0; i < img.length; i += 0x8000) bin += String.fromCharCode(...img.subarray(i, i + 0x8000))
+          out.push({ rgba: btoa(bin), at: { ...at } })
+          if (out.length >= n) {
+            game.events.off('postrender', onPost)
+            resolve(out)
+          }
+        }
+        game.events.on('postrender', onPost)
+      })
+    },
     readNextFrame() {
       if (!three) return Promise.resolve(null)
       const game = scene.game
@@ -319,7 +365,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     lights: () => (three ? three.heldLights() : null),
     setActors(actors) {
-      three?.setActors(actors)
+      three?.setDevActors(actors)
     },
     backAt: (x, y) => three?.backAt(x, y) ?? false,
     setLights(lights) {

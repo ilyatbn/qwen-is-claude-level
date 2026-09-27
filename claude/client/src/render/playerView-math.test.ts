@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveAnimState, facingLeft, walkFrameMs, WALK_ANIM_THRESHOLD } from './playerView-math'
+import { deriveAnimState, facingLeft, WALK_ANIM_THRESHOLD } from './playerView-math'
 
 const base = { alive: true, grounded: true, jetpack: false, vx: 0, vy: 0 }
 
@@ -44,18 +44,5 @@ describe('facingLeft', () => {
     expect(facingLeft(Math.PI / 2 + 0.01)).toBe(true)
     expect(facingLeft(-Math.PI / 2 - 0.01)).toBe(true)
     expect(facingLeft(-Math.PI / 2 + 0.01)).toBe(false)
-  })
-})
-
-describe('walkFrameMs', () => {
-  it('slows the cycle as the player slows', () => {
-    const fast = walkFrameMs(150, 150)
-    const slow = walkFrameMs(75, 150)
-    expect(slow).toBeGreaterThan(fast)
-  })
-
-  it('clamps, so a nearly-stopped player does not freeze mid-stride', () => {
-    expect(walkFrameMs(0.0001, 150)).toBeLessThanOrEqual(400)
-    expect(walkFrameMs(100000, 150)).toBeGreaterThanOrEqual(40)
   })
 })

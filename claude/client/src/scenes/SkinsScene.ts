@@ -303,18 +303,17 @@ export class SkinsScene extends Phaser.Scene {
         glassesName: glassesArt(self.choice.glassesId).name,
         /** Drawn, not intended (§A15): what the canvas actually holds. */
         weaponsShown: self.weaponRow.length,
-        previewIsAtlas: self.preview?.usesAtlas ?? false,
-        // T20.12: where the accessories landed, so a pixel check aims at the band
-        // the renderer chose rather than at a rect typed into the check.
+        // T23.14: the preview is the stick figure now — no sprite atlas, no hat or glasses band, no frame name
+        // (R8: wearables are drawn as nothing). T23.15 removes this screen; its `skins` check is disabled until then.
+        previewIsAtlas: false,
         previewScale: PREVIEW_SCALE,
-        previewDrawnH: self.preview?.accessoryBands.drawnH ?? 0,
-        previewAnchorY: self.preview?.accessoryBands.anchorY ?? 0,
-        hatBottom: self.preview?.accessoryBands.hatBottom ?? 0,
-        hatH: self.preview?.accessoryBands.hatH ?? 0,
-        glassesMid: self.preview?.accessoryBands.glassesMid ?? 0,
-        glassesH: self.preview?.accessoryBands.glassesH ?? 0,
-        /** §B3 wants the walk cycle; a still frame is the failure it names. */
-        previewFrame: self.preview?.currentFrame ?? '',
+        previewDrawnH: 0,
+        previewAnchorY: 0,
+        hatBottom: 0,
+        hatH: 0,
+        glassesMid: 0,
+        glassesH: 0,
+        previewFrame: '',
         /** The section must be present *and* inert, so report both. */
         weaponsDisabled: !!self.root?.querySelector('fieldset.coming-soon[disabled]'),
         // **Raw on purpose** — reporting what is literally in storage is this

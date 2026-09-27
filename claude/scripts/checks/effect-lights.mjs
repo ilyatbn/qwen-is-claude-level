@@ -37,6 +37,8 @@ const FAR_MAX = 3
 const DECAY_AT = 0.5
 /** …and wants the near gain under this fraction of the first (linear decay ⇒ ~DECAY_AT; room for the tonemap's curve). */
 const DECAY_GAIN = 0.8
+/** How far above the ground the jet leg's burn has carried the body when its light is first listed (measured: ~65 px). */
+const JET_RISE = 60
 /** The jet leg places the player this far (world px) above the ground under it before burning. */
 const JET_HOVER = 20
 /** Rock pixels (buffer) a region needs before its number means anything. */
@@ -261,11 +263,27 @@ export default async function ({ page, shot, log }) {
   // ------------------------------------------------------------ 3. a jetpack burn over rock
   // Low over flat-ish rock: placed a little above the ground under it and jetting at once (airborne, so
   // no jump first) — the plume's light is 100 px, and a burn begun from a standing jump is ~60 px up.
+  // T23.14: the jet light sits at the pack's feet (F's `L(ex − 4, ey − 4 …)`), in the sandbox too now that it draws the
+  // body at the body (it hung it half a body up), so the burn is taken where rock lies within the light's near radius
+  // of the height the burn reaches (JET_RISE) — not under the player's spawn, where an overhang above had supplied it.
   const me3 = await page.evaluate(() => window.__game.debug().player)
-  const gy = await surface(page, Math.round(me3.x), Math.round(me3.y - 80))
-  if (gy === null) throw new Error(`no rock under the player at x ${Math.round(me3.x)} for the jet leg`)
-  await page.evaluate(([x, y]) => window.__game.place(x, y), [Math.round(me3.x), gy - JET_HOVER])
-  log(`jet leg: ground at y ${gy} under x ${Math.round(me3.x)}; placed at ${gy - JET_HOVER}; now ${JSON.stringify(await page.evaluate(() => window.__game.debug().player))}`)
+  const pick = await page.evaluate(([x0, rise, r]) => {
+    const c = window.__game.core
+    let best = null
+    for (let x = Math.round(x0) - 400; x <= x0 + 400; x += 16) {
+      let gy = null
+      for (let y = 40; y < c.height - 2; y++) if (c.solidAt(x, y) && !c.solidAt(x, y - 1)) { let air = true; for (let k = 2; k < 90 && air; k += 4) air = !c.solidAt(x, y - k); if (air) { gy = y; break } }
+      if (gy === null) continue
+      let n = 0
+      for (let dy = -r; dy <= r; dy += 2) for (let dx = -r; dx <= r; dx += 2) if (dx * dx + dy * dy <= r * r && c.solidAt(x + dx, gy - rise + dy)) n++
+      if (!best || n > best.n) best = { x, gy, n }
+    }
+    return best
+  }, [me3.x, JET_RISE, Math.round(100 * NEAR_FRAC)])
+  if (!pick) throw new Error('no rock to burn over for the jet leg')
+  const gy = pick.gy
+  await page.evaluate(([x, y]) => window.__game.place(x, y), [pick.x, gy - JET_HOVER])
+  log(`jet leg: ground at y ${gy} under x ${pick.x} (${pick.n} rock samples near where the burn reaches); placed at ${gy - JET_HOVER}; now ${JSON.stringify(await page.evaluate(() => window.__game.debug().player))}`)
   await page.keyboard.down('Space')
   const jet = await freezeWith(page, 'jet', 4000)
   await page.keyboard.up('Space')
