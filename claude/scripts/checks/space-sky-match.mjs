@@ -48,6 +48,10 @@ const frames = (page, n) => drawnFrames(page, n)
 /** `harness.mjs::soloMatch`, then settled a few drawn frames. */
 async function solo(stack, name, gravity) {
   const r = await soloMatch(stack, name, gravity)
+  // The world renderer is a lazily loaded chunk (T23.03B F10): until it arrives `debug().sky.ground`
+  // is null and `__world` absent. Measured ~0.5 s after the match starts (T23.06B, which grew the
+  // chunk); reading before it raced — "the ground's sky is up in a space match: {sky: null}".
+  await r.page.waitForFunction(() => window.__world?.scene === 'Game' && window.__world.backend === 'three', null, { timeout: 30_000 })
   await frames(r.page, SETTLE_FRAMES)
   return r
 }

@@ -7385,3 +7385,6 @@ F4: rederive_landform adds pass 8's fill (shared fn): replayed mask == generate_
 F6 Large worst frame 132–140 → 22–23 ms (three-off control 18–26): strips, moved install (15 → 2.4 ms), lazy clear + 1-px warm draws at map change (41–44 ms there), 256×128 tiles; ready 3.9 → 5.6 s. Wasm high-water (Medium start) 68 → 50 MB.
 F5 context-budget samples post-install (15 textures, up to 88 MB); leak plant red. F7 carve boxes (game-core render-only accumulator): bullet max 4.0 → 1.4 ms. F8 fringe skip + scorch-only test; REACH 0 → 30 stale, red.
 Browser: look-lab, look-albedo, sandbox, objects, context-budget, no-webgl2 6/6; vitest all green; game-core 1235 + game-wasm 69 green; golden.rs diff empty; clippy clean. --changed and the full suite: next entry.
+T23.06B gates: check.sh --changed HEAD~1 --fast EXIT 0 (Rust + vitest 1166; --fast runs no browser checks). Full browser suite 76/78:
+space-sky-match read `debug().sky.ground` before the lazily loaded world-renderer chunk arrived (null; measured arriving ~0.5 s after the match
+starts) — now waits for `__world` (Game, three); 2/2 green after. world-canvas: one frame's marker 534 px apart in the match vertical leg; green 3/3 alone. Reported, not parked.
