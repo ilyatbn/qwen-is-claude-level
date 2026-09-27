@@ -227,6 +227,10 @@ Two levels (`M23-RESEARCH.md` § 7):
                T23.03 ─ T23.21
     everything ─ T23.22 ─ T23.23
 
+- **Owner priority (2026-09-27): the character comes next.** After T23.09/09A/09B: T23.12 → T23.13 → T23.14, with
+  the jetpack's look pulled forward out of T23.18 into **T23.14B** (jet flame + space thrust plume on the stick
+  figure, lit by T23.09's lights). T23.10/T23.11 wait until the character is in. "Proper character animations" =
+  T23.14's full set (walk/run with IK feet, jump, jet, space thrust, fall, land, melee, aim), each shown to the owner.
 - **T23.00 first and alone**: if the owner's Chrome cannot get WebGL2, R1/R2 are revisited before any code.
 - **T23.05 is pure Rust** and can start the same day.
 - **The first picture gate is after T23.08**: the look-lab's F1 background + terrain + fog + post, compared at
