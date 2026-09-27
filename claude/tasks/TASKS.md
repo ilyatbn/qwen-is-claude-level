@@ -814,6 +814,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.05](M23/T23.05-terrain-fields-in-rust.md) — Terrain fields in Rust — exact EDT, cave-back and relief per dirty rectangle, render-only in `game-wasm`, incremental == full
 - [x] [T23.05B](M23/T23.05B-the-generators-cave-mask.md) — The generator's cave mask on the client (R17) — re-derive the landform from `map_init`'s seed/scale/generator and feed it as the cave wall's "was rock" input
 - [x] [T23.06](M23/T23.06-albedo-and-scorch.md) — Painting the rock — albedo on the GPU with the mockup's hash bit-exact, one palette, scorch from explosions
+- [x] [T23.06B](M23/T23.06B-what-the-terrain-review-found.md) — What the terrain review found — the fields' lifecycle tested (plants D/E red), a warm spare worker, never-absent readiness for T23.07, the fill in the landform, strips + warm passes (Large worst frame 132–140 → 22–23 ms), carve boxes, skew guard, R23
 - [ ] [T23.07](M23/T23.07-the-lit-terrain.md) — The lit terrain — bevel, rim, lip, cave interiors, 16–24 lights, two tiers; `masks.bin` byte-identical
 - [ ] [T23.08](M23/T23.08-fog-depth-and-post.md) — Fog, foreground depth and the post chain — **the first picture gate**: nothing after it starts until F1's numbers are in
 - [ ] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller

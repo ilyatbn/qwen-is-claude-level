@@ -1642,7 +1642,7 @@ export class GameScene extends Phaser.Scene {
     const seedHi = Number((init.seed >> 32n) & 0xffffffffn) >>> 0
     const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme])
     this.terrainFields = fields
-    this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids, C().CHUNK_SIZE)
+    this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids)
     this.worldRenderer?.setTerrain(fields)
 
     // T22.06's space backdrop, seeded off the same wire seed (the ground sky's seed goes in above).
@@ -3906,6 +3906,11 @@ export class GameScene extends Phaser.Scene {
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte
           // above can be 0 while the frame is dark — that `||` is why both exist.
           drawnDarkness: self.drawnDarkness,
+          // T23.06B (F3/F9): why this map's terrain fields are not the full picture — the worker
+          // failed (main-thread fallback, no generated cave walls) or version skew — '' when they are;
+          // and whether the new terrain's picture is whole (T23.07's switch from Phaser's rock).
+          terrainWarning: self.terrainFields?.stats.warning ?? '',
+          terrainReady: self.worldRenderer?.terrainReady() ?? false,
           sky: {
             space: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
             // T23.04: whether the world renderer draws the ground sky (not on a space map).

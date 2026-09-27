@@ -179,7 +179,10 @@ void main() {
     o = vec4(c / 255.0, 128.0 / 255.0);
   }
   // Grass fringe: a blade grows up from the first rock below, if that rock is a top surface not burnt.
-  for (int k = 1; k <= ${MAX_BLADE}; k++) {
+  // T23.06B F8: skipped where the nearest rock is farther than a blade — dOut (G, ×4 truncated) > 19
+  // px means no rock within 19 straight down, so the loop could only fall through: the output is
+  // unchanged and open sky costs one texel read instead of nineteen.
+  if (f.g <= ${4 * MAX_BLADE}) for (int k = 1; k <= ${MAX_BLADE}; k++) {
     int ys = y + k;
     if (ys >= H) break;
     if (!solidAt(x, ys)) continue;

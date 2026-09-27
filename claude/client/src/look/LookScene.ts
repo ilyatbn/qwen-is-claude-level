@@ -107,10 +107,7 @@ export class LookScene extends Phaser.Scene {
           handle.fields = lab.channelFnv(desc.masks.h)
           renderer.setTerrain(lab, Infinity)
           renderer.showAlbedo(true)
-          albedoDone = () => {
-            const t = renderer.terrainInfo()
-            return t.gpu && t.pending === 0
-          }
+          albedoDone = () => renderer.terrain.ready && renderer.terrain.pending === 0
         } catch (e) {
           handle.error = String(e)
           return

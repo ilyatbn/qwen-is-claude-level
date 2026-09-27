@@ -20,6 +20,10 @@
  *    release it by), Phaser's renderer, and the page's one three.js renderer.
  * 2. **Phaser's context is never lost** — the white page itself.
  * 3. **three holds the same at every title, and the same at every match** (`__world.info().memory`:
+ *    **T23.06B (F5): a match is sampled twice** — at `ready`, and again once the terrain's GPU side
+ *    is installed and whole (`__world.terrain()`: fields in, `ready`, nothing pending), so its four
+ *    world-sized textures (fields, `dIn²`, albedo, scorch — the ~92 MB of a Large map) are counted
+ *    after the work that fills them, not before;
  *    geometries, textures, programs). A scene that leaks one render target shows here in one cycle.
  * 4. **GPU-process memory is flat** — the measured proxy (resident set of the browser's GPU
  *    process, `SystemInfo.getProcessInfo` → `/proc/<pid>/status`). Before R22 it grew 36–90 MB a
@@ -136,6 +140,7 @@ try {
 
   const titles = []
   const matches = []
+  const installed = []
   for (let i = 0; i < CYCLES; i++) {
     const ts = await sample(`cycle ${i} title`, 'Title')
     titles.push(ts)
@@ -154,6 +159,15 @@ try {
     const ms = await sample(`cycle ${i} match`, 'Game')
     matches.push(ms)
     console.log(`  ${line(ms)}`)
+    // F5: and after the terrain is in and painted.
+    await page.waitForFunction(() => {
+      const t = window.__world?.terrain?.()
+      return !!t && t.fields && t.ready && t.pending === 0
+    }, null, { timeout: 60_000 })
+    const mt = await sample(`cycle ${i} match+terrain`, 'Game')
+    mt.terrainMB = (await page.evaluate(() => window.__world.terrain().bytes)) / 2 ** 20
+    installed.push(mt)
+    console.log(`  ${line(mt)}; terrain GPU side ${mt.terrainMB.toFixed(1)} MB`)
     await page.waitForSelector('.results-screen', { timeout: (ROUND_S + 60) * 1000 })
     await page.click('.results-exit', { timeout: 30_000 })
     await page.waitForSelector('#start-game', { timeout: 30_000 })
@@ -165,7 +179,10 @@ try {
     }
   }
 
-  const all = [...titles, ...matches]
+  const all = [...titles, ...matches, ...installed]
+  // F5's presence control: the installed samples really hold a terrain GPU side.
+  if (installed.length !== matches.length || installed.some((s) => !(s.terrainMB > 0))) t.fail(`F5: ${installed.length} of ${matches.length} matches sampled with a terrain GPU side`)
+  else ok(`every match sampled again with its terrain installed (${installed[0].terrainMB.toFixed(1)} MB GPU side)`)
   // Presence: the counter saw Phaser's context and a three.js one, and the match drew the world.
   const sawPhaser = all.every((s) => s.ctxs.some((c) => c.phaser && c.live))
   const sawThree = all.every((s) => s.ctxs.some((c) => c.world && c.live))
@@ -200,7 +217,7 @@ try {
   if (phaserEverLost || consoleLost.length) t.fail(`Phaser's context lost or contexts dropped: ${J(consoleLost.slice(0, 3))}`)
   else ok(`Phaser's context never lost; no "too many contexts" warning`)
   // 3. three's memory, the same at every title and at every match.
-  for (const [name, list] of [['title', titles], ['match', matches]]) {
+  for (const [name, list] of [['title', titles], ['match', matches], ['match with the terrain installed', installed]]) {
     const kinds = new Set(list.map((s) => J(s.memory)))
     if (list.some((s) => !s.memory)) t.fail(`${name}: __world.info().memory missing — the instrument reads nothing`)
     else if (kinds.size !== 1) t.fail(`three's memory differs between ${name}s: ${[...kinds].join(' / ')}`)

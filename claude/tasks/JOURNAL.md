@@ -7376,3 +7376,12 @@ Exact dIn² (R16UI) added to render_fields: 97.4 → 99.63 % exact. Worker full 
 Carve update 4.2 ms CPU + ~20 ms GPU on SwiftShader (> CHUNK_REBAKE_MS 4, reported). In game: computed, not drawn (Phaser terrain until T23.07).
 context-budget went red 1/78 (title textures 10 vs 11 = 1 vs 2 composer frames); fixed by allocating both composer targets; 20/20 stable.
 Done-when EXIT 0 (vitest 1153, look-albedo ok); check.sh --changed HEAD --fast EXIT 0; full browser suite 77/78 (context-budget, since fixed; 10 renderer checks rerun ok).
+
+## T23.06B — what the terrain review found (builder, 2026-09-27)
+F1 vitest (fake core + worker, 9 tests): plants D (no disposed guard), E (no replay), no-terminate, no-fallback each red. F10: rederive(71284 V2 Small requested) == safe preset ≠ default; plant red.
+F2: terminate alone was slower (fresh worker ~400 ms > stale remainder: 1.93–2.22 s vs 1.80–2.09 queued); terminate + warm spare: Large rematch 2.04–2.08 → 1.66–1.73 s (200 ms gap), 1.80–1.90 → 1.57–1.58 s (0 ms).
+F3: `terrainReady()` (whole picture) for T23.07; same-map resync keeps GPU side + scorch (0/134 frames not ready; plant red); worker error → main-thread pass + debug().terrainWarning. R23 recorded.
+F4: rederive_landform adds pass 8's fill (shared fn): replayed mask == generate_full's on 12 builds; late joiner == round-start fields (3 maps), plant red. F9 skew guard: doctored 400 strays → wall = mask.
+F6 Large worst frame 132–140 → 22–23 ms (three-off control 18–26): strips, moved install (15 → 2.4 ms), lazy clear + 1-px warm draws at map change (41–44 ms there), 256×128 tiles; ready 3.9 → 5.6 s. Wasm high-water (Medium start) 68 → 50 MB.
+F5 context-budget samples post-install (15 textures, up to 88 MB); leak plant red. F7 carve boxes (game-core render-only accumulator): bullet max 4.0 → 1.4 ms. F8 fringe skip + scorch-only test; REACH 0 → 30 stale, red.
+Browser: look-lab, look-albedo, sandbox, objects, context-budget, no-webgl2 6/6; vitest all green; game-core 1235 + game-wasm 69 green; golden.rs diff empty; clippy clean. --changed and the full suite: next entry.

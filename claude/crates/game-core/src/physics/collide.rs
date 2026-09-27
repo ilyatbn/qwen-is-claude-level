@@ -184,6 +184,7 @@ pub(crate) mod tests {
             },
             dirty: vec![false; chunks],
             dirty_list: Vec::new(),
+            carve_boxes: Default::default(),
             breaches: Vec::new(),
         }
     }
@@ -307,6 +308,7 @@ pub(crate) mod tests {
             meta: test_map(256, 256, |_| {}).meta,
             dirty: vec![false; chunks],
             dirty_list: Vec::new(),
+            carve_boxes: Default::default(),
             breaches: Vec::new(),
         };
         assert!(

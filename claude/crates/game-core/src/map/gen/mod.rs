@@ -293,6 +293,40 @@ pub fn rederive(seed: u64, scale: MapScale, generator: MapGenerator, theme: u8) 
     }
 }
 
+/// `T23.06B` (F4): what a client re-derives for the M23 cave wall — the generator's
+/// landform **and the map build's ground fill** (T21.28: rock pass 8 adds under every pad
+/// and platform), from `map_init`'s fields alone.
+///
+/// Why the fill belongs in "was rock": R17's wall is `landform ∪ the mask at the full
+/// pass`. A client at round start sees the fill in the mask it receives; a client that
+/// joins (or resyncs) after a carve has opened a filled column does not — so without
+/// this the same crater showed wall to one client and sky to the other. With it, every
+/// client derives the same "was rock" whenever it joined.
+pub struct Rederived {
+    /// [`GenOutcome::landform`] ∪ `mask`.
+    pub landform: Mask,
+    /// The mask the map build ships at round start: the generator's, plus the fill.
+    pub mask: Mask,
+}
+
+/// [`rederive`] plus pass 8's ground fill ([`Rederived`]). One generation, plus the
+/// furniture choice (cheap: samplers over surface points).
+pub fn rederive_landform(
+    seed: u64,
+    scale: MapScale,
+    generator: MapGenerator,
+    theme: u8,
+) -> Rederived {
+    let o = rederive(seed, scale, generator, theme);
+    let space = generator == MapGenerator::Space;
+    let (_, pads, platforms) = crate::map::meta::standing_furniture(&o, space);
+    let mut mask = o.mask.clone();
+    crate::map::meta::fill_under_furniture(&mut mask, &pads, &platforms);
+    let mut landform = o.landform;
+    union_into(&mut landform, &mask);
+    Rederived { landform, mask }
+}
+
 fn generate_terrain_v1(requested_seed: u64, scale: MapScale) -> GenOutcome {
     let mut params = GenParams::default_for(scale);
     params.theme = crate::map::meta::theme_for(requested_seed);
@@ -413,12 +447,12 @@ mod tests {
                 .into_iter()
                 .flat_map(|g| MapScale::ALL.into_iter().map(move |s| (g, s)))
                 .collect();
-        let retried: usize = std::thread::scope(|sc| {
+        let (retried, filled): (usize, usize) = std::thread::scope(|sc| {
             let hs: Vec<_> = combos
                 .iter()
                 .map(|&(generator, scale)| {
                     sc.spawn(move || {
-                        let (mut retried, mut worst_ms) = (0usize, 0f64);
+                        let (mut retried, mut worst_ms, mut filled_maps) = (0usize, 0f64, 0usize);
                         for k in 0..8u64 {
                             let requested = k * 7919 + 13;
                             let at = format!("{generator:?} {scale:?} requested {requested}");
@@ -438,6 +472,15 @@ mod tests {
                                 let mut both = map.mask.clone();
                                 union_into(&mut both, &server.mask);
                                 assert_eq!(both, map.mask, "{at}: pass 8 removed rock?");
+                                // T23.06B F4: the re-derive replays pass 8's fill exactly —
+                                // the round-start mask a client receives, px for px — and its
+                                // landform holds it.
+                                let r = rederive_landform(map.meta.seed, scale, generator, map.meta.theme);
+                                assert_eq!(r.mask, map.mask, "{at}: re-derived fill ≠ the map build's");
+                                let mut held = r.landform.clone();
+                                union_into(&mut held, &map.mask);
+                                assert_eq!(held, r.landform, "{at}: landform ⊉ round-start mask");
+                                filled_maps += usize::from(map.mask != server.mask);
                                 (map.meta.seed, map.meta.theme)
                             } else {
                                 (server.seed, theme_for(requested))
@@ -448,19 +491,23 @@ mod tests {
                             assert_eq!(d.mask, server.mask, "{at}: mask");
                             assert_eq!(d.landform, server.landform, "{at}: landform");
                         }
-                        println!("rederive {generator:?} {scale:?}: worst {worst_ms:.0} ms");
-                        retried
+                        println!("rederive {generator:?} {scale:?}: worst {worst_ms:.0} ms, {filled_maps} of 2 full builds filled ground");
+                        (retried, filled_maps)
                     })
                 })
                 .collect();
             hs.into_iter()
                 .map(|h| h.join().expect("combo thread"))
-                .sum()
+                .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
         });
         assert!(
             retried > 0,
             "no map in the sweep retried — the actual-seed path is untested"
         );
+        // Presence control for F4's equality: some full builds really filled ground, or
+        // `r.mask == map.mask` would hold with the fill replay deleted.
+        assert!(filled > 0, "no full build in the sweep filled ground");
+        println!("full builds with ground fill: {filled}");
         println!("maps that retried: {retried}");
     }
 
@@ -484,6 +531,27 @@ mod tests {
             rederive(o.seed, MapScale::Small, o.generator, theme).mask,
             o.mask
         );
+        // T23.06B F10: `rederive`'s safe-preset branch, exercised. V2 Small requested 71284
+        // retried (its default attempt fails), so re-deriving **from the requested seed** takes
+        // the branch: the default attempt's verdict fails, and the safe preset at that seed is
+        // what comes back — not the default attempt's map. (No sweep has found a map that
+        // *ships* the safe preset, so this is the branch's only exercise.)
+        const RETRIED: u64 = 71284;
+        let server = generate_terrain_with(RETRIED, MapScale::Small, MapGenerator::V2);
+        assert!(
+            server.attempts > 1,
+            "71284 no longer retries on V2 Small — re-find one"
+        );
+        let theme = crate::map::meta::theme_for(RETRIED);
+        let mut safe = v2::V2Params::safe_for(MapScale::Small);
+        safe.theme = theme;
+        let mut default = v2::V2Params::default_for(MapScale::Small);
+        default.theme = theme;
+        let default_attempt = v2::generate_once(RETRIED, &default);
+        assert!(!default_attempt.report.passed);
+        let d = rederive(RETRIED, MapScale::Small, MapGenerator::V2, theme);
+        assert_eq!(d.mask, v2::generate_once(RETRIED, &safe).mask);
+        assert_ne!(d.mask, default_attempt.mask);
     }
 
     /// R17's premise: the landform holds every px of the map, and on every scale and

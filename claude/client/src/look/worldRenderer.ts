@@ -30,8 +30,6 @@ import {
   OrthographicCamera,
   PlaneGeometry,
   Scene,
-  ShaderMaterial,
-  GLSL3,
   SRGBColorSpace,
   WebGLRenderer,
   WebGLRenderTarget,
@@ -47,8 +45,9 @@ import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
 import { gameSky, skyOffsets, type Offset } from './skyLayout'
 import { exposeWorldHandle } from './worldHandle'
-import { TerrainGpu, type Rect } from './terrainGpu'
 import type { TerrainFeed } from './terrainFields'
+import { TerrainLayer } from './terrainLayer'
+import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
 import { TIER_SAMPLES, bufferFor, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /**
@@ -145,20 +144,12 @@ export class WorldRenderer implements SceneRenderer {
   private readonly markers: Mesh[] = []
   private readonly unsubscribe: () => void
   /**
-   * T23.06: the terrain fields this scene feeds (`terrainFields.ts`), and their GPU side — made on
-   * the first thing to draw (the fields' install, or a blast before it), sized to the feed.
+   * T23.06: the terrain fields this scene feeds and their GPU side (`terrainLayer.ts`) — scene-owned
+   * (R22), made at the map change, kept across a same-map resync, `ready` once the picture is whole.
    */
-  private feed: TerrainFeed | null = null
-  private terrain: TerrainGpu | null = null
-  /** Albedo tiles painted per drawn frame while the full pass is queued (the look-lab: all). */
-  private albedoTiles = 0
-  /** T23.06: draw the albedo flat instead of the world (the look-lab's `only=albedo`, a dev view). */
-  private albedoView: { scene: Scene; mesh: Mesh<PlaneGeometry, ShaderMaterial> } | null = null
-  /** Dev: the last dirty update's cost (upload + repaint; with `measureTerrain`, until the GPU is done), ms. */
-  private lastTerrainMs = NaN
-  private maxTerrainMs = 0
-  /** Dev: finish each dirty update on the GPU (a 1-px readback) so `lastUpdateMs` includes its work. */
-  measureTerrain = false
+  readonly terrain: TerrainLayer
+  /** T23.06: draw the albedo flat instead of the world (the look-lab's `only=albedo`, a dev view — `terrainDev.ts`). */
+  private albedoView: AlbedoView | null = null
 
   /**
    * @param phaserCanvas the canvas this one goes under — same parent, same box.
@@ -171,6 +162,7 @@ export class WorldRenderer implements SceneRenderer {
     page.owner = this
     this.canvas = page.canvas
     this.renderer = page.renderer
+    this.terrain = new TerrainLayer(this.renderer)
     this.camera.position.z = 1000
     // Static: `bgMaterial` has no clock (stars a hash grid, rays a function of angle), so an
     // unchanged view is an unchanged sky and the redraw skip stands (skyMaterial.ts).
@@ -305,7 +297,7 @@ export class WorldRenderer implements SceneRenderer {
   render(view: ViewRect): void {
     if (!this.desc || !this.owns) return
     this.syncBox()
-    this.pumpTerrain()
+    if (this.terrain.pump() && this.albedoView) this.dirty = true
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -333,6 +325,7 @@ export class WorldRenderer implements SceneRenderer {
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
     if (this.albedoView) {
+      syncAlbedoView(this.albedoView, this.terrain)
       this.renderer.setRenderTarget(null)
       this.renderer.render(this.albedoView.scene, this.camera)
     } else {
@@ -343,161 +336,33 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /**
-   * T23.06: hand over the scene's terrain fields (`null`: none — a new map, or the title). Tiles:
-   * albedo tiles painted per frame while a full pass is queued. The old GPU side is disposed (R22:
-   * scene-owned) and the new one is made when there is something to draw.
+   * T23.06: hand over the scene's terrain fields (`null`: none — the title). `units`: field strips and
+   * albedo tiles done per drawn frame while a full pass is queued. A new map gets a new GPU side now
+   * (F6: allocated, nothing uploaded); the same map's resync keeps it (F3) — `terrainLayer.ts`.
    */
-  setTerrain(feed: TerrainFeed | null, tiles: number): void {
-    this.terrain?.dispose()
-    this.terrain = null
-    this.feed = feed
-    this.albedoTiles = tiles
+  setTerrain(feed: TerrainFeed | null, units: number): void {
+    this.terrain.setFeed(feed, units)
     this.dirty = true
-  }
-
-  /** Apply what changed in the fields since the last frame; paint a few queued albedo tiles. */
-  private pumpTerrain(): void {
-    const feed = this.feed
-    if (!feed) return
-    const t = feed.take()
-    if (!this.terrain && !feed.ready && t.scorches.length === 0) return
-    if (!this.terrain || this.terrain.w !== feed.w || this.terrain.h !== feed.h) {
-      this.terrain?.dispose()
-      this.terrain = new TerrainGpu(this.renderer, feed.w, feed.h)
-      if (this.albedoView) this.albedoView.mesh.material.uniforms['albedo']!.value = this.terrain.albedo.texture
-      // A new GPU side has no fields: upload them whole if they are in.
-      if (feed.ready) t.full = true
-    }
-    const g = this.terrain
-    let changed = t.full || t.rects.length > 0 || t.scorches.length > 0
-    const t0 = performance.now()
-    if (t.full) {
-      const v = feed.view()
-      const d = feed.din2()
-      if (v && d) {
-        g.uploadFields(v, d, null)
-        g.queueAll()
-      }
-    }
-    for (const r of t.rects) {
-      // Fresh views per upload: nothing here allocates in wasm, but a kept view is F9's bug.
-      const v = feed.view()
-      const d = feed.din2()
-      if (!v || !d) continue
-      g.uploadFields(v, d, r)
-      g.paintNow(r)
-    }
-    for (const [x, y, r] of t.scorches) g.addScorch(x, y, r)
-    if (t.rects.length || t.scorches.length) {
-      // Dev: finish the GPU's work before the clock stops, so the number includes it.
-      if (this.measureTerrain) this.renderer.readRenderTargetPixels(g.albedo, 0, 0, 1, 1, new Uint8Array(4))
-      this.lastTerrainMs = performance.now() - t0
-      this.maxTerrainMs = Math.max(this.maxTerrainMs, this.lastTerrainMs)
-    }
-    if (g.pending > 0) {
-      g.step(this.albedoTiles)
-      changed = true
-    }
-    if (changed && this.albedoView) this.dirty = true
   }
 
   /** T23.06 dev/look-lab: draw the albedo flat (sRGB bytes straight to the canvas, air black) instead of the world. */
   showAlbedo(on: boolean): void {
     if (!on) {
-      if (this.albedoView) {
-        this.albedoView.mesh.geometry.dispose()
-        this.albedoView.mesh.material.dispose()
-      }
+      if (this.albedoView) disposeAlbedoView(this.albedoView)
       this.albedoView = null
       this.dirty = true
       return
     }
     if (this.albedoView || !this.desc) return
-    const w = this.feed?.w ?? this.desc.world.w
-    const h = this.feed?.h ?? this.desc.world.h
-    const mat = new ShaderMaterial({
-      glslVersion: GLSL3,
-      uniforms: { albedo: { value: this.terrain?.albedo.texture ?? null }, size: { value: [w, h] } },
-      vertexShader: /* glsl */ `
-        uniform vec2 size; out vec2 px;
-        void main() { px = vec2(uv.x, 1.0 - uv.y) * size; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: /* glsl */ `
-        precision highp float; uniform sampler2D albedo; in vec2 px; out vec4 fragColor;
-        void main() {
-          vec4 a = texelFetch(albedo, ivec2(floor(px)), 0);
-          fragColor = a.a > 0.0 ? vec4(a.rgb, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
-        }`,
-      depthTest: false,
-      depthWrite: false,
-    })
-    const mesh = new Mesh(new PlaneGeometry(w, h), mat)
-    const c = toWorld(w / 2, h / 2, this.desc.world.h)
-    mesh.position.set(c.x, c.y, 0)
-    mesh.frustumCulled = false
-    const scene = new Scene()
-    scene.add(mesh)
-    this.albedoView = { scene, mesh }
+    const w = this.terrain.feed?.w ?? this.desc.world.w
+    const h = this.terrain.feed?.h ?? this.desc.world.h
+    this.albedoView = makeAlbedoView(w, h, this.desc.world.h, this.terrain.gpu?.albedo.texture ?? null)
     this.dirty = true
   }
 
-  /** T23.06 dev: the terrain's state — whether the fields are in, tiles left, counts, the last update's cost. */
-  terrainInfo(): {
-    fields: boolean
-    gpu: boolean
-    pending: number
-    lastUpdateMs: number
-    maxUpdateMs: number
-    albedoView: boolean
-    w: number
-    h: number
-    lastScorch: [number, number, number] | null
-    feed: Readonly<Record<string, number | string>> | null
-  } & TerrainGpu['stats'] {
-    const g = this.terrain
-    return {
-      fields: this.feed?.ready ?? false,
-      gpu: !!g,
-      pending: g?.pending ?? 0,
-      lastUpdateMs: this.lastTerrainMs,
-      maxUpdateMs: this.maxTerrainMs,
-      lastScorch: g?.lastScorch ?? null,
-      feed: this.feed?.stats ?? null,
-      albedoView: !!this.albedoView,
-      w: this.feed?.w ?? 0,
-      h: this.feed?.h ?? 0,
-      ...(g?.stats ?? { tiles: 0, dirtyPaints: 0, scorches: 0, uploads: 0, uploadedPx: 0 }),
-    }
-  }
-
-  /**
-   * T23.06 dev: the from-scratch control an incremental update is compared with — every field
-   * re-uploaded from the wasm buffers, then the whole albedo repainted, now.
-   */
-  repaintAlbedo(): void {
-    const v = this.feed?.view()
-    const d = this.feed?.din2()
-    if (!this.terrain || !v || !d) return
-    this.terrain.uploadFields(v, d, null)
-    this.terrain.queueAll()
-    this.terrain.step(Infinity)
-  }
-
-  /** T23.06 dev: the albedo rects repainted since the last call. */
-  takeAlbedoPaints(): Rect[] {
-    return this.terrain?.takePaints() ?? []
-  }
-
-  /** T23.06 dev: albedo bytes over a world rect (rows top-down), null without a GPU side. */
-  readAlbedo(r: Rect): Uint8Array | null {
-    return this.terrain?.readAlbedo(r) ?? null
-  }
-
-  /** T23.06 dev: the GLSL hash's 10k words (`albedo.ts::HASH_PROBE_FS`). */
-  hashProbe(): Uint32Array {
-    const g = this.terrain ?? new TerrainGpu(this.renderer, 1, 1)
-    const out = g.hashProbe()
-    if (g !== this.terrain) g.dispose()
-    return out
+  /** Dev: whether the flat albedo view is on. */
+  get albedoViewOn(): boolean {
+    return !!this.albedoView
   }
 
   /** Redraw on the next frame even if nothing changed. */
@@ -612,6 +477,11 @@ export class WorldRenderer implements SceneRenderer {
     }
   }
 
+  /** Dev: the page's three.js renderer (`terrainDev.ts::hashProbe` draws on it). */
+  get renderer3(): WebGLRenderer {
+    return this.renderer
+  }
+
   /** The WebGL context, for a check's same-frame readback. */
   get gl(): WebGL2RenderingContext {
     return this.renderer.getContext() as WebGL2RenderingContext
@@ -625,9 +495,7 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.sky.dispose()
     this.showAlbedo(false)
-    this.terrain?.dispose()
-    this.terrain = null
-    this.feed = null
+    this.terrain.dispose()
     this.disposeComposer()
     // R22: the renderer and its context are the page's and outlive this scene. Its canvas leaves
     // the page cleared, so the next scene never shows this one's last picture before it draws.
@@ -684,9 +552,19 @@ export interface GameWorld {
    * the albedo, not yet shown — the lit terrain is T23.07; Phaser's terrain draws the rock until then.
    */
   setTerrain(feed: TerrainFeed | null): void
+  /**
+   * **T23.06B (F3): whether the new terrain's picture is whole** (`TerrainLayer.ready`: every field
+   * strip up, every albedo tile painted, for this map). T23.07 keeps Phaser's rock until this is
+   * true, so the terrain is never absent; a same-map resync keeps it true. Always false where three
+   * did not start (the stub draws no terrain — Phaser's rock stays).
+   */
+  terrainReady(): boolean
 }
 
-/** T23.06: albedo tiles painted per frame in the game while the round-start pass is queued (measured: `look-albedo`). */
+/**
+ * T23.06: work units (a field strip upload or an albedo tile, T23.06B F6) done per frame in the game
+ * while the round-start pass is queued (measured: `look-albedo`, the Large install).
+ */
 export const GAME_ALBEDO_TILES: Record<QualityTier, number> = { full: 4, low: 1 }
 
 /**
@@ -695,12 +573,22 @@ export const GAME_ALBEDO_TILES: Record<QualityTier, number> = { full: 4, low: 1 
  */
 export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   const renderer = createWorldRenderer(scene, gameDescription(map))
+  // T23.06B F11: where three did not start, nothing takes the feed's rects and blasts — drain them
+  // per frame so they do not pile up for a whole match.
+  let undrawn: TerrainFeed | null = null
+  if (!(renderer instanceof WorldRenderer)) {
+    const drain = (): void => void undrawn?.take()
+    scene.events.on('render', drain)
+    scene.events.once('shutdown', () => scene.events.off('render', drain))
+  }
   return {
     renderer,
     mapChanged: (m) => renderer.setScene(gameDescription(m)),
     setTerrain: (feed) => {
       if (renderer instanceof WorldRenderer) renderer.setTerrain(feed, GAME_ALBEDO_TILES[renderer.info().tier])
+      else undrawn = feed
     },
+    terrainReady: () => renderer instanceof WorldRenderer && renderer.terrain.ready,
     detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
   }
 }

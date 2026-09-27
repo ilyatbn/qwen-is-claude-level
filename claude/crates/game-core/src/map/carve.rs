@@ -560,6 +560,14 @@ impl Map {
             for cx in cx0..=cx1 {
                 let id = cy * cw + cx;
                 result.dirty_chunks.push(id);
+                let (bx, by) = ((cx * CHUNK_SIZE) as i32, (cy * CHUNK_SIZE) as i32);
+                let clipped = [
+                    x0.max(bx),
+                    y0.max(by),
+                    x1.min(bx + CHUNK_SIZE as i32 - 1),
+                    y1.min(by + CHUNK_SIZE as i32 - 1),
+                ];
+                self.carve_boxes.note(id, cw * ch, clipped);
                 if !self.dirty[id as usize] {
                     self.dirty[id as usize] = true;
                     self.dirty_list.push(id);
@@ -590,6 +598,13 @@ impl Map {
             self.dirty[*id as usize] = false;
         }
         out
+    }
+
+    /// T23.06B (M23 F7): the carve boxes noted since the last call, each clipped to one
+    /// chunk, inclusive `[x0, y0, x1, y1]` — a superset of every px a carve changed (a
+    /// carve's box is its circle's). Render data; drained by the client's terrain fields.
+    pub fn drain_carve_boxes(&mut self) -> Vec<[i32; 4]> {
+        self.carve_boxes.drain()
     }
 
     /// Chunks currently pending, without draining.
@@ -841,6 +856,55 @@ mod tests {
             reported.len(),
             actual.len()
         );
+    }
+
+    /// T23.06B (M23 F7): the carve boxes cover every px a carve changed, one box per chunk,
+    /// each inside its chunk, and a drain empties them. Control: the boxes are far smaller than
+    /// the chunks they came from (else the client would diff whole chunks for nothing).
+    #[test]
+    fn carve_boxes_cover_every_changed_px_one_per_chunk() {
+        let mut m = solid_map();
+        m.drain_carve_boxes();
+        let before = m.mask.clone();
+        let cs = CHUNK_SIZE as i32;
+        // Two craters in one chunk, and one across a chunk corner.
+        m.carve_circle(700, 400, 12);
+        m.carve_circle(720, 410, 9);
+        m.carve_circle(cs, cs, 20);
+        let boxes = m.drain_carve_boxes();
+        let (w, h) = (m.mask.w as i32, m.mask.h as i32);
+        let mut changed = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if before.get(x, y) != m.mask.get(x, y) {
+                    changed += 1;
+                    assert!(
+                        boxes
+                            .iter()
+                            .any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
+                        "changed px ({x}, {y}) outside every box {boxes:?}"
+                    );
+                }
+            }
+        }
+        assert!(changed > 0);
+        // The corner crater spans four chunks, the other two share one: five boxes.
+        assert_eq!(boxes.len(), 5, "{boxes:?}");
+        for b in &boxes {
+            assert_eq!(b[0] / cs, b[2] / cs, "box {b:?} crosses a chunk column");
+            assert_eq!(b[1] / cs, b[3] / cs, "box {b:?} crosses a chunk row");
+            assert!(
+                (b[2] - b[0] + 1) * (b[3] - b[1] + 1) < cs * cs / 16,
+                "{b:?}"
+            );
+        }
+        assert!(
+            m.drain_carve_boxes().is_empty(),
+            "a drain did not empty them"
+        );
+        // A repeat carve changes nothing and notes nothing.
+        m.carve_circle(700, 400, 12);
+        assert!(m.drain_carve_boxes().is_empty());
     }
 
     #[test]
@@ -1520,5 +1584,48 @@ mod tests {
             removed > 0 && solid_in(&m, &rock) * 2 < before,
             "control: rock barely dented"
         );
+    }
+}
+
+/// T23.06B (M23 F7): the per-chunk union of carve boxes since the last drain — at most
+/// one entry per chunk, so a map nobody drains (the server's) holds at most one box per
+/// chunk. Render data only: nothing in the simulation reads it.
+#[derive(Clone, Debug, Default)]
+pub struct CarveBoxes {
+    /// Per chunk id; `EMPTY` when nothing is noted. Sized on first use.
+    boxes: Vec<[i32; 4]>,
+    /// The chunk ids with a box, in first-noted order.
+    list: Vec<u32>,
+}
+
+impl CarveBoxes {
+    const EMPTY: [i32; 4] = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+
+    /// Union `b` (inclusive world px, already clipped to chunk `id`) into that chunk's box.
+    pub(crate) fn note(&mut self, id: u32, chunks: u32, b: [i32; 4]) {
+        if self.boxes.len() != chunks as usize {
+            self.boxes = vec![Self::EMPTY; chunks as usize];
+            self.list.clear();
+        }
+        let Some(e) = self.boxes.get_mut(id as usize) else {
+            return;
+        };
+        if *e == Self::EMPTY {
+            self.list.push(id);
+        }
+        *e = [
+            e[0].min(b[0]),
+            e[1].min(b[1]),
+            e[2].max(b[2]),
+            e[3].max(b[3]),
+        ];
+    }
+
+    fn drain(&mut self) -> Vec<[i32; 4]> {
+        let mut out = Vec::with_capacity(self.list.len());
+        for id in std::mem::take(&mut self.list) {
+            out.push(std::mem::replace(&mut self.boxes[id as usize], Self::EMPTY));
+        }
+        out
     }
 }

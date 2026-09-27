@@ -144,6 +144,13 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   *Reverse it by:* building the renderer in `WorldRenderer`'s constructor again and calling `forceContextLoss()`
   in `destroy()` (a context per scene, released).
 
+- **R23 — scorch history is cosmetic** (coordinator, 2026-09-27, answering the T23.05B/T23.06 review's F3). Scorch
+  lives only in each client's GPU scorch mask, written from the explosion events that client saw; it is not on the
+  wire, in `map_init` or in replays. A late joiner or a client that reconnects to a new scene starts with none; a
+  same-map resync keeps the scorch it had (`terrainLayer.ts` keeps the GPU side). Two clients may therefore show
+  different scorch on the same crater, and nothing simulated reads it. *Reverse it by:* carrying blast
+  positions/radii in `map_init` (or a scorch RLE) and replaying them into the mask at install.
+
 ## Verification — what "exactly the same" means here
 
 Two levels (`M23-RESEARCH.md` § 7):

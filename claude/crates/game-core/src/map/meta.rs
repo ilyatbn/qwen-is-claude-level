@@ -410,6 +410,10 @@ pub struct Map {
     // `World::step_vortices`. Bounded (`MAX_PENDING_BREACHES`): a client's map carves
     // too and nothing there drains it.
     pub(crate) breaches: Vec<(i32, i32)>,
+    // T23.06B (M23 F7): per dirty chunk, the bounding box of what carves touched in it —
+    // render data, drained by the client's terrain fields so a crater's update diffs its
+    // own box, not the whole 256² chunk. Never read by the simulation.
+    pub(crate) carve_boxes: crate::map::carve::CarveBoxes,
 }
 
 impl Map {
@@ -427,6 +431,7 @@ impl Map {
             dirty: vec![false; chunks],
             dirty_list: Vec::new(),
             breaches: Vec::new(),
+            carve_boxes: Default::default(),
         }
     }
 
@@ -598,45 +603,17 @@ pub fn generate_full(
     generate_full_with(requested_seed, scale, buried_secret, generator, true)
 }
 
-/// `generate_full`, with T21.28's ground fill switchable — `false` only for the
-/// tests' control, which is the same choices with the bug left in.
-pub(crate) fn generate_full_with(
-    requested_seed: u64,
-    scale: MapScale,
-    buried_secret: u64,
-    generator: MapGenerator,
-    fill: bool,
-) -> Map {
-    let outcome = generate_terrain_with(requested_seed, scale, generator);
-    let params = scale.params();
-    let objects = outcome.objects.clone();
-    let asteroids = outcome.asteroids.clone();
-
-    let theme = theme_for(requested_seed);
-
-    // **`T22.05B`: the one derived fact the rest of pass 8 branches on.**
-    //
-    // Derived from the generator, which R15 derives from the gravity mode, so
-    // there is one source of truth and no way for a lobby to ask for a space
-    // map with landscape furniture in it. Everything below that reads it is a
-    // *ruling*, made here and reversible here; the reasons are at each site.
-    let space = generator == MapGenerator::Space;
-
-    // **Ruling: no wind in a vacuum.** `MapMeta.wind` is read by
-    // `effects/weather.rs` and the client's rain and cloud drift, and a wind
-    // speed in space is a physical claim the mode contradicts. Zero rather than
-    // absent, because `wind` is an `f32` every consumer already multiplies by.
-    // The draw is skipped, not discarded: `rng::substream` builds a fresh
-    // generator per tag, so not drawing from `"wind"` cannot move any other
-    // stream.
-    //
-    // **Reverse it by:** this one expression.
-    let wind = if space {
-        0.0
-    } else {
-        range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX)
-    };
-
+/// `T23.06B` (F4): the standing furniture pass 8 seats — spawns, teleport pads, gun
+/// platforms — chosen from a generator outcome alone. Split out of [`generate_full_with`]
+/// **unchanged** so the client's landform re-derive (`gen::rederive_landform`) can replay
+/// the ground fill (T21.28) the server's map build adds under pads and platforms: every
+/// input is the outcome's own (its mask, surface, objects, report, seed) and the space
+/// flag, none is the requested seed. `golden.rs` is the proof nothing moved.
+pub(crate) fn standing_furniture(
+    outcome: &crate::map::gen::GenOutcome,
+    space: bool,
+) -> (Vec<Point>, Vec<TeleportPad>, Vec<GunPlatform>) {
+    let objects = &outcome.objects;
     // §D5 keeps spawns and pads `OBJECT_CLEAR_OF_SPAWN` from an object centre.
     //
     // Enforced **here**, not at stamp time: pass 6b runs before pass 8, so when
@@ -651,7 +628,7 @@ pub(crate) fn generate_full_with(
     let clear = clear_of_objects(
         &outcome.surface,
         &outcome.report.largest_component,
-        &objects,
+        objects,
         WhenStarved::FallBack,
     );
 
@@ -701,7 +678,7 @@ pub(crate) fn generate_full_with(
     let clear_anywhere = clear_of_objects(
         &outcome.surface,
         &everywhere,
-        &objects,
+        objects,
         WhenStarved::FallBack,
     );
     let bodies: Vec<Point> = spawn_points.clone();
@@ -898,6 +875,69 @@ pub(crate) fn generate_full_with(
             .collect::<Vec<_>>()
     };
 
+    (spawn_points, teleport_pads, gun_platforms)
+}
+
+/// `T21.28`'s ground fill for pads and platforms, onto `mask`; px added. Shared by pass 8
+/// and the client's landform re-derive (T23.06B F4), so the two cannot drift apart.
+pub(crate) fn fill_under_furniture(
+    mask: &mut Mask,
+    teleport_pads: &[TeleportPad],
+    gun_platforms: &[GunPlatform],
+) -> u64 {
+    let mut filled = 0u64;
+    for p in teleport_pads {
+        filled += fill_standing_ground(mask, p.pos, PAD_ART_W);
+    }
+    for g in gun_platforms {
+        filled += fill_standing_ground(mask, g.pos, GUN_PLATFORM_W);
+    }
+    filled
+}
+
+/// `generate_full`, with T21.28's ground fill switchable — `false` only for the
+/// tests' control, which is the same choices with the bug left in.
+pub(crate) fn generate_full_with(
+    requested_seed: u64,
+    scale: MapScale,
+    buried_secret: u64,
+    generator: MapGenerator,
+    fill: bool,
+) -> Map {
+    let outcome = generate_terrain_with(requested_seed, scale, generator);
+    let params = scale.params();
+    let objects = outcome.objects.clone();
+    let asteroids = outcome.asteroids.clone();
+
+    let theme = theme_for(requested_seed);
+
+    // **`T22.05B`: the one derived fact the rest of pass 8 branches on.**
+    //
+    // Derived from the generator, which R15 derives from the gravity mode, so
+    // there is one source of truth and no way for a lobby to ask for a space
+    // map with landscape furniture in it. Everything below that reads it is a
+    // *ruling*, made here and reversible here; the reasons are at each site.
+    let space = generator == MapGenerator::Space;
+
+    // **Ruling: no wind in a vacuum.** `MapMeta.wind` is read by
+    // `effects/weather.rs` and the client's rain and cloud drift, and a wind
+    // speed in space is a physical claim the mode contradicts. Zero rather than
+    // absent, because `wind` is an `f32` every consumer already multiplies by.
+    // The draw is skipped, not discarded: `rng::substream` builds a fresh
+    // generator per tag, so not drawing from `"wind"` cannot move any other
+    // stream.
+    //
+    // **Reverse it by:** this one expression.
+    let wind = if space {
+        0.0
+    } else {
+        range_f32(&mut substream(requested_seed, "wind"), -WIND_MAX, WIND_MAX)
+    };
+
+    // Spawns, pads and platforms: `standing_furniture` (split out, unchanged, for T23.06B's
+    // landform re-derive — the reasons for every rule are there).
+    let (spawn_points, teleport_pads, gun_platforms) = standing_furniture(&outcome, space);
+
     // **Ruling: no buried items in space, and this is a skip rather than an
     // empty call.**
     //
@@ -934,15 +974,11 @@ pub(crate) fn generate_full_with(
     // so it cannot move a spawn, a pad, a platform, a buried slot or an object —
     // `the_fill_moves_no_spawn_pad_platform_or_object` holds that.
     let mut mask = outcome.mask;
-    let mut filled = 0u64;
-    if fill {
-        for p in &teleport_pads {
-            filled += fill_standing_ground(&mut mask, p.pos, PAD_ART_W);
-        }
-        for g in &gun_platforms {
-            filled += fill_standing_ground(&mut mask, g.pos, GUN_PLATFORM_W);
-        }
-    }
+    let filled = if fill {
+        fill_under_furniture(&mut mask, &teleport_pads, &gun_platforms)
+    } else {
+        0
+    };
 
     // **And the surface is re-derived from the filled mask.** It was extracted
     // before the fill, and the fill both removes air where a point on a slope
@@ -1033,6 +1069,7 @@ pub(crate) fn generate_full_with(
         dirty: vec![false; chunk_count],
         dirty_list: Vec::new(),
         breaches: Vec::new(),
+        carve_boxes: Default::default(),
     }
 }
 

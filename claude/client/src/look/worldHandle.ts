@@ -9,6 +9,7 @@ import type { RenderStats, SceneRenderer } from './renderer'
 import type { ViewRect } from './scene'
 import type { WorldRenderer } from './worldRenderer'
 import { sameView } from './worldRenderer-math'
+import { hashProbe, readAlbedo, repaintAlbedo, scorchOnly, takeAlbedoPaints, terrainInfo } from './terrainDev'
 
 /** What a dev check can reach: `window.__world` (dev surface only). */
 export interface WorldHandle {
@@ -47,8 +48,8 @@ export interface WorldHandle {
   hideSkyLayers(hide: number[]): void
   /** T23.04B: ms per drawn frame over `n` forced draws, each finished on the GPU (`WorldRenderer.timeDraws`). */
   drawCost(n: number): ReturnType<WorldRenderer['timeDraws']>
-  /** T23.06: the terrain fields/albedo state (`WorldRenderer.terrainInfo`). */
-  terrain(): ReturnType<WorldRenderer['terrainInfo']> | null
+  /** T23.06: the terrain fields/albedo state (`terrainDev.ts::terrainInfo`; `ready` is T23.07's switch — F3). */
+  terrain(): ReturnType<typeof terrainInfo> | null
   /** T23.06: albedo RGBA over a world rect, rows top-down, base64 (null before the GPU side exists). */
   readAlbedo(x: number, y: number, w: number, h: number): string | null
   /** T23.06: the GLSL hash's 10k words, index order (`albedo.ts::probeInput`). */
@@ -59,6 +60,8 @@ export interface WorldHandle {
   albedoPaints(measure?: boolean): { x: number; y: number; w: number; h: number }[]
   /** T23.06: repaint the whole albedo from the fields now — the full pass an incremental one must equal. */
   repaintAlbedo(): void
+  /** T23.06B (F8): scorch radius `r` at `(x, y)` with no carve — `TerrainGpu.addScorch`; the rect repainted. */
+  scorchOnly(x: number, y: number, r: number): { x: number; y: number; w: number; h: number } | null
 }
 
 export interface ProbeSample {
@@ -219,24 +222,25 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three?.hideSkyLayers(hide)
     },
     drawCost: (n) => three?.timeDraws(n) ?? null,
-    terrain: () => three?.terrainInfo() ?? null,
+    terrain: () => (three ? terrainInfo(three.terrain, three.albedoViewOn) : null),
     readAlbedo(x, y, w, h) {
-      const px = three?.readAlbedo({ x, y, w, h })
+      const px = three ? readAlbedo(three.terrain, { x, y, w, h }) : null
       if (!px) return null
       let bin = ''
       for (let i = 0; i < px.length; i += 0x8000) bin += String.fromCharCode(...px.subarray(i, i + 0x8000))
       return btoa(bin)
     },
-    hashProbe: () => (three ? Array.from(three.hashProbe()) : null),
+    hashProbe: () => (three ? Array.from(hashProbe(three.renderer3, three.terrain)) : null),
     showAlbedo(on) {
       three?.showAlbedo(on)
     },
     repaintAlbedo() {
-      three?.repaintAlbedo()
+      if (three) repaintAlbedo(three.terrain)
     },
+    scorchOnly: (x, y, r) => (three ? scorchOnly(three.terrain, x, y, r) : null),
     albedoPaints(measure) {
-      if (three && measure !== undefined) three.measureTerrain = measure
-      return three?.takeAlbedoPaints() ?? []
+      if (three && measure !== undefined) three.terrain.measure = measure
+      return three ? takeAlbedoPaints(three.terrain) : []
     },
     phaserAlpha(points) {
       const game = scene.game

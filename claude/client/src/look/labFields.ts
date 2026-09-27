@@ -40,10 +40,14 @@ function encodeRle(bits: Uint8Array): Uint8Array {
   return new Uint8Array(out)
 }
 
+let labMaps = 0
+
 export class LabFields implements TerrainFeed {
   readonly w: number
   readonly h: number
   readonly ready = true
+  /** A look-lab scene is its own map: never a same-map resync (F3). */
+  readonly mapKey = `lab:${++labMaps}`
   private first = true
 
   constructor(

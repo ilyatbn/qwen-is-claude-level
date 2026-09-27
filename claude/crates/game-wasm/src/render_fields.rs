@@ -102,6 +102,33 @@ impl BitGrid {
             *a |= *b;
         }
     }
+    /// T23.06B (F6): the grid as little-endian `u32` words (px `i` = bit `i % 32` of word
+    /// `i / 32`) — a worker hands the "was rock" mask back in 1/32 of a byte-per-px buffer.
+    pub fn to_u32_words(&self) -> Vec<u32> {
+        let n = (self.w as usize * self.h as usize).div_ceil(32);
+        let mut out = Vec::with_capacity(n);
+        for &b in &self.bits {
+            out.push(b as u32);
+            out.push((b >> 32) as u32);
+        }
+        out.truncate(n);
+        out
+    }
+
+    /// The inverse of [`to_u32_words`](Self::to_u32_words); `None` on a wrong length.
+    pub fn from_u32_words(w: u32, h: u32, words: &[u32]) -> Option<Self> {
+        if words.len() != (w as usize * h as usize).div_ceil(32) {
+            return None;
+        }
+        let mut g = BitGrid::new(w, h);
+        for (i, b) in g.bits.iter_mut().enumerate() {
+            let lo = words.get(2 * i).copied().unwrap_or(0) as u64;
+            let hi = words.get(2 * i + 1).copied().unwrap_or(0) as u64;
+            *b = lo | (hi << 32);
+        }
+        Some(g)
+    }
+
     pub fn put(&mut self, x: u32, y: u32, on: bool) {
         let i = y as usize * self.w as usize + x as usize;
         if on {
@@ -243,14 +270,58 @@ pub struct LandformKey {
 
 impl RenderFields {
     /// R17's generator half (T23.05B): the landform for `key`, re-derived with
-    /// `gen::rederive` (exact — see there) and cached by `key`. The caller always names
-    /// the map, so a cached landform can never be applied to a different one.
+    /// `gen::rederive_landform` (exact — see there) and cached by `key`. The caller always
+    /// names the map, so a cached landform can never be applied to a different one.
+    /// **T23.06B (F4): it includes the map build's ground fill**, so a client that joined
+    /// after a carve opened a filled column derives the same "was rock" as one that saw
+    /// the round start.
     pub fn landform(&mut self, key: LandformKey) -> &BitGrid {
         if self.landform.as_ref().map(|(k, _)| *k) != Some(key) {
-            let o = game_core::map::gen::rederive(key.seed, key.scale, key.generator, key.theme);
-            self.landform = Some((key, BitGrid::from_solid(&o.landform)));
+            let r = game_core::map::gen::rederive_landform(
+                key.seed,
+                key.scale,
+                key.generator,
+                key.theme,
+            );
+            self.landform = Some((key, BitGrid::from_solid(&r.landform)));
         }
         &self.landform.as_ref().expect("set above").1
+    }
+
+    /// **R17 whole, guarded (T23.06B F9).** The full pass against the landform for `key`
+    /// — unless the mask has rock the landform lacks. Carving only removes rock and the
+    /// fill is in the landform, so on matching builds `mask ⊆ landform` whenever the mask
+    /// was taken; a px outside it means this client's generator is not the server's
+    /// (version skew) or the key names another map. Then the landform cannot be trusted
+    /// and the pass falls back to "was rock" = the mask ([`full`](Self::full)): craters
+    /// carved from here on show their wall, generated caves read as sky. Returns the rect
+    /// and the stray px count (0 = the landform was used). A landform of another size is
+    /// refused ([`FieldsError::WallSize`]).
+    pub fn full_landform(
+        &mut self,
+        mask: &impl Solid,
+        key: LandformKey,
+    ) -> Result<(Rect, u64), FieldsError> {
+        let (w, h) = mask.dims();
+        let land = self.landform(key);
+        if land.dims() != (w, h) {
+            let (lw, lh) = land.dims();
+            return Err(FieldsError::WallSize(
+                lw as usize * lh as usize,
+                w as usize * h as usize,
+            ));
+        }
+        let mut strays = 0u64;
+        for y in 0..h {
+            for x in 0..w {
+                strays += u64::from(mask.solid(x, y) && !land.solid(x, y));
+            }
+        }
+        if strays > 0 {
+            return Ok((self.full(mask), strays));
+        }
+        let wall = land.clone();
+        Ok((self.full_with_wall(mask, wall)?, 0))
     }
 }
 
@@ -345,17 +416,14 @@ impl RenderFields {
         &self.din2
     }
 
-    /// T23.06: the "was rock" mask the last full pass used, one byte per px (1 = rock) —
-    /// what a worker that ran the full pass hands back with [`rgba`](Self::rgba).
-    pub fn wall_bytes(&self) -> Vec<u8> {
-        let Some(p) = &self.wall else {
-            return Vec::new();
-        };
-        let (w, h) = p.dims();
-        (0..h)
-            .flat_map(|y| (0..w).map(move |x| (x, y)))
-            .map(|(x, y)| u8::from(p.solid(x, y)))
-            .collect()
+    /// T23.06: the "was rock" mask the last full pass used — what a worker that ran the
+    /// full pass hands back with [`rgba`](Self::rgba). T23.06B (F6): as bit words
+    /// ([`BitGrid::to_u32_words`]), not a byte per px (8 MB on a Large map → 1 MB).
+    pub fn wall_words(&self) -> Vec<u32> {
+        self.wall
+            .as_ref()
+            .map(BitGrid::to_u32_words)
+            .unwrap_or_default()
     }
 
     /// T23.06: take a full pass computed elsewhere (a worker's copy of this map, so the
@@ -365,12 +433,15 @@ impl RenderFields {
     /// worker's copy was taken is **not** in the buffer, so the caller replays those
     /// carves' rectangles through `dirty` (incremental == full makes that exact). Wrong
     /// sizes are refused, writing nothing.
+    ///
+    /// T23.06B (F6): the buffers are **moved in**, not copied — the JS → wasm transfer is
+    /// the one copy (it was two: that, then `extend_from_slice`, 48 MB each on Large).
     pub fn install(
         &mut self,
         mask: &impl Solid,
         wall: BitGrid,
-        rgba: &[u8],
-        din2: &[u16],
+        rgba: Vec<u8>,
+        din2: Vec<u16>,
     ) -> Result<Rect, FieldsError> {
         let (w, h) = mask.dims();
         let px = w as usize * h as usize;
@@ -386,10 +457,8 @@ impl RenderFields {
         }
         self.w = w;
         self.h = h;
-        self.rgba.clear();
-        self.rgba.extend_from_slice(rgba);
-        self.din2.clear();
-        self.din2.extend_from_slice(din2);
+        self.rgba = rgba;
+        self.din2 = din2;
         self.wall = Some(wall);
         Ok(Rect { x: 0, y: 0, w, h })
     }
@@ -617,6 +686,13 @@ fn relief_at(x: u32, y: u32, d_in: f32) -> f32 {
 use crate::GameCore;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// T23.06B (F11): [`READ_MARGIN`] for the client, which merges dirty rects this close
+/// (`terrainFields.ts::mergeRects`) — read from here, not hand-copied into TypeScript.
+#[wasm_bindgen]
+pub fn render_fields_read_margin() -> u32 {
+    READ_MARGIN
+}
+
 #[wasm_bindgen]
 impl GameCore {
     /// Every field for the whole world, and the `back` snapshot. Call at round start.
@@ -648,11 +724,15 @@ impl GameCore {
 
     /// **R17 whole (T23.05B): the production full pass for a networked map.** "Was rock"
     /// = the generator's landform for `map_init`'s own fields (seed — the one it carries,
-    /// the attempt that passed — scale byte, generator byte, theme byte) OR the mask as
-    /// it is now, so generated caves and craters both show the wall. The landform is
-    /// re-derived by running the generator once (cached per map, so a resync is free);
-    /// cost in T23.05B's journal line. Unknown scale/generator bytes throw, writing
-    /// nothing. Returns the rect written.
+    /// the attempt that passed — scale byte, generator byte, theme byte), with the map
+    /// build's ground fill (T23.06B F4), OR the mask as it is now, so generated caves and
+    /// craters both show the wall. The landform is re-derived by running the generator
+    /// once (cached per map, so a resync is free); cost in T23.05B's journal line.
+    /// Unknown scale/generator bytes throw, writing nothing.
+    ///
+    /// Returns `[x, y, w, h, strays]`: the rect written, and the mask px the landform
+    /// lacks. **`strays > 0` is version skew (F9)**: the pass fell back to "was rock" =
+    /// the mask ([`RenderFields::full_landform`]) and the caller should say so.
     pub fn render_fields_full_landform(
         &mut self,
         seed_lo: u32,
@@ -668,25 +748,13 @@ impl GameCore {
                 .ok_or(format!("render_fields: generator byte {generator}"))?,
             theme,
         };
-        let wall = self.render_fields.landform(key).clone();
-        self.render_fields
-            .full_with_wall(&self.map.mask, wall)
-            .map(Rect::to_vec)
-            .map_err(|e| e.to_string())
-    }
-
-    /// `render_fields_full_landform` for a map **this core generated** (sandbox, preview):
-    /// its own meta names it, exactly as `map_init` would.
-    pub fn render_fields_full_own_landform(&mut self) -> Result<Vec<u32>, String> {
-        let m = &self.map.meta;
-        let (seed, scale, generator, theme) = (m.seed, m.scale, m.generator, m.theme);
-        self.render_fields_full_landform(
-            seed as u32,
-            (seed >> 32) as u32,
-            scale.as_u8(),
-            generator.to_u8(),
-            theme,
-        )
+        let (rect, strays) = self
+            .render_fields
+            .full_landform(&self.map.mask, key)
+            .map_err(|e| e.to_string())?;
+        let mut out = rect.to_vec();
+        out.push(strays.min(u32::MAX as u64) as u32);
+        Ok(out)
     }
 
     /// T23.06: what names this core's own map to `render_fields_full_landform` —
@@ -720,35 +788,39 @@ impl GameCore {
             .map_err(|e| e.to_string())
     }
 
-    /// T23.06: the last full pass's "was rock" mask, one byte per px — a worker returns it
-    /// with the field buffer for [`render_fields_install`](Self::render_fields_install).
-    pub fn render_fields_wall(&self) -> Vec<u8> {
-        self.render_fields.wall_bytes()
+    /// T23.06: the last full pass's "was rock" mask — a worker returns it with the field
+    /// buffer for [`render_fields_install`](Self::render_fields_install). T23.06B (F6): bit
+    /// words, `ceil(w * h / 32)` of them ([`BitGrid::to_u32_words`]).
+    pub fn render_fields_wall_words(&self) -> Vec<u32> {
+        self.render_fields.wall_words()
     }
 
-    /// T23.06: install a full pass a worker computed on a copy of this map (`wall` one byte
-    /// per px, `rgba` the field buffer). Then replay, through `render_fields_dirty`, every
-    /// carve made here since the copy was taken. Wrong sizes throw, writing nothing.
+    /// T23.06: install a full pass a worker computed on a copy of this map (`wall` as bit
+    /// words, `rgba` the field buffer, `din2` the exact squared distances) — **moved in**,
+    /// one copy across the boundary (T23.06B F6). Then replay, through
+    /// `render_fields_dirty`, every carve made here since the copy was taken. Wrong sizes
+    /// throw, writing nothing.
     pub fn render_fields_install(
         &mut self,
-        wall: &[u8],
-        rgba: &[u8],
-        din2: &[u16],
+        wall: Vec<u32>,
+        rgba: Vec<u8>,
+        din2: Vec<u16>,
     ) -> Result<Vec<u32>, String> {
         let (w, h) = (self.map.mask.w, self.map.mask.h);
-        if wall.len() != w as usize * h as usize {
-            return Err(FieldsError::WallSize(wall.len(), w as usize * h as usize).to_string());
-        }
-        let mut g = BitGrid::new(w, h);
-        for (i, &b) in wall.iter().enumerate() {
-            if b != 0 {
-                g.put(i as u32 % w, i as u32 / w, true);
-            }
-        }
+        let px = w as usize * h as usize;
+        let g = BitGrid::from_u32_words(w, h, &wall)
+            .ok_or_else(|| FieldsError::WallSize(wall.len() * 32, px).to_string())?;
         self.render_fields
             .install(&self.map.mask, g, rgba, din2)
             .map(Rect::to_vec)
             .map_err(|e| e.to_string())
+    }
+
+    /// T23.06B (F7): the carve boxes since the last call, flattened `[x0, y0, x1, y1]*`
+    /// (inclusive world px, each within one chunk) — `Map::drain_carve_boxes`. The client's
+    /// terrain fields diff only these, not whole 256² chunks.
+    pub fn render_fields_take_carve_boxes(&mut self) -> Vec<i32> {
+        self.map.drain_carve_boxes().into_iter().flatten().collect()
     }
 
     /// T23.06: a copy of the field buffer (a worker transfers it; the main thread reads the
@@ -1019,7 +1091,7 @@ mod tests {
                 0,
                 "gen {generator}: pristine map, round-start wall only"
             );
-            local.render_fields_full_own_landform().unwrap();
+            own_landform(&mut local);
             let m = &local.map;
             let o = game_core::map::gen::rederive(
                 m.meta.seed,
@@ -1045,14 +1117,16 @@ mod tests {
             let rle = game_core::map::rle::encode(&m.mask);
             assert!(net.load_mask(m.mask.w, m.mask.h, &rle));
             let seed = m.meta.seed;
-            net.render_fields_full_landform(
-                seed as u32,
-                (seed >> 32) as u32,
-                m.meta.scale.as_u8(),
-                m.meta.generator.to_u8(),
-                m.meta.theme,
-            )
-            .unwrap();
+            let out = net
+                .render_fields_full_landform(
+                    seed as u32,
+                    (seed >> 32) as u32,
+                    m.meta.scale.as_u8(),
+                    m.meta.generator.to_u8(),
+                    m.meta.theme,
+                )
+                .unwrap();
+            assert_eq!(out[4], 0, "gen {generator}: strays on a matching build");
             assert!(
                 net.render_fields.rgba() == local.render_fields.rgba(),
                 "gen {generator}: net ≠ local"
@@ -1118,7 +1192,7 @@ mod tests {
             .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme)
             .unwrap();
         let (wall, rgba, din2) = (
-            worker.render_fields_wall(),
+            worker.render_fields_wall_words(),
             worker.render_fields.rgba().to_vec(),
             worker.render_fields_din2_copy(),
         );
@@ -1126,7 +1200,8 @@ mod tests {
         let sp = main.map.meta.spawn_points[0];
         let (cx, cy, r) = (sp.x, sp.y + 30, 60);
         main.carve(cx, cy, r);
-        main.render_fields_install(&wall, &rgba, &din2).unwrap();
+        main.render_fields_install(wall.clone(), rgba.clone(), din2.clone())
+            .unwrap();
         let stale = main.render_fields.rgba().to_vec();
         main.render_fields_dirty(cx - r, cy - r, 2 * r + 1, 2 * r + 1)
             .unwrap();
@@ -1137,11 +1212,10 @@ mod tests {
         // The truth's "was rock" is the landform ∪ the mask **before** the carve.
         let mut pre = GameCore::new();
         pre.generate_with(4242, 0, 0, 1);
-        let wall_pre: Vec<u8> = {
-            pre.render_fields_full_own_landform().unwrap();
-            pre.render_fields_wall()
-        };
-        truth.render_fields_full_with_wall(&wall_pre).unwrap();
+        own_landform(&mut pre);
+        truth
+            .render_fields_full_with_wall(&wall_bytes(&pre))
+            .unwrap();
         assert_eq!(main.render_fields.rgba().len(), n * 4);
         assert!(
             main.render_fields.rgba() == truth.render_fields.rgba(),
@@ -1156,11 +1230,180 @@ mod tests {
             "control: the un-replayed install already matched"
         );
         assert!(main
-            .render_fields_install(&wall[1..], &rgba, &din2)
+            .render_fields_install(wall[1..].to_vec(), rgba.clone(), din2.clone())
             .is_err_and(|e| e.contains("wall has")));
         assert!(main
-            .render_fields_install(&wall, &rgba[4..], &din2)
+            .render_fields_install(wall, rgba[4..].to_vec(), din2)
             .is_err_and(|e| e.contains("installed buffer")));
+    }
+
+    /// `render_fields_full_landform` for a map **this core generated**: its own meta names
+    /// it, exactly as `map_init` would (was a wasm export only tests called — T23.06B F11).
+    fn own_landform(core: &mut GameCore) -> Vec<u32> {
+        let m = &core.map.meta;
+        let (seed, scale, generator, theme) = (m.seed, m.scale, m.generator, m.theme);
+        core.render_fields_full_landform(
+            seed as u32,
+            (seed >> 32) as u32,
+            scale.as_u8(),
+            generator.to_u8(),
+            theme,
+        )
+        .unwrap()
+    }
+
+    /// The last full pass's "was rock" mask, a byte per px (for `render_fields_full_with_wall`).
+    fn wall_bytes(core: &GameCore) -> Vec<u8> {
+        let (w, h) = (core.width(), core.height());
+        let g = BitGrid::from_u32_words(w, h, &core.render_fields_wall_words()).unwrap();
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| u8::from(g.solid(x, y)))
+            .collect()
+    }
+
+    /// T23.06B (F6): the wall's bit words round-trip, and a wrong length is refused.
+    #[test]
+    fn wall_words_round_trip() {
+        let g = random_grid(7, 97, 33);
+        let words = g.to_u32_words();
+        assert_eq!(words.len(), (97 * 33usize).div_ceil(32));
+        assert_eq!(BitGrid::from_u32_words(97, 33, &words), Some(g));
+        assert_eq!(BitGrid::from_u32_words(97, 33, &words[1..]), None);
+    }
+
+    /// T23.06B (F4): **the cave wall does not depend on when a client joined.** A client
+    /// at round start (full pass on the pristine mask, then the carve through `dirty`) and a
+    /// client that joined after the carve (full pass on the carved mask) hold the same
+    /// fields, byte for byte — with the carve opening a column the map build filled under a
+    /// pad. Control: the landform **without** the fill (T23.05B's) gives the late joiner
+    /// sky where the round-start client has wall.
+    #[test]
+    fn a_late_joiner_and_a_round_start_client_derive_the_same_wall() {
+        let mut checked = 0;
+        for (seed, generator) in [(4242u32, 1u8), (7, 0), (12161, 1)] {
+            let mut start = GameCore::new();
+            start.generate_with(seed, 0, 0, generator);
+            let m = start.map.clone();
+            let gen = game_core::map::gen::rederive(
+                m.meta.seed,
+                m.meta.scale,
+                m.meta.generator,
+                m.meta.theme,
+            );
+            // The fill: rock in the round-start mask the generator did not make.
+            let (w, h) = (m.mask.w as i32, m.mask.h as i32);
+            let fill: Vec<(i32, i32)> = (0..w * h)
+                .map(|i| (i % w, i / w))
+                .filter(|&(x, y)| m.mask.get(x, y) && !gen.mask.get(x, y))
+                .collect();
+            // The highest filled px away from the side walls: the fill's lowest rows can reach
+            // bedrock and the map's edges are not carvable, and neither opens (measured: seed
+            // 12161's topmost fill px sits at x 124 and a carve there changes nothing).
+            let Some(&(fx, fy)) = fill
+                .iter()
+                .filter(|p| p.0 > w / 4 && p.0 < 3 * w / 4)
+                .min_by_key(|p| p.1)
+            else {
+                continue;
+            };
+            own_landform(&mut start);
+            let r = 24;
+            start.carve(fx, fy, r);
+            let opened = fill
+                .iter()
+                .filter(|&&(x, y)| !start.map.mask.get(x, y))
+                .count();
+            assert!(opened > 0, "seed {seed}: the carve opened no filled px");
+            start
+                .render_fields_dirty(fx - r, fy - r, 2 * r + 1, 2 * r + 1)
+                .unwrap();
+            let mut late = GameCore::new();
+            late.set_map_generator(generator);
+            let rle = game_core::map::rle::encode(&start.map.mask);
+            assert!(late.load_mask(m.mask.w, m.mask.h, &rle));
+            let s = m.meta.seed;
+            let out = late
+                .render_fields_full_landform(
+                    s as u32,
+                    (s >> 32) as u32,
+                    m.meta.scale.as_u8(),
+                    m.meta.generator.to_u8(),
+                    m.meta.theme,
+                )
+                .unwrap();
+            assert_eq!(out[4], 0, "seed {seed}: strays");
+            assert!(
+                late.render_fields.rgba() == start.render_fields.rgba(),
+                "seed {seed}: the late joiner's fields ≠ the round-start client's"
+            );
+            // Control: T23.05B's landform (no fill) — the opened fill reads as sky late.
+            let mut old = GameCore::new();
+            old.set_map_generator(generator);
+            assert!(old.load_mask(m.mask.w, m.mask.h, &rle));
+            let bytes: Vec<u8> = (0..w * h)
+                .map(|i| u8::from(gen.landform.get(i % w, i / w)))
+                .collect();
+            old.render_fields_full_with_wall(&bytes).unwrap();
+            assert!(
+                old.render_fields.rgba() != start.render_fields.rgba(),
+                "seed {seed}: control — without the fill the late wall already matched"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "only {checked} maps had ground fill to carve");
+    }
+
+    /// T23.06B (F9): **version skew falls back, visibly.** A mask with rock the re-derived
+    /// landform lacks (a doctored `map_init`, or another generator build) reports strays and
+    /// takes "was rock" = the mask: no generated cave is wall. Control: the true mask —
+    /// no strays, and the caves are wall.
+    #[test]
+    fn a_mask_the_landform_does_not_cover_falls_back_to_the_mask() {
+        let mut local = GameCore::new();
+        local.generate_with(4242, 0, 0, 1);
+        let m = local.map.clone();
+        let s = m.meta.seed;
+        let key = |c: &mut GameCore| {
+            c.render_fields_full_landform(
+                s as u32,
+                (s >> 32) as u32,
+                m.meta.scale.as_u8(),
+                m.meta.generator.to_u8(),
+                m.meta.theme,
+            )
+            .unwrap()
+        };
+        let walls = |c: &GameCore| {
+            c.render_fields
+                .rgba()
+                .chunks_exact(4)
+                .filter(|p| p[2] == 255)
+                .count()
+        };
+        let mut good = GameCore::new();
+        good.set_map_generator(1);
+        assert!(good.load_mask(m.mask.w, m.mask.h, &game_core::map::rle::encode(&m.mask)));
+        assert_eq!(key(&mut good)[4], 0);
+        assert!(
+            walls(&good) > 1000,
+            "control: the true mask shows its caves"
+        );
+        // Doctored: a 20×20 block of rock in the open sky at the top of the map.
+        let mut doctored = m.mask.clone();
+        for y in 4..24 {
+            doctored.set_run(y, 100, 119);
+        }
+        let mut bad = GameCore::new();
+        bad.set_map_generator(1);
+        assert!(bad.load_mask(m.mask.w, m.mask.h, &game_core::map::rle::encode(&doctored)));
+        let out = key(&mut bad);
+        assert_eq!(out[4], 400, "the doctored px are the strays");
+        assert_eq!(
+            walls(&bad),
+            0,
+            "fallback: wall = the mask, no generated cave is wall"
+        );
     }
 
     /// F9: the two calls that used to degrade silently now refuse, write nothing and say

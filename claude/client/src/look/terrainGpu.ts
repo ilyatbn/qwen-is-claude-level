@@ -6,8 +6,14 @@
  *
  * **Dirty rectangles only.** A carve uploads the rect `render_fields_dirty` returned
  * (`texSubImage2D` straight from the wasm buffer, `UNPACK_ROW_LENGTH` = world width) and repaints
- * that rect grown by `ALBEDO_REACH` at once. The **full** albedo pass is queued as `ALBEDO_TILE`
- * tiles and painted a few per frame (`step`), so a Large map's 8 M px never land in one frame.
+ * that rect grown by `ALBEDO_REACH` at once. The **full** pass is queued (`queueAll`) and done a few
+ * units per frame (`step`), so a Large map's 8 M px never land in one frame (T23.06B F6): the fields
+ * go up in `STRIP_ROWS`-row strips, and each albedo tile is painted as soon as the strips it reads
+ * are up (`fullPassWork`).
+ *
+ * **Made at map change, uploaded nothing** (F6): the textures are allocated with `texStorage2D` and
+ * no data (three's `source.dataReady = false`) — WebGL zero-fills new storage, so neither a 48 MB
+ * zero upload nor a clear of the targets is needed.
  */
 import {
   Color,
@@ -43,8 +49,16 @@ export interface Rect {
   h: number
 }
 
-/** Side of one queued albedo tile, px. */
-export const ALBEDO_TILE = 256
+/**
+ * One queued albedo tile, px: 256 wide, 128 tall (T23.06B F6). Measured on SwiftShader, Large, low
+ * tier (1 unit a frame): 256² tiles over solid rock made 33–37 ms frames (control, three off: 17–18);
+ * halving the tile keeps a frame's share of the pass under budget, and the pass is not on screen
+ * until it is whole (`TerrainLayer.ready`), so taking more frames costs nothing visible.
+ */
+export const ALBEDO_TILE_W = 256
+export const ALBEDO_TILE_H = 128
+/** Rows per queued field-strip upload (a Large strip is 4 MB of fields + 2 MB of `dIn²`). */
+export const STRIP_ROWS = 256
 /**
  * How far an albedo px reads fields: ±1 px (the `dIn` gradient) and 19 px below (the grass fringe
  * finds its surface) — so a fields rect grown by this covers every albedo px it can change.
@@ -63,11 +77,37 @@ export function grow(r: Rect, m: number): Rect {
   return { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m }
 }
 
-/** Every `ALBEDO_TILE` tile of a `w × h` world, row-major. */
+/** One unit of the queued full pass: a strip of field rows to upload, or an albedo tile to paint. */
+export type Work = { strip: { y: number; h: number } } | { tile: Rect }
+
+/**
+ * The full pass as work units (T23.06B F6): albedo tiles row-major, each preceded by the field strips
+ * it reads that are not up yet — its own rows, the row above, and `ALBEDO_REACH` below (the grass
+ * fringe looks 19 px down for its rock).
+ */
+export function fullPassWork(w: number, h: number): Work[] {
+  const out: Work[] = []
+  let strips = 0
+  const stripsTo = (row: number): void => {
+    while (strips * STRIP_ROWS <= row && strips * STRIP_ROWS < h) {
+      const y = strips * STRIP_ROWS
+      out.push({ strip: { y, h: Math.min(STRIP_ROWS, h - y) } })
+      strips++
+    }
+  }
+  for (const t of tilesOf(w, h)) {
+    stripsTo(Math.min(h - 1, t.y + t.h - 1 + ALBEDO_REACH))
+    out.push({ tile: t })
+  }
+  stripsTo(h - 1)
+  return out
+}
+
+/** Every albedo tile of a `w × h` world, row-major. */
 export function tilesOf(w: number, h: number): Rect[] {
   const out: Rect[] = []
-  for (let y = 0; y < h; y += ALBEDO_TILE) {
-    for (let x = 0; x < w; x += ALBEDO_TILE) out.push({ x, y, w: Math.min(ALBEDO_TILE, w - x), h: Math.min(ALBEDO_TILE, h - y) })
+  for (let y = 0; y < h; y += ALBEDO_TILE_H) {
+    for (let x = 0; x < w; x += ALBEDO_TILE_W) out.push({ x, y, w: Math.min(ALBEDO_TILE_W, w - x), h: Math.min(ALBEDO_TILE_H, h - y) })
   }
   return out
 }
@@ -83,7 +123,12 @@ export class TerrainGpu {
   private paints: Rect[] = []
   /** Dev: the last blast scorched, `[x, y, r]`. */
   lastScorch: [number, number, number] | null = null
-  private queue: Rect[] = []
+  /**
+   * F3: a whole picture has been painted into this GPU side (a full pass finished) — what T23.07
+   * waits for before it hides Phaser's rock. Stays true while a same-map resync repaints it.
+   */
+  painted = false
+  private queue: Work[] = []
   private readonly quad = new PlaneGeometry(2, 2)
   private readonly albedoMat: RawShaderMaterial
   private readonly scorchMat: RawShaderMaterial
@@ -96,25 +141,28 @@ export class TerrainGpu {
     readonly w: number,
     readonly h: number,
   ) {
-    this.field = new DataTexture(new Uint8Array(w * h * 4), w, h, RGBAFormat, UnsignedByteType)
+    // F6: storage only (`texStorage2D`, no data) — `uploadFields` writes it, strip by strip.
+    this.field = new DataTexture(null, w, h, RGBAFormat, UnsignedByteType)
     this.field.minFilter = this.field.magFilter = LinearFilter
     this.field.generateMipmaps = false
     this.field.flipY = false
+    this.field.source.dataReady = false
     this.field.needsUpdate = true
     renderer.initTexture(this.field)
-    // Uploaded (zeros) and never re-uploaded from here — `uploadFields` writes it — so the JS copy goes.
-    ;(this.field.image as { data: Uint8Array | null }).data = null
-    this.din2 = new DataTexture(new Uint16Array(w * h), w, h, RedIntegerFormat, UnsignedShortType)
+    this.din2 = new DataTexture(null, w, h, RedIntegerFormat, UnsignedShortType)
     this.din2.internalFormat = 'R16UI'
     this.din2.minFilter = this.din2.magFilter = NearestFilter
     this.din2.generateMipmaps = false
     this.din2.flipY = false
     this.din2.unpackAlignment = 2
+    this.din2.source.dataReady = false
     this.din2.needsUpdate = true
     renderer.initTexture(this.din2)
-    ;(this.din2.image as unknown as { data: Uint16Array | null }).data = null
-    const target = (format: typeof RGBAFormat | typeof RedFormat): WebGLRenderTarget =>
-      new WebGLRenderTarget(w, h, { format, type: UnsignedByteType, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter, generateMipmaps: false })
+    const target = (format: typeof RGBAFormat | typeof RedFormat): WebGLRenderTarget => {
+      const t = new WebGLRenderTarget(w, h, { format, type: UnsignedByteType, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter, generateMipmaps: false })
+      renderer.initRenderTarget(t) // allocated now (zero-filled by WebGL), not on the first paint
+      return t
+    }
     this.albedo = target(RGBAFormat)
     this.scorch = target(RedFormat)
     this.albedoMat = new RawShaderMaterial({
@@ -140,8 +188,28 @@ export class TerrainGpu {
     this.passMesh = new Mesh(this.quad, this.albedoMat)
     this.passMesh.frustumCulled = false
     this.passScene.add(this.passMesh)
-    this.clear(this.albedo)
-    this.clear(this.scorch)
+    this.touch()
+    this.warm()
+  }
+
+  /**
+   * F6: **draw each pass once now, 1 px, at the map change.** Measured (each queued unit finished on
+   * the GPU): the first albedo tile after the install cost 81–84 ms on SwiftShader and every later one
+   * 4 ms — the driver builds the draw's pipeline on its first use with these textures bound, and
+   * `renderer.compile` (link only) did not move it. Px (0, 0) of the albedo is written here and
+   * repainted by its tile; the scorch pass draws a radius-0 blast, which writes 0 under MAX.
+   */
+  private warm(): void {
+    const px = { x: 0, y: 0, w: 1, h: 1 }
+    this.pass(this.albedo, this.albedoMat, px)
+    ;(this.scorchMat.uniforms['rect']!.value as Vector4).set(0, 0, 1, 1)
+    ;(this.scorchMat.uniforms['blast']!.value as Vector3).set(0, 0, 0)
+    this.pass(this.scorch, this.scorchMat, px)
+  }
+
+  /** Dev (F5): the GPU bytes this side holds — fields RGBA8 + `dIn²` R16 + albedo RGBA8 + scorch R8. */
+  get bytes(): number {
+    return this.w * this.h * (4 + 2 + 4 + 1)
   }
 
   /** The fields and `dIn²` from the wasm buffers (views made **now** — F9): `rect` only, or all of it. */
@@ -152,30 +220,61 @@ export class TerrainGpu {
       throw new Error(`terrain fields: views ${view.length} B / ${din2.length} px, want ${this.w * this.h * 4} / ${this.w * this.h}`)
     }
     const gl = this.renderer.getContext() as WebGL2RenderingContext
-    const put = (t: DataTexture, align: number, format: number, type: number, data: ArrayBufferView): void => {
-      const tex = (this.renderer.properties.get(t) as { __webglTexture?: WebGLTexture }).__webglTexture
-      if (!tex) throw new Error('terrain fields: texture not initialised')
-      this.renderer.state.bindTexture(gl.TEXTURE_2D, tex)
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, align)
-      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, this.w)
-      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, r.x)
-      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, r.y)
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, format, type, data)
-      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0)
-      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0)
-      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
-    }
-    put(this.field, 4, gl.RGBA, gl.UNSIGNED_BYTE, view)
-    put(this.din2, 2, gl.RED_INTEGER, gl.UNSIGNED_SHORT, din2)
+    this.put(this.field, 4, gl.RGBA, gl.UNSIGNED_BYTE, view, r, true)
+    this.put(this.din2, 2, gl.RED_INTEGER, gl.UNSIGNED_SHORT, din2, r, true)
     this.stats.uploads++
     this.stats.uploadedPx += r.w * r.h
   }
 
-  /** Queue the whole world's albedo, tile by tile (`step` paints them). */
+  /**
+   * `texSubImage2D` of rect `r` of `t` from `data`: a whole world-sized buffer (`world`: read at `r`,
+   * `UNPACK_ROW_LENGTH` = the world's width), or exactly `r`'s texels.
+   */
+  private put(t: DataTexture, align: number, format: number, type: number, data: ArrayBufferView, r: Rect, world: boolean): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext
+    const tex = (this.renderer.properties.get(t) as { __webglTexture?: WebGLTexture }).__webglTexture
+    if (!tex) throw new Error('terrain fields: texture not initialised')
+    this.renderer.state.bindTexture(gl.TEXTURE_2D, tex)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, align)
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, world ? this.w : 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, world ? r.x : 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, world ? r.y : 0)
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, format, type, data)
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0)
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
+  }
+
+  /**
+   * F6: **pay Chrome's lazy clear now, at the map change.** Its GPU process zero-fills a texture on
+   * the first partial upload or draw into it, not at allocation — measured: with nothing touched
+   * here, the install's first strip frame took 117–123 ms on SwiftShader (88 MB cleared) while the
+   * pump itself took 2–8 ms. A 1-px upload into each field texture and a clear of each target move
+   * that into the map change, which already hitches (map load, Phaser's bake).
+   */
+  private touch(): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext
+    const px = { x: 0, y: 0, w: 1, h: 1 }
+    this.put(this.field, 4, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4), px, false)
+    this.put(this.din2, 2, gl.RED_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(2), px, false)
+    const r = this.renderer
+    const prev = r.getRenderTarget()
+    const alpha = r.getClearAlpha()
+    const col = r.getClearColor(new Color())
+    r.setClearColor(0x000000, 0) // the scorch mask must read 0: no blast yet
+    for (const rt of [this.albedo, this.scorch]) {
+      r.setRenderTarget(rt)
+      r.clear(true, false, false)
+    }
+    r.setClearColor(col, alpha)
+    r.setRenderTarget(prev)
+  }
+
+  /** Queue the full pass — field strips and albedo tiles, interleaved (`fullPassWork`); `step` does them. */
   queueAll(): void {
-    this.queue = tilesOf(this.w, this.h)
+    this.queue = fullPassWork(this.w, this.h)
   }
 
   /** Repaint the albedo over `r` **now** (a carve's fields rect, grown by `ALBEDO_REACH`). */
@@ -196,12 +295,22 @@ export class TerrainGpu {
     return p
   }
 
-  /** Paint up to `maxTiles` queued tiles; returns how many are left. */
-  step(maxTiles: number): number {
-    for (let n = 0; n < maxTiles && this.queue.length > 0; n++) {
-      this.pass(this.albedo, this.albedoMat, this.queue.shift() as Rect)
-      this.stats.tiles++
+  /**
+   * Do up to `units` queued units (a strip upload or a tile paint each; the strips read fresh views
+   * from `fields` — F9); returns how many are left. A finished queue marks the picture `painted`.
+   */
+  step(units: number, fields: () => { view: Uint8Array; din2: Uint16Array } | null): number {
+    for (let n = 0; n < units && this.queue.length > 0; n++) {
+      const u = this.queue.shift() as Work
+      if ('strip' in u) {
+        const f = fields()
+        if (f) this.uploadFields(f.view, f.din2, { x: 0, y: u.strip.y, w: this.w, h: u.strip.h })
+      } else {
+        this.pass(this.albedo, this.albedoMat, u.tile)
+        this.stats.tiles++
+      }
     }
+    if (this.queue.length === 0) this.painted = true
     return this.queue.length
   }
 
@@ -250,18 +359,6 @@ export class TerrainGpu {
     this.albedoMat.dispose()
     this.scorchMat.dispose()
     this.quad.dispose()
-  }
-
-  private clear(rt: WebGLRenderTarget): void {
-    const r = this.renderer
-    const prev = r.getRenderTarget()
-    const alpha = r.getClearAlpha()
-    const col = r.getClearColor(new Color())
-    r.setRenderTarget(rt)
-    r.setClearColor(0x000000, 0)
-    r.clear(true, false, false)
-    r.setClearColor(col, alpha)
-    r.setRenderTarget(prev)
   }
 
   /** Draw `mat` over `rect` of `rt` (viewport and scissor = the rect), no clear. */

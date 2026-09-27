@@ -84,6 +84,8 @@ export class SandboxScene extends Phaser.Scene {
   private worldRenderer: GameWorld | null = null
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
   private terrainFields: TerrainFields | null = null
+  /** T23.06B: counts regenerates — part of the fields' map key, so only a resync is the same map. */
+  private terrainEpoch = 0
   private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
@@ -392,6 +394,15 @@ export class SandboxScene extends Phaser.Scene {
     return this.core.meta.generator === 'Space'
   }
 
+  /** New terrain fields for the map in the core (its key and this regenerate's epoch), handed to the renderer. */
+  private feedTerrain(): void {
+    this.terrainFields?.dispose()
+    const fields = new TerrainFields(this.core, [...this.core.renderFieldsOwnKey(), this.terrainEpoch])
+    this.terrainFields = fields
+    if (this.world) this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids)
+    this.worldRenderer?.setTerrain(fields)
+  }
+
   private regenerate(): void {
     // Tear the old map down *first*. Phaser's texture manager is global, so a
     // reused key keeps the old pixels and the new map comes out looking subtly
@@ -413,11 +424,10 @@ export class SandboxScene extends Phaser.Scene {
     this.worldRenderer?.mapChanged(this.gameMap())
     this.timings.buildAllMs = this.world.timings.buildAllMs
     // T23.06: the fields for this map, off the frame; every carve the terrain hears of reaches them.
-    this.terrainFields?.dispose()
-    const fields = new TerrainFields(this.core, this.core.renderFieldsOwnKey())
-    this.terrainFields = fields
-    this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids, C().CHUNK_SIZE)
-    this.worldRenderer?.setTerrain(fields)
+    // T23.06B: a regenerate is a new map even at the same seed (a fresh mask) — its own epoch in the
+    // key, so the renderer does not keep the last one's GPU side as it would for a resync (F3).
+    this.terrainEpoch++
+    this.feedTerrain()
 
     const spawn = this.core.meta.spawn_points[0] ?? { x: mapW / 2, y: mapH / 2 }
     // Spawn points are feet positions; the body is positioned by its centre.
@@ -810,6 +820,11 @@ export class SandboxScene extends Phaser.Scene {
           skyPhase: skyPhase(cycleU(self.roundTime)),
           // Which renderer Phaser is drawing with (it was the retired parallax band's to report).
           renderer: self.game.renderer.type === Phaser.WEBGL ? 'webgl' : 'canvas',
+          // T23.06B (F3/F9): why this map's terrain fields are not the full picture — the worker
+          // failed (main-thread fallback, no generated cave walls) or version skew — '' when they are;
+          // and whether the new terrain's picture is whole (T23.07's switch from Phaser's rock).
+          terrainWarning: self.terrainFields?.stats.warning ?? '',
+          terrainReady: self.worldRenderer?.terrainReady() ?? false,
           // T22.06: the space sky's bodies and stars, or null while it is not shown (not a space map).
           spaceSky: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
           darkness: self.darkness(),
@@ -1350,6 +1365,13 @@ export class SandboxScene extends Phaser.Scene {
         // This cost two debugging rounds as a caller's responsibility, which is
         // the definition of a trap — §A24: make the correct use the only use.
         self.grantSandboxLoadout()
+      },
+      /**
+       * T23.06B (F3): what a networked resync does — new fields for the **same** map, so the renderer
+       * keeps its GPU side (picture, readiness, scorch — R23) while they install and repaint.
+       */
+      resyncTerrain() {
+        self.feedTerrain()
       },
       regenerate(seed?: string, scale?: string, gravity?: string) {
         if (seed !== undefined) self.seed = BigInt(seed)

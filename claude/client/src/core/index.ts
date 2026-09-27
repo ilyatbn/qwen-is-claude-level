@@ -22,6 +22,7 @@ import init, {
   quantize_angle,
   dequantize_angle,
   AttractCore,
+  render_fields_read_margin,
 } from './pkg/game_wasm.js'
 import wasmUrl from './pkg/game_wasm_bg.wasm?url'
 
@@ -620,6 +621,29 @@ export function dequantizeAngle(q: number): number {
 let wasmMemory: WebAssembly.Memory | null = null
 let constantsCache: Constants | null = null
 
+let compiledModule: WebAssembly.Module | null = null
+
+async function compileWasm(source?: BufferSource | WebAssembly.Module): Promise<WebAssembly.Module> {
+  if (source instanceof WebAssembly.Module) return source
+  if (source) return WebAssembly.compile(source)
+  try {
+    return await WebAssembly.compileStreaming(fetch(wasmUrl))
+  } catch {
+    // A server that does not say `application/wasm`: the bytes, then.
+    return WebAssembly.compile(await (await fetch(wasmUrl)).arrayBuffer())
+  }
+}
+
+/** T23.06B (F2): the compiled wasm module, once `Core.init()` has run — a worker instantiates it without recompiling. */
+export function wasmModule(): WebAssembly.Module | null {
+  return compiledModule
+}
+
+/** `render_fields.rs::READ_MARGIN` (T23.06B F11): the terrain fields' read margin, px — needs `Core.init()`. */
+export function renderFieldsReadMargin(): number {
+  return render_fields_read_margin()
+}
+
 export function C(): Constants {
   if (!constantsCache) {
     throw new Error('constants read before Core.init() — call it first')
@@ -763,7 +787,10 @@ export class Core {
    * file:// URL is not available there.
    */
   static async init(source?: BufferSource | WebAssembly.Module): Promise<Core> {
-    const wasm = await init({ module_or_path: source ?? wasmUrl })
+    // T23.06B (F2): compiled here and kept, so a restarted fields worker instantiates it instead of
+    // fetching and compiling the binary again (`wasmModule`).
+    compiledModule ??= await compileWasm(source)
+    const wasm = await init({ module_or_path: compiledModule })
     constantsCache = JSON.parse(constants_json()) as Constants
     wasmMemory = wasm.memory
     return new Core(new GameCore(), wasm.memory)
@@ -1441,11 +1468,12 @@ export class Core {
   // ---- T23.05/T23.06: the M23 terrain fields (`game-wasm/src/render_fields.rs`) ----
   // Every call can grow wasm memory; `renderFieldsView()` is rebuilt per call (F9), never kept.
 
-  /** R17: the full pass, "was rock" = the generator's landform for these `map_init` fields ∪ the mask now. */
-  renderFieldsFullLandform(seed: bigint, scale: number, generator: number, theme: number): number[] {
-    const lo = Number(seed & 0xffffffffn) >>> 0
-    const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
-    return Array.from(this.inner.render_fields_full_landform(lo, hi, scale, generator, theme))
+  /**
+   * T23.06B (F3): the full pass with "was rock" = the mask as it is now — the main-thread fallback
+   * when the fields worker fails (generated caves read as sky; craters carved from here on show wall).
+   */
+  renderFieldsFull(): number[] {
+    return Array.from(this.inner.render_fields_full())
   }
 
   /** The full pass against an explicit "was rock" mask, one byte per px (the look-lab's scene `back`). */
@@ -1458,14 +1486,25 @@ export class Core {
     return Array.from(this.inner.render_fields_dirty(x, y, w, h))
   }
 
-  /** The last full pass's "was rock" mask, one byte per px (a worker hands it back). */
-  renderFieldsWall(): Uint8Array {
-    return this.inner.render_fields_wall()
+  /**
+   * Install a worker's full pass (the wall as bit words — T23.06B F6); then replay carves made since
+   * through `renderFieldsDirty`. The buffers are copied into wasm once and moved in there.
+   */
+  renderFieldsInstall(wall: Uint32Array, rgba: Uint8Array, din2: Uint16Array): number[] {
+    return Array.from(this.inner.render_fields_install(wall, rgba, din2))
   }
 
-  /** Install a worker's full pass; then replay carves made since through `renderFieldsDirty`. */
-  renderFieldsInstall(wall: Uint8Array, rgba: Uint8Array, din2: Uint16Array): number[] {
-    return Array.from(this.inner.render_fields_install(wall, rgba, din2))
+  /**
+   * T23.06B (F7): the carve boxes since the last call, `[x0, y0, x1, y1]` inclusive world px, each
+   * within one chunk — what the terrain fields diff instead of whole 256² chunks.
+   */
+  takeCarveBoxes(): Int32Array {
+    return this.inner.render_fields_take_carve_boxes()
+  }
+
+  /** Dev (T23.06B F6): the wasm memory's size now, bytes — it only grows, so it is the high-water mark. */
+  memoryBytes(): number {
+    return this.memory.buffer.byteLength
   }
 
   /** T23.06: a fresh view of the exact `dIn²` buffer (`w * h` u16, row-major); empty before a full pass. */

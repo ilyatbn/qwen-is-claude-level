@@ -28,6 +28,23 @@
  * and nowhere else — both counted against the pre-blast frame as the control. The update's cost
  * (the carve's wasm update, then the upload and repaint finished on the GPU) is printed beside
  * `CHUNK_REBAKE_MS`; on SwiftShader it is reported, not gated (a wall clock on a loaded box).
+ *
+ * ## 3. A scorch alone (T23.06B F8): its repaint reaches the grass it kills
+ *
+ * A scorch with no carve — `__world.scorchOnly`, the production `TerrainGpu.addScorch` — centred
+ * just under a grassy surface, so its circle takes the surface rock and its box stops a few px
+ * above it: the grass blades that grew from that rock (up to 19 px tall) are outside the box and
+ * must go. No fields rect covers them (nothing was carved), so only `ALBEDO_REACH` does: the
+ * incremental albedo must equal a full repaint (0 texels differ), and the control is presence —
+ * fringe texels above the surface really changed.
+ *
+ * ## 4. A same-map resync keeps the picture (T23.06B F3, R23)
+ *
+ * `__game.resyncTerrain()` does what a networked resync's second `map_init` does: new fields for the
+ * same map. The renderer keeps its GPU side — `ready` is true at once and at every frame until the new
+ * fields are installed and repainted (T23.07 reads it to keep Phaser's rock or not: never absent) — and
+ * keeps its scorch (R23: scorch history is cosmetic and not on the wire; a client keeps its own). The
+ * control is a regenerate — a new map — whose GPU side is new: not ready at first, no scorch.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -199,7 +216,7 @@ async function run({ page, shot, log }) {
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => {
     const t = window.__world?.terrain?.()
-    return !!window.__game && !!t && t.fields && t.gpu && t.pending === 0
+    return !!window.__game && !!t && t.fields && t.ready && t.pending === 0
   }, null, { timeout: 180_000 })
   const t0 = await page.evaluate(() => window.__world.terrain())
   const K = await page.evaluate(() => window.__game.constants())
@@ -262,7 +279,7 @@ async function run({ page, shot, log }) {
     return performance.now() - t
   })
   const perTile = repaintMs / ((await page.evaluate(() => window.__world.terrain().tiles)) - tiles)
-  log(`full albedo repaint (fields re-uploaded, every tile, finished on the GPU): ${repaintMs.toFixed(0)} ms, ${perTile.toFixed(1)} ms per 256² tile — the round-start pass paints 1 per frame on the low tier (GAME_ALBEDO_TILES)`)
+  log(`full albedo repaint (fields re-uploaded, every tile, finished on the GPU): ${repaintMs.toFixed(0)} ms, ${perTile.toFixed(1)} ms per 256×128 tile — the round-start pass does 1 unit (a tile or a field strip) per frame on the low tier (GAME_ALBEDO_TILES)`)
   const full = await read()
   let stale = 0
   for (let i = 0; i < full.length; i += 4) if (full[i] !== post[i] || full[i + 1] !== post[i + 1] || full[i + 2] !== post[i + 2] || full[i + 3] !== post[i + 3]) stale++
@@ -272,6 +289,89 @@ async function run({ page, shot, log }) {
   if (!(changedIn > 0)) problems.push('control: the blast changed no albedo texel at all')
   if (!(scorchIn > 200 && scorchIn > 4 * scorchPreIn)) problems.push(`no scorch at the blast: ${scorchPreIn} → ${scorchIn} px in its circle`)
   if (scorchOut !== scorchPreOut) problems.push(`scorch outside the blast's circle: ${scorchPreOut} → ${scorchOut} px`)
+
+  // ------------------------------------------------------------ 3. a scorch alone (F8)
+  // A column near the player with a tall blade: fringe (alpha 200) for ≥ 8 px straight above rock (255).
+  const regA = await read()
+  let col = null
+  for (let x = 0; x < reg.w && !col; x += 3) {
+    const wx = reg.x + x
+    if (Math.abs(wx - bx) < br + 60) continue // clear of the bazooka's crater and its scorch
+    for (let y = 20; y < reg.h - 1 && !col; y++) {
+      const a = (yy) => regA[(yy * reg.w + x) * 4 + 3]
+      if (a(y) === 255 && a(y - 1) === 200) {
+        let n = 0
+        while (n < 19 && a(y - 1 - n) === 200) n++
+        if (n >= 8) col = { wx, wy: reg.y + y, blade: n }
+      }
+    }
+  }
+  if (!col) {
+    problems.push('F8: no grassy surface with a tall blade near the player to scorch')
+  } else {
+    const R = 30
+    const [cx, cy] = [col.wx, col.wy + R - 3] // the circle's top 3 px into the surface rock
+    const reg3 = { x: Math.max(0, col.wx - 60), y: Math.max(0, col.wy - 60), w: 120, h: 120 }
+    const read3 = async () => decode(await page.evaluate((r) => window.__world.readAlbedo(r.x, r.y, r.w, r.h), reg3))
+    const pre3 = await read3()
+    const box = await page.evaluate(([x, y, r]) => window.__world.scorchOnly(x, y, r), [cx, cy, R])
+    const post3 = await read3()
+    await page.evaluate(() => window.__world.repaintAlbedo())
+    const full3 = await read3()
+    let stale3 = 0
+    let killed = 0
+    for (let i = 0; i < full3.length; i += 4) {
+      if (full3[i] !== post3[i] || full3[i + 1] !== post3[i + 1] || full3[i + 2] !== post3[i + 2] || full3[i + 3] !== post3[i + 3]) stale3++
+      const wy = reg3.y + Math.floor(i / 4 / reg3.w)
+      if (wy < col.wy && pre3[i + 3] === 200 && full3[i + 3] !== 200) killed++
+    }
+    log(`scorch alone at (${cx}, ${cy}) r ${R} under the surface at y ${col.wy} (blade ${col.blade} px): repainted ${box.w}x${box.h}@${box.x},${box.y}; grass texels killed above the surface ${killed}; incremental vs full ${stale3} differ`)
+    if (!(killed > 0)) problems.push('F8 control: the scorch killed no grass above the surface — the case is not exercised')
+    if (stale3 !== 0) problems.push(`F8: a scorch alone left ${stale3} albedo texels stale (the repaint does not reach the grass it kills)`)
+  }
+
+  // ------------------------------------------------------------ 4. a same-map resync (F3, R23)
+  const scorchedIn = (a) => {
+    let n = 0
+    for (let y = 0; y < reg.h; y++) {
+      for (let x = 0; x < reg.w; x++) if (Math.hypot(reg.x + x - bx, reg.y + y - by) < br && near(a, (y * reg.w + x) * 4)) n++
+    }
+    return n
+  }
+  const sc0 = scorchedIn(await read())
+  const k0 = (await page.evaluate(() => window.__world.terrain())).kept
+  const resync = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        window.__game.resyncTerrain()
+        const first = window.__world.terrain()
+        let notReady = first.ready ? 0 : 1
+        let frames = 0
+        let sawWork = false
+        const tick = () => {
+          const t = window.__world.terrain()
+          frames++
+          if (!t.ready) notReady++
+          if (t.pending > 0) sawWork = true
+          if ((t.fields && sawWork && t.pending === 0) || frames > 3000) return resolve({ first, notReady, frames, sawWork, kept: t.kept })
+          requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+  )
+  const sc1 = scorchedIn(await read())
+  log(`resync (same map): kept ${k0} → ${resync.kept}; ready at once ${resync.first.ready}, frames not ready ${resync.notReady} of ${resync.frames} to the repaint's end (work seen ${resync.sawWork}); scorched px in the blast circle ${sc0} → ${sc1}`)
+  if (resync.kept !== k0 + 1 || !resync.first.gpu) problems.push(`F3: a same-map resync did not keep the GPU side (kept ${k0} → ${resync.kept})`)
+  if (resync.notReady !== 0) problems.push(`F3: the terrain was not ready on ${resync.notReady} frames of a same-map resync — it would flash Phaser's rock`)
+  if (!resync.sawWork) problems.push('F3 control: the resync repainted nothing — the new fields never installed')
+  if (!(sc1 > 200 && sc1 >= sc0 * 0.9)) problems.push(`R23: the resync lost this client's scorch (${sc0} → ${sc1} px)`)
+  // Control: a regenerate is a new map — a new GPU side, not ready at first, no scorch.
+  const regen = await page.evaluate(() => {
+    window.__game.regenerate('4242')
+    return window.__world.terrain()
+  })
+  log(`control: regenerate (a new map): ready at once ${regen.ready}, kept ${regen.kept}, scorches ${regen.scorches}`)
+  if (regen.ready || regen.kept !== resync.kept || regen.scorches !== 0) problems.push(`F3 control: a regenerate kept the old GPU side (ready ${regen.ready}, kept ${regen.kept}, scorches ${regen.scorches})`)
 
   // For a person: the albedo around the blast, before | after (air black). In the game it is not
   // drawn yet — Phaser's terrain covers it until T23.07 lights it.
