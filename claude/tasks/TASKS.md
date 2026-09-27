@@ -824,6 +824,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller
 - [x] [T23.09A](M23/T23.09-effects-are-the-lights.md) — The cave wall switchable, off by default in the game (owner request; ruling pending — the look-lab keeps F1's walls)
 - [x] [T23.09B](M23/T23.09-effects-are-the-lights.md) — `world-canvas` un-parked: the marker search takes only a bar-thick crossing (the 313.5 px was the probe line along the bar, cut by the moon's glow); match map pinned
+- [ ] [T23.09C](M23/T23.09C-what-the-lights-review-found.md) — What the lights review found — no false muzzle flashes on late join, night-combat rewritten, one cave-wall switch, lights checked in matches
 - [ ] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
 - [ ] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [ ] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
