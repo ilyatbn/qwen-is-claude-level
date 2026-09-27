@@ -147,3 +147,8 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
   animates"* — two different messages, which is the distinction that produced two false sightings
   on `smoke-shader`.
   **Red again 3/3 at HEAD after T22.00F, and a different cause — found and fixed by T22.00H (2026-09-25).** *"stroked 75.2 % changed … does not animate"* on every commit a bisect tried, both ends included, so there was no first bad commit: the **still-strokes control** was never still. The flicker band is sky, and the sky's day cycle runs on the round clock — fastest in a round's first seconds, which is where a check run alone lands (~3 s in); a batched run lands ~17 s in, where the gradient barely moves, which is why every green was batched and every red alone. Fix: `__game.holdSky(t)` pins the sky and its parallax band to one round time across the five steps (darkness, fog and the shader's own `time` keep the live clock); **no threshold touched**. Plants red both ways: the hold ignored → stroked 75.2 %; the beam ripple's `time` zeroed → painted 0.0 %. Not parked; the row stays closed.
+
+**Not parked, noted (T23.09, 2026-09-27): `death`.** Red once in the 77-check `--only` run after T23.09
+(`gate-t2309-e2e.txt`): *"timed out waiting for the death overlay"* and *"no death event for this player arrived"*,
+117.9 s; green alone straight after (`gate-t2309-death1.txt`, 23.1 s). No causal path from T23.09 (client light list;
+the missing event is the server's). One sighting, recorded rather than parked — the coordinator's call.

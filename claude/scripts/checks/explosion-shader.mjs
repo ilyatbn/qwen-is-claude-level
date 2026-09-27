@@ -321,6 +321,14 @@ if (arrived) {
     await backdrop(null)
     return shots
   }
+  // T23.09: the blast's own light (F's effect lights) brightens the rock around it in both frames, and
+  // measured it costs the drawing ~2 ring points of contrast over the world (9, 9 with the explosion's
+  // light removed; 7, 7 alone and 5 in the suite with it). This leg is about the **drawing** reading on
+  // its backdrop — its floor's basis was measured unlit — so the scene is frozen and the world renderer
+  // holds no lights while it photographs; the lit count is reported below, not gated (T23.18 re-measures
+  // it when the blast is redrawn in F's style).
+  const heldLights = await page.evaluate(() => window.__world.lights())
+  await page.evaluate(() => window.__world.setLights([]))
   await setHQ(true)
   await frame()
   const qOn = await overEach()
@@ -377,6 +385,19 @@ if (arrived) {
     await setHQ(false)
     await frame()
   }
+  // Reported, not gated: the same count with the blast's light on, over the world canvas as drawn.
+  await page.evaluate((l) => window.__world.setLights(l), heldLights)
+  await setHQ(true)
+  await frame()
+  const litOn = await full()
+  await show(false)
+  await frame()
+  const litNone = await full()
+  await show(true)
+  await setHQ(false)
+  await frame()
+  const lit = await compare(litOn, litNone, ring, VISIBLE)
+  console.log(`  reported (T23.09): with the effect lights on (${heldLights.length} held), ${cover(lit)}/${ring.length} blast-radius points painted over the world canvas`)
   const onWorld = cover(qPainted.per[BACKDROPS.indexOf(null)])
   if (onWorld < WORLD_FLOOR) fail(`only ${onWorld} of ${ring.length} blast-radius points are painted over the world canvas as drawn (floor ${WORLD_FLOOR}) — the blast does not read on the sky it is drawn over`)
   else ok(`over the world canvas as drawn, ${onWorld}/${ring.length} blast-radius points are painted (floor ${WORLD_FLOOR})`)

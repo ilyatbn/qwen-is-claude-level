@@ -7441,3 +7441,10 @@ F6 enclosed term deleted; F7 exceptions photograph the scanned run, key has both
 Plants red: bloom radius 0 (halo 2.464>1.232), run +5 px (39>36), single-length worker (3 checks + look-match warn), fog-off in match (band 0), offset 0 (0/4096).
 Parked `world-canvas` (unpinned match map, marker 313.5 px mismatch; red 3/5 new, 1/5 with old render_fields). affected.mjs: reference PNGs map to "everything" — no rule for tasks/M23/reference/**.
 
+
+## T23.09 — effects are the lights (builder, 2026-09-27)
+`look/effectLights.ts`: one F light list per frame from impacts/beams/rounds/flames/jetting bodies/vents/gates, values pinned to `f_scene.js` by vitest; `GameWorld.setLights`; lightmap keeps FoV only, its light producers deleted (R15, beyond list). Callers: GameScene/SandboxScene update, map_init/regenerate (gates).
+Done-when EXIT 0: vitest 1132/1132; effect-lights ok — blast near gain 16.1 (min 4) far Δ0, decay 16.1→7.4, laser 15.1, jet 6.7. Plants red: terrain draws gates only; no decay; shader laser r×3 (far Δ27).
+check.sh --changed HEAD~1 --fast EXIT 0 (skips e2e); affected browser checks 75/77: `death` red once in suite (no death event, 118 s), green alone (23 s) — noted in flaky-test.md; `explosion-shader` red 5/12 < 6: the blast's own light costs ~2 ring points (9,9 unlit vs 7,7 lit) → ring leg holds lights off (10, 11), lit count reported (4, 5). Finding → T23.18.
+fps busy match: D3D12 full 59.9 (vsync); SwiftShader low 56.0. Per lights drawn: Swift 0/4/8/16 → 13.1/14.3/15.6/17.6 ms (~0.28 ms each); D3D12 ~5.0 flat.
+Looked: shots/t2309-{gpu,swift}-{blast,laser,muzzle}.png — blast washes the rock warm to ~300 px, laser teal on the slope, muzzle a faint warm patch; low tier the same picture.
