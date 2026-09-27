@@ -816,6 +816,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.06](M23/T23.06-albedo-and-scorch.md) — Painting the rock — albedo on the GPU with the mockup's hash bit-exact, one palette, scorch from explosions
 - [x] [T23.06B](M23/T23.06B-what-the-terrain-review-found.md) — What the terrain review found — the fields' lifecycle tested (plants D/E red), a warm spare worker, never-absent readiness for T23.07, the fill in the landform, strips + warm passes (Large worst frame 132–140 → 22–23 ms), carve boxes, skew guard, R23
 - [x] [T23.07](M23/T23.07-the-lit-terrain.md) — The lit terrain — bevel, rim, lip, cave interiors, 16–24 lights, two tiers; `masks.bin` byte-identical — look-terrain Level A all 12 within (deltaE_terrain 0.009), crater lit in its own frame, Phaser rock hidden only when ready; procTextures, decor, object atlas retired
+- [ ] [T23.07B](M23/T23.07B-what-the-lit-terrain-review-found.md) — What the lit-terrain review found — cave walls fade into the sky (R24), rock pattern per map, gate-ground wall, check bases
 - [ ] [T23.08](M23/T23.08-fog-depth-and-post.md) — Fog, foreground depth and the post chain — **the first picture gate**: nothing after it starts until F1's numbers are in
 - [ ] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller
 - [ ] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change

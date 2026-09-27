@@ -151,6 +151,16 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   different scorch on the same crater, and nothing simulated reads it. *Reverse it by:* carrying blast
   positions/radii in `map_init` (or a scorch RLE) and replaying them into the mask at install.
 
+- **R24 — cave wall fades where it meets open sky; rock pattern varies per map** (coordinator, 2026-09-27, answering
+  the T23.07 review's F1/F2). R17 stands (wall = generator landform OR round-start rock). Render-only (R4): the `back`
+  field becomes a coverage ramp — a saturating distance from the wall's edge against *non-wall air*, ~8–12 px, same
+  distance-transform pass as the other fields — so a wall slab left by a cave shaft through a V2 cliff fades into the
+  sky instead of ending on a hard straight line. Walls enclosed by rock (every F picture) are unchanged; look-terrain
+  Level A must stay green. The albedo takes a per-map integer offset hashed from the `map_init` seed (0 in the
+  look-lab, so Level A stays exact), so strata, boulders and cracks sit differently on each map (owner's T21.15
+  report). *Reverse it by:* the bit `back` again / offset 0; or, for the wall, counting generator wall only under
+  a roof (rock above it in its column).
+
 ## Verification — what "exactly the same" means here
 
 Two levels (`M23-RESEARCH.md` § 7):
