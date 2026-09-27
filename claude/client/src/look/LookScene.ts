@@ -26,6 +26,12 @@
  * actors, fx, labels and HUD out of the data — for `look-terrain` to compare with the mockup's sky and
  * terrain alone (`reference/controls/F1-terrain.png`). `&knob=rim-off|bevel-off|lights-off` changes
  * the terrain look in the data (the must-fail controls: `terrainonly.js`'s knobs).
+ *
+ * T23.08: `&only=world` is now the world without its cast — sky, back fog, lit terrain, front fog, the
+ * foreground leaves, bloom and grade (`reference/controls/worldonly.js` → `F1-world.png`, look-gate-f1);
+ * `&only=terrain` is T23.07's sky + terrain alone (look-terrain), and `&only=sky` keeps no fog or post
+ * either — their references have none. Knobs `bloom-off | fog-off | exposure-up | exposure-down |
+ * fg-off | grade-off` are the gate's controls (`worldonly.js`'s knobs, lab side).
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
@@ -94,16 +100,30 @@ export class LookScene extends Phaser.Scene {
     const only = q.get('only')
     const knob = q.get('knob')
     const terrainLook = { ...full.look.terrain }
+    let look: SceneDescription['look'] = { ...full.look, terrain: terrainLook }
+    const P = full.look
     if (knob === 'rim-off') terrainLook.rimK = 0
     else if (knob === 'bevel-off') terrainLook.bevel = 0.001
-    else if (knob !== null && knob !== 'lights-off') handle.error = `unknown knob "${knob}"`
-    const look = { ...full.look, terrain: terrainLook, lights: knob === 'lights-off' ? [] : full.look.lights }
+    else if (knob === 'lights-off') look.lights = []
+    // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
+    else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
+    else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
+    else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
+    else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9
+    else if (knob === 'fg-off') look.fg = null
+    else if (knob === 'grade-off') look.grade = null
+    else if (knob !== null) handle.error = `unknown knob "${knob}"`
+    // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
+    const bare = { fogBack: null, fogFront: null, fg: null, bloom: [0, P.bloom[1], P.bloom[2]] as SceneDescription['look']['bloom'], grade: null }
+    const cast = { actors: [], fx: [], labels: [], hud: null }
     const desc: SceneDescription =
       only === 'sky'
-        ? { ...full, masks: null, litTerrain: false, actors: [], fx: [], labels: [], hud: null }
-        : only === 'world'
-          ? { ...full, look, actors: [], fx: [], labels: [], hud: null }
-          : { ...full, look }
+        ? { ...full, look: { ...full.look, ...bare }, masks: null, litTerrain: false, ...cast }
+        : only === 'terrain'
+          ? { ...full, look: { ...look, ...bare }, ...cast }
+          : only === 'world'
+            ? { ...full, look, ...cast }
+            : { ...full, look }
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)

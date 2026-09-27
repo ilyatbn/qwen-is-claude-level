@@ -9,9 +9,10 @@
  * space (`worldRenderer-math.ts`). **Resolution (R18):** the drawing buffer is Phaser's game
  * resolution × the tier's scale, never `devicePixelRatio` — the pictures' `setPixelRatio(1)`.
  *
- * The post chain is the mockup's skeleton (`kit.js::post`): a half-float target with 4× MSAA
- * (full tier; the low tier renders the whole canvas at half resolution and drops MSAA) → `OutputPass` (ACES at `look.exposure`,
- * then sRGB). Bloom and the grade come in T23.08.
+ * The post chain is the mockup's (`kit.js::post`, T23.08 — `post.ts`): a half-float target with 4× MSAA
+ * (full tier; the low tier renders the whole canvas at half resolution and drops MSAA) → bloom →
+ * `OutputPass` (ACES at `look.exposure`, then sRGB) → the grade. The back fog, front fog and the
+ * foreground leaves are `atmosphere.ts` (T23.08), in `f_kit.js::frame`'s order around the terrain.
  *
  * **What it draws: the sky** (T23.04, `skyMaterial.ts` — the mockup's `bgQuad`), its layers
  * moved per frame by their parallax offsets (`skyLayout.ts::skyOffsets`, from the same view the
@@ -23,24 +24,26 @@ import type Phaser from 'phaser'
 import {
   ACESFilmicToneMapping,
   Color,
-  HalfFloatType,
   Mesh,
   MeshBasicMaterial,
+  NoBlending,
+  NormalBlending,
   type Object3D,
   OrthographicCamera,
   PlaneGeometry,
   Scene,
+  ShaderMaterial,
   SRGBColorSpace,
   WebGLRenderer,
   WebGLRenderTarget,
 } from 'three'
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import type { Background, SceneDescription, ViewRect } from './scene'
+import type { Background, Box, SceneDescription, ViewRect } from './scene'
+import { Atmosphere } from './atmosphere'
+import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
 import { gameSky, skyOffsets, type Offset } from './skyLayout'
@@ -122,6 +125,13 @@ function thePageRenderer(): PageRenderer {
   return pageRenderer
 }
 
+/**
+ * R14 (T23.08): the low tier's bloom runs at this fraction of the low tier's own buffer (already half the
+ * pictures'). Measured on the checks' SwiftShader in a match (640×360, camera panning): the bloom at the
+ * buffer's size cost 8.3 ms of a 19.3 ms drawn frame and the match fell 60 → 43 fps.
+ */
+export const LOW_BLOOM_SCALE = 0.5
+
 export class WorldRenderer implements SceneRenderer {
   readonly backend = 'three' as const
   readonly stats: RenderStats & { skipped: number } = { frames: 0, view: null, scene: null, skipped: 0 }
@@ -136,6 +146,14 @@ export class WorldRenderer implements SceneRenderer {
   /** The parallax offsets the last drawn frame used (screen px), for the dev handle. */
   private drawnOffsets: { layers: Offset[]; horizon: Offset } = { layers: [], horizon: [0, 0] }
   private composer: EffectComposer
+  /** T23.08: the composer's passes the look drives (`post.ts`). */
+  private post!: Post
+  /** T23.08: back fog, front fog, foreground leaves (`atmosphere.ts`). */
+  private readonly atmos = new Atmosphere()
+  /** T23.08: player boxes (mask px) the foreground fades over, besides the description's stick figures — `setOccluders`. */
+  private occluders: Box[] = []
+  /** Dev (T23.08): layers and passes switched off — `fogBack`, `fogFront`, `fg`, `bloom`, `grade` (`hideLayers`). */
+  private hidden = new Set<string>()
   private desc: SceneDescription | null = null
   private tier: QualityTier
   /** Phaser's CSS box as last applied to this canvas (fractional — `getBoundingClientRect`). */
@@ -181,6 +199,8 @@ export class WorldRenderer implements SceneRenderer {
     this.terrainMesh.frustumCulled = false
     this.terrainMesh.visible = false
     this.addLayer({ object: this.terrainMesh, animated: false })
+    // T23.08: no clock in the fog or the leaves (`atmosphere.ts`) — the redraw skip stands.
+    for (const m of this.atmos.meshes) this.addLayer({ object: m, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
@@ -262,6 +282,8 @@ export class WorldRenderer implements SceneRenderer {
     this.renderer.setSize(buf.w, buf.h, false)
     this.composer.setPixelRatio(1)
     this.composer.setSize(buf.w, buf.h)
+    // R14's low tier: half-resolution bloom (`LOW_BLOOM_SCALE`) — the composer just sized it to the buffer.
+    if (this.tier === 'low') this.post.bloom.setSize(Math.round(buf.w * LOW_BLOOM_SCALE), Math.round(buf.h * LOW_BLOOM_SCALE))
     // T23.06: allocate both ping-pong targets now. three allocates a target on first use, and the
     // composer first writes its second one on its second drawn frame — so a scene that drew once
     // held one texture fewer than one that drew twice, and `context-budget`'s "the same memory at
@@ -273,11 +295,8 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   private buildComposer(): EffectComposer {
-    const rt = new WebGLRenderTarget(1, 1, { type: HalfFloatType, samples: TIER_SAMPLES[this.tier] })
-    const c = new EffectComposer(this.renderer, rt)
-    c.addPass(new RenderPass(this.scene3, this.camera))
-    c.addPass(new OutputPass())
-    return c
+    this.post = buildPost(this.renderer, this.scene3, this.camera, TIER_SAMPLES[this.tier])
+    return this.post.composer
   }
 
   /** R22: this scene's composer — its two targets, its copy pass **and** its passes (`EffectComposer.dispose` leaves those). */
@@ -348,6 +367,8 @@ export class WorldRenderer implements SceneRenderer {
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
     this.placeTerrain(view)
+    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
+    applyPost(this.post, this.desc.look, this.hidden)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
       this.renderer.setRenderTarget(null)
@@ -389,6 +410,94 @@ export class WorldRenderer implements SceneRenderer {
     const c = toWorld(desc.world.w / 2, desc.world.h / 2, desc.world.h)
     this.terrainMesh.position.set(c.x, c.y, 0)
     this.drawnTerrain = { drawn: true, material: low ? 'low' : 'full', lights: lights.length }
+  }
+
+  /**
+   * T23.08: the boxes the foreground may not hide — the description's stick figures (the look-lab; the
+   * game's once T23.12 describes its actors) and the boxes a scene hands over (`setOccluders`).
+   */
+  private occluderBoxes(): Box[] {
+    const sticks = (this.desc?.actors ?? []).flatMap((a) => (a.kind === 'stick' && a.box ? [a.box] : []))
+    return [...sticks, ...this.occluders]
+  }
+
+  /** T23.08: player boxes, mask px `[x0, y0, x1, y1]`, the foreground leaves fade over (≤ 0.25 alpha). */
+  setOccluders(boxes: Box[]): void {
+    if (JSON.stringify(boxes) === JSON.stringify(this.occluders)) return
+    this.occluders = boxes.map((b) => [...b] as Box)
+    this.dirty = true
+  }
+
+  /** Dev (T23.08): switch layers/passes off by name — `fogBack`, `fogFront`, `fg`, `bloom`, `grade` (the per-pass cost, the layer hunt). */
+  hideLayers(names: string[]): void {
+    this.hidden = new Set(names)
+    this.dirty = true
+  }
+
+  /** Dev (T23.08): what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
+  atmosphereDrawn(): { fogBack: boolean; fogFront: boolean; fg: boolean; bloom: boolean; grade: boolean; occluders: Box[]; bloomTarget: [number, number] } {
+    const bright = this.post.bloom.renderTargetBright
+    return {
+      bloomTarget: [bright.width, bright.height],
+      fogBack: this.atmos.fogBack.visible,
+      fogFront: this.atmos.fogFront.visible,
+      fg: this.atmos.fg.visible,
+      bloom: this.post.bloom.enabled,
+      grade: (this.post.output.uniforms as Record<string, { value: unknown }>)['gradeOn']!.value === 1,
+      occluders: this.atmos.drawnOccluders.map((b) => [...b] as Box),
+    }
+  }
+
+  /**
+   * Dev (T23.08, look-gate-f1): the foreground layer's own alpha — the leaves drawn alone, unblended,
+   * into an 8-bit target at this frame's view — as the max and mean over mask-px box `box` (0–1).
+   * What the fade promises is an alpha, so it is read as one; the check also reads its effect in pixels.
+   */
+  foregroundAlpha(box: Box): { max: number; mean: number; px: number } | null {
+    const desc = this.desc
+    const v = this.stats.view
+    if (!desc || !v || !this.atmos.fg.visible) return null
+    const w = this.buf.w
+    const h = this.buf.h
+    const rt = new WebGLRenderTarget(w, h)
+    const only = new Scene()
+    const fg = this.atmos.fg
+    const parent = fg.parent
+    only.add(fg)
+    const mat = fg.material as ShaderMaterial
+    mat.blending = NoBlending
+    const prev = this.renderer.getRenderTarget()
+    const clear = this.renderer.getClearColor(new Color())
+    const clearA = this.renderer.getClearAlpha()
+    this.renderer.setRenderTarget(rt)
+    this.renderer.setClearColor(0x000000, 0)
+    this.renderer.clear()
+    this.renderer.render(only, this.camera)
+    const px = new Uint8Array(w * h * 4)
+    this.renderer.readRenderTargetPixels(rt, 0, 0, w, h, px)
+    this.renderer.setRenderTarget(prev)
+    this.renderer.setClearColor(clear, clearA)
+    mat.blending = NormalBlending
+    parent?.add(fg)
+    rt.dispose()
+    // Mask px → buffer px (rows bottom-up in the readback).
+    let max = 0
+    let sum = 0
+    let n = 0
+    for (let by = 0; by < h; by++) {
+      const my = v.y + ((h - by - 0.5) * v.h) / h
+      if (my < box[1] || my >= box[3]) continue
+      for (let bx = 0; bx < w; bx++) {
+        const mx = v.x + ((bx + 0.5) * v.w) / w
+        if (mx < box[0] || mx >= box[2]) continue
+        const a = px[(by * w + bx) * 4 + 3]! / 255
+        max = Math.max(max, a)
+        sum += a
+        n++
+      }
+    }
+    this.dirty = true
+    return { max, mean: n ? sum / n : 0, px: n }
   }
 
   /** T23.07: whether the scene asks for the lit terrain (it draws once its picture is whole). */
@@ -627,6 +736,7 @@ export class WorldRenderer implements SceneRenderer {
       ;(m.material as MeshBasicMaterial).dispose()
     }
     this.sky.dispose()
+    this.atmos.dispose()
     this.terrainMesh.geometry.dispose()
     this.terrainMats.full.dispose()
     this.terrainMats.low.dispose()
@@ -671,7 +781,11 @@ export function gameDescription(map: GameMap): SceneDescription {
     // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
     // this map's (the game's own are T23.09's): none.
     litTerrain: !map.space,
-    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1), lights: [] },
+    // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
+    // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
+    // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
+    // Space has no fog (F3 draws none); its bloom and grade stay F1's until T23.20 gives space its look.
+    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1), lights: [], fg: null, ...(map.space ? { fogBack: null, fogFront: null } : {}) },
     palette: F1.palette,
     actors: [],
     fx: [],

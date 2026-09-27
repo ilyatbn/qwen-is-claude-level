@@ -78,6 +78,14 @@ export interface WorldHandle {
   hideTerrain(hide: boolean): void
   /** T23.07B (F4): draw the lit terrain without its cave wall (`gate-ground`: rock changes with the terrain, not with the wall). */
   hideWall(hide: boolean): void
+  /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`); `[]` restores. */
+  hideLayers(names: string[]): void
+  /** T23.08: player boxes (mask px) the foreground leaves fade over. */
+  setOccluders(boxes: [number, number, number, number][]): void
+  /** T23.08: what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
+  atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
+  /** T23.08: the foreground leaves' own alpha over a mask-px box (`WorldRenderer.foregroundAlpha`). */
+  foregroundAlpha(box: [number, number, number, number]): ReturnType<WorldRenderer['foregroundAlpha']>
 }
 
 export interface ProbeSample {
@@ -270,6 +278,14 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three.wallHidden = hide
       three.invalidate()
     },
+    hideLayers(names) {
+      three?.hideLayers(names)
+    },
+    setOccluders(boxes) {
+      three?.setOccluders(boxes)
+    },
+    atmosphere: () => three?.atmosphereDrawn() ?? null,
+    foregroundAlpha: (box) => three?.foregroundAlpha(box) ?? null,
     forceTerrainMaterial(m) {
       if (!three) return
       three.terrainForce = m

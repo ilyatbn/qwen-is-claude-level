@@ -172,9 +172,10 @@ export interface FrameLook {
   fogBack: Fog | null
   fogFront: Fog | null
   fg: Foreground | null
-  /** UnrealBloomPass `[strength, radius, threshold]`. */
+  /** UnrealBloomPass `[strength, radius, threshold]`; strength 0 = no bloom pass (T23.08). */
   bloom: Rgb
-  grade: Grade
+  /** `kit.js::post`'s grade pass; `null` = none (T23.08: the look-lab's `only=sky`/`only=terrain`, whose references have none). */
+  grade: Grade | null
   exposure: number
   moon: Moon
 }

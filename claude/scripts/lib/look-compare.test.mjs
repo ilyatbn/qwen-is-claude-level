@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MUST_FAIL, actorBoxes, compare, deltaE2000, deriveThresholds, failures, loadPng, withActors } from './look-compare.mjs'
+import { MUST_FAIL, actorBoxes, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
@@ -22,6 +22,8 @@ const single = Object.keys(th.controls).filter(c => c !== 'F0')
 const retained = Object.keys(th.metrics)
 // R19: the controls that place a threshold, and the ones only reported.
 const gating = single.filter(c => MUST_FAIL.includes(c))
+// T23.08: the look-lab's floor — its F1 world on SwiftShader and on the owner's GPU — re-measured from the PNGs.
+const lab = labFloor(th, regions, p => loadPng(ref(p)))
 const sensitivity = single.filter(c => !MUST_FAIL.includes(c))
 
 test('the table', () => {
@@ -30,7 +32,7 @@ test('the table', () => {
   const lines = [head.map(s => s.padStart(13)).join('')]
   for (const m of [...retained, ...Object.keys(th.dropped)]) {
     const t = th.metrics[m]
-    lines.push([m.padStart(13), '0'.padStart(13), ...cols.map(c => rows[c][m].toPrecision(3).padStart(13)), (t ? String(t.threshold) : 'DROPPED').padStart(13)].join(''))
+    lines.push([m.padStart(13), (lab.floor[m] ?? 0).toPrecision(3).padStart(13), ...cols.map(c => rows[c][m].toPrecision(3).padStart(13)), (t ? String(t.threshold) : 'DROPPED').padStart(13)].join(''))
   }
   lines.push('(sensitivity, not gating — R19) ' + sensitivity.map(c => `${c} fails ${failures(rows[c], th).length}/${retained.length}`).join('; '))
   console.log(lines.join('\n'))
@@ -63,7 +65,9 @@ test('every must-fail single-knob control fails at least one retained metric', (
 test('the thresholds file is R19\'s rule applied to what the instrument measures now', () => {
   // Re-derived from the PNGs: a hand-edited threshold, a control moved in or out of the must-fail
   // set, or an instrument change all show up here as a difference.
-  const d = deriveThresholds(rows, 0)
+  const d = deriveThresholds(rows, lab.floor)
+  assert.deepEqual(th.labFloor.metrics, lab.floor)
+  assert.deepEqual(th.box, lab.box)
   assert.deepEqual(th.mustFail, MUST_FAIL)
   assert.deepEqual(th.metrics, d.metrics)
   assert.deepEqual(th.dropped, d.dropped)
@@ -74,6 +78,17 @@ test('the thresholds file is R19\'s rule applied to what the instrument measures
   }
   // A dropped metric really could not separate: some must-fail control leaves it on the floor.
   for (const [m, d] of Object.entries(th.dropped)) assert.ok(Math.min(...MUST_FAIL.map(c => rows[c][m])) <= d.floor, `${m} was dropped but separates`)
+  for (const [n, b] of Object.entries(th.box)) assert.ok(b.floor < b.threshold && b.threshold < b.smallest, `box ${n}: threshold not between floor and control`)
+})
+
+test('T23.08: the lab floor is two real back-ends, and it moved the thresholds', () => {
+  // Two renders of one back-end are byte-identical (SwiftShader, twice: floor 0 on every metric) — a
+  // floor of all zeros would mean the two frames were one. And the rule re-derived with a zero floor
+  // differs from the file: the floor is what placed dssim / deltaE_sky and dropped deltaE_actors.
+  assert.ok(lab.floor.dssim > 0 && lab.floor.deltaE_sky > 0, 'the two lab frames are identical — one back-end twice')
+  const zero = deriveThresholds(rows, 0)
+  assert.notDeepEqual(zero.metrics, th.metrics)
+  assert.ok('deltaE_actors' in zero.metrics && 'deltaE_actors' in th.dropped, 'deltaE_actors: kept at a zero floor, dropped at the lab floor')
 })
 
 test('control: with rim-off gating, the rule would place tighter thresholds (R19 is what moved them)', () => {

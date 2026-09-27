@@ -78,6 +78,16 @@ export const CHECKS = [
   {
     name: 'look-terrain',
     file: 'scripts/checks/look-terrain.mjs',
+    url: '?look=F1&only=terrain',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
+  // T23.08: the first picture gate — the look-lab's F1 world without its cast (sky, fog, lit terrain,
+  // foreground, bloom, grade) against the mockup's (`controls/F1-world.png`) at Level A, full tier; the
+  // lab's bloom-off / fog-off / exposure ±10 % / fg-off / grade-off must fail; against the F1 picture with
+  // the actor boxes excluded, the whole miss must be the cast's; a leaf over a player fades to ≤ 0.25.
+  {
+    name: 'look-gate-f1',
+    file: 'scripts/checks/look-gate-f1.mjs',
     url: '?look=F1&only=world',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },

@@ -4,7 +4,7 @@
  *
  * ## 1. Level A, full tier: the look-lab's F1 sky + terrain against the mockup's sky + terrain
  *
- * `?look=F1&only=world` describes F1 with its actors, fx, labels and HUD taken out of the data, so the
+ * `?look=F1&only=terrain` describes F1 with its actors, fx, labels and HUD taken out of the data, so the
  * world renderer draws its sky and its lit terrain — F1's masks through the Rust fields, the GPU albedo,
  * F1's terrain look and its ten point lights — alone. The reference is the mockup drawing the same
  * thing: `reference/controls/terrainonly.js` (`f_kit.js::frame` less fog, actors, fx, foreground,
@@ -197,7 +197,7 @@ export default async function ({ page, shot, log }) {
 
   // ---------------------------------------------------------------- 1. Level A, full tier
   await page.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
-  const full = await lab(page, '&only=world')
+  const full = await lab(page, '&only=terrain')
   const i = full.info
   if (i.tier !== 'full' || i.buffer[0] !== 1280 || i.buffer[1] !== 720 || i.samples !== 4) {
     throw new Error(`want the full tier (1280x720, MSAA 4), got ${JSON.stringify(i)}`)
@@ -205,7 +205,7 @@ export default async function ({ page, shot, log }) {
   if (!full.lit?.drawn || full.lit.material !== 'full' || full.lit.lights !== 10) {
     throw new Error(`want the lit terrain drawn with the full material and F1's 10 lights, got ${JSON.stringify(full.lit)} (terrain ${JSON.stringify(full.terrain)})`)
   }
-  if (full.look.described.actors !== 0) throw new Error(`only=world still describes ${full.look.described.actors} actors`)
+  if (full.look.described.actors !== 0) throw new Error(`only=terrain still describes ${full.look.described.actors} actors`)
   await shot('look-terrain-F1')
   const m = compare(full.frame, reference, { regions })
   log(`Level A — look-lab F1 sky + lit terrain vs reference/controls/F1-terrain.png (full tier, ${Object.keys(TH.metrics).length} metrics):`)
@@ -218,7 +218,7 @@ export default async function ({ page, shot, log }) {
   log(`reported, not gating: vs the F1 picture deltaE_terrain ${whole.deltaE_terrain.toFixed(3)}, deltaE_cave ${whole.deltaE_cave.toFixed(3)} (fog, bloom, grade: T23.08)`)
 
   // Must-fail: the rim off, the bevel off; presence: no terrain at all.
-  for (const [knob, extra] of [['rim-off', '&only=world&knob=rim-off'], ['bevel-off', '&only=world&knob=bevel-off'], ['no terrain', '&only=sky']]) {
+  for (const [knob, extra] of [['rim-off', '&only=terrain&knob=rim-off'], ['bevel-off', '&only=terrain&knob=bevel-off'], ['no terrain', '&only=sky']]) {
     const c = await lab(page, extra)
     const cm = compare(c.frame, reference, { regions })
     const cbad = failures(cm, TH)
@@ -228,7 +228,7 @@ export default async function ({ page, shot, log }) {
 
   // ---------------------------------------------------------------- 2. the low tier's bake
   await page.evaluate((k) => localStorage.setItem(k, '0'), HIGH_QUALITY_KEY)
-  const low = await lab(page, '&only=world')
+  const low = await lab(page, '&only=terrain')
   if (low.info.tier !== 'low') problems.push(`the low half runs ${low.info.tier}`)
   if (low.lit?.material !== 'low' || !(low.terrain?.bakes > 0)) problems.push(`the low tier drew with ${JSON.stringify(low.lit)}, bakes ${low.terrain?.bakes} — want the baked material`)
   await shot('look-terrain-F1-low')

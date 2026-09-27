@@ -262,15 +262,50 @@ export function deriveThresholds(rows, floor = 0) {
   const metrics = {}
   const dropped = {}
   for (const m of names) {
+    // T23.08: `floor` may be per metric — the look-lab on two back-ends (`labFloor`).
+    const f = typeof floor === 'number' ? floor : (floor[m] ?? 0)
     const [smallestControl, smallest] = MUST_FAIL.map(c => [c, rows[c][m]]).sort((a, b) => a[1] - b[1])[0]
-    if (smallest > floor) metrics[m] = { floor, smallestControl, smallest, threshold: sig4((floor + smallest) / 2), F0: rows.F0[m] }
-    else dropped[m] = { floor, smallestControl, smallest, reason: `${smallestControl} does not move it off the floor` }
+    if (smallest > f) metrics[m] = { floor: f, smallestControl, smallest, threshold: sig4((f + smallest) / 2), F0: rows.F0[m] }
+    else if (f > 0 && smallest > 0) dropped[m] = { floor: f, smallestControl, smallest, reason: `the look-lab's two-back-end floor is at or past ${smallestControl}` }
+    else dropped[m] = { floor: f, smallestControl, smallest, reason: `${smallestControl} does not move it off the floor` }
   }
   const sensitivity = {}
   for (const c of Object.keys(rows).filter(c => !MUST_FAIL.includes(c))) {
     sensitivity[c] = failures(rows[c], { metrics })
   }
   return { metrics, dropped, sensitivity }
+}
+
+/** T23.08: mean |Δ| per channel over a box `[x0, y0, x1, y1]` (px, half-open) — `look-thresholds.json` `box`. */
+export function boxDelta(a, b, [x0, y0, x1, y1]) {
+  let s = 0
+  let n = 0
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * a.width + x) * 4
+      for (let c = 0; c < 3; c++) s += Math.abs(a.data[i + c] - b.data[i + c])
+      n += 3
+    }
+  }
+  return s / n
+}
+
+/**
+ * T23.08 step 4: the look-lab's noise floor — its F1 world frame on two back-ends (`labFloor.frames`),
+ * compared metric by metric — and the box metrics (`box`), each placed by the same rule: the midpoint of
+ * that floor and its control. `thDir` is where the file's paths are relative to (`tasks/M23`).
+ */
+export function labFloor(th, regions, load) {
+  const [a, b] = th.labFloor.frames.map(f => load(f.split(' ')[0]))
+  const metrics = compare(a, b, { regions })
+  const floor = Object.fromEntries(Object.entries(metrics).filter(([, v]) => typeof v === 'number'))
+  const box = {}
+  for (const [name, bx] of Object.entries(th.box)) {
+    const f = boxDelta(a, b, bx.box)
+    const smallest = boxDelta(load(bx.reference.split(' ')[0]), load(bx.control.split(' ')[0]), bx.box)
+    box[name] = { ...bx, floor: f, smallest, threshold: sig4((f + smallest) / 2) }
+  }
+  return { floor, box }
 }
 
 /** Which retained metrics exceed their threshold. `thresholds.metrics[name].threshold` is a max. */
@@ -289,8 +324,9 @@ function derive() {
   const regions = withActors(loadPng(ref('reference/controls/regions-F1.png')), actorBoxes('F1'))
   const f1 = loadPng(ref(th.reference))
   const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(th.controls[c].split(' ')[0])), { regions })]))
-  const d = deriveThresholds(rows, 0)
-  writeFileSync(path, JSON.stringify({ ...th, mustFail: MUST_FAIL, ...d }, null, 2) + '\n')
+  const lf = labFloor(th, regions, p => loadPng(ref(p)))
+  const d = deriveThresholds(rows, lf.floor)
+  writeFileSync(path, JSON.stringify({ ...th, labFloor: { ...th.labFloor, metrics: lf.floor }, box: lf.box, mustFail: MUST_FAIL, ...d }, null, 2) + '\n')
   console.log(`wrote ${path}: ${Object.keys(d.metrics).length} retained, ${Object.keys(d.dropped).length} dropped`)
 }
 

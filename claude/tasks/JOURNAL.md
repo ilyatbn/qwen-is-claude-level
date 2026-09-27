@@ -7421,3 +7421,13 @@ Built: `render_fields.rs::classify` (closing via two EDT passes + enclosed-regio
 Look: s11 slab back as a soft-edged dark block (T23.07B's picture); s4 chambers dark wall, no sky circles; s9 slab keeps a hard straight edge (the named 39). shots/t2307c-final-s{4,9,11}.png.
 Cost: Medium worker 1273 ms (1095 T23.07B, one draw each); release bench full pass Medium 508 ms, r=60 crater 3.5 ms.
 Done-when EXIT 0 (vitest 1116, game-wasm 70, look-terrain/terrain-seed/gate-ground + look-albedo/look-lab 5/5); check.sh --changed HEAD --fast EXIT 0.
+
+## T23.08 — fog, foreground, post chain; the first picture gate (builder, 2026-09-27)
+Gate (look-gate-f1, full tier) lab F1 world vs mockup `controls/F1-world.png` (no cast): all within — dssim .00004/.00501, deltaE .0088/.3613, lumaW1 0/.00281, p50 0/1, p95 0/2.5, paletteDE .0054/.8239, satW1 .00001/.002186, edge .00002/.000945, dE_sky .0056/.2151, dE_terrain .0134/.4862, dE_cave .0050/.01517, bloomBox .008/.866.
+vs F1 picture, actor boxes excluded: misses 11/11 (dssim .0703, deltaE 2.26, p95 17, dE_sky 2.15, dE_terrain 1.88, dE_cave 12.19) = the mockup's own world vs F1 within every threshold (max |Δ| paletteDE .0068): layer = the cast/fx (T23.12+/T23.18), none the lab's.
+Controls (lab knobs) red: fog-off 11/12, exposure-up 10/12, -down 12/12, bloom-off bloomBox 1.21 > .866, fg-off 3/12, grade-off 12/12. Leaf over a player alpha .200 (≤.25; control .961), pixels 12.13 → 2.86.
+Plants red: front-fog seed ignored (4), grain cell 640 (6), fade off (alpha .96), low bloom full-size. Green: bloom radius 0 (moon box .27 < floor .52 — limit, stated).
+Lab floor SwiftShader vs D3D12 Arc B390: dssim .0046, dE_sky .187, dE_actors .242 (stars/grain) → thresholds re-derived, deltaE_actors dropped; look-compare.test 10/10.
+fps panning a Medium match: SwiftShader low 56.8 (control 60.2), draw 12.9 ms: bloom 3.3, fog 1.2, grade 0.2; D3D12 full 60.1 (vsync), +1.25 ms (bloom .95, fog .27). Lab full: SwiftShader bloom 56, fg 12 ms; GPU 1.1/1.0.
+Game: fog+bloom+grade, no leaves (T23.08B: needs players' boxes from the scenes). explosion-shader world count 9/12 (was 10/12 at T23.04C) — reported.
+Browser 26/26 (look-*, world-canvas, context-budget, sandbox, gate-ground, fog/weather, shaders, animals, birds, rematch…); check.sh --changed HEAD --fast EXIT 0; e2e --only ignores unknown names (finding).
