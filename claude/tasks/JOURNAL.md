@@ -7459,3 +7459,10 @@ Looked (GPU full): off, every cave/crater opens onto the sky's purple bands and 
 Cause (instrumented, gate-t2309b-inst1.txt): probe column along the tall bar; moon glow split it in three.js → first-run centres 359.5 vs 46 = 313.5. Unpinned map chose the pan direction.
 Fix: `crossing()` — only bar-thick runs, two = ambiguous (named fail); FIXED_SEED 4242 pinned (crosses on 2 frames/run). vitest 3 (the red run's runs as the fixture).
 Plants: old search on 4242 → red 2/2 (313.50); decoy bar → red by name every leg. 5/5 green alone after T23.09A → flaky flag removed.
+
+## T23.12 — the actor atlas (builder, 2026-09-27)
+`look/actors/`: e_style.js cast ported (draw.ts); cells of 4–6 images (halo+shadow | stroke-count mask | ink | per-pass extras) in a 2048² atlas, 64-px grid, keyed on the drawing not the light; one draw call, lit()'s fill+ink composited in sRGB in the shader (rim passes wired, off → T23.13). Game has no actors yet (T23.14).
+Level A (new R25 actor set on F4 cast, castonly.js): swift floor 0 → max 0.1761 (bloom-off .352; rim-off 3.30); lab 0.1213 ok. gpu floor .312 → max .3323; D3D12 lab .373 **fails the gpu set** (edge AA of the GPU canvas; world alone .16 on those boxes) — reported, check runs on SwiftShader.
+Findings: (1) owner's D3D12 Chrome canvas draws roundRect/ellipse/stroked arcs wrong (bow-tie jetpacks, flat beetle, no gate ring) → `flat.ts` flattens those; shots/t2312-gpu-canvas-bug-before-after.png. (2) checks' --use-gl=swiftshader rasterises canvas on CPU (dithered, 0.52) → actor-atlas uses render.mjs's flags in its own browser.
+Done-when EXIT 0 (vitest 1144/1144, actor-atlas ok). Plants red: no fill pass (0.69>0.176), cache defeated (vitest 2 red; 32→352 redraws). Controls red: exposure-up 1.19, bloom-off .41, fog-off 2.93, only=world 7.89.
+check.sh --changed HEAD --fast EXIT 0 (maps to all e2e; ran 13 look/world/context/sandbox checks 13/13). Retired: none (no old reader replaced yet).

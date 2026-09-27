@@ -54,6 +54,15 @@ export const CHECKS = [
     url: '?look=F1',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.12: the actor atlas — the look-lab's F4 cast drawn by code into atlas cells, at Level A on its actor
+  // boxes (deltaE_actors, R25's actor threshold) in the reference harness's own browser; the cache; R19's knobs
+  // and a cast-less frame as must-fail controls.
+  {
+    name: 'actor-atlas',
+    file: 'scripts/checks/actor-atlas.mjs',
+    url: '?look=F4',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.04: the sky — the look-lab's F1/F5 sky alone against the mockup's sky alone at Level A
   // (full tier, every look-thresholds.json metric, F5's sky as the must-fail control), then live
   // in the sandbox: each band's pan shift = pan × zoom × parallax, far < near, a moon fixed;

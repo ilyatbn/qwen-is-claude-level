@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEFERRED, MUST_FAIL, actorBoxes, areaDelta, backEnd, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, thresholdsFor, withActors } from './look-compare.mjs'
+import { ACTOR_MUST_FAIL, DEFERRED, MUST_FAIL, actorBoxes, actorSet, areaDelta, backEnd, boxesDeltaE, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, thresholdsFor, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
@@ -182,7 +182,7 @@ test('FLIP is never reported uncomputed', () => {
 })
 
 test('the actor boxes are where the actors are: rim-off lands inside them', () => {
-  // (deltaE_actors is computed for every compare and gates nothing yet — R25, `DEFERRED`.)
+  // (deltaE_actors is computed for every F1 compare and gates nothing there — R25 places it on F4's cast: `actorSet`.)
   // rim-off changes only what lit() paints — the actors (plus the bloom they feed). Measured:
   // mean ΔE 1.70 inside the boxes against 0.127 in the sky. The same boxes shifted 200 px right
   // (the control) sit mostly on empty sky and terrain and must lose that contrast.
@@ -194,4 +194,62 @@ test('the actor boxes are where the actors are: rim-off lands inside them', () =
   const shifted = withActors(loadPng(ref('reference/controls/regions-F1.png')), boxes.map(([a, b, c, d]) => [a + 200, b, c + 200, d]))
   const moved = compare(f1, loadPng(ref(file('rim-off'))), { regions: shifted })
   assert.ok(!(inside(moved) > 5 * outside(moved)), `control: shifted boxes still concentrate rim-off (${inside(moved)} vs ${outside(moved)})`)
+})
+
+test('R25 (T23.12): each set\'s actor threshold is R19\'s rule on F4\'s cast, re-derived from the PNGs', () => {
+  const load = p => loadPng(ref(p))
+  assert.deepEqual(th.actors.mustFail, ACTOR_MUST_FAIL)
+  assert.ok(ACTOR_MUST_FAIL.includes('rim-off'), 'R25: rim-off is in the actor set\'s must-fail set')
+  assert.deepEqual(Object.keys(th.actors.controls).sort(), [...ACTOR_MUST_FAIL].sort(), 'every must-fail control has a picture')
+  const lines = []
+  for (const n of SETS) {
+    const got = actorSet(th, n, load)
+    const { frames, ...placed } = th.sets[n].actors
+    assert.equal(frames.length, 2, `${n}: two floor frames`)
+    assert.deepEqual(placed, got, `${n}: actors`)
+    assert.ok(got.floor < got.threshold && got.threshold < got.smallest, `${n}: the actor threshold is not between floor and control`)
+    assert.ok(ACTOR_MUST_FAIL.includes(got.smallestControl))
+    // Every must-fail control fails it — rim-off by the widest margin of the lot.
+    for (const c of ACTOR_MUST_FAIL) assert.ok(got.controls[c] > got.threshold, `${n}: ${c} passes the actor threshold`)
+    lines.push(`${n}: deltaE_actors floor ${got.floor.toPrecision(3)} max ${got.threshold}; controls ` + Object.entries(got.controls).map(([c, v]) => `${c} ${v.toPrecision(3)}`).join(', '))
+  }
+  // The swiftshader floor is one back end twice (0); the gpu floor is two (> 0).
+  assert.equal(th.sets.swiftshader.actors.floor, 0)
+  assert.ok(th.sets.gpu.actors.floor > 0, 'the gpu floor frames are identical — one back end twice')
+  // The lab's own frames against the reference the lab draws today (T23.12: no rim passes), on each set.
+  const rimOff = load('reference/controls/F4-cast-rim-off.png')
+  const boxes = actorBoxes('F4')
+  for (const n of SETS) {
+    const f = load(th.sets[n].actors.frames[1].split(' ')[0])
+    lines.push(`${n}: the lab (${th.sets[n].actors.frames[1].split(' ')[0].split('/').pop()}) vs F4-cast-rim-off ${boxesDeltaE(f, rimOff, boxes).toFixed(4)}`)
+  }
+  const swift = load(th.sets.swiftshader.actors.frames[0].split(' ')[0])
+  assert.ok(boxesDeltaE(swift, rimOff, boxes) <= th.sets.swiftshader.actors.threshold, 'the committed SwiftShader lab frame fails its own set')
+  // Control: the same frame against the world without its cast (castonly 'world') fails — the boxes see the cast.
+  assert.ok(boxesDeltaE(swift, load('reference/controls/F4-world.png'), boxes) > th.sets.swiftshader.actors.threshold)
+  console.log(lines.join('\n'))
+})
+
+test('boxesDeltaE is compare()\'s deltaE_actors, alone', () => {
+  const a = loadPng(ref('reference/controls/F4-cast.png'))
+  const b = loadPng(ref('reference/controls/F4-cast-rim-off.png'))
+  const boxes = actorBoxes('F4')
+  const blank = { width: a.width, height: a.height, data: new Uint8Array(a.width * a.height * 4) }
+  assert.equal(boxesDeltaE(a, b, boxes), compare(a, b, { regions: withActors(blank, boxes) }).deltaE_actors)
+  assert.equal(boxesDeltaE(a, a, boxes), 0)
+})
+
+test('T23.12: castonly.js draws variant_F4.js\'s cast call for call, less the text', () => {
+  // The actor references are only F4 "without what the lab does not draw" if castonly's draw2d is F4's, less
+  // label() and the caption. Compared as trimmed lines: F4's draw2d body minus its text lines, against castonly's
+  // body between its marker and the end of its `if (knob !== 'world')` block.
+  const f4 = readFileSync(ref('reference/mockup-src/variant_F4.js'), 'utf8').split('\n').map(l => l.trim())
+  const co = readFileSync(ref('reference/controls/castonly.js'), 'utf8').split('\n').map(l => l.trim())
+  const from = (ls, a, b) => ls.slice(ls.findIndex(l => l.startsWith(a)) + 1, ls.findIndex(l => l.startsWith(b)))
+  const text = /label|fillText|g\.font|textAlign|g\.fillStyle = 'rgba\(225,218,230/
+  const want = from(f4, 'draw2d: g => {', 'fx3d: fx => {').slice(0, -1).filter(l => l && !text.test(l))
+  const got = from(co, "if (knob !== 'world') {", "S.setInk('#16110d')").slice(0, -1).filter(Boolean)
+  assert.equal(from(f4, 'draw2d: g => {', 'fx3d: fx => {').filter(l => text.test(l)).length, 6, 'F4\'s text lines')
+  assert.equal(want.length, 17, 'F4\'s cast calls')
+  assert.deepEqual(got, want)
 })

@@ -92,6 +92,8 @@ export interface WorldHandle {
   setOccluders(boxes: [number, number, number, number][]): void
   /** T23.08: what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
   atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
+  /** T23.12: the cast as last laid out — quads, and the atlas's redraws/uploads/resets/cells. */
+  actors(): ReturnType<WorldRenderer['actorsDrawn']> | null
   /** T23.08: the foreground leaves' own alpha over a mask-px box (`WorldRenderer.foregroundAlpha`). */
   foregroundAlpha(box: [number, number, number, number]): ReturnType<WorldRenderer['foregroundAlpha']>
 }
@@ -319,6 +321,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three?.setOccluders(boxes)
     },
     atmosphere: () => three?.atmosphereDrawn() ?? null,
+    actors: () => three?.actorsDrawn() ?? null,
     foregroundAlpha: (box) => three?.foregroundAlpha(box) ?? null,
     forceTerrainMaterial(m) {
       if (!three) return

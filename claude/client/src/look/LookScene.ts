@@ -150,7 +150,7 @@ export class LookScene extends Phaser.Scene {
         try {
           lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
         } catch (e) {
-          // F3 (space) and F4 (the cast sheet): no solid bottom row to pad — no lit terrain (only=albedo: an error).
+          // F3 (space): no solid bottom row to pad — no lit terrain (only=albedo: an error). F4 pads (T23.12 draws its cast on it).
           if (only === 'albedo') {
             handle.error = String(e)
             return

@@ -43,6 +43,7 @@ import { detectTier, onHighQualityChange, qualityTier, rendererString } from '..
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import type { Background, Box, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere } from './atmosphere'
+import { ActorLayer } from './actors/layer'
 import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
@@ -177,6 +178,8 @@ export class WorldRenderer implements SceneRenderer {
    */
   private readonly terrainMats = makeTerrainMaterials()
   private readonly terrainMesh = new Mesh(new PlaneGeometry(1, 1), this.terrainMats.full)
+  /** T23.12: the cast — one quad per actor over its atlas cell (`actors/layer.ts`), between the front fog and the leaves. */
+  private readonly actorLayer: ActorLayer
   /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
   private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number } = { drawn: false, material: null, lights: 0 }
 
@@ -201,6 +204,9 @@ export class WorldRenderer implements SceneRenderer {
     this.addLayer({ object: this.terrainMesh, animated: false })
     // T23.08: no clock in the fog or the leaves (`atmosphere.ts`) — the redraw skip stands.
     for (const m of this.atmos.meshes) this.addLayer({ object: m, animated: false })
+    // T23.12: static like the rest — a changed cast or light list is a changed description, which marks the frame.
+    this.actorLayer = new ActorLayer(this.renderer)
+    this.addLayer({ object: this.actorLayer.mesh, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
@@ -368,6 +374,7 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.placeTerrain(view)
     this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
+    this.actorLayer.place(this.desc.actors, this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     applyPost(this.post, this.desc.look, this.hidden)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
@@ -522,6 +529,11 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.dirty = true
     return { max, mean: n ? sum / n : 0, px: n }
+  }
+
+  /** Dev (T23.12): the cast as last laid out — quads drawn and the atlas's counters. */
+  actorsDrawn(): { quads: number; redraws: number; uploads: number; resets: number; cells: number } {
+    return { quads: this.actorLayer.drawn, ...this.actorLayer.atlasStats }
   }
 
   /** T23.07: whether the scene asks for the lit terrain (it draws once its picture is whole). */
@@ -761,6 +773,7 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.sky.dispose()
     this.atmos.dispose()
+    this.actorLayer.dispose()
     this.terrainMesh.geometry.dispose()
     this.terrainMats.full.dispose()
     this.terrainMats.low.dispose()

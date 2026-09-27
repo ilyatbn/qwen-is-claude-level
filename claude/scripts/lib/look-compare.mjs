@@ -249,13 +249,53 @@ export function compare(a, b, { regions = null } = {}) {
 export const MUST_FAIL = ['F0', 'exposure+10', 'exposure-10', 'bloom-off', 'fog-off']
 
 /**
- * R25 (coordinator, 2026-09-27): metrics no set places yet. `deltaE_actors` measures the actor boxes, and
- * no frame the gates compare has a cast in them until the lab draws one (T23.12), so a floor or control
- * measured today would be a number about empty sky. T23.12 creates its threshold on cast frames, with
- * R19's must-fail set plus rim-off. Until then it is computed and reported, and gates nothing.
+ * R25 (coordinator, 2026-09-27): metrics the whole-frame derivation (F1's rows) does not place. `deltaE_actors`
+ * measures the actor boxes, and R25 has its threshold measured on frames that **contain the cast**, with its own
+ * must-fail set (`ACTOR_MUST_FAIL`): T23.12 places it on F4, the cast sheet (`actorSet`), under each threshold
+ * set's `actors`. It is still computed in every F1 compare, and gates nothing there.
  */
 export const DEFERRED = {
-  deltaE_actors: 'R25: created by T23.12 on frames containing the cast, must-fail = R19 ∪ rim-off; no gated frame has a cast yet',
+  deltaE_actors: 'R25: placed on cast frames by the actor set (T23.12: F4, the cast sheet — look-thresholds.json `actors`), not by F1\'s rows',
+}
+
+/**
+ * R25 (T23.12): the actor box's must-fail set — R19's through the mockup, plus rim-off. R19's F0 has no F4
+ * counterpart (today's look never drew a cast sheet); a smaller set can only raise its minimum, never lower it.
+ */
+export const ACTOR_MUST_FAIL = ['exposure+10', 'exposure-10', 'bloom-off', 'fog-off', 'rim-off']
+
+/** Mean ΔE2000 over the union of `boxes` (px inside any box, each once) — `compare`'s `deltaE_actors`, alone. */
+export function boxesDeltaE(a, b, boxes) {
+  const blank = { width: a.width, height: a.height, data: new Uint8Array(a.width * a.height * 4) }
+  const r = withActors(blank, boxes)
+  let s = 0
+  let n = 0
+  for (let i = 0; i < a.width * a.height; i++) {
+    const o = i * 4
+    if (r.data[o] === 0) continue
+    n++
+    if (a.data[o] === b.data[o] && a.data[o + 1] === b.data[o + 1] && a.data[o + 2] === b.data[o + 2]) continue
+    s += deltaE2000(lab(a.data[o], a.data[o + 1], a.data[o + 2]), lab(b.data[o], b.data[o + 1], b.data[o + 2]))
+  }
+  return s / n
+}
+
+/**
+ * R25 (T23.12): one set's actor threshold — its floor (`sets.<name>.actors.frames`, two look-lab renders of the
+ * cast sheet) and R19's rule against the smallest `ACTOR_MUST_FAIL` control, each control measured against the
+ * actor set's reference (`th.actors`, F4 through the mockup without its fx and text). `load` as `labFloor`'s.
+ */
+export function actorSet(th, name, load) {
+  const spec = th.actors
+  const boxes = actorBoxes(spec.scene)
+  const [a, b] = th.sets[name].actors.frames.map(f => load(f.split(' ')[0]))
+  const floor = boxesDeltaE(a, b, boxes)
+  const ref = load(spec.reference.split(' ')[0])
+  const controls = Object.fromEntries(Object.entries(spec.controls).map(([c, f]) => [c, boxesDeltaE(ref, load(f.split(' ')[0]), boxes)]))
+  const [smallestControl, smallest] = ACTOR_MUST_FAIL.map(c => [c, controls[c]]).sort((p, q) => p[1] - q[1])[0]
+  return smallest > floor
+    ? { floor, smallestControl, smallest, threshold: sig4((floor + smallest) / 2), controls }
+    : { floor, smallestControl, smallest, threshold: null, controls, dropped: `this set's floor is at or past ${smallestControl}` }
 }
 
 /**
@@ -395,10 +435,12 @@ function derive() {
   for (const name of Object.keys(th.sets)) {
     const lf = labFloor(th, name, regions, p => loadPng(ref(p)))
     const d = deriveThresholds(rows, lf.floor)
-    sets[name] = { ...th.sets[name], floor: lf.floor, ...d, box: lf.box }
+    const actors = { ...th.sets[name].actors, ...actorSet(th, name, p => loadPng(ref(p))) }
+    sets[name] = { ...th.sets[name], floor: lf.floor, ...d, box: lf.box, actors }
+    console.log(`${name}: deltaE_actors floor ${actors.floor.toPrecision(3)} threshold ${actors.threshold} (${actors.smallestControl} ${actors.smallest.toPrecision(3)})`)
     console.log(`${name}: ${Object.keys(d.metrics).length} retained, ${Object.keys(d.dropped).length} dropped`)
   }
-  writeFileSync(path, JSON.stringify({ ...th, mustFail: MUST_FAIL, deferred: DEFERRED, sets }, null, 2) + '\n')
+  writeFileSync(path, JSON.stringify({ ...th, mustFail: MUST_FAIL, deferred: DEFERRED, actors: { ...th.actors, mustFail: ACTOR_MUST_FAIL }, sets }, null, 2) + '\n')
   console.log(`wrote ${path}`)
 }
 

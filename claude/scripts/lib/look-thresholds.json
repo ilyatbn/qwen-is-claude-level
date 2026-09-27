@@ -194,6 +194,23 @@
           "smallest": 2.463209219858156,
           "threshold": 1.232
         }
+      },
+      "actors": {
+        "frames": [
+          "reference/controls/F4-lab-cast-swiftshader.png (look-lab F4, T23.12's cast without rim passes, SwiftShader under the reference harness's flags, render 1)",
+          "reference/controls/F4-lab-cast-swiftshader-2.png (the same, a separate launch)"
+        ],
+        "floor": 0,
+        "smallestControl": "bloom-off",
+        "smallest": 0.3522349649666968,
+        "threshold": 0.1761,
+        "controls": {
+          "rim-off": 3.298547544768269,
+          "exposure+10": 1.1889004181754854,
+          "exposure-10": 1.2571744042145812,
+          "bloom-off": 0.3522349649666968,
+          "fog-off": 2.6244989188097363
+        }
       }
     },
     "gpu": {
@@ -343,6 +360,23 @@
           "smallest": 2.463209219858156,
           "threshold": 1.42
         }
+      },
+      "actors": {
+        "frames": [
+          "reference/controls/F4-lab-cast-swiftshader.png (look-lab F4, SwiftShader)",
+          "reference/controls/F4-lab-cast-d3d12.png (look-lab F4, headed Chrome, GALLIUM_DRIVER=d3d12, D3D12 Intel Arc B390)"
+        ],
+        "floor": 0.31243562864390234,
+        "smallestControl": "bloom-off",
+        "smallest": 0.3522349649666968,
+        "threshold": 0.3323,
+        "controls": {
+          "rim-off": 3.298547544768269,
+          "exposure+10": 1.1889004181754854,
+          "exposure-10": 1.2571744042145812,
+          "bloom-off": 0.3522349649666968,
+          "fog-off": 2.6244989188097363
+        }
       }
     }
   },
@@ -354,6 +388,25 @@
     "fog-off"
   ],
   "deferred": {
-    "deltaE_actors": "R25: created by T23.12 on frames containing the cast, must-fail = R19 ∪ rim-off; no gated frame has a cast yet"
+    "deltaE_actors": "R25: placed on cast frames by the actor set (T23.12: F4, the cast sheet — look-thresholds.json `actors`), not by F1's rows"
+  },
+  "actors": {
+    "about": "R25 (T23.12): the actor-box threshold, deltaE_actors = mean CIEDE2000 over the union of a scene's actor boxes (look-compare.mjs::boxesDeltaE). Placed on F4, the cast sheet, where the cast is the subject: reference = the mockup's F4 with only what the look-lab does not draw taken out (controls/castonly.js: the fx group and the text), controls = the same with one knob turned. Must-fail = R19's through the mockup plus rim-off (ACTOR_MUST_FAIL; R19's F0 has no F4 counterpart). Each set's floor = two look-lab renders of F4 (sets.<name>.actors.frames); threshold = midpoint of that floor and the smallest control, by R19's rule. The lab renders are made in the reference harness's browser (render.mjs: --use-gl=angle --use-angle=swiftshader), where Chrome rasterises a 2D canvas on the GPU as the mockup's was: under the checks' --use-gl=swiftshader every canvas is rasterised on the CPU, which dithers gradients (measured, F4 actor boxes: 0.50 against 0.12).",
+    "scene": "F4",
+    "reference": "reference/controls/F4-cast.png (castonly.js, no knob)",
+    "controls": {
+      "rim-off": "reference/controls/F4-cast-rim-off.png (lit() without its two rim passes)",
+      "exposure+10": "reference/controls/F4-cast-exposure-up10.png (exposure x 1.1)",
+      "exposure-10": "reference/controls/F4-cast-exposure-down10.png (exposure x 0.9)",
+      "bloom-off": "reference/controls/F4-cast-bloom-off.png (bloom strength 0)",
+      "fog-off": "reference/controls/F4-cast-fog-off.png (fogBack = null)"
+    },
+    "mustFail": [
+      "exposure+10",
+      "exposure-10",
+      "bloom-off",
+      "fog-off",
+      "rim-off"
+    ]
   }
 }
