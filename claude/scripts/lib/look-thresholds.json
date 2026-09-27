@@ -1,7 +1,6 @@
 {
-  "about": "T23.02, re-derived by T23.03B under R19: look-compare thresholds, each a maximum distance. Measured, not picked: threshold = midpoint of the floor and the SMALLEST control of the must-fail set (mustFail: F0 vs F1, exposure +/-10 %, bloom off, fog off). rim-off and F2 are sensitivity lines: their failures are listed under `sensitivity`, they do not place a threshold. `node scripts/lib/look-compare.mjs --derive` rewrites metrics/dropped/sensitivity (look-compare.mjs::deriveThresholds); scripts/lib/look-compare.test.mjs re-derives them from the PNGs and fails if the file differs.",
+  "about": "T23.02, re-derived by T23.03B under R19, split by back end under R25 (T23.08C): look-compare thresholds, each a maximum distance. Measured, not picked: in each set, threshold = midpoint of that set's floor and the SMALLEST control of the must-fail set (mustFail: F0 vs F1, exposure +/-10 %, bloom off, fog off). rim-off and F2 are sensitivity lines: their failures are listed under each set's `sensitivity`, they do not place a threshold. `deferred` metrics are computed and gate nothing (R25: deltaE_actors, created by T23.12 on cast frames). A check picks its set from the renderer string (look-compare.mjs::thresholdsFor; an unknown renderer throws). `node scripts/lib/look-compare.mjs --derive` rewrites every set's floor/metrics/dropped/sensitivity/box (look-compare.mjs::deriveThresholds, ::labFloor); scripts/lib/look-compare.test.mjs re-derives them from the PNGs and fails if the file differs.",
   "measured": "2026-09-25, mockup-src harness, three 0.170.0, headless Chromium swiftshader (render.mjs), 1280x720",
-  "floor": "F1 re-rendered by the mockup is byte-identical to reference/F1-night-combat.png (cmp): the mockup's floor is 0. T23.08 (step 4) measured the LOOK-LAB's floor: its F1 world frame (?look=F1&only=world, full tier, 1280x720 MSAA 4) on two back-ends — the checks' SwiftShader (headless chromium, twice byte-identical) and the owner's GPU (google-chrome headed, GALLIUM_DRIVER=d3d12, D3D12 Intel Arc B390) — compared metric by metric (labFloor.metrics). Each threshold is the midpoint of that floor and the smallest must-fail control; a metric whose floor is at or past its smallest control is dropped. The difference is the sky's hash grain and its star grid (T23.04's bgMaterial hash12 evaluated on two GPUs: ±1-2 levels over the sky, some stars present on one and not the other), not the terrain (deltaE_terrain 0.028).",
   "reference": "reference/F1-night-combat.png",
   "regions": "reference/controls/regions-F1.png (red: 1 sky, 2 terrain, 3 cave = carved; from world.js buildMask(ARENA_E)), with F1's actor boxes (id 4) painted over it at compare time: look-compare.mjs::withActors(regions, actorBoxes('F1')), the boxes measured from the mockup's drawing (client/src/look/scenes/actor-boxes.json, the same numbers the scene description carries as Actor.box). Region px: sky 495772, terrain 360050, cave 27602, actors 38176. Re-measured 2026-09-26 (T23.02 remainder): excluding the actors moved sky/terrain/cave's smallest controls (sky rim-off 0.228 -> 0.127).",
   "controls": {
@@ -15,133 +14,8 @@
   },
   "recipe": "scratch copy of mockup-src with the .js under src/, a src/scene.html import-mapping three and three/addons/ to node_modules, F1's P exported from a copy of variant_F1.js, one variant_K*.js per knob calling combatF({...P, knob}), rim-off via a window.__noRim guard around lit()'s two rim passes; then node render.mjs <variants> under nice.",
   "flip": "not computed: python3 -c \"import flip_evaluator\" fails on this box",
-  "metrics": {
-    "dssim": {
-      "floor": 0.004635463670099815,
-      "smallestControl": "exposure+10",
-      "smallest": 0.005385368104515065,
-      "threshold": 0.00501,
-      "F0": 0.8234319245411659
-    },
-    "deltaE": {
-      "floor": 0.12176910264195527,
-      "smallestControl": "fog-off",
-      "smallest": 0.6008611226741402,
-      "threshold": 0.3613,
-      "F0": 47.1035399275717
-    },
-    "lumaW1": {
-      "floor": 0.00002811431884779396,
-      "smallestControl": "fog-off",
-      "smallest": 0.0055925369262696525,
-      "threshold": 0.00281,
-      "F0": 0.49121292961968344
-    },
-    "p50": {
-      "floor": 0,
-      "smallestControl": "exposure+10",
-      "smallest": 2,
-      "threshold": 1,
-      "F0": 134
-    },
-    "p95": {
-      "floor": 0,
-      "smallestControl": "exposure+10",
-      "smallest": 5,
-      "threshold": 2.5,
-      "F0": 90
-    },
-    "paletteDE": {
-      "floor": 0.017868347222645332,
-      "smallestControl": "exposure+10",
-      "smallest": 1.6300283163923859,
-      "threshold": 0.8239,
-      "F0": 24.138078294605997
-    },
-    "satW1": {
-      "floor": 0.00008880615234373168,
-      "smallestControl": "exposure+10",
-      "smallest": 0.004282735188802097,
-      "threshold": 0.002186,
-      "F0": 0.23873267279730906
-    },
-    "edgeDensity": {
-      "floor": 0.00019398346127523503,
-      "smallestControl": "fog-off",
-      "smallest": 0.001695720594068903,
-      "threshold": 0.0009449,
-      "F0": 0.036780572011455924
-    },
-    "deltaE_sky": {
-      "floor": 0.1868387309717099,
-      "smallestControl": "fog-off",
-      "smallest": 0.2432977909019891,
-      "threshold": 0.2151,
-      "F0": 51.061247544122196
-    },
-    "deltaE_terrain": {
-      "floor": 0.028384336397961382,
-      "smallestControl": "exposure+10",
-      "smallest": 0.944069145478233,
-      "threshold": 0.4862,
-      "F0": 42.80833351042933
-    },
-    "deltaE_cave": {
-      "floor": 0.005316343907938902,
-      "smallestControl": "fog-off",
-      "smallest": 0.025017768124074958,
-      "threshold": 0.01517,
-      "F0": 42.70895490656444
-    }
-  },
-  "dropped": {
-    "p5": {
-      "floor": 0,
-      "smallestControl": "exposure+10",
-      "smallest": 0,
-      "reason": "exposure+10 does not move it off the floor"
-    },
-    "bloomFrac": {
-      "floor": 0,
-      "smallestControl": "fog-off",
-      "smallest": 0,
-      "reason": "fog-off does not move it off the floor"
-    },
-    "deltaE_actors": {
-      "floor": 0.24168251306813696,
-      "smallestControl": "fog-off",
-      "smallest": 0.12362840299160593,
-      "reason": "the look-lab's two-back-end floor is at or past fog-off"
-    }
-  },
-  "mustFail": [
-    "F0",
-    "exposure+10",
-    "exposure-10",
-    "bloom-off",
-    "fog-off"
-  ],
-  "sensitivity": {
-    "rim-off": [
-      "paletteDE",
-      "edgeDensity",
-      "deltaE_cave"
-    ],
-    "F2": [
-      "dssim",
-      "deltaE",
-      "lumaW1",
-      "p50",
-      "p95",
-      "paletteDE",
-      "satW1",
-      "edgeDensity",
-      "deltaE_sky",
-      "deltaE_terrain",
-      "deltaE_cave"
-    ]
-  },
-  "box": {
+  "floor": "The mockup's floor is 0: F1 re-rendered by the mockup is byte-identical to reference/F1-night-combat.png (cmp). R25 (T23.08C): each set carries its own floor from the LOOK-LAB's F1 world frame (?look=F1&only=world, full tier, 1280x720 MSAA 4). `swiftshader` = two renders on the checks' back end (headless chromium, separate launches; byte-identical, so the floor is 0 on every metric and the thresholds are R19's rule from zero). `gpu` = the spread between back ends: SwiftShader against the owner's GPU (google-chrome headed, GALLIUM_DRIVER=d3d12, D3D12 Intel Arc B390 — the only GPU on this box; D3D12 twice is byte-identical too, T23.08 and T23.08C renders cmp equal). The spread is the sky's hash grain and its star grid (±1-2 levels, some stars on one GPU and not the other), not the terrain. A floor measured across two GPUs must not loosen checks that only run on one (R25).",
+  "boxes": {
     "bloomBox": {
       "about": "T23.08: the moon's bloom — mean |delta| per channel over the box. In a frame with no cast the moon is the only thing above P.bloom's threshold, and the whole-frame metrics cannot see its halo: the mockup's own bloom-off passes every one of them against F1-world (look-gate-f1). Box = where F1-world and its bloom-off differ, grown to the disc and halo.",
       "box": [
@@ -151,33 +25,335 @@
         160
       ],
       "reference": "reference/controls/F1-world.png",
-      "control": "reference/controls/F1-world-bloom-off.png (worldonly.js, P.bloom strength 0)",
-      "floor": 0.5208181818181818,
-      "smallest": 1.2113030303030303,
-      "threshold": 0.8661
+      "controls": [
+        "reference/controls/F1-world-bloom-off.png (worldonly.js, P.bloom strength 0)"
+      ]
+    },
+    "bloomHalo": {
+      "about": "T23.08C (R25): the moon's halo as a ring, the disc excluded. Centre = the centroid of F1-world-bloom-off's px brighter than luma 150 near the moon (1021.4, 96.0; 44 px, equivalent radius 3.7). Radii measured from the radial profile of |F1-world - F1-world-bloom-radius-0| against the SwiftShader/D3D12 spread, 4-px rings: radius 0 moves 5.38 / 2.64 / 1.12 / 0.64 / 0.29 over r 4-8 / 8-12 / 12-16 / 16-20 / 20-24 where the spread is 0.46 / 0.31 / 0.40 / 0.52 / 0.47. Inner 4 = the disc's radius; outer 16 = the last ring where radius 0 moves the halo more than twice the spread. bloomBox's 110x100 px is mostly far sky where radius 0 moves 0.03 and the spread 0.4, which is why it could not see the radius (T23.08's known limit).",
+      "ring": [
+        1021.4,
+        96,
+        4,
+        16
+      ],
+      "reference": "reference/controls/F1-world.png",
+      "controls": [
+        "reference/controls/F1-world-bloom-off.png (P.bloom strength 0)",
+        "reference/controls/F1-world-bloom-radius-0.png (worldonly.js knob bloom-radius-0: P.bloom radius 0)"
+      ]
     }
   },
-  "labFloor": {
-    "measured": "2026-09-27, T23.08, client at the T23.08 commit",
-    "frames": [
-      "reference/controls/F1-lab-swiftshader.png (look-lab F1 world, SwiftShader)",
-      "reference/controls/F1-lab-d3d12.png (look-lab F1 world, D3D12 Arc B390)"
-    ],
-    "metrics": {
-      "dssim": 0.004635463670099815,
-      "deltaE": 0.12176910264195527,
-      "lumaW1": 0.00002811431884779396,
-      "p5": 0,
-      "p50": 0,
-      "p95": 0,
-      "paletteDE": 0.017868347222645332,
-      "satW1": 0.00008880615234373168,
-      "edgeDensity": 0.00019398346127523503,
-      "bloomFrac": 0,
-      "deltaE_sky": 0.1868387309717099,
-      "deltaE_terrain": 0.028384336397961382,
-      "deltaE_cave": 0.005316343907938902,
-      "deltaE_actors": 0.24168251306813696
+  "sets": {
+    "swiftshader": {
+      "about": "The checks back end: headless chromium, ANGLE on SwiftShader. Floor = two renders on it (separate browser launches).",
+      "frames": [
+        "reference/controls/F1-lab-swiftshader.png (look-lab F1 world, SwiftShader, render 1)",
+        "reference/controls/F1-lab-swiftshader-2.png (look-lab F1 world, SwiftShader, render 2, T23.08C)"
+      ],
+      "floor": {
+        "dssim": 0,
+        "deltaE": 0,
+        "lumaW1": 0,
+        "p5": 0,
+        "p50": 0,
+        "p95": 0,
+        "paletteDE": 0,
+        "satW1": 0,
+        "edgeDensity": 0,
+        "bloomFrac": 0,
+        "deltaE_sky": 0,
+        "deltaE_terrain": 0,
+        "deltaE_cave": 0
+      },
+      "metrics": {
+        "dssim": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 0.005385368104515065,
+          "threshold": 0.002693,
+          "F0": 0.8234319245411659
+        },
+        "deltaE": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0.6008611226741402,
+          "threshold": 0.3004,
+          "F0": 47.1035399275717
+        },
+        "lumaW1": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0.0055925369262696525,
+          "threshold": 0.002796,
+          "F0": 0.49121292961968344
+        },
+        "p50": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 2,
+          "threshold": 1,
+          "F0": 134
+        },
+        "p95": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 5,
+          "threshold": 2.5,
+          "F0": 90
+        },
+        "paletteDE": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 1.6300283163923859,
+          "threshold": 0.815,
+          "F0": 24.138078294605997
+        },
+        "satW1": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 0.004282735188802097,
+          "threshold": 0.002141,
+          "F0": 0.23873267279730906
+        },
+        "edgeDensity": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0.001695720594068903,
+          "threshold": 0.0008479,
+          "F0": 0.036780572011455924
+        },
+        "deltaE_sky": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0.2432977909019891,
+          "threshold": 0.1216,
+          "F0": 51.061247544122196
+        },
+        "deltaE_terrain": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 0.944069145478233,
+          "threshold": 0.472,
+          "F0": 42.80833351042933
+        },
+        "deltaE_cave": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0.025017768124074958,
+          "threshold": 0.01251,
+          "F0": 42.70895490656444
+        }
+      },
+      "dropped": {
+        "p5": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 0,
+          "reason": "exposure+10 does not move it off the floor"
+        },
+        "bloomFrac": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0,
+          "reason": "fog-off does not move it off the floor"
+        }
+      },
+      "sensitivity": {
+        "rim-off": [
+          "dssim",
+          "paletteDE",
+          "edgeDensity",
+          "deltaE_sky",
+          "deltaE_cave"
+        ],
+        "F2": [
+          "dssim",
+          "deltaE",
+          "lumaW1",
+          "p50",
+          "p95",
+          "paletteDE",
+          "satW1",
+          "edgeDensity",
+          "deltaE_sky",
+          "deltaE_terrain",
+          "deltaE_cave"
+        ]
+      },
+      "box": {
+        "bloomBox": {
+          "floor": 0,
+          "smallestControl": "reference/controls/F1-world-bloom-off.png",
+          "smallest": 1.2113030303030303,
+          "threshold": 0.6057
+        },
+        "bloomHalo": {
+          "floor": 0,
+          "smallestControl": "reference/controls/F1-world-bloom-radius-0.png",
+          "smallest": 2.463209219858156,
+          "threshold": 1.232
+        }
+      }
+    },
+    "gpu": {
+      "about": "Any real GPU. Floor = the spread between back ends: SwiftShader against D3D12 Intel Arc B390.",
+      "frames": [
+        "reference/controls/F1-lab-swiftshader.png (look-lab F1 world, SwiftShader)",
+        "reference/controls/F1-lab-d3d12.png (look-lab F1 world, D3D12 Arc B390)"
+      ],
+      "floor": {
+        "dssim": 0.004635463670099815,
+        "deltaE": 0.12176910264195527,
+        "lumaW1": 0.00002811431884779396,
+        "p5": 0,
+        "p50": 0,
+        "p95": 0,
+        "paletteDE": 0.017868347222645332,
+        "satW1": 0.00008880615234373168,
+        "edgeDensity": 0.00019398346127523503,
+        "bloomFrac": 0,
+        "deltaE_sky": 0.1868387309717099,
+        "deltaE_terrain": 0.028384336397961382,
+        "deltaE_cave": 0.005316343907938902
+      },
+      "metrics": {
+        "dssim": {
+          "floor": 0.004635463670099815,
+          "smallestControl": "exposure+10",
+          "smallest": 0.005385368104515065,
+          "threshold": 0.00501,
+          "F0": 0.8234319245411659
+        },
+        "deltaE": {
+          "floor": 0.12176910264195527,
+          "smallestControl": "fog-off",
+          "smallest": 0.6008611226741402,
+          "threshold": 0.3613,
+          "F0": 47.1035399275717
+        },
+        "lumaW1": {
+          "floor": 0.00002811431884779396,
+          "smallestControl": "fog-off",
+          "smallest": 0.0055925369262696525,
+          "threshold": 0.00281,
+          "F0": 0.49121292961968344
+        },
+        "p50": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 2,
+          "threshold": 1,
+          "F0": 134
+        },
+        "p95": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 5,
+          "threshold": 2.5,
+          "F0": 90
+        },
+        "paletteDE": {
+          "floor": 0.017868347222645332,
+          "smallestControl": "exposure+10",
+          "smallest": 1.6300283163923859,
+          "threshold": 0.8239,
+          "F0": 24.138078294605997
+        },
+        "satW1": {
+          "floor": 0.00008880615234373168,
+          "smallestControl": "exposure+10",
+          "smallest": 0.004282735188802097,
+          "threshold": 0.002186,
+          "F0": 0.23873267279730906
+        },
+        "edgeDensity": {
+          "floor": 0.00019398346127523503,
+          "smallestControl": "fog-off",
+          "smallest": 0.001695720594068903,
+          "threshold": 0.0009449,
+          "F0": 0.036780572011455924
+        },
+        "deltaE_sky": {
+          "floor": 0.1868387309717099,
+          "smallestControl": "fog-off",
+          "smallest": 0.2432977909019891,
+          "threshold": 0.2151,
+          "F0": 51.061247544122196
+        },
+        "deltaE_terrain": {
+          "floor": 0.028384336397961382,
+          "smallestControl": "exposure+10",
+          "smallest": 0.944069145478233,
+          "threshold": 0.4862,
+          "F0": 42.80833351042933
+        },
+        "deltaE_cave": {
+          "floor": 0.005316343907938902,
+          "smallestControl": "fog-off",
+          "smallest": 0.025017768124074958,
+          "threshold": 0.01517,
+          "F0": 42.70895490656444
+        }
+      },
+      "dropped": {
+        "p5": {
+          "floor": 0,
+          "smallestControl": "exposure+10",
+          "smallest": 0,
+          "reason": "exposure+10 does not move it off the floor"
+        },
+        "bloomFrac": {
+          "floor": 0,
+          "smallestControl": "fog-off",
+          "smallest": 0,
+          "reason": "fog-off does not move it off the floor"
+        }
+      },
+      "sensitivity": {
+        "rim-off": [
+          "paletteDE",
+          "edgeDensity",
+          "deltaE_cave"
+        ],
+        "F2": [
+          "dssim",
+          "deltaE",
+          "lumaW1",
+          "p50",
+          "p95",
+          "paletteDE",
+          "satW1",
+          "edgeDensity",
+          "deltaE_sky",
+          "deltaE_terrain",
+          "deltaE_cave"
+        ]
+      },
+      "box": {
+        "bloomBox": {
+          "floor": 0.5208181818181818,
+          "smallestControl": "reference/controls/F1-world-bloom-off.png",
+          "smallest": 1.2113030303030303,
+          "threshold": 0.8661
+        },
+        "bloomHalo": {
+          "floor": 0.37677304964539005,
+          "smallestControl": "reference/controls/F1-world-bloom-radius-0.png",
+          "smallest": 2.463209219858156,
+          "threshold": 1.42
+        }
+      }
     }
+  },
+  "mustFail": [
+    "F0",
+    "exposure+10",
+    "exposure-10",
+    "bloom-off",
+    "fog-off"
+  ],
+  "deferred": {
+    "deltaE_actors": "R25: created by T23.12 on frames containing the cast, must-fail = R19 ∪ rim-off; no gated frame has a cast yet"
   }
 }

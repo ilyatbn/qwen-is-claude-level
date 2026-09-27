@@ -406,6 +406,9 @@ export const CHECKS = [
   { name: 'smoke-shader', file: 'scripts/checks/smoke-shader.mjs', standalone: true },
   { name: 'fire-shader', file: 'scripts/checks/fire-shader.mjs', standalone: true },
   { name: 'explosion-shader', file: 'scripts/checks/explosion-shader.mjs', standalone: true },
+  // T23.08C F9: T23.08's fog and grade drawn in a live match (pixels with each hidden, a control patch and a
+  // control hide), and two matches with different `map_init` seeds showing different rock at one world rect.
+  { name: 'look-match', file: 'scripts/checks/look-match.mjs', standalone: true },
   // T22.04B F2/F3: GameScene's plume wiring, which no sandbox run reaches — a remote's
   // plume on the other client in space, none after the bell, none under standard
   // gravity, none on a player killed mid-burn. Standalone: two real servers (the

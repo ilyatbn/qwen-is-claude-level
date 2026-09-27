@@ -1,6 +1,6 @@
 // T23.02 — `look-compare`: how far a rendered frame is from an M23 reference picture.
 //
-//   node scripts/lib/look-compare.mjs <reference.png> <candidate.png> [--regions map.png [--actors F1]] [--json]
+//   node scripts/lib/look-compare.mjs <reference.png> <candidate.png> [--regions map.png [--actors F1]] [--renderer <string>] [--json]
 //   node scripts/lib/look-compare.mjs --derive      (rewrite look-thresholds.json by R19's rule)
 //
 // Every metric is a **distance** (0 = identical, larger = further), so every threshold in
@@ -244,9 +244,46 @@ export function compare(a, b, { regions = null } = {}) {
  * R19 (coordinator, 2026-09-26): the controls a threshold is placed against. Each threshold sits
  * between the floor and the **smallest of these**. Every other control in `look-thresholds.json`
  * (rim-off; F2's palette) is a sensitivity line — reported, never gating: a rim-only change is
- * below what the whole-frame metrics are for, and the actor-box region carries it.
+ * below what the whole-frame metrics are for; the actor-box threshold T23.12 creates carries it (R25: rim-off is in its must-fail set).
  */
 export const MUST_FAIL = ['F0', 'exposure+10', 'exposure-10', 'bloom-off', 'fog-off']
+
+/**
+ * R25 (coordinator, 2026-09-27): metrics no set places yet. `deltaE_actors` measures the actor boxes, and
+ * no frame the gates compare has a cast in them until the lab draws one (T23.12), so a floor or control
+ * measured today would be a number about empty sky. T23.12 creates its threshold on cast frames, with
+ * R19's must-fail set plus rim-off. Until then it is computed and reported, and gates nothing.
+ */
+export const DEFERRED = {
+  deltaE_actors: 'R25: created by T23.12 on frames containing the cast, must-fail = R19 ∪ rim-off; no gated frame has a cast yet',
+}
+
+/**
+ * R25: which threshold set a renderer string is compared with. SwiftShader is the checks' back end (floor:
+ * two renders on it); any real GPU uses the `gpu` set (floor: the spread between back ends). A software
+ * renderer that is not SwiftShader, or a string naming no known GPU vendor, has no measured floor — it
+ * throws rather than borrowing one (R25: "an unknown renderer fails loudly").
+ */
+export function backEnd(renderer) {
+  const r = String(renderer ?? '')
+  if (/swiftshader/i.test(r)) return 'swiftshader'
+  if (/llvmpipe|softpipe|lavapipe|software|basic render/i.test(r)) throw new Error(`renderer ${JSON.stringify(r)} is a software renderer with no measured floor (R25): only SwiftShader has one`)
+  if (/d3d1[12]|direct3d|nvidia|geforce|quadro|radeon|amd|intel|apple|adreno|mali|powervr|metal/i.test(r)) return 'gpu'
+  throw new Error(`renderer ${JSON.stringify(r)} names no known back end (R25): no threshold set applies`)
+}
+
+/**
+ * R25: the threshold set for `renderer` — `{ backEnd, renderer, metrics, dropped, box, ... }`, where each
+ * `box` entry is its geometry (`look-thresholds.json` `boxes`) with that set's floor and threshold.
+ * `failures(m, thresholdsFor(th, r))` then gates exactly as `failures(m, th)` did before the split.
+ */
+export function thresholdsFor(th, renderer) {
+  const name = backEnd(renderer)
+  const set = th.sets?.[name]
+  if (!set) throw new Error(`look-thresholds.json has no "${name}" set`)
+  const box = Object.fromEntries(Object.entries(th.boxes).map(([k, def]) => [k, { ...def, ...set.box[k] }]))
+  return { ...set, backEnd: name, renderer, box }
+}
 
 /** Four significant figures: the threshold is a midpoint, not a measurement, so more digits claim nothing. */
 const sig4 = v => Number(v.toPrecision(4))
@@ -258,7 +295,7 @@ const sig4 = v => Number(v.toPrecision(4))
  * `sensitivity` is each non-gating control's retained-metric failures, for the report.
  */
 export function deriveThresholds(rows, floor = 0) {
-  const names = Object.keys(rows.F0).filter(k => typeof rows.F0[k] === 'number')
+  const names = Object.keys(rows.F0).filter(k => typeof rows.F0[k] === 'number' && !(k in DEFERRED))
   const metrics = {}
   const dropped = {}
   for (const m of names) {
@@ -266,7 +303,7 @@ export function deriveThresholds(rows, floor = 0) {
     const f = typeof floor === 'number' ? floor : (floor[m] ?? 0)
     const [smallestControl, smallest] = MUST_FAIL.map(c => [c, rows[c][m]]).sort((a, b) => a[1] - b[1])[0]
     if (smallest > f) metrics[m] = { floor: f, smallestControl, smallest, threshold: sig4((f + smallest) / 2), F0: rows.F0[m] }
-    else if (f > 0 && smallest > 0) dropped[m] = { floor: f, smallestControl, smallest, reason: `the look-lab's two-back-end floor is at or past ${smallestControl}` }
+    else if (f > 0 && smallest > 0) dropped[m] = { floor: f, smallestControl, smallest, reason: `this set's floor is at or past ${smallestControl}` }
     else dropped[m] = { floor: f, smallestControl, smallest, reason: `${smallestControl} does not move it off the floor` }
   }
   const sensitivity = {}
@@ -276,7 +313,7 @@ export function deriveThresholds(rows, floor = 0) {
   return { metrics, dropped, sensitivity }
 }
 
-/** T23.08: mean |Δ| per channel over a box `[x0, y0, x1, y1]` (px, half-open) — `look-thresholds.json` `box`. */
+/** T23.08: mean |Δ| per channel over a box `[x0, y0, x1, y1]` (px, half-open) — `look-thresholds.json` `boxes`. */
 export function boxDelta(a, b, [x0, y0, x1, y1]) {
   let s = 0
   let n = 0
@@ -290,20 +327,50 @@ export function boxDelta(a, b, [x0, y0, x1, y1]) {
   return s / n
 }
 
+/** T23.08C (R25): mean |Δ| per channel over a ring `[cx, cy, r0, r1]` — px whose centre is r0 ≤ d < r1 from (cx, cy). */
+export function ringDelta(a, b, [cx, cy, r0, r1]) {
+  let s = 0
+  let n = 0
+  for (let y = Math.max(0, Math.floor(cy - r1)); y <= Math.min(a.height - 1, Math.ceil(cy + r1)); y++) {
+    for (let x = Math.max(0, Math.floor(cx - r1)); x <= Math.min(a.width - 1, Math.ceil(cx + r1)); x++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+      if (d < r0 || d >= r1) continue
+      const i = (y * a.width + x) * 4
+      for (let c = 0; c < 3; c++) s += Math.abs(a.data[i + c] - b.data[i + c])
+      n += 3
+    }
+  }
+  return s / n
+}
+
+/** A `boxes` entry's metric: its `box` (rect) or its `ring`. */
+export function areaDelta(a, b, def) {
+  if (def.ring) return ringDelta(a, b, def.ring)
+  if (def.box) return boxDelta(a, b, def.box)
+  throw new Error(`a box entry needs "box" or "ring": ${JSON.stringify(def)}`)
+}
+
 /**
- * T23.08 step 4: the look-lab's noise floor — its F1 world frame on two back-ends (`labFloor.frames`),
- * compared metric by metric — and the box metrics (`box`), each placed by the same rule: the midpoint of
- * that floor and its control. `thDir` is where the file's paths are relative to (`tasks/M23`).
+ * T23.08 step 4, split by R25: one threshold set's floor — its two frames (`sets.<name>.frames`, the
+ * look-lab's F1 world) compared metric by metric — and each `boxes` entry placed by the same rule: the
+ * midpoint of that floor and the smallest of the entry's controls against its reference. `load` resolves
+ * the file's paths (relative to `tasks/M23`).
  */
-export function labFloor(th, regions, load) {
-  const [a, b] = th.labFloor.frames.map(f => load(f.split(' ')[0]))
+export function labFloor(th, name, regions, load) {
+  const set = th.sets[name]
+  const [a, b] = set.frames.map(f => load(f.split(' ')[0]))
   const metrics = compare(a, b, { regions })
-  const floor = Object.fromEntries(Object.entries(metrics).filter(([, v]) => typeof v === 'number'))
+  const floor = Object.fromEntries(Object.entries(metrics).filter(([k, v]) => typeof v === 'number' && !(k in DEFERRED)))
   const box = {}
-  for (const [name, bx] of Object.entries(th.box)) {
-    const f = boxDelta(a, b, bx.box)
-    const smallest = boxDelta(load(bx.reference.split(' ')[0]), load(bx.control.split(' ')[0]), bx.box)
-    box[name] = { ...bx, floor: f, smallest, threshold: sig4((f + smallest) / 2) }
+  for (const [k, def] of Object.entries(th.boxes)) {
+    const f = areaDelta(a, b, def)
+    const ref = load(def.reference.split(' ')[0])
+    const [smallestControl, smallest] = def.controls
+      .map(c => [c.split(' ')[0], areaDelta(ref, load(c.split(' ')[0]), def)])
+      .sort((p, q) => p[1] - q[1])[0]
+    box[k] = smallest > f
+      ? { floor: f, smallestControl, smallest, threshold: sig4((f + smallest) / 2) }
+      : { floor: f, smallestControl, smallest, threshold: null, dropped: `this set's floor is at or past ${smallestControl}` }
   }
   return { floor, box }
 }
@@ -314,8 +381,8 @@ export function failures(metrics, thresholds) {
 }
 
 /**
- * `--derive`: re-measure every control against the reference and rewrite the thresholds file's
- * `metrics`, `dropped` and `sensitivity` by R19's rule (`deriveThresholds`); the prose fields stay.
+ * `--derive`: re-measure every control against the reference and rewrite each set's (R25) `floor`,
+ * `metrics`, `dropped`, `sensitivity` and `box` by R19's rule (`deriveThresholds`); the prose fields stay.
  */
 function derive() {
   const path = join(root, 'scripts/lib/look-thresholds.json')
@@ -324,10 +391,15 @@ function derive() {
   const regions = withActors(loadPng(ref('reference/controls/regions-F1.png')), actorBoxes('F1'))
   const f1 = loadPng(ref(th.reference))
   const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(th.controls[c].split(' ')[0])), { regions })]))
-  const lf = labFloor(th, regions, p => loadPng(ref(p)))
-  const d = deriveThresholds(rows, lf.floor)
-  writeFileSync(path, JSON.stringify({ ...th, labFloor: { ...th.labFloor, metrics: lf.floor }, box: lf.box, mustFail: MUST_FAIL, ...d }, null, 2) + '\n')
-  console.log(`wrote ${path}: ${Object.keys(d.metrics).length} retained, ${Object.keys(d.dropped).length} dropped`)
+  const sets = {}
+  for (const name of Object.keys(th.sets)) {
+    const lf = labFloor(th, name, regions, p => loadPng(ref(p)))
+    const d = deriveThresholds(rows, lf.floor)
+    sets[name] = { ...th.sets[name], floor: lf.floor, ...d, box: lf.box }
+    console.log(`${name}: ${Object.keys(d.metrics).length} retained, ${Object.keys(d.dropped).length} dropped`)
+  }
+  writeFileSync(path, JSON.stringify({ ...th, mustFail: MUST_FAIL, deferred: DEFERRED, sets }, null, 2) + '\n')
+  console.log(`wrote ${path}`)
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes('--derive')) {
@@ -343,10 +415,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes(
     if (!regions) throw new Error('--actors needs --regions')
     regions = withActors(regions, actorBoxes(id))
   }
+  // R25: `--renderer <string>` picks the threshold set (default: the checks' SwiftShader).
+  const vi = args.indexOf('--renderer')
+  const renderer = vi >= 0 ? args.splice(vi, 2)[1] : 'SwiftShader'
   const json = args.includes('--json')
   const [ra, rb] = args.filter(x => !x.startsWith('--'))
   const m = compare(loadPng(ra), loadPng(rb), { regions })
-  const th = JSON.parse(readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+  const th = thresholdsFor(JSON.parse(readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8')), renderer)
   const bad = failures(m, th)
   if (json) console.log(JSON.stringify({ metrics: m, failures: bad }, null, 1))
   else {

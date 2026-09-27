@@ -9,7 +9,7 @@
  * bevel; the glowing lip where the top edge catches the sky; grass tips; the cave wall set back
  * behind the face, shadowed by it and darkened toward the rock (`dOut`), lit by the point lights at
  * z −30, and — R24 final form, T23.07C — drawn with `back` as its coverage: hard wall is 255, soft wall
- * (landform outside the closing and not enclosed) fades from open sky over `render_fields.rs::BACK_RAMP_PX`; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
+ * (landform outside the closing) fades from open sky over `render_fields.rs::BACK_RAMP_PX`; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
  *
  * **Dropped, and why:** `occl` (the object contact shadow's 5×5 = 25 reads a pixel) is a blank 4×4
  * render target in every F scene (`f_kit.js::frame`'s `black`), so it multiplies by exactly 1 —

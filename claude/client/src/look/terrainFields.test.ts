@@ -230,6 +230,25 @@ describe('TerrainFields (F1)', () => {
     expect(g.stats.warning).toBe('')
   })
 
+  it('T23.08C F8: a single-length worker result (one half, no hard part) falls back and says got/want', () => {
+    const core = new FakeCore()
+    const host = new FakeHost()
+    const f = new TerrainFields(core, KEY, host)
+    const half = Math.ceil((W * H) / 32)
+    host.onResult!({ id: host.job!.id, ok: true, wall: new Uint32Array(half), rgba: core.fieldsOf(core.snapshot!), din2: new Uint16Array(W * H), strays: 0, ms: 1 })
+    expect(core.installs).toBe(0)
+    expect(core.fulls).toBe(1)
+    expect(f.ready).toBe(true)
+    expect(f.stats.warning).toContain(`${half} long, want ${2 * half}`)
+    // Control: the doubled length installs, with no warning.
+    const c2 = new FakeCore()
+    const h2 = new FakeHost()
+    const g = new TerrainFields(c2, KEY, h2)
+    h2.deliver(c2)
+    expect(c2.installs).toBe(1)
+    expect(g.stats.warning).toBe('')
+  })
+
   it('F9: version skew is reported', () => {
     const core = new FakeCore()
     const host = new FakeHost()

@@ -390,6 +390,10 @@ export default async function ({ page, shot, log }) {
   })
 
   if (!sized) failures.push('no pad was on screen to measure the gate size — the size check measured nothing')
+  // T23.08C F8: the fields this photographed came from the worker, not a main-thread fallback (which
+  // draws a terrain too, without the generator's cave wall this check's wall rule reads).
+  const warning = await page.evaluate(() => window.__game.debug().terrainWarning)
+  if (warning !== '') failures.push(`the terrain fields warn — got ${JSON.stringify(warning)}, want ""`)
   // Failures first: a pad skipped for a moving camera is not asserted, and the count
   // alone would name the symptom ("only 0 pads") instead of the cause.
   if (failures.length) throw new Error(failures.join('\n'))

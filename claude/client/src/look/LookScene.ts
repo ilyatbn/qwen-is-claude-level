@@ -107,6 +107,8 @@ export class LookScene extends Phaser.Scene {
     else if (knob === 'lights-off') look.lights = []
     // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
     else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
+    // T23.08C (R25): the halo's spread alone — `worldonly.js`'s 'bloom-radius-0'; the halo ring must see it.
+    else if (knob === 'bloom-radius-0') look.bloom = [P.bloom[0], 0, P.bloom[2]]
     else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
     else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
     else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9

@@ -59,14 +59,16 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { actorBoxes, compare, failures, loadPng, withActors } from '../lib/look-compare.mjs'
+import { actorBoxes, compare, failures, loadPng, thresholdsFor, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 import { toScreen, PIXEL_MOVED } from './pixels.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 const ref = (p) => join(root, 'tasks/M23/reference', p)
-const TH = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+/** R25 (T23.08C): the threshold set for this page's renderer, from the first lab frame (`look-compare.mjs::thresholdsFor`). */
+let TH = null
 
 /**
  * The low material against the full one on the same buffer, per channel byte: the mean |Δ| over the
@@ -109,7 +111,9 @@ const WALL_EDGE_SEEDS = [4, 6, 9, 11]
  * `measured + 2`; anywhere else the bound is `WALL_EDGE_MAX_RUN`, so the run growing or moving fails.
  * Seed 9's slab and the ledge above it lie inside the closing (their gaps to the rock are under 2R), so
  * they are hard wall with straight edges — 39 and 28 px, measured T23.07C; shown to the owner
- * (shots/t2307c-final-s9.png), not bounded away.
+ * (shots/t2307c-final-s9.png), not bounded away. T23.08C F7: the run photographed at a named site is the one
+ * the fields' scan finds there now (the longest overlapping it), not these recorded coordinates — so a run
+ * that grows past its recorded end is measured whole (planted: recorded 5 px short → red).
  */
 const WALL_EDGE_EXCEPTIONS = [
   { seed: 9, dir: 'v', x: 861, y0: 638, y1: 678, measured: 39 },
@@ -198,6 +202,8 @@ export default async function ({ page, shot, log }) {
   // ---------------------------------------------------------------- 1. Level A, full tier
   await page.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
   const full = await lab(page, '&only=terrain')
+  TH = thresholdsFor(RAW, full.info.gpu)
+  log(`renderer ${JSON.stringify(full.info.gpu)} → the ${TH.backEnd} threshold set (R25)`)
   const i = full.info
   if (i.tier !== 'full' || i.buffer[0] !== 1280 || i.buffer[1] !== 720 || i.samples !== 4) {
     throw new Error(`want the full tier (1280x720, MSAA 4), got ${JSON.stringify(i)}`)
@@ -332,6 +338,10 @@ export default async function ({ page, shot, log }) {
   if (!lastHidden) problems.push(`Phaser's rock is not hidden once the lit terrain is ready: ${JSON.stringify(swap.slice(-5))}`)
   const lit = await page.evaluate(() => window.__world.litTerrain())
   if (!lit?.drawn) problems.push(`the lit terrain is not drawn once ready: ${JSON.stringify(lit)}`)
+  // T23.08C F8: ready from the worker, not from a main-thread fallback (which is ready too, without the
+  // generator's cave wall that §4 photographs).
+  const warning = await page.evaluate(() => window.__game.debug().terrainWarning)
+  if (warning !== '') problems.push(`seed 4242: the terrain fields warn — got ${JSON.stringify(warning)}, want ""`)
   // F5, in pixels: the same patch with the lit terrain hidden (Phaser's rock is hidden once ready) is the sky
   // behind it — the "absent" picture. Every screenshot, before ready and after, must differ from it.
   await page.evaluate(() => window.__world.hideTerrain(true))
@@ -364,6 +374,7 @@ export default async function ({ page, shot, log }) {
   // ---------------------------------------------------------------- 4. cave wall against open sky
   const edges = await wallEdges(page, WALL_EDGE_SEEDS, log)
   for (const e of edges) for (const x of e.over) problems.push(`seed ${e.seed}: ${x}`)
+  for (const e of edges) if (e.warning !== '') problems.push(`seed ${e.seed}: the terrain fields warn — got ${JSON.stringify(e.warning)}, want ""`)
   for (const e of edges) {
     if (!(e.geometric >= WALL_EDGE_MIN_GEOMETRIC)) problems.push(`seed ${e.seed}: control — the review's slab boundary is ${e.geometric} px of air (0: moved or filled), want ≥ ${WALL_EDGE_MIN_GEOMETRIC} (nothing to photograph)`)
   }
@@ -394,8 +405,10 @@ export async function wallEdges(page, seeds, log) {
   const out = []
   for (const seed of seeds) {
     await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
+    const warning = await page.evaluate(() => window.__game.debug().terrainWarning)
+    const exceptions = WALL_EDGE_EXCEPTIONS.filter((e) => e.seed === seed)
     const sites = await page.evaluate(
-      ([n, apart, minRun]) => {
+      ([n, apart, minRun, exceptions]) => {
         const core = window.__game.core
         const w = core.width
         const h = core.height
@@ -436,10 +449,15 @@ export async function wallEdges(page, seeds, log) {
           const [mx, my] = mid(r)
           if (picked.every((p) => Math.hypot(mid(p)[0] - mx, mid(p)[1] - my) > apart)) picked.push(r)
         }
-        return { w, h, sites: picked, longest: runs[0]?.len ?? 0 }
+        // T23.08C F7: at each named exception's site, the run the fields draw *now* — the longest one there,
+        // whatever its ends — so a run that grew past the recorded one is the one photographed.
+        const at = (e, r) => r.dir === e.dir && (r.dir === 'v' ? Math.abs(e.x - r.x) <= 2 && r.y0 < e.y1 && e.y0 < r.y1 : Math.abs(e.y - r.y) <= 2 && r.x0 < e.x1 && e.x0 < r.x1)
+        const named = exceptions.map((e) => runs.find((r) => at(e, r)) ?? null)
+        return { w, h, sites: picked, named, longest: runs[0]?.len ?? 0 }
       },
-      [WALL_EDGE_SITES, WALL_EDGE_APART, 8],
+      [WALL_EDGE_SITES, WALL_EDGE_APART, 8, exceptions],
     )
+    const missing = exceptions.filter((_, i) => !sites.named[i])
     let rendered = 0
     const over = []
     const per = []
@@ -457,9 +475,18 @@ export async function wallEdges(page, seeds, log) {
         }),
       known,
     )
-    const key = (r) => JSON.stringify([r.dir, r.x, r.y, r.x0, r.y0])
-    const knownKeys = new Set(known.map(key))
-    for (const r of [...known, ...sites.sites.filter((q) => !knownKeys.has(key(q)))]) {
+    // T23.08C F7: the key holds both ends — a scanned run that starts where a known one does but ends
+    // further on is a different run, and is photographed (it used to be deduped against the known one).
+    const key = (r) => JSON.stringify([r.dir, r.x, r.y, r.x0, r.y0, r.x1, r.y1])
+    const photographed = new Set()
+    const todo = []
+    for (const r of [...known, ...sites.named.filter(Boolean), ...sites.sites]) {
+      if (photographed.has(key(r))) continue
+      photographed.add(key(r))
+      todo.push(r)
+    }
+    for (const e of missing) over.push(`the named exception ${e.dir}@(${e.x ?? e.x0}, ${e.y0 ?? e.y}) has no wall/sky run at its site in the fields (moved or gone: re-measure it)`)
+    for (const r of todo) {
       const [mx, my] = r.dir === 'v' ? [r.x, (r.y0 + r.y1) / 2] : [(r.x0 + r.x1) / 2, r.y]
       await page.evaluate(([x, y]) => window.__game.watch(x, y), [mx, my])
       await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(res)))))
@@ -487,7 +514,7 @@ export async function wallEdges(page, seeds, log) {
       if (seed === WALL_EDGE_SHOT_SEED && r === known[0]) cropShot(fr, r, `look-terrain-wall-edge-s${seed}.png`)
     }
     log(`wall/sky seed ${seed}: the review's slab runs ${known.map((r) => r.len).join('/')} px (air in the mask: ${knownAir}); longest straight boundary in the fields now ${sites.longest} px; drawn hard ${rendered.toFixed(0)} px (max ${WALL_EDGE_MAX_RUN}) — ${per.join('; ') || 'no site'}`)
-    out.push({ seed, geometric: knownAir ? Math.max(0, ...known.map((r) => r.len)) : 0, rendered, over, specs: sites.sites })
+    out.push({ seed, geometric: knownAir ? Math.max(0, ...known.map((r) => r.len)) : 0, rendered, over, specs: sites.sites, warning })
   }
   await page.evaluate(() => window.__game.watch(null))
   return out
@@ -669,11 +696,11 @@ async function crater(page, seed, log, problems) {
 /**
  * The sky-circle guard (T23.07C). With the closing alone, cave chambers wider than 2R lost their wall and the
  * sky showed through underground (seeds 4 and 9). Per seed: a `CHAMBER_PATCH`² patch at `CHAMBER_SITES`, air
- * farther than R from any rock (G, dOut ×4, ≥ 4·(R + 4) — outside the closing, so only R24's other terms keep
+ * farther than R from any rock (G, dOut ×4, ≥ 4·(R + 4) — outside the closing, so only the fade keeps
  * it), photographed with the wall shown and with only the wall hidden (`hideWall`): the share of its px that
- * change is the share drawn as wall. Falsified with the closing-only rule (T23.07C's): red. With only the
- * enclosed-region term off it stays green — the fade keeps a chamber's inside whole (≥ 10 px from sky);
- * the enclosed term is pinned by `render_fields.rs`'s unit test instead.
+ * change is the share drawn as wall. T23.07C falsified it with the closing-only rule *and no fade* (soft
+ * wall dropped): red. R24's fourth amendment (T23.08C) deleted the enclosed-region term — the fade keeps a
+ * chamber whole (no open-sky edge within `BACK_RAMP_PX`), which this guard now checks alone.
  */
 async function chambers(page, seeds, log) {
   const out = []

@@ -354,9 +354,11 @@ export class TerrainFields implements TerrainFeed {
       return
     }
     // T23.07C: the wall words are two equal halves, all "was rock" then its hard part (`render_fields.rs::wall_words`).
-    if (r.wall.length !== 2 * Math.ceil((this.core.width * this.core.height) / 32)) {
-      // The core's map changed size under the job (a scene that forgot to dispose us): never absent.
-      this.fallBack('the map changed size under the job')
+    const want = 2 * Math.ceil((this.core.width * this.core.height) / 32)
+    if (r.wall.length !== want) {
+      // The core's map changed size under the job (a scene that forgot to dispose us), or a worker built
+      // before T23.07C handed back one half: never absent, and the warning says which numbers disagreed.
+      this.fallBack(`the worker's wall words are ${r.wall.length} long, want ${want} (2 halves of ${want / 2})`)
       return
     }
     const t1 = performance.now()

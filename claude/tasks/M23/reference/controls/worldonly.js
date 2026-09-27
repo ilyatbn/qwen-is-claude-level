@@ -4,7 +4,8 @@
 // fog, foreground and post chain land, before the cast (T23.12+) and the effects (T23.18).
 // The lights are f_scene.js::combatF's, copied unchanged from terrainonly.js.
 // Knobs (the gate's must-fail controls through the mockup): 'bloom-off' (strength 0), 'fog-off'
-// (fogBack = fogFront = null), 'exposure+10' / 'exposure-10' (P.exposure x 1.1 / x 0.9), 'fg-off', 'grade-off'.
+// (fogBack = fogFront = null), 'exposure+10' / 'exposure-10' (P.exposure x 1.1 / x 0.9), 'fg-off', 'grade-off',
+// and (T23.08C, R25) 'bloom-radius-0' (P.bloom radius 0, strength and threshold kept: the halo's spread).
 import * as THREE from 'three'
 import { buildMask, derive, groundAt } from './world.js'
 import { ARENA_E } from './maps.js'
@@ -39,7 +40,7 @@ export function worldOnly(P, knob = null) {
   const exposure = P.exposure * (knob === 'exposure+10' ? 1.1 : knob === 'exposure-10' ? 0.9 : 1)
   const fogBack = knob === 'fog-off' ? null : P.fogBack
   const fogFront = knob === 'fog-off' ? null : P.fogFront
-  const bloom = knob === 'bloom-off' ? [0, P.bloom[1], P.bloom[2]] : P.bloom
+  const bloom = knob === 'bloom-off' ? [0, P.bloom[1], P.bloom[2]] : knob === 'bloom-radius-0' ? [P.bloom[0], 0, P.bloom[2]] : P.bloom
   const grade = knob === 'grade-off' ? { vignette: 0, sat: 1, warm: [1, 1, 1], cool: [1, 1, 1] } : P.grade
   // --- f_kit.js::frame, less the actor canvas and fx ---
   const r = makeRenderer(); r.toneMappingExposure = exposure

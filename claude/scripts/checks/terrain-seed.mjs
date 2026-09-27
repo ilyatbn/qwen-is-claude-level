@@ -19,6 +19,9 @@
  * - **Control, the rect is rock**: every px of it is painted opaque rock (albedo A = 255) on both.
  *
  * Planted (`terrainFields.ts`: `albedoOffset` forced to `[0, 0]`): the two seeds read back equal — red.
+ *
+ * T23.08C F8: every map's fields must come from the worker with no warning (`debug().terrainWarning`
+ * `=== ''`) — a main-thread fallback draws a terrain too, so ready alone cannot tell it apart.
  */
 
 /** The two maps, V2 Medium: the sandbox's default seed and gate-ground's. */
@@ -52,6 +55,8 @@ async function albedoAt(page, seed, [x, y]) {
   await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
   const info = await page.evaluate(() => window.__world.terrain())
   if (!info?.ready) throw new Error(`seed ${seed}: the lit terrain is not ready after the regenerate (${JSON.stringify(info)})`)
+  const warning = await page.evaluate(() => window.__game.debug().terrainWarning)
+  if (warning !== '') throw new Error(`seed ${seed}: the terrain fields warn — got ${JSON.stringify(warning)}, want ""`)
   const b64 = await page.evaluate(([x, y, n]) => window.__world.readAlbedo(x, y, n, n), [x, y, RECT])
   if (!b64) throw new Error(`seed ${seed}: no albedo to read back`)
   return Buffer.from(b64, 'base64')

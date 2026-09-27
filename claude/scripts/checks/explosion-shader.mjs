@@ -63,6 +63,9 @@ const RING_POINTS = 12
  * passed a blast faded to 20 % (the review's plant: 10/12 over white, 1/12 over the world canvas).
  * Basis, measured on this pose after T23.04C: 7, 8, 8 of 12 over the world canvas (T23.04B's pose:
  * 10); the 20 % plant: 1. The floor sits one point under the lowest unplanted run.
+ * **The spread on this pose is 7–10** (T23.08C F5): 7, 8, 8 (T23.04C), 9 (T23.08, after fog, bloom and
+ * grade), 10 (the T23.08 review, at a17748a) — so one run's 9 or 10 is inside the unplanted spread, not a
+ * readability change; only a run under `WORLD_FLOOR` is one.
  */
 const WORLD_FLOOR = 6
 

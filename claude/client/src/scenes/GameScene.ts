@@ -1603,8 +1603,9 @@ export class GameScene extends Phaser.Scene {
     const init = this.mirror.applyMapInitB64(b64)
 
     this.world?.destroy()
-    // (The rock no longer takes the seed or theme — T23.07: the lit terrain's albedo is keyed by world
-    // position, the one palette R5's.) **Space is read off this map, not off `this.gravity`** (T22.06B F7). A
+    // (Phaser's rock no longer takes the seed or theme — T23.07, the one palette R5's. The lit terrain's albedo
+    // does take the seed: a per-map offset, R24 / T23.07B, carried by `TerrainFields` below from `init.seed`.)
+    // **Space is read off this map, not off `this.gravity`** (T22.06B F7). A
     // mid-match joiner is sent `map_init` *before* `lobby_state`, so at this line
     // `this.gravity` is whatever the previous match left it (the field outlives a
     // round) and the cave-backdrop lock was decided by the wrong match. The map's

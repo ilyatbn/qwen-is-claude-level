@@ -45,13 +45,15 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { actorBoxes, compare, failures, loadPng, withActors } from '../lib/look-compare.mjs'
+import { actorBoxes, compare, failures, loadPng, thresholdsFor, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 const ref = (p) => join(root, 'tasks/M23/reference', p)
-const TH = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+/** R25 (T23.08C): the threshold set for this page's renderer, from the first lab frame (`look-compare.mjs::thresholdsFor`). */
+let TH = null
 
 /** World px the camera is moved between the two readings. */
 const PAN = 200
@@ -80,6 +82,7 @@ async function levelA(page, shot, log, id) {
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 60_000 })
   const h = await page.evaluate(() => ({ look: window.__look, info: window.__world.info() }))
   if (h.look.error) throw new Error(`look-lab ${id}: ${h.look.error}`)
+  TH = thresholdsFor(RAW, h.info.gpu)
   const i = h.info
   if (i.tier !== 'full' || i.buffer[0] !== 1280 || i.buffer[1] !== 720 || i.samples !== 4 || !i.sky) {
     throw new Error(`${id}: want the full tier (1280x720, MSAA 4) with the sky drawn, got ${JSON.stringify(i)}`)

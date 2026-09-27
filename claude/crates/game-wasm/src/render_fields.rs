@@ -20,8 +20,8 @@
 //! ## `back` — the cave wall (R17)
 //!
 //! `back = was rock ∧ air now`. R24's final form (T23.07C, [`classify`]): hard wall (255) is round-start
-//! rock ∪ landform in the closing of round-start rock by [`WALL_CLOSING_R`] or in a region that touches no
-//! open sky; the rest fades from its open-sky edge over [`BACK_RAMP_PX`].
+//! rock ∪ landform in the closing of round-start rock by [`WALL_CLOSING_R`]; the rest fades from its
+//! open-sky edge over [`BACK_RAMP_PX`] (an enclosed chamber has no such edge, so the fade draws it whole).
 //! The mockup's `back` is exactly the pixels its `buildMask`
 //! spec carved out of a landform — generated tunnels and craters alike — and R17 rules
 //! the game does the same: "was rock" is the generator's landform **or** the mask at
@@ -601,71 +601,17 @@ pub struct WallClass {
     pub hard: BitGrid,
 }
 
-/// **R24 final form (T23.07C).** Hard wall = round-start rock ∪ (landform ∩ (closing(round-start rock,
-/// R) ∪ every landform air region that does not touch open sky)). The first term keeps tunnel mouths and
-/// gaps under 2R with the mockup's edge; the second keeps enclosed chambers wider than 2R, which the
-/// closing alone showed as sky (T23.07C: pink circles underground on seeds 4 and 9). Landform outside both
-/// is soft: drawn with T23.07B's fade from its open-sky edge ([`back_coverage`]). Once per map.
+/// **R24 final form (fourth amendment, T23.08C).** Hard wall = round-start rock ∪ (landform ∩
+/// closing(round-start rock, R)): tunnel mouths and gaps under 2R keep the mockup's edge. Landform outside
+/// it is soft: drawn with T23.07B's fade from its open-sky edge ([`back_coverage`]). T23.07C's second term
+/// (every landform air region touching no open sky) is gone: it changed zero `back` bytes on seeds 4, 6, 9,
+/// 11, 4242 and 7 (T23.08 review F6) — an enclosed chamber has no open-sky edge, so the fade already draws
+/// it at 255. Derive, do not add. Once per map.
 pub fn classify(landform: &BitGrid, round_start: &impl Solid, r: u32) -> WallClass {
     let mut all = landform.clone();
     all.union_with(&BitGrid::from_solid(round_start));
-    let mut hard = closed(landform, round_start, r);
-    hard.union_with(&enclosed_air(&all, round_start));
+    let hard = closed(landform, round_start, r);
     WallClass { all, hard }
-}
-
-/// The landform air (in `all`, not round-start rock) whose 4-connected region touches no open sky (a
-/// px outside `all`). The map's edge is not sky.
-pub fn enclosed_air(all: &BitGrid, round_start: &impl Solid) -> BitGrid {
-    let (w, h) = all.dims();
-    let n = w as usize * h as usize;
-    let cand = |i: usize| {
-        let (x, y) = ((i % w as usize) as u32, (i / w as usize) as u32);
-        all.solid(x, y) && !round_start.solid(x, y)
-    };
-    let mut seen = vec![false; n];
-    let mut out = BitGrid::new(w, h);
-    let mut stack = Vec::new();
-    let mut region = Vec::new();
-    for start in 0..n {
-        if seen[start] || !cand(start) {
-            continue;
-        }
-        seen[start] = true;
-        stack.push(start);
-        region.clear();
-        let mut open = false;
-        while let Some(i) = stack.pop() {
-            region.push(i);
-            let (x, y) = (i % w as usize, i / w as usize);
-            let mut nb = |j: usize| {
-                if !all.solid((j % w as usize) as u32, (j / w as usize) as u32) {
-                    open = true;
-                } else if !seen[j] && cand(j) {
-                    seen[j] = true;
-                    stack.push(j);
-                }
-            };
-            if x > 0 {
-                nb(i - 1);
-            }
-            if x + 1 < w as usize {
-                nb(i + 1);
-            }
-            if y > 0 {
-                nb(i - w as usize);
-            }
-            if y + 1 < h as usize {
-                nb(i + w as usize);
-            }
-        }
-        if !open {
-            for &i in &region {
-                out.put((i % w as usize) as u32, (i / w as usize) as u32, true);
-            }
-        }
-    }
-    out
 }
 
 /// Everything that is not open sky: solid now, or was rock (the wall). Its complement is the air
@@ -1175,11 +1121,12 @@ mod tests {
 
     /// R24 final form (T23.07C). In units of R: a tunnel R tall through a hill is hard wall, mouth
     /// included; a slab of landform standing in open sky is soft (it fades from its sky edge — kept, not
-    /// removed); an enclosed chamber 3R across (wider than 2R, so outside the closing) is hard; a
-    /// dug-away roof keeps the tunnel's wall (the split read the round start). Control: the slab's sky
-    /// edge px would be 255 were it hard.
+    /// removed); an enclosed chamber 3R across (wider than 2R, so outside the closing) is soft but drawn
+    /// whole, since it has no open-sky edge to fade from (R24's fourth amendment: why the enclosed-region
+    /// term was deleted); a dug-away roof keeps the tunnel's wall (the split read the round start).
+    /// Control: the slab's sky edge px would be 255 were it hard.
     #[test]
-    fn hard_wall_is_the_closing_or_an_enclosed_region_the_rest_fades() {
+    fn hard_wall_is_the_closing_the_rest_fades_and_a_chamber_is_whole() {
         let r = WALL_CLOSING_R;
         let (w, h) = (16 * r, 16 * r);
         let ground = 8 * r;
@@ -1235,16 +1182,19 @@ mod tests {
             !hard(&f, 2 * r, 3 * r) && b(&f, 2 * r, 3 * r) > 0,
             "kept, not removed"
         );
+        // The chamber's centre is outside the closing (not hard), and the fade draws it whole anyway.
         assert!(
-            hard(&f, cx as u32, cy as u32) && b(&f, cx as u32, cy as u32) == 255,
-            "the enclosed chamber is hard"
+            !hard(&f, cx as u32, cy as u32),
+            "the chamber is outside the closing"
         );
-        // Control: the chamber's centre is outside the closing — only the enclosed term keeps it hard.
-        let only_closing = closed(f.wall.as_ref().unwrap(), &rock, r);
-        assert!(
-            !only_closing.solid(cx as u32, cy as u32),
-            "control: the closing alone drops the chamber"
+        assert_eq!(
+            b(&f, cx as u32, cy as u32),
+            255,
+            "the enclosed chamber is drawn whole"
         );
+        // Its rim, one px in from the rock: still no open sky within the ramp, still whole.
+        let rim = cx as u32 - (3 * r / 2) + 1;
+        assert_eq!(b(&f, rim, cy as u32), 255, "and so is its rim");
         // Dig the hill's top away mid-round: the tunnel stays hard wall.
         let mut dug = rock.clone();
         for y in 4 * r..5 * r {

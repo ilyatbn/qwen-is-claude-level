@@ -8,16 +8,17 @@
  * `?look=F1&only=world` draws F1 without its cast (actors, fx, labels, HUD are T23.12+ / T23.18). The
  * reference is the mockup drawing the same thing: `reference/controls/worldonly.js` — `f_kit.js::frame`
  * with only the 2D actor canvas and the fx group taken out — → `controls/F1-world.png`, rendered twice
- * byte-identical (floor 0). Every `look-thresholds.json` metric must sit within its threshold, printed
- * beside it, plus the **moon's bloom** (`bloomBox`): in a frame with no cast the only thing above
- * `P.bloom`'s threshold is the moon, and whole-frame metrics cannot see its halo (the mockup's own
- * bloom-off passes every one of them against F1-world — measured), so its box is compared on its own.
+ * byte-identical (floor 0). Every `look-thresholds.json` metric must sit within its threshold — the set for
+ * this page's renderer (R25: `swiftshader` in the checks, `gpu` on a real GPU; any other renderer throws) —
+ * printed beside it, plus the **moon's bloom** (`bloomBox`, and the `bloomHalo` ring for its radius): in a
+ * frame with no cast the only thing above `P.bloom`'s threshold is the moon, and whole-frame metrics cannot
+ * see its halo (the mockup's own bloom-off passes every one of them against F1-world — measured).
  *
  * ## 2. Must-fail controls through the game's renderer (R19's set, lab side)
  *
  * The lab with one knob turned against the same reference: `fog-off`, `exposure-up`/`-down` (±10 %),
- * `bloom-off` (the moon box), and T23.08's other two layers, `fg-off` and `grade-off`. Each must fail —
- * a comparison that passes one cannot see that layer.
+ * `bloom-off` (the moon box), `bloom-radius-0` (the halo ring, which it must turn red — T23.08C), and T23.08's
+ * other two layers, `fg-off` and `grade-off`. Each must fail — a comparison that passes one cannot see that layer.
  *
  * ## 3. Against the F1 picture, actor boxes excluded (the gate's number, and where the miss is)
  *
@@ -26,7 +27,9 @@
  * explosions' sprites, the laser and rocket ribbons, the muzzle flashes — draw outside the actor boxes
  * and are T23.18's, and the bloom they feed spreads further. So the gate asserts **where** the miss is:
  * the mockup's own F1-world is compared with F1 the same way, and the lab's distance must equal the
- * mockup's within each metric's threshold — every point of the miss is the cast's, none the lab's.
+ * mockup's within each metric's threshold — every point of the miss is the cast's, none the lab's —
+ * except paletteDE, whose difference attributes nothing (T23.08C F1: a k-means palette is not additive).
+ * The direct comparison it stands in for gates beside it: the lab against the mockup, boxes pasted in both.
  *
  * ## 4. A leaf never hides a player
  *
@@ -40,24 +43,29 @@ import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { actorBoxes, boxDelta, compare, failures, loadPng, withActors } from '../lib/look-compare.mjs'
+import { actorBoxes, areaDelta, boxDelta, compare, failures, loadPng, thresholdsFor, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 const ref = (p) => join(root, 'tasks/M23/reference', p)
-const TH = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+/** R25: the threshold set for the back end this page renders on — set from the first lab frame's renderer string. */
+let TH = null
 
 /**
- * The moon's bloom box and its threshold: `look-thresholds.json` `box.bloomBox` — the box (where the
- * mockup's F1-world and its bloom-off differ, grown to the disc and halo), the metric (mean |Δ| per
- * channel, `look-compare.mjs::boxDelta`), and its threshold between the look-lab's two-back-end floor
- * and the mockup's bloom-off control, both written there (`look-compare.mjs --derive`).
+ * The moon's bloom, as two areas (`look-thresholds.json` `boxes`, each set's threshold between that set's floor
+ * and the smallest of the area's controls, `look-compare.mjs --derive`): `bloomBox` — where the mockup's
+ * F1-world and its bloom-off differ, grown to the disc and halo (strength) — and `bloomHalo`, a ring around
+ * the disc where the bloom's radius shows (T23.08C, R25: bloom radius 0 passed `bloomBox`; it must fail here).
+ * Metric: mean |Δ| per channel (`look-compare.mjs::areaDelta`).
  */
-const BLOOM_KEY = 'bloomBox'
+const AREAS = ['bloomBox', 'bloomHalo']
 
 /** The foreground leg: a player-sized box (the F1 stick's is 51×56) behind the right-hand clump (`fg.spots[1]`, 1300, 700, r 110). */
 const FG_BOX = [1180, 610, 1231, 666]
+/** T23.08C F1: metrics whose |lab − mockup| difference in §3 is reported but attributes nothing (see there). */
+const ATTRIBUTION_SKIPS = ['paletteDE']
 /** The task's bound on a leaf's alpha over a player. */
 const FG_MAX_ALPHA = 0.25
 /** Control: with no player, the clump covers the box — its alpha there reaches at least this. */
@@ -106,22 +114,27 @@ export default async function ({ page, shot, log }) {
   const problems = []
   const regions = withActors(loadPng(ref('controls/regions-F1.png')), actorBoxes('F1'))
   const reference = loadPng(ref('controls/F1-world.png'))
-  const bloomMax = TH.box?.[BLOOM_KEY]?.threshold
-  const BLOOM_BOX = TH.box?.[BLOOM_KEY]?.box
-  if (!(bloomMax > 0) || BLOOM_BOX?.length !== 4) throw new Error(`look-thresholds.json has no box.${BLOOM_KEY}`)
-  const table = (name, m, bloom) => {
+  /** Every area's delta against the reference, and the ones over their threshold. */
+  const areas = (frame) => {
+    const d = Object.fromEntries(AREAS.map((k) => [k, areaDelta(frame, reference, TH.box[k])]))
+    return { d, bad: AREAS.filter((k) => d[k] > TH.box[k].threshold) }
+  }
+  const table = (name, m, frame) => {
     const bad = failures(m, TH)
     for (const [k, t] of Object.entries(TH.metrics)) {
       log(`  ${name} ${k.padEnd(15)} ${m[k].toFixed(5).padStart(10)}  max ${String(t.threshold).padEnd(9)} ${bad.includes(k) ? 'FAIL' : 'ok'}`)
     }
-    const bb = bloom > bloomMax
-    log(`  ${name} ${BLOOM_KEY.padEnd(15)} ${bloom.toFixed(5).padStart(10)}  max ${String(bloomMax).padEnd(9)} ${bb ? 'FAIL' : 'ok'}`)
-    return bb ? [...bad, BLOOM_KEY] : bad
+    const a = areas(frame)
+    for (const k of AREAS) log(`  ${name} ${k.padEnd(15)} ${a.d[k].toFixed(5).padStart(10)}  max ${String(TH.box[k].threshold).padEnd(9)} ${a.bad.includes(k) ? 'FAIL' : 'ok'}`)
+    return [...bad, ...a.bad]
   }
 
   // ---------------------------------------------------------------- 1. Level A, full tier
   await page.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
   const full = await lab(page, '&only=world')
+  TH = thresholdsFor(RAW, full.info.gpu)
+  for (const k of AREAS) if (!(TH.box[k]?.threshold > 0)) throw new Error(`look-thresholds.json's ${TH.backEnd} set places no threshold for ${k}`)
+  log(`renderer ${JSON.stringify(full.info.gpu)} → the ${TH.backEnd} threshold set (R25)`)
   const i = full.info
   if (i.tier !== 'full' || i.buffer[0] !== 1280 || i.buffer[1] !== 720 || i.samples !== 4) {
     throw new Error(`want the full tier (1280x720, MSAA 4), got ${JSON.stringify(i)}`)
@@ -133,21 +146,22 @@ export default async function ({ page, shot, log }) {
   await shot('look-gate-f1')
   writeFileSync(join(root, 'shots/look-gate-f1-lab.png'), PNG.sync.write(Object.assign(new PNG({ width: 1280, height: 720 }), { data: Buffer.from(full.frame.data) })))
   const m = compare(full.frame, reference, { regions })
-  log(`1. Level A — look-lab F1 world vs reference/controls/F1-world.png (full tier, ${Object.keys(TH.metrics).length} metrics + ${BLOOM_KEY}):`)
-  const bad = table('F1', m, boxDelta(full.frame, reference, BLOOM_BOX))
+  log(`1. Level A — look-lab F1 world vs reference/controls/F1-world.png (full tier, ${Object.keys(TH.metrics).length} metrics + ${AREAS.join(', ')}):`)
+  const bad = table('F1', m, full.frame)
   if (bad.length) problems.push(`F1 world outside its thresholds: ${bad.join(', ')}`)
   sideBySide(full.frame, reference, 'look-gate-f1-vs-reference.png')
   log('side by side (lab | mockup): shots/look-gate-f1-vs-reference.png')
 
   // ---------------------------------------------------------------- 2. must-fail, lab side
-  for (const knob of ['fog-off', 'exposure-up', 'exposure-down', 'bloom-off', 'fg-off', 'grade-off']) {
+  for (const knob of ['fog-off', 'exposure-up', 'exposure-down', 'bloom-off', 'bloom-radius-0', 'fg-off', 'grade-off']) {
     const c = await lab(page, `&only=world&knob=${knob}`)
     const cm = compare(c.frame, reference, { regions })
-    const cbad = failures(cm, TH)
-    const bloom = boxDelta(c.frame, reference, BLOOM_BOX)
-    if (bloom > bloomMax) cbad.push(BLOOM_KEY)
-    log(`2. control ${knob}: fails ${cbad.length}/${Object.keys(TH.metrics).length + 1} (${cbad.join(', ') || 'none'}); ${BLOOM_KEY} ${bloom.toFixed(3)}, dssim ${cm.dssim.toFixed(4)}`)
+    const a = areas(c.frame)
+    const cbad = [...failures(cm, TH), ...a.bad]
+    log(`2. control ${knob}: fails ${cbad.length}/${Object.keys(TH.metrics).length + AREAS.length} (${cbad.join(', ') || 'none'}); ${AREAS.map((k) => `${k} ${a.d[k].toFixed(3)}`).join(', ')}, dssim ${cm.dssim.toFixed(4)}`)
     if (!cbad.length) problems.push(`control ${knob} passes every threshold — the gate cannot see it`)
+    // R25: the halo ring is the area placed against the radius; the radius knob must turn *it* red.
+    if (knob === 'bloom-radius-0' && !a.bad.includes('bloomHalo')) problems.push(`control bloom-radius-0: bloomHalo ${a.d.bloomHalo.toFixed(3)} ≤ ${TH.box.bloomHalo.threshold} — the halo ring cannot see the radius`)
   }
 
   // ---------------------------------------------------------------- 3. vs the F1 picture, actor boxes excluded
@@ -163,10 +177,21 @@ export default async function ({ page, shot, log }) {
   const notCast = []
   for (const [k, t] of Object.entries(TH.metrics)) {
     const d = Math.abs(gl[k] - gm[k])
-    const own = d > t.threshold
+    // T23.08C F1: paletteDE is an 8-colour k-means of each image; two near-identical frames against a third
+    // can settle on different clusters (measured: 1.746 vs 2.285 while every other metric agreed to 0.0007),
+    // so a difference of two paletteDEs attributes nothing. It is shown, and the attribution leg skips it.
+    const attributes = !ATTRIBUTION_SKIPS.includes(k)
+    const own = attributes && d > t.threshold
     if (own) notCast.push(k)
-    log(`   ${k.padEnd(15)} ${gl[k].toFixed(5).padStart(10)}  ${String(t.threshold).padEnd(9)} ${gbad.includes(k) ? 'MISS' : 'ok  '}  ${gm[k].toFixed(5).padStart(10)}   ${d.toFixed(5)} ${own ? '> max: the lab\'s own' : '≤ max: the cast\'s'}`)
+    log(`   ${k.padEnd(15)} ${gl[k].toFixed(5).padStart(10)}  ${String(t.threshold).padEnd(9)} ${gbad.includes(k) ? 'MISS' : 'ok  '}  ${gm[k].toFixed(5).padStart(10)}   ${d.toFixed(5)} ${!attributes ? '(reported: not a difference that attributes)' : own ? '> max: the lab\'s own' : '≤ max: the cast\'s'}`)
   }
+  // The direct comparison the difference stands in for: the lab against the mockup, both with the boxes pasted.
+  // paletteDE is skipped here too, measured: with F1's cast colours pasted in, its k-means lands the lab and
+  // the mockup on different clusters (the value is printed) while §1's unpasted paletteDE is 0.005.
+  const dm = compare(labEx, mockEx, { regions })
+  const direct = failures(dm, TH).filter((k) => !ATTRIBUTION_SKIPS.includes(k))
+  log(`   direct: lab vs mockup F1-world, boxes pasted in both — fails ${direct.length}/${Object.keys(TH.metrics).length - ATTRIBUTION_SKIPS.length} (${direct.join(', ') || 'none'}); reported: ${ATTRIBUTION_SKIPS.map((k) => `${k} ${dm[k].toFixed(3)}`).join(', ')}`)
+  if (direct.length) problems.push(`with the actor boxes pasted, the lab differs from the mockup's world on ${direct.join(', ')}`)
   log(`   misses ${gbad.length}/${Object.keys(TH.metrics).length} (${gbad.join(', ') || 'none'}) — layer: the cast (actors outside their boxes' reach, fx, their bloom), T23.12+ / T23.18`)
   if (notCast.length) problems.push(`against F1 the lab differs from the mockup's own world by more than a threshold on ${notCast.join(', ')} — a miss that is not the cast's`)
   sideBySide(labEx, f1, 'look-gate-f1-vs-F1.png')
@@ -203,7 +228,7 @@ export default async function ({ page, shot, log }) {
   for (let y = 0; y < 720; y++) for (let x = 0; x < 1280; x++) scaled.data.set(low.frame.data.subarray(((y >> 1) * low.frame.width + (x >> 1)) * 4, ((y >> 1) * low.frame.width + (x >> 1)) * 4 + 4), (y * 1280 + x) * 4)
   const lm = compare(scaled, reference, { regions })
   log(`5. low tier ${lb.join('x')}: bloom's first target ${low.atmos?.bloomTarget?.join('x')} (want ${want.join('x')}, full tier's ${a.bloomTarget?.join('x')}); every layer drawn ${JSON.stringify({ ...low.atmos, occluders: undefined, bloomTarget: undefined })}`)
-  log(`   reported, not gating: low (doubled) vs F1-world — fails ${failures(lm, TH).length}/${Object.keys(TH.metrics).length}, dssim ${lm.dssim.toFixed(4)}, deltaE ${lm.deltaE.toFixed(3)}, ${BLOOM_KEY} ${boxDelta(scaled, reference, BLOOM_BOX).toFixed(3)}`)
+  log(`   reported, not gating: low (doubled) vs F1-world — fails ${failures(lm, TH).length}/${Object.keys(TH.metrics).length}, dssim ${lm.dssim.toFixed(4)}, deltaE ${lm.deltaE.toFixed(3)}, ${AREAS.map((k) => `${k} ${areaDelta(scaled, reference, TH.box[k]).toFixed(3)}`).join(', ')}`)
   sideBySide(scaled, reference, 'look-gate-f1-low-vs-reference.png')
   if (low.info.tier !== 'low') problems.push(`the low leg ran ${low.info.tier}`)
   if (JSON.stringify(low.atmos?.bloomTarget) !== JSON.stringify(want)) problems.push(`low tier bloom target ${low.atmos?.bloomTarget}, want ${want} (half resolution)`)

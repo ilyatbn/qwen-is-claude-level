@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MUST_FAIL, actorBoxes, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, withActors } from './look-compare.mjs'
+import { DEFERRED, MUST_FAIL, actorBoxes, areaDelta, backEnd, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, thresholdsFor, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
@@ -19,22 +19,24 @@ const f1 = loadPng(ref(th.reference))
 const file = c => th.controls[c].split(' ')[0]
 const rows = Object.fromEntries(Object.keys(th.controls).map(c => [c, compare(f1, loadPng(ref(file(c))), { regions })]))
 const single = Object.keys(th.controls).filter(c => c !== 'F0')
-const retained = Object.keys(th.metrics)
+// R25: one threshold set per back end, each re-measured from its own two PNGs.
+const SETS = Object.keys(th.sets)
+const sets = Object.fromEntries(SETS.map(n => [n, thresholdsFor(th, n === 'gpu' ? 'ANGLE (Microsoft Corporation, D3D12 (Intel(R) Arc(TM) B390 GPU), OpenGL 4.6)' : 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)')]))
+const lab = Object.fromEntries(SETS.map(n => [n, labFloor(th, n, regions, p => loadPng(ref(p)))]))
 // R19: the controls that place a threshold, and the ones only reported.
 const gating = single.filter(c => MUST_FAIL.includes(c))
-// T23.08: the look-lab's floor — its F1 world on SwiftShader and on the owner's GPU — re-measured from the PNGs.
-const lab = labFloor(th, regions, p => loadPng(ref(p)))
 const sensitivity = single.filter(c => !MUST_FAIL.includes(c))
 
 test('the table', () => {
   const cols = ['F0', ...gating, ...sensitivity]
-  const head = ['metric', 'floor', ...cols.map(c => (MUST_FAIL.includes(c) ? c : `(${c})`)), 'threshold']
+  const head = ['metric', ...SETS.flatMap(n => [`${n} floor`, `${n} max`]), ...cols.map(c => (MUST_FAIL.includes(c) ? c : `(${c})`))]
   const lines = [head.map(s => s.padStart(13)).join('')]
-  for (const m of [...retained, ...Object.keys(th.dropped)]) {
-    const t = th.metrics[m]
-    lines.push([m.padStart(13), (lab.floor[m] ?? 0).toPrecision(3).padStart(13), ...cols.map(c => rows[c][m].toPrecision(3).padStart(13)), (t ? String(t.threshold) : 'DROPPED').padStart(13)].join(''))
+  const all = [...new Set(SETS.flatMap(n => [...Object.keys(sets[n].metrics), ...Object.keys(sets[n].dropped)])), ...Object.keys(DEFERRED)]
+  for (const m of all) {
+    const perSet = SETS.flatMap(n => [(lab[n].floor[m] ?? 0).toPrecision(3), sets[n].metrics[m] ? String(sets[n].metrics[m].threshold) : m in DEFERRED ? 'DEFERRED' : 'DROPPED'])
+    lines.push([m, ...perSet, ...cols.map(c => rows[c][m].toPrecision(3))].map(s => s.padStart(13)).join(''))
   }
-  lines.push('(sensitivity, not gating — R19) ' + sensitivity.map(c => `${c} fails ${failures(rows[c], th).length}/${retained.length}`).join('; '))
+  for (const n of SETS) lines.push(`(${n}: sensitivity, not gating — R19) ` + sensitivity.map(c => `${c} fails ${failures(rows[c], sets[n]).length}/${Object.keys(sets[n].metrics).length}`).join('; ') + '; boxes ' + Object.entries(sets[n].box).map(([k, b]) => `${k} floor ${b.floor.toPrecision(3)} max ${b.threshold} control ${b.smallest.toPrecision(3)}`).join(', '))
   console.log(lines.join('\n'))
 })
 
@@ -47,55 +49,131 @@ test('the ΔE2000 is the published one (Sharma, Wu & Dalal 2005 test pairs 1, 7,
 test('the same image twice is identical on every metric', () => {
   const m = compare(f1, loadPng(ref(th.reference)), { regions })
   for (const [k, v] of Object.entries(m)) if (typeof v === 'number') assert.equal(v, 0, k)
-  assert.deepEqual(failures(m, th), [])
+  for (const n of SETS) assert.deepEqual(failures(m, sets[n]), [])
 })
 
-test('F0 against F1 fails every retained metric', () => {
-  assert.deepEqual(failures(rows.F0, th), retained)
+test('F0 against F1 fails every retained metric, in every set', () => {
+  for (const n of SETS) assert.deepEqual(failures(rows.F0, sets[n]), Object.keys(sets[n].metrics), n)
 })
 
-test('every must-fail single-knob control fails at least one retained metric', () => {
+test('every must-fail single-knob control fails at least one retained metric, in every set', () => {
   assert.deepEqual(gating, ['exposure+10', 'exposure-10', 'bloom-off', 'fog-off'], 'R19 names these four')
-  for (const c of gating) {
-    const bad = failures(rows[c], th)
-    assert.ok(bad.length > 0, `${c} passed every metric`)
+  for (const n of SETS) {
+    for (const c of gating) assert.ok(failures(rows[c], sets[n]).length > 0, `${n}: ${c} passed every metric`)
   }
 })
 
-test('the thresholds file is R19\'s rule applied to what the instrument measures now', () => {
+test('each set is R19\'s rule applied to its own floor, as the instrument measures it now (R25)', () => {
   // Re-derived from the PNGs: a hand-edited threshold, a control moved in or out of the must-fail
-  // set, or an instrument change all show up here as a difference.
-  const d = deriveThresholds(rows, lab.floor)
-  assert.deepEqual(th.labFloor.metrics, lab.floor)
-  assert.deepEqual(th.box, lab.box)
+  // set, a frame swapped between sets, or an instrument change all show up here as a difference.
   assert.deepEqual(th.mustFail, MUST_FAIL)
-  assert.deepEqual(th.metrics, d.metrics)
-  assert.deepEqual(th.dropped, d.dropped)
-  assert.deepEqual(th.sensitivity, d.sensitivity)
-  for (const [m, t] of Object.entries(th.metrics)) {
-    assert.ok(t.floor < t.threshold && t.threshold < t.smallest, `${m}: threshold not between floor and control`)
-    assert.ok(MUST_FAIL.includes(t.smallestControl), `${m}: placed against ${t.smallestControl}, not a must-fail control`)
+  assert.deepEqual(th.deferred, DEFERRED)
+  for (const n of SETS) {
+    const set = th.sets[n]
+    const d = deriveThresholds(rows, lab[n].floor)
+    assert.deepEqual(set.floor, lab[n].floor, `${n}: floor`)
+    assert.deepEqual(set.box, lab[n].box, `${n}: box`)
+    assert.deepEqual(set.metrics, d.metrics, `${n}: metrics`)
+    assert.deepEqual(set.dropped, d.dropped, `${n}: dropped`)
+    assert.deepEqual(set.sensitivity, d.sensitivity, `${n}: sensitivity`)
+    for (const [m, t] of Object.entries(set.metrics)) {
+      assert.ok(t.floor < t.threshold && t.threshold < t.smallest, `${n} ${m}: threshold not between floor and control`)
+      assert.ok(MUST_FAIL.includes(t.smallestControl), `${n} ${m}: placed against ${t.smallestControl}, not a must-fail control`)
+    }
+    // A dropped metric really could not separate: some must-fail control leaves it on the floor.
+    for (const [m, dd] of Object.entries(set.dropped)) assert.ok(Math.min(...MUST_FAIL.map(c => rows[c][m])) <= dd.floor, `${n} ${m} was dropped but separates`)
+    for (const [k, b] of Object.entries(set.box)) assert.ok(b.floor < b.threshold && b.threshold < b.smallest, `${n} box ${k}: threshold not between floor and control`)
+    for (const m of Object.keys(DEFERRED)) assert.ok(!(m in set.metrics) && !(m in set.dropped), `${n}: ${m} is deferred (R25), not placed or dropped`)
   }
-  // A dropped metric really could not separate: some must-fail control leaves it on the floor.
-  for (const [m, d] of Object.entries(th.dropped)) assert.ok(Math.min(...MUST_FAIL.map(c => rows[c][m])) <= d.floor, `${m} was dropped but separates`)
-  for (const [n, b] of Object.entries(th.box)) assert.ok(b.floor < b.threshold && b.threshold < b.smallest, `box ${n}: threshold not between floor and control`)
 })
 
-test('T23.08: the lab floor is two real back-ends, and it moved the thresholds', () => {
-  // Two renders of one back-end are byte-identical (SwiftShader, twice: floor 0 on every metric) — a
-  // floor of all zeros would mean the two frames were one. And the rule re-derived with a zero floor
-  // differs from the file: the floor is what placed dssim / deltaE_sky and dropped deltaE_actors.
-  assert.ok(lab.floor.dssim > 0 && lab.floor.deltaE_sky > 0, 'the two lab frames are identical — one back-end twice')
-  const zero = deriveThresholds(rows, 0)
-  assert.notDeepEqual(zero.metrics, th.metrics)
-  assert.ok('deltaE_actors' in zero.metrics && 'deltaE_actors' in th.dropped, 'deltaE_actors: kept at a zero floor, dropped at the lab floor')
+test('R25: the swiftshader floor is one back end twice, the gpu floor is two, and only the gpu set is loosened by it', () => {
+  // SwiftShader's two frames are separate launches and byte-identical: its floor is 0 on every metric.
+  const [a, b] = th.sets.swiftshader.frames.map(f => f.split(' ')[0])
+  assert.notEqual(a, b, 'the swiftshader floor names one file twice')
+  for (const [m, v] of Object.entries(lab.swiftshader.floor)) assert.equal(v, 0, `swiftshader floor ${m}`)
+  // The gpu floor is two real back ends — all zeros would mean the two frames were one.
+  assert.ok(lab.gpu.floor.dssim > 0 && lab.gpu.floor.deltaE_sky > 0, 'the gpu floor frames are identical — one back end twice')
+  // So the swiftshader set is R19's rule from zero, and the gpu set is at least as loose on every metric and looser on some.
+  assert.deepEqual(th.sets.swiftshader.metrics, deriveThresholds(rows, 0).metrics)
+  const looser = []
+  for (const [m, t] of Object.entries(th.sets.swiftshader.metrics)) {
+    const g = th.sets.gpu.metrics[m]
+    if (!g) continue
+    assert.ok(g.threshold >= t.threshold, `${m}: the gpu set is tighter than swiftshader`)
+    if (g.threshold > t.threshold) looser.push(m)
+  }
+  assert.ok(looser.length > 0, 'the gpu floor loosened nothing — the split changes nothing')
+})
+
+test('R25: the renderer string picks the set, and an unknown one fails loudly', () => {
+  assert.equal(backEnd('ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)'), 'swiftshader')
+  assert.equal(backEnd('ANGLE (Microsoft Corporation, D3D12 (Intel(R) Arc(TM) B390 GPU), OpenGL 4.6)'), 'gpu')
+  assert.equal(backEnd('ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'), 'gpu')
+  assert.throws(() => backEnd('llvmpipe (LLVM 15.0.7, 256 bits)'), /software renderer/)
+  assert.throws(() => backEnd('ANGLE (Microsoft Corporation, D3D12 (Microsoft Basic Render Driver), OpenGL 4.6)'), /software renderer/)
+  assert.throws(() => backEnd('Mystery GPU 9000'), /no known back end/)
+  assert.throws(() => backEnd(undefined), /no known back end/)
+  assert.equal(sets.swiftshader.backEnd, 'swiftshader')
+  assert.equal(sets.gpu.backEnd, 'gpu')
+})
+
+test('R25: the halo ring sees bloom radius 0 on SwiftShader, where the moon box could not', () => {
+  const reference = loadPng(ref('reference/controls/F1-world.png'))
+  const r0 = loadPng(ref('reference/controls/F1-world-bloom-radius-0.png'))
+  const halo = sets.swiftshader.box.bloomHalo
+  const box = sets.swiftshader.box.bloomBox
+  assert.ok(areaDelta(r0, reference, halo) > halo.threshold, `radius 0: halo ${areaDelta(r0, reference, halo)} ≤ ${halo.threshold}`)
+  // Control: the moon box (the strength's area) does not see it — why the ring exists.
+  assert.ok(areaDelta(r0, reference, box) <= box.threshold, 'the moon box already sees radius 0 — the ring adds nothing')
+  // Control: the lab's own frame is inside the ring's threshold on both sets.
+  for (const n of SETS) {
+    const f = loadPng(ref(th.sets[n].frames[1].split(' ')[0]))
+    assert.ok(areaDelta(f, reference, sets[n].box.bloomHalo) <= sets[n].box.bloomHalo.threshold, `${n}: the lab's frame fails the halo ring`)
+  }
 })
 
 test('control: with rim-off gating, the rule would place tighter thresholds (R19 is what moved them)', () => {
   // The sensitivity line is not decoration: rim-off is the smallest control on metrics R19 now
   // places elsewhere, so a derivation that silently included it would differ.
-  const moved = Object.keys(th.metrics).filter(m => rows['rim-off'][m] < th.metrics[m].smallest)
-  assert.ok(moved.length > 0, 'rim-off is smaller than no must-fail control — R19 changed nothing')
+  for (const n of SETS) {
+    const moved = Object.keys(th.sets[n].metrics).filter(m => rows['rim-off'][m] < th.sets[n].metrics[m].smallest)
+    assert.ok(moved.length > 0, `${n}: rim-off is smaller than no must-fail control — R19 changed nothing`)
+  }
+})
+
+test('T23.08C F1: worldonly.js is f_kit.js::frame with only the actor canvas and the fx group taken out', () => {
+  // The reference F1-world.png is only a fair "F1 without its cast" if worldonly.js draws what frame()
+  // draws, less the cast. Compared as statements: frame()'s body minus its draw2d/fx lines, and
+  // worldonly's body after its marker with its knob plumbing normalised (P.x → x, the fg-off guard).
+  const body = (src, from) => {
+    const i = src.indexOf(from)
+    assert.ok(i >= 0, `no ${from}`)
+    const lines = []
+    let depth = 0
+    for (const line of src.slice(src.indexOf('\n', i) + 1).split('\n')) {
+      depth += (line.match(/{/g) ?? []).length - (line.match(/}/g) ?? []).length
+      if (depth < 0) break
+      lines.push(line.trim())
+    }
+    return lines.filter(Boolean)
+  }
+  const kit = readFileSync(ref('reference/mockup-src/f_kit.js'), 'utf8')
+  const only = readFileSync(ref('reference/controls/worldonly.js'), 'utf8')
+  const cast = /\bcv\b|getContext|draw2d|CanvasTexture|\baq\b|\bfx\b|fx3d/
+  const frame = body(kit, 'export function frame(')
+  const taken = frame.filter(l => cast.test(l))
+  const want = frame.filter(l => !cast.test(l))
+  const got = body(only, '// --- f_kit.js::frame, less the actor canvas and fx ---')
+    .map(l => l.replace(/\bP\.(bg|terrain|fg)\b/g, '$1').replace(" && knob !== 'fg-off'", ''))
+  assert.equal(taken.length, 6, `frame()'s cast lines: ${JSON.stringify(taken)}`)
+  // frame()'s page setup sits at the top of worldOnly, before the marker (it sets up the lights after it).
+  const setup = want.shift()
+  assert.match(setup, /^document\.body\.style\.cssText = /)
+  assert.ok(body(only, 'export function worldOnly(').includes(setup), 'worldOnly does not set the page up as frame() does')
+  assert.deepEqual(got, want)
+  // Control: frame() itself, cast included, is not what worldonly draws.
+  assert.notDeepEqual(got, frame)
 })
 
 test('FLIP is never reported uncomputed', () => {
@@ -104,6 +182,7 @@ test('FLIP is never reported uncomputed', () => {
 })
 
 test('the actor boxes are where the actors are: rim-off lands inside them', () => {
+  // (deltaE_actors is computed for every compare and gates nothing yet — R25, `DEFERRED`.)
   // rim-off changes only what lit() paints — the actors (plus the bloom they feed). Measured:
   // mean ΔE 1.70 inside the boxes against 0.127 in the sky. The same boxes shifted 200 px right
   // (the control) sit mostly on empty sky and terrain and must lose that contrast.
