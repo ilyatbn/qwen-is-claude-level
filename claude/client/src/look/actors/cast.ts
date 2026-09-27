@@ -13,6 +13,11 @@ import type { Actor } from '../scene'
 export interface CastMember {
   /** This frame's actor, or null (hidden: culled, dead and not drawn). */
   actor(): Actor | null
+  /**
+   * T23.19A: a prop drawn **behind** every figure — a gate, a turret. The actor layer blends in list order, so this
+   * decides who covers whom: a player mounted on a turret stands in front of it.
+   */
+  back?: boolean
 }
 
 const casts = new WeakMap<Phaser.Scene, Set<CastMember>>()
@@ -25,13 +30,15 @@ export function joinCast(scene: Phaser.Scene, m: CastMember): () => void {
   return () => void set?.delete(m)
 }
 
-/** The scene's cast this frame, in join order (a stable draw order). */
+/** The scene's cast this frame: the props (`back`) first, then everyone else, each in join order (a stable draw order). */
 export function castOf(scene: Phaser.Scene): Actor[] {
   const out: Actor[] = []
+  const front: Actor[] = []
   for (const m of casts.get(scene) ?? []) {
     const a = m.actor()
-    if (a) out.push(a)
+    if (a) (m.back ? out : front).push(a)
   }
+  for (const a of front) out.push(a)
   return out
 }
 

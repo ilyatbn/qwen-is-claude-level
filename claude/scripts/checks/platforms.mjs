@@ -44,6 +44,10 @@ export default async function ({ page, shot, log }) {
   if (p.count !== p.total) {
     throw new Error(`${p.total} platforms declared and ${p.count} drawn — the layer is not running`)
   }
+  // T23.19A, both ends: every platform's turret is in the world renderer (behind the figures), not on Phaser.
+  if (p.turretsInWorld !== p.count) {
+    throw new Error(`${p.count} platforms drawn, ${p.turretsInWorld} of them in the world renderer`)
+  }
 
   // Frame one. §A22: a screenshot that does not contain its subject is not
   // evidence, and this project has taken one of an empty snowfield before.
@@ -87,7 +91,9 @@ export default async function ({ page, shot, log }) {
   // against ground of a similar value. Sampling the whole box averaged the
   // second into the first and reported 7.2 against a threshold of 8, on a frame
   // where the turret is plainly visible.
-  const artH = c.GUN_PLATFORM_W * 0.95
+  // T23.19A: the turret is F's tripod in the world renderer now, its drawn size off the layer (`platforms().turret`)
+  // rather than the retired steel art's `GUN_PLATFORM_W * 0.95`.
+  const artH = p.turret.h
   const bandH = artH * 0.55
   const sampleY = target.y - (artH - bandH / 2)
   const onPlatform = await toScreen(page, target.x, sampleY)
@@ -129,7 +135,7 @@ export default async function ({ page, shot, log }) {
   // world-space width straight to `page.screenshot` samples about half the
   // turret and fills the rest with terrain — which is signal thrown away.
   const scale = onPlatform.scale
-  const w = Math.round(c.GUN_PLATFORM_W * 1.05 * scale)
+  const w = Math.round(p.turret.w * 1.05 * scale)
   const h = Math.round(bandH * scale)
   const box = (s) => ({ x: Math.round(s.x - w / 2), y: Math.round(s.y - h / 2), w, h })
 

@@ -69,6 +69,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { overlapsAny, overlapsBoxes } from '../look/actors/props'
 import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
@@ -1658,6 +1659,11 @@ export class GameScene extends Phaser.Scene {
     // resolved as a bazooka).
     this.platformViews = init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.platforms.build(this.platformViews)
+    // T23.19A: gates and turrets are the world renderer's, behind the figures — Phaser's canvas lies over the world's,
+    // so there they covered a mounted gunner. Space keeps Phaser's (its opaque backdrop hides the world canvas, and
+    // its figures are Phaser's too — `PlayerView.drawSpace`, until T23.20).
+    this.world.pads.useWorld(!spaceMap)
+    this.world.platforms.useWorld(!spaceMap, this.core.width)
 
     // §D6's objects are stamped into the mask (collision, R5) and drawn as rock since T23.07 — the atlas
     // art retired (R15). Kept for the debug handle: what `map_init` carried.
@@ -2206,6 +2212,7 @@ export class GameScene extends Phaser.Scene {
       // T22.19B F6: the name tag, off the lobby's names — it had no caller before.
       this.localView.setName(this.scores.get(this.me)?.name ?? '')
       this.localView.setWeapon(this.slots[this.selectedSlot]?.key ?? '')
+      this.localView.overPhaser = this.overPhaserLayer(rp.x, rp.y)
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         tilt: this.localTilt,
         alive: true,
@@ -2659,6 +2666,7 @@ export class GameScene extends Phaser.Scene {
       // T23.14: the held item, off the snapshot's selected-item byte (every player's is on the wire).
       const sel = this.mirror.players.get(id)?.selectedItem ?? null
       r.view.setWeapon(sel === null ? '' : (this.itemKeys().get(sel) ?? ''))
+      r.view.overPhaser = this.overPhaserLayer(p.x, p.y)
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
         tilt: rtrack.theta,
         alive: flag(p.flags, FLAG.alive),
@@ -2902,6 +2910,24 @@ export class GameScene extends Phaser.Scene {
    * The local player is included from their own snapshot rather than from
    * prediction, so the lamp cannot light on a mount the server refused.
    */
+  /**
+   * T23.19A's stopgap: does a body centred at (x, y) overlap a pickup, a pickup's label or a grave — the layers Phaser still draws over
+   * the world canvas (until T23.19)? Such a figure is drawn through Phaser, at the actors' depth, so it is not hidden
+   * under them. The box is the drawn figure's (`FIGURE_SCALE`'s ~36 px over the 28-px body) against an item or grave
+   * sprite's (≤ 24 px); space draws every figure in Phaser anyway.
+   */
+  private overPhaserLayer(x: number, y: number): boolean {
+    if (this.gravity === SPACE_GRAVITY) return false
+    const c = C()
+    const feet = y + c.PLAYER_H / 2
+    const near = (t: Iterable<{ x: number; y: number }>): boolean => overlapsAny(x, feet, c.PLAYER_W + 8, c.PLAYER_H + 12, t, 12, 16)
+    return (
+      near(this.mirror.items.values()) ||
+      near(this.mirror.tombstones.values()) ||
+      overlapsBoxes(x, feet, c.PLAYER_W + 8, c.PLAYER_H + 12, this.world?.items.labelBoxes() ?? [])
+    )
+  }
+
   private occupiedPlatforms(): number[] {
     const c = C()
     return occupiedPlatforms(
@@ -3512,6 +3538,9 @@ export class GameScene extends Phaser.Scene {
           // assuming it.
           padsVisible: self.world?.pads.visible ?? false,
           platformsDrawn: self.world?.platforms.count ?? 0,
+          // T23.19A: how many of them the world renderer draws (behind the figures), and the gates likewise.
+          turretsInWorld: self.world?.platforms.turretsInWorld ?? 0,
+          gatesInWorld: self.world?.pads.drawsInWorld ? (self.world?.pads.gatesDrawn ?? 0) : 0,
           // §D6: what `map_init` carried. Drawn as rock since T23.07 (the mask stamps them), so there is
           // no separate index to count at the other end any more.
           objects: self.mapObjects.length,
@@ -3527,6 +3556,8 @@ export class GameScene extends Phaser.Scene {
           // instrument rather than a stopwatch the check starts itself.
           lastBakeMs: self.world?.terrain.stats.lastBakeMs ?? 0,
           padPositions: self.padViews.map((p) => ({ id: p.id, x: p.x, y: p.y })),
+          // T23.19A: where the pickups lie, so a check (or a person's probe) can walk a player to one.
+          itemPositions: [...self.mirror.items.values()].map((i) => ({ id: i.id, x: i.x, y: i.y })),
           // The local player's charge as the client has it, so a check can watch
           // it fill rather than sleeping for two seconds and hoping.
           teleportCharge: self.teleportCharge,

@@ -15,6 +15,7 @@ column is what nobody is checking while it sits here.
 |---|---|---|---|
 | `terrain-render` | browser | **RETIRED by T23.07** (2026-09-27): it photographed Phaser's rock, which the lit terrain replaced; its guard (§C0, a crater changes the picture) moved to `look-terrain`'s live half, which reads the crater in the frame it is carved against a from-scratch repaint. History: red in the T21.18 laser gate (camera motion), stale layer pin fixed in T22.08D | — |
 | `boots-visible` | browser | **UNPARKED by T23.14** (2026-09-27): rewritten on the stick figure's world-canvas pixels with the scene frozen (no camera ease between its frames — the cause below); green in 4 runs incl. two parallel subsets. Was: same gate: control region changed by 12.8; T21.23 measured it **2-in-3 red on an idle box** at HEAD, camera ease moving a screen-space band | ironman boots are visible on the player |
+| `fire-visible` | browser | Parked by T23.19A (2026-09-27), **not caused by it** (measured). Red twice in its runs, green four times, alone and serial: *"only 78 flames stayed alive — the field this measures does not exist"* (the 21-check subset, `gate-t2319a-subset.txt`) and *"a full flame field costs 50.40 ms/frame — under 20 fps"* (alone, `gate-t2319a-rerun.txt`). The same check with T23.19A's gates/turrets planted back on Phaser read 49.1 and 48.2 ms (`gate-t2319a-fire-base{1,2}.txt`); with them in the world renderer 47.9 and 47.3 (`…-fire-mine{1,2}.txt`) — so the budget sits within 1–4 ms of its 20-fps floor either way, and the live-flame count (78–110 of a 160 cap) moves across its own floor run to run. An instrument measuring the box's margin; the owner decides | molotov fire is drawn where it burns, and a full flame field keeps 20 fps |
 | `two-clients` | browser | red in a T21.26 gate (2026-09-14); a gun-platform flake that T21.22b was meant to close | the M6 checkpoint — two clients, one server, one round |
 | `bullets-visible` | browser | carried on the known-flaky list since M19 (`HANDOFF-M19.md`) | a bullet is drawn while it flies (§F2) |
 | `hud-timer` | browser | carried on the known-flaky list since M19 | the round timer and event banner (§C8) |
@@ -159,3 +160,10 @@ listed under `disabled:` in `e2e.mjs --help`. The toxic halves of `m5-weather`, 
 (`gate-t2309-e2e.txt`): *"timed out waiting for the death overlay"* and *"no death event for this player arrived"*,
 117.9 s; green alone straight after (`gate-t2309-death1.txt`, 23.1 s). No causal path from T23.09 (client light list;
 the missing event is the server's). One sighting, recorded rather than parked — the coordinator's call.
+
+**`teleport`, re-measured by T23.19A (2026-09-27) — red again, and not by that change.** Its charge half's terrain
+control moved 5.3–11.6 between the uncharged and charging frames (*"the control patch moved … something global
+changed"*) on 4 of 6 runs alone: 2 of 3 with the F gate in the world renderer (`gate-t2319a-teleport-mine{1,2,3}.txt`),
+2 of 3 with the gates planted back on Phaser (`…-base{1,2,3}.txt`); green runs read control 2.1 and 1.4. The charge
+indicator itself moved 79.3 (F gate) and 184.7 (old fill) against its 8. Stays parked; the control, not the gate, is
+what moves.

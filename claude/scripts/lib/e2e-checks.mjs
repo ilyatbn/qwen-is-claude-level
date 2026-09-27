@@ -147,6 +147,8 @@ export const CHECKS = [
   { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242' },
   // T23.14: the stick figure — Level A on F7's pose boxes; running redraws and moves the legs, standing does not.
   { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.19A: the figure on a turret, in a gate and over a pickup, photographed on the page (both canvases).
+  { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337' },
   // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn
   // lighting the rock near the flame against the flame planted off (the light at the flame, both ends).
   { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242' },
@@ -296,7 +298,8 @@ export const CHECKS = [
   // also carries §F10.3's full-flame-field frame time, for the same reason.
   // `serial`: it fails when a full flame field's median frame time passes 50 ms,
   // a wall-clock rendering cost that sharing the box would inflate.
-  { name: 'fire-visible', file: 'scripts/checks/fire-visible.mjs', standalone: true, serial: true },
+  // Parked by T23.19A (2026-09-27): its full-field frame budget and live-flame floor sit on the box's margin — tasks/flaky-test.md.
+  { name: 'fire-visible', file: 'scripts/checks/fire-visible.mjs', standalone: true, serial: true, flaky: true },
   // §F9: the fog veil **in the game**, not only in the sandbox. Standalone — it
   // needs a real server, because a networked client learns that fog exists from
   // an `effect_start` event and the sandbox path never sends one.

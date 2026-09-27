@@ -44,6 +44,8 @@ import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { loadIdentity } from '../ui/skins'
 import { LANDING_VOLUME_FLOOR, landingVolume } from '../render/feel-math'
+import { overlapsAny, overlapsBoxes, turretGeometry } from '../look/actors/props'
+import type { WorldItemView } from '../render/itemSprites-math'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -155,6 +157,8 @@ export class SandboxScene extends Phaser.Scene {
   private timeScrub = false
 
   private player!: PlayerView
+  /** T23.19A: pickups a check stages (`stagePickup`) — the sandbox runs no item spawner of its own. */
+  private staged: WorldItemView[] = []
   /** T21.37: the extra bodies `__game.showSkins` stands up for a check. */
   private skinLineup: PlayerView[] = []
   private localInput!: LocalInput
@@ -432,6 +436,9 @@ export class SandboxScene extends Phaser.Scene {
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, this.gravity === SPACE_GRAVITY)
+    // T23.19A: gates and turrets in the world renderer, behind the figures (space keeps Phaser's — `GameScene`).
+    this.world.pads.useWorld(this.gravity !== SPACE_GRAVITY)
+    this.world.platforms.useWorld(this.gravity !== SPACE_GRAVITY, mapW)
     // T23.09: this map's gates are static lights, from the pads the world view just built.
     this.effectLights.statics.set(gateLights(this.core.meta.teleport_pads.map((p) => p.pos)))
     // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
@@ -1012,9 +1019,28 @@ export class SandboxScene extends Phaser.Scene {
         self.world.pads.setVisible(on)
         return { visible: self.world.pads.visible }
       },
+      /**
+       * T23.19A: lay one pickup of registry `key` at (x, y) — or none (`null`) — through the item layer the match
+       * uses. Returns what the layer drew, read back.
+       */
+      stagePickup(x: number | null, y = 0, key = 'bazooka') {
+        const defs = JSON.parse(self.core.itemRegistryJson()) as { id: number; key: string }[]
+        const item = defs.find((d) => d.key === key)?.id ?? null
+        self.staged = x === null ? [] : [{ id: 1, item, count: 1, x, y, source: 'Periodic', grounded: true }]
+        self.world.items.update(0, self.staged, { x: x ?? 0, y })
+        return { staged: self.staged.length, drawn: self.world.items.count }
+      },
+      /** T23.19A: hide or show the local figure (both paths: the world renderer's cast and the Phaser stopgap). */
+      showPlayer(on: boolean) {
+        self.player.container.setVisible(on)
+        return { visible: self.player.container.visible, overPhaser: self.player.overPhaser }
+      },
       platforms() {
         return {
           count: self.world.platforms.count,
+          // T23.19A: the turret as drawn (world renderer: F's tripod; its size off `props.ts`), and whether it is.
+          turret: turretGeometry(),
+          turretsInWorld: self.world.platforms.turretsInWorld,
           lamp: self.world.platforms.lampGeometry(),
           total: self.core.meta.gun_platforms.length,
           at: self.core.meta.gun_platforms.map((g) => ({ x: g.pos.x, y: g.pos.y })),
@@ -1497,6 +1523,16 @@ export class SandboxScene extends Phaser.Scene {
       // on the rock, so half a body up was a figure floating 14 px over the ground (seen in the first strips).
       const pull = this.core.standPullAt(body.x, body.y, body.moveMods)
       this.tilt = stepTilt(this.tilt, standTarget(pull[0]!, pull[1]!), dt)
+      // T23.19A's stopgap, as the match does it (`GameScene.overPhaserLayer`): over a pickup Phaser still draws, the
+      // figure is drawn through Phaser at the actors' depth.
+      {
+        const c = C()
+        this.player.overPhaser =
+          this.gravity !== SPACE_GRAVITY &&
+          (overlapsAny(body.x, body.y + c.PLAYER_H / 2, c.PLAYER_W + 8, c.PLAYER_H + 12, this.staged, 12, 16) ||
+            overlapsBoxes(body.x, body.y + c.PLAYER_H / 2, c.PLAYER_W + 8, c.PLAYER_H + 12, this.world.items.labelBoxes()))
+        this.world.items.update(dt, this.staged, body)
+      }
       this.player.setState(body.x, body.y, body.vx, body.vy, aim, {
         tilt: this.tilt,
         alive: true,

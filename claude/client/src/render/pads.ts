@@ -27,6 +27,8 @@ import { DEPTH } from './backdrop'
 // `Phaser.Loader` at runtime) broke collection outright with `window is not
 // defined`. The portal region is injected by the caller instead.
 import type { ImageRegion } from './assets'
+import { joinCast } from '../look/actors/cast'
+import { gateActor, gateGeometry } from '../look/actors/props'
 
 /**
  * The gate image's texture key, as `build-gate-sprite.mjs` registers it.
@@ -80,6 +82,14 @@ export class PadLayer {
   private readonly entries = new Map<number, Entry>()
   private readonly container: Phaser.GameObjects.Container
   private pulse = 0
+  /**
+   * T23.19A: the gates are the world renderer's (`look/actors/props.ts`), behind the figures — or, off (space, until
+   * T23.20: its opaque Phaser backdrop hides the world canvas), Phaser's arch as before. Each pad's cast membership.
+   */
+  private worldGates = false
+  private readonly inCast = new Map<number, () => void>()
+  /** The pad being charged and its charge, as `update` was last told — what the world gate's window shows. */
+  private charging: { id: number | null; t: number } = { id: null, t: 0 }
 
   constructor(private readonly scene: Phaser.Scene) {
     // Above the terrain and below the actors: you stand **on** a pad, so the
@@ -199,6 +209,53 @@ export class PadLayer {
       this.container.add([glow, ring, arc])
       this.entries.set(p.id, { ring, glow, arc, gate, fill, view: p })
     }
+    // A layer never switched to the world renderer is left exactly as built.
+    if (this.worldGates || this.inCast.size) this.useWorld(this.worldGates)
+  }
+
+  /**
+   * T23.19A: draw the gates in the world renderer (`on`), behind the figures, or with Phaser's arch. The Phaser
+   * objects stay built either way, hidden, so a map that switches back (space) needs no rebuild.
+   */
+  useWorld(on: boolean): void {
+    this.worldGates = on
+    for (const [id, e] of this.entries) {
+      const hasArt = e.gate !== null
+      e.gate?.setVisible(!on)
+      e.fill?.setVisible(!on)
+      e.ring.setVisible(!on && !hasArt)
+      e.glow.setVisible(!on && !hasArt)
+      e.arc.setVisible(!on)
+      const joined = this.inCast.get(id)
+      if (on && !joined) {
+        this.inCast.set(
+          id,
+          joinCast(this.scene, {
+            back: true,
+            actor: () => {
+              const cur = this.entries.get(id)
+              if (!cur || !this.container.visible) return null
+              const t = this.charging.id === id ? this.charging.t : 0
+              return gateActor(cur.view.x, cur.view.y, C().PAD_ART_W, t)
+            },
+          }),
+        )
+      } else if (!on && joined) {
+        joined()
+        this.inCast.delete(id)
+      }
+    }
+    for (const [id, leave] of this.inCast) {
+      if (!this.entries.has(id)) {
+        leave()
+        this.inCast.delete(id)
+      }
+    }
+  }
+
+  /** Whether the gates are the world renderer's (T23.19A). */
+  get drawsInWorld(): boolean {
+    return this.worldGates
   }
 
   /**
@@ -226,6 +283,8 @@ export class PadLayer {
    * rest of this file's assertions are written to catch.
    */
   get gatesDrawn(): number {
+    // T23.19A: a world gate is drawn while the layer is shown and it is in the cast.
+    if (this.worldGates) return this.container.visible ? this.inCast.size : 0
     return [...this.entries.values()].filter((e) => e.gate?.visible === true).length
   }
 
@@ -249,6 +308,8 @@ export class PadLayer {
     gw: number
     gh: number
   } | null {
+    // T23.19A: the world gate's window and stone, from the numbers `gateActor` draws it with.
+    if (this.worldGates) return this.entries.size ? gateGeometry(C().PAD_ART_W) : null
     for (const e of this.entries.values()) {
       if (!e.fill || !e.gate) continue
       return {
@@ -273,6 +334,7 @@ export class PadLayer {
    * `dtMs` drives the idle pulse only. Nothing here integrates the charge.
    */
   update(dtMs: number, padId: number | null, charge: number): void {
+    this.charging = { id: padId, t: padId === null ? 0 : charge }
     this.pulse = (this.pulse + dtMs / 1000) % 1
     const breathe = 0.55 + 0.25 * Math.sin(this.pulse * Math.PI * 2)
     const c = C()
@@ -327,6 +389,8 @@ export class PadLayer {
   }
 
   destroy(): void {
+    for (const leave of this.inCast.values()) leave()
+    this.inCast.clear()
     for (const e of this.entries.values()) {
       e.ring.destroy()
       e.glow.destroy()

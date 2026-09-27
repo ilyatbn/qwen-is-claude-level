@@ -7504,3 +7504,9 @@ Mask mismatch: **test-side read race** — traced `server_seq 144, clients 145, 
 Refused-joiner announce: the bot's `player_join` counted late (before 0 / after 1); counted by name now, presence control, server-announce plant red.
 Inventory 2-vs-1: **real server duplicate** — `seat` read the world after `welcome`, a start in between re-sent inventory + catch-up; gated on the welcome snapshot. 33/48 → 0/48.
 Ready-window count: a 400 ms settle budget, 1/48 → 0/48, message now self-measuring. Totals 34/144 → 0/144. Done-when EXIT 0 both; check.sh --changed HEAD --fast EXIT 0; lobby-start/lobby/quick-rejoin/rematch/round-end 5/5.
+
+## T23.19A — the gunner is visible (builder, 2026-09-27)
+Gates + turrets are world-renderer actors (`look/actors/props.ts`, F's draw.ts, `cast.ts` `back` = behind figures); space keeps Phaser's. Lamps moved to the base (above the housing they hid 13 % of the rider). Pickups/labels/graves: stopgap — an overlapping figure is drawn via `drawSpace` (`overPhaser`); animals left to T23.19.
+New `gunner-visible` (page composite, footprint share): turret .870 / gate .961 / pickup .918; plant (props on Phaser, stopgap off) .147 / .429 / .782 — red. `platforms.mjs` re-aimed at the tripod (R13).
+GPU (D3D12 full) 60.0/60.1/60.0; Swift low 46.1/46.4/45.9 vs 46.5/46.5/45.4 planted. Shots: shots/t2319a-{turret,gate,pickup}-gpu.png, gunner-visible-*.png. Level A: F4 platform box .043, gate box .196 (> .1761, pre-existing).
+Done-when: EXIT 0 once (4/4), then teleport red on the re-run — parked `teleport`'s terrain control, 4/6 red alone with or without the change (flaky-test.md); vitest 1130, gunner-visible/platform-autofire/minimap-crates green. check.sh --changed --fast EXIT 0; subset 21: 19 + gunner-visible (camera wait fixed) ok; fire-visible parked (margin, measured both ways).

@@ -191,6 +191,20 @@ export class ItemLayer {
     this.drawCrateMarkers(live)
   }
 
+  /**
+   * T23.19A: the labels on screen, world px (read off the text objects). They draw over the world canvas, so the
+   * stopgap (`look/actors/props.ts::overlapsBoxes`) draws a figure one of them overlaps through Phaser, above it.
+   */
+  labelBoxes(): { x0: number; y0: number; x1: number; y1: number }[] {
+    const out: { x0: number; y0: number; x1: number; y1: number }[] = []
+    for (const e of this.entries.values()) {
+      const l = e.label
+      if (!l) continue
+      out.push({ x0: l.x - l.width / 2, y0: l.y - l.height, x1: l.x + l.width / 2, y1: l.y })
+    }
+    return out
+  }
+
   /** Parachutes on the crates still falling, beacons on all of them (`docs/32` §4). */
   private drawCrateMarkers(live: WorldItemView[]): void {
     const g = this.chutes

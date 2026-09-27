@@ -29,6 +29,8 @@
 import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
+import { joinCast } from '../look/actors/cast'
+import { turretActor, turretFace, turretLamps } from '../look/actors/props'
 
 /** Where a platform is, in world pixels. `pos` is a feet line. */
 export interface PlatformView {
@@ -236,6 +238,13 @@ interface Entry {
 export class PlatformLayer {
   private readonly entries = new Map<number, Entry>()
   private readonly container: Phaser.GameObjects.Container
+  /**
+   * T23.19A: the turrets are the world renderer's (`look/actors/props.ts`), behind the figures, so a mounted player is
+   * seen in front of their gun — or, off (space until T23.20), Phaser's steel art as before. The lamps stay Phaser's
+   * (they are a signal, and sit clear of the rider). `mapW` faces each turret into the map.
+   */
+  private world: { on: boolean; mapW: number } = { on: false, mapW: 0 }
+  private readonly inCast = new Map<number, () => void>()
 
   constructor(private readonly scene: Phaser.Scene) {
     // The same depth as `PadLayer`, and for the same reason its comment gives:
@@ -372,9 +381,57 @@ export class PlatformLayer {
       this.container.add([sprite, ...lamps])
       this.entries.set(p.id, { sprite, lamps, view: p })
     }
+    // A layer never switched to the world renderer is left exactly as built.
+    if (this.world.on || this.inCast.size) this.useWorld(this.world.on, this.world.mapW)
+  }
+
+  /** T23.19A: draw the turrets in the world renderer (`on`), behind the figures, or with Phaser's art. */
+  useWorld(on: boolean, mapW: number): void {
+    this.world = { on, mapW }
+    const art = ensurePlatformTexture(this.scene.textures)
+    const L = turretLamps()
+    for (const [id, e] of this.entries) {
+      const p = e.view
+      e.sprite.setVisible(!on)
+      e.lamps.forEach((l, i) => {
+        const dir = i === 0 ? -1 : 1
+        if (on) l.setPosition(p.x + dir * L.dx, p.y + L.dy).setSize(L.w, L.h)
+        else l.setPosition(p.x + dir * art.w * 0.3, p.y - art.h * 0.75).setSize(art.w * 0.22, Math.max(2, art.h * 0.12))
+      })
+      const joined = this.inCast.get(id)
+      if (on && !joined) {
+        this.inCast.set(
+          id,
+          joinCast(this.scene, {
+            back: true,
+            actor: () => {
+              const cur = this.entries.get(id)
+              if (!cur || !this.container.visible) return null
+              return turretActor(cur.view.x, cur.view.y, turretFace(cur.view.x, this.world.mapW))
+            },
+          }),
+        )
+      } else if (!on && joined) {
+        joined()
+        this.inCast.delete(id)
+      }
+    }
+    for (const [id, leave] of this.inCast) {
+      if (!this.entries.has(id)) {
+        leave()
+        this.inCast.delete(id)
+      }
+    }
+  }
+
+  /** How many turrets the world renderer is drawing (T23.19A) — 0 while the layer is hidden or on Phaser. */
+  get turretsInWorld(): number {
+    return this.world.on && this.container.visible ? this.inCast.size : 0
   }
 
   destroy(): void {
+    for (const leave of this.inCast.values()) leave()
+    this.inCast.clear()
     for (const e of this.entries.values()) {
       e.sprite.destroy()
       for (const l of e.lamps) l.destroy()

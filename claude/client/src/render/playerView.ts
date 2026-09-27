@@ -101,6 +101,11 @@ export class PlayerView {
   /** The figure's animation state (`pose.ts`) and what it was last posed as. */
   private readonly fig = newFigureState()
   private drawn: Actor | null = null
+  /**
+   * T23.19A: this figure overlaps a layer Phaser still draws over the world canvas (pickups, graves), so it is drawn
+   * through Phaser this frame (`drawSpace`). Set by the scene before `setState`.
+   */
+  overPhaser = false
   private weaponKey = ''
   private seat = 0
   private readonly leave: () => void
@@ -218,10 +223,13 @@ export class PlayerView {
       this.flameNow = { x: gx, y: gy, dir: { x: (ax.tip[0] - ax.base[0]) / L, y: (ax.tip[1] - ax.base[1]) / L }, jet: J.jet ?? 0 }
       fig.glows = [{ x: gx, y: gy, size: (JET_GLOW.size * (J.jet ?? 0)) / JET_LEN, color: JET_GLOW.color, alpha: JET_GLOW.alpha }]
     }
-    this.drawn = flags.space ? null : fig
+    // T23.19A's stopgap: a figure over a layer still on Phaser's canvas (a pickup, a grave — `overPhaser`, set by the
+    // scene) is drawn the way space draws it, at the actors' depth, so the layer does not cover it (until T23.19).
+    const phaser = flags.space || this.overPhaser
+    this.drawn = phaser ? null : fig
     // Space: the canvas holds the figure turned by its pose only (the container carries the tilt), feet at SPACE_FEET.
-    this.drawSpace(flags.space ? { kind: fig.kind, lit: fig.lit, box: fig.box, x: SPACE_FEET[0] + pivot.x, y: SPACE_FEET[1] + pivot.y, opts: { ...fig.opts, rot: d.rot } } : null)
-    this.drawSpaceGlow(flags.space && this.flameNow ? { x: this.flameNow.x - fx, y: this.flameNow.y - fy, size: fig.glows?.[0]?.size ?? 0 } : null)
+    this.drawSpace(phaser ? { kind: fig.kind, lit: fig.lit, box: fig.box, x: SPACE_FEET[0] + pivot.x, y: SPACE_FEET[1] + pivot.y, opts: { ...fig.opts, rot: d.rot } } : null)
+    this.drawSpaceGlow(phaser && this.flameNow ? { x: this.flameNow.x - fx, y: this.flameNow.y - fy, size: fig.glows?.[0]?.size ?? 0 } : null)
   }
 
   /**
