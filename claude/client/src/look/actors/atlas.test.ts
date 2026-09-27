@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Actor } from '../scene'
 import { F4 } from '../scenes/F4'
 import { ATLAS_SIZE, ActorAtlas, BASE_CELL, EVICT_FRAMES, type Painter } from './atlas'
-import { CELL_ALIGN, actorRect, cellKey, hasExtras, type PassOffsets } from './cell'
+import { CELL_ALIGN, actorRect, cellKey, hasExtras, type Lighting } from './cell'
 import type { G } from './draw'
 import { dominant, passes } from './lit'
 
@@ -31,43 +31,49 @@ function countingPainter(): Painter & { begun: number; uploads: [number, number]
 }
 
 const standing: Actor = { kind: 'stick', x: 100.25, y: 200, opts: { s: 1.15, aim: 0.3, weapon: 'bazooka', accent: '#e8482c' }, lit: { size: 1, halo: null, shadow: true }, box: null }
-const offs = (dx: number): PassOffsets => [[-dx, 0], [dx, 0], [dx * 1.7, 0]]
+const offs = (dx: number, a = 0.8): Lighting => ({ offs: [[-dx, 0], [dx, 0], [dx * 1.7, 0]], rgb: '185,195,245', a, fill: '90,80,110', rim: true })
 
 describe('the actor atlas (T23.12)', () => {
-  it('redraws a standing figure once over 100 frames', () => {
+  it('redraws a standing figure once over 100 frames under one light', () => {
     const p = countingPainter()
     const atlas = new ActorAtlas(p)
     for (let f = 0; f < 100; f++) {
       atlas.beginFrame()
-      expect(atlas.cellFor(standing, offs(1 + f / 100))).not.toBeNull()
+      expect(atlas.cellFor(standing, offs(1, 0.5 + f / 200))).not.toBeNull()
     }
+    // The light brightened every frame: still one drawing — its colour and alpha are the shader's.
     expect(atlas.stats.redraws).toBe(1)
     expect(p.begun).toBe(1)
     expect(p.uploads).toHaveLength(1)
   })
 
-  it('redraws when the drawing changes — aim, position phase — and not when the light turns (control above)', () => {
+  it('redraws when the drawing changes — aim, position phase, the key light turning — and not below the 1/8 px key', () => {
     const atlas = new ActorAtlas(countingPainter())
     atlas.beginFrame()
-    atlas.cellFor(standing)
-    atlas.cellFor({ ...standing, opts: { ...standing.opts, aim: 0.31 } })
+    atlas.cellFor(standing, offs(1))
+    atlas.cellFor({ ...standing, opts: { ...standing.opts, aim: 0.31 } }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
-    // The same drawing one whole px along: the same cell (the quad moves, not the raster).
-    atlas.cellFor({ ...standing, x: standing.x + CELL_ALIGN })
+    // The same drawing one whole cell grain along: the same cell (the quad moves, not the raster).
+    atlas.cellFor({ ...standing, x: standing.x + CELL_ALIGN }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
     // A quarter px along: a new raster phase, a new cell.
-    atlas.cellFor({ ...standing, x: standing.x + 0.25 })
+    atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1))
     expect(atlas.stats.redraws).toBe(3)
+    // The key light turned: the passes are drawn at new offsets.
+    atlas.cellFor(standing, offs(2))
+    expect(atlas.stats.redraws).toBe(4)
+    atlas.cellFor(standing, offs(2.01))
+    expect(atlas.stats.redraws).toBe(4)
   })
 
-  it('an actor with extras keys on its pass offsets (drawn at them), one without does not', () => {
+  it('an actor with extras is baked: it keys on the light\'s colour and alpha too, one without does not', () => {
     const jet: Actor = { ...standing, opts: { ...standing.opts, jet: true, pose: 'jet' } }
     expect(hasExtras(jet)).toBe(true)
     expect(hasExtras(standing)).toBe(false)
-    expect(cellKey(jet, offs(1))).not.toBe(cellKey(jet, offs(2)))
-    expect(cellKey(standing, offs(1))).toBe(cellKey(standing, offs(2)))
-    // Below the key's 1/8 px, the same cell.
-    expect(cellKey(jet, offs(1))).toBe(cellKey(jet, offs(1.01)))
+    expect(cellKey(jet, offs(1, 0.5))).not.toBe(cellKey(jet, offs(1, 0.9)))
+    expect(cellKey(standing, offs(1, 0.5))).toBe(cellKey(standing, offs(1, 0.9)))
+    expect(cellKey(jet, { ...offs(1), rim: false })).not.toBe(cellKey(jet, offs(1)))
+    expect(cellKey(standing, { ...offs(1), rim: false })).toBe(cellKey(standing, offs(1)))
   })
 
   it('places cells on the 64-px grid, apart', () => {
@@ -91,16 +97,16 @@ describe('the actor atlas (T23.12)', () => {
     const probe = new ActorAtlas(countingPainter())
     probe.beginFrame()
     let full = 0
-    while (probe.stats.resets === 0) probe.cellFor(aim(full++))
+    while (probe.stats.resets === 0) probe.cellFor(aim(full++), offs(1))
     full--
     expect(full).toBeGreaterThan(10)
     const run = (age: number): ActorAtlas => {
       const atlas = new ActorAtlas(countingPainter())
       atlas.beginFrame()
-      for (let n = 0; n < full; n++) atlas.cellFor(aim(n))
+      for (let n = 0; n < full; n++) atlas.cellFor(aim(n), offs(1))
       expect(atlas.stats.resets).toBe(0)
       for (let f = 0; f < age; f++) atlas.beginFrame()
-      atlas.cellFor(aim(-1))
+      atlas.cellFor(aim(-1), offs(1))
       return atlas
     }
     // Aged out: the new cell takes an old one's room, no reset.

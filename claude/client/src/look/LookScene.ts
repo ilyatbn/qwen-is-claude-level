@@ -98,23 +98,29 @@ export class LookScene extends Phaser.Scene {
     const full = describeScene(data)
     const q = new URLSearchParams(location.search)
     const only = q.get('only')
-    const knob = q.get('knob')
+    const knobs = q.get('knob')
     const terrainLook = { ...full.look.terrain }
+    let actorRim = true
     let look: SceneDescription['look'] = { ...full.look, terrain: terrainLook }
     const P = full.look
-    if (knob === 'rim-off') terrainLook.rimK = 0
-    else if (knob === 'bevel-off') terrainLook.bevel = 0.001
-    else if (knob === 'lights-off') look.lights = []
-    // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
-    else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
-    // T23.08C (R25): the halo's spread alone — `worldonly.js`'s 'bloom-radius-0'; the halo ring must see it.
-    else if (knob === 'bloom-radius-0') look.bloom = [P.bloom[0], 0, P.bloom[2]]
-    else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
-    else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
-    else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9
-    else if (knob === 'fg-off') look.fg = null
-    else if (knob === 'grade-off') look.grade = null
-    else if (knob !== null) handle.error = `unknown knob "${knob}"`
+    // T23.13: knobs combine, comma-separated (`actor-rim-off,exposure-up`: a control of T23.12's picture).
+    for (const knob of (knobs ?? '').split(',').filter(Boolean)) {
+      if (knob === 'rim-off') terrainLook.rimK = 0
+      else if (knob === 'bevel-off') terrainLook.bevel = 0.001
+      else if (knob === 'lights-off') look.lights = []
+      // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
+      else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
+      // T23.08C (R25): the halo's spread alone — `worldonly.js`'s 'bloom-radius-0'; the halo ring must see it.
+      else if (knob === 'bloom-radius-0') look.bloom = [P.bloom[0], 0, P.bloom[2]]
+      else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
+      else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
+      else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9
+      else if (knob === 'fg-off') look.fg = null
+      else if (knob === 'grade-off') look.grade = null
+      // T23.13: the actors without lit()'s two rim passes (castonly.js 'rim-off') — rim-light's must-fail control.
+      else if (knob === 'actor-rim-off') actorRim = false
+      else handle.error = `unknown knob "${knob}"`
+    }
     // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
     const bare = { fogBack: null, fogFront: null, fg: null, bloom: [0, P.bloom[1], P.bloom[2]] as SceneDescription['look']['bloom'], grade: null }
     const cast = { actors: [], fx: [], labels: [], hud: null }
@@ -126,6 +132,7 @@ export class LookScene extends Phaser.Scene {
           : only === 'world'
             ? { ...full, look, ...cast }
             : { ...full, look }
+    desc.actorRim = actorRim
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)

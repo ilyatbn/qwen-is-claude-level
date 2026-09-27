@@ -28,6 +28,9 @@ export function dominant(lights: readonly Light[], x: number, y: number, moon: M
 export interface Passes {
   /** The rim passes' colour, 0–1 sRGB, and alpha `a` (`min(1, 0.45 + w·0.5)`). */
   rim: [number, number, number]
+  /** The same colours as `lit()`'s `'r,g,b'` strings (the baked cells, `cell.ts`). */
+  rimRgb: string
+  fillRgb: string
   a: number
   /** Rim pass offset (`L·o`, o = 1.15·size); the far rim sits at 1.7× it. */
   off: [number, number]
@@ -46,6 +49,8 @@ export function passes(lights: readonly Light[], moon: Moon, x: number, y: numbe
   const o = 1.15 * size
   return {
     rim: rgb01(L.rgb),
+    rimRgb: L.rgb,
+    fillRgb: moon.fill,
     a: Math.min(1, 0.45 + L.w * 0.5),
     off: [L.dx * o, L.dy * o],
     fillOff: [-L.dx * 0.7 * size, -L.dy * 0.7 * size],

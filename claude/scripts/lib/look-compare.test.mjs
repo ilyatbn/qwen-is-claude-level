@@ -204,29 +204,34 @@ test('R25 (T23.12): each set\'s actor threshold is R19\'s rule on F4\'s cast, re
   const lines = []
   for (const n of SETS) {
     const got = actorSet(th, n, load)
-    const { frames, ...placed } = th.sets[n].actors
+    // eslint-disable-next-line no-unused-vars
+    const { frames, reference, controls, ...placed } = th.sets[n].actors
     assert.equal(frames.length, 2, `${n}: two floor frames`)
     assert.deepEqual(placed, got, `${n}: actors`)
     assert.ok(got.floor < got.threshold && got.threshold < got.smallest, `${n}: the actor threshold is not between floor and control`)
     assert.ok(ACTOR_MUST_FAIL.includes(got.smallestControl))
     // Every must-fail control fails it — rim-off by the widest margin of the lot.
-    for (const c of ACTOR_MUST_FAIL) assert.ok(got.controls[c] > got.threshold, `${n}: ${c} passes the actor threshold`)
-    lines.push(`${n}: deltaE_actors floor ${got.floor.toPrecision(3)} max ${got.threshold}; controls ` + Object.entries(got.controls).map(([c, v]) => `${c} ${v.toPrecision(3)}`).join(', '))
+    for (const c of ACTOR_MUST_FAIL) assert.ok(got.measured[c] > got.threshold, `${n}: ${c} passes the actor threshold`)
+    lines.push(`${n}: deltaE_actors floor ${got.floor.toPrecision(3)} max ${got.threshold}; controls ` + Object.entries(got.measured).map(([c, v]) => `${c} ${v.toPrecision(3)}`).join(', '))
   }
-  // The swiftshader floor is one back end twice (0); the gpu floor is two (> 0).
-  assert.equal(th.sets.swiftshader.actors.floor, 0)
-  assert.ok(th.sets.gpu.actors.floor > 0, 'the gpu floor frames are identical — one back end twice')
-  // The lab's own frames against the reference the lab draws today (T23.12: no rim passes), on each set.
-  const rimOff = load('reference/controls/F4-cast-rim-off.png')
+  // Like for like (T23.13): each floor is one back end twice, and the gpu set is measured against the mockup on D3D12.
+  for (const n of SETS) assert.notEqual(...th.sets[n].actors.frames.map(f => f.split(' ')[0]), `${n}: one file twice`)
+  assert.match(th.sets.gpu.actors.reference, /d3d12/)
+  for (const f of Object.values(th.sets.gpu.actors.controls)) assert.match(f, /d3d12/)
+  // The lab's own frames against each set's reference (T23.13: rim passes on) — like for like.
   const boxes = actorBoxes('F4')
   for (const n of SETS) {
-    const f = load(th.sets[n].actors.frames[1].split(' ')[0])
-    lines.push(`${n}: the lab (${th.sets[n].actors.frames[1].split(' ')[0].split('/').pop()}) vs F4-cast-rim-off ${boxesDeltaE(f, rimOff, boxes).toFixed(4)}`)
+    const set = { ...th.actors, ...th.sets[n].actors }
+    const f = load(set.frames[0].split(' ')[0])
+    const d = boxesDeltaE(f, load(set.reference.split(' ')[0]), boxes)
+    lines.push(`${n}: the lab vs ${set.reference.split(' ')[0].split('/').pop()} ${d.toFixed(4)} (max ${th.sets[n].actors.threshold})`)
+    // The gpu frame is reported, not asserted: on D3D12 it is 0.19 over a max of 0.173, and 0.12 of that is the
+    // world alone (the lab's F4 world against the mockup's, both on D3D12, no cast) — a sky/terrain difference the
+    // world gates' cross-back-end gpu floor never saw, put to the coordinator (T23.13). The checks run SwiftShader.
+    if (n === 'swiftshader') assert.ok(d <= th.sets[n].actors.threshold, `${n}: the committed lab frame fails its own set`)
+    // Control: the same frame against the world without its cast (castonly 'world') fails — the boxes see the cast.
+    if (n === 'swiftshader') assert.ok(boxesDeltaE(f, load('reference/controls/F4-world.png'), boxes) > th.sets[n].actors.threshold)
   }
-  const swift = load(th.sets.swiftshader.actors.frames[0].split(' ')[0])
-  assert.ok(boxesDeltaE(swift, rimOff, boxes) <= th.sets.swiftshader.actors.threshold, 'the committed SwiftShader lab frame fails its own set')
-  // Control: the same frame against the world without its cast (castonly 'world') fails — the boxes see the cast.
-  assert.ok(boxesDeltaE(swift, load('reference/controls/F4-world.png'), boxes) > th.sets.swiftshader.actors.threshold)
   console.log(lines.join('\n'))
 })
 

@@ -197,14 +197,14 @@
       },
       "actors": {
         "frames": [
-          "reference/controls/F4-lab-cast-swiftshader.png (look-lab F4, T23.12's cast without rim passes, SwiftShader under the reference harness's flags, render 1)",
+          "reference/controls/F4-lab-cast-swiftshader.png (look-lab F4, rim passes on (T23.13), SwiftShader under the reference harness's flags, render 1)",
           "reference/controls/F4-lab-cast-swiftshader-2.png (the same, a separate launch)"
         ],
         "floor": 0,
         "smallestControl": "bloom-off",
         "smallest": 0.3522349649666968,
         "threshold": 0.1761,
-        "controls": {
+        "measured": {
           "rim-off": 3.298547544768269,
           "exposure+10": 1.1889004181754854,
           "exposure-10": 1.2571744042145812,
@@ -363,19 +363,27 @@
       },
       "actors": {
         "frames": [
-          "reference/controls/F4-lab-cast-swiftshader.png (look-lab F4, SwiftShader)",
-          "reference/controls/F4-lab-cast-d3d12.png (look-lab F4, headed Chrome, GALLIUM_DRIVER=d3d12, D3D12 Intel Arc B390)"
+          "reference/controls/F4-lab-cast-d3d12.png (look-lab F4, rim on, headed Chrome, GALLIUM_DRIVER=d3d12, D3D12 Intel Arc B390, render 1)",
+          "reference/controls/F4-lab-cast-d3d12-2.png (the same, a separate launch)"
         ],
-        "floor": 0.31243562864390234,
-        "smallestControl": "bloom-off",
-        "smallest": 0.3522349649666968,
-        "threshold": 0.3323,
+        "reference": "reference/controls/F4-cast-d3d12.png (castonly.js + flatpatch.js, rendered on D3D12)",
         "controls": {
-          "rim-off": 3.298547544768269,
-          "exposure+10": 1.1889004181754854,
-          "exposure-10": 1.2571744042145812,
-          "bloom-off": 0.3522349649666968,
-          "fog-off": 2.6244989188097363
+          "rim-off": "reference/controls/F4-cast-rim-off-d3d12.png",
+          "exposure+10": "reference/controls/F4-cast-exposure-up10-d3d12.png",
+          "exposure-10": "reference/controls/F4-cast-exposure-down10-d3d12.png",
+          "bloom-off": "reference/controls/F4-cast-bloom-off-d3d12.png",
+          "fog-off": "reference/controls/F4-cast-fog-off-d3d12.png"
+        },
+        "floor": 0,
+        "smallestControl": "bloom-off",
+        "smallest": 0.3451997577680268,
+        "threshold": 0.1726,
+        "measured": {
+          "rim-off": 3.308788155837255,
+          "exposure+10": 1.1888615470035506,
+          "exposure-10": 1.2588218365260455,
+          "bloom-off": 0.3451997577680268,
+          "fog-off": 2.6201505272374273
         }
       }
     }
@@ -391,7 +399,7 @@
     "deltaE_actors": "R25: placed on cast frames by the actor set (T23.12: F4, the cast sheet — look-thresholds.json `actors`), not by F1's rows"
   },
   "actors": {
-    "about": "R25 (T23.12): the actor-box threshold, deltaE_actors = mean CIEDE2000 over the union of a scene's actor boxes (look-compare.mjs::boxesDeltaE). Placed on F4, the cast sheet, where the cast is the subject: reference = the mockup's F4 with only what the look-lab does not draw taken out (controls/castonly.js: the fx group and the text), controls = the same with one knob turned. Must-fail = R19's through the mockup plus rim-off (ACTOR_MUST_FAIL; R19's F0 has no F4 counterpart). Each set's floor = two look-lab renders of F4 (sets.<name>.actors.frames); threshold = midpoint of that floor and the smallest control, by R19's rule. The lab renders are made in the reference harness's browser (render.mjs: --use-gl=angle --use-angle=swiftshader), where Chrome rasterises a 2D canvas on the GPU as the mockup's was: under the checks' --use-gl=swiftshader every canvas is rasterised on the CPU, which dithers gradients (measured, F4 actor boxes: 0.50 against 0.12).",
+    "about": "R25 (T23.12): the actor-box threshold, deltaE_actors = mean CIEDE2000 over the union of a scene's actor boxes (look-compare.mjs::boxesDeltaE). Placed on F4, the cast sheet, where the cast is the subject: reference = the mockup's F4 with only what the look-lab does not draw taken out (controls/castonly.js: the fx group and the text), controls = the same with one knob turned. Must-fail = R19's through the mockup plus rim-off (ACTOR_MUST_FAIL; R19's F0 has no F4 counterpart). Each set's floor = two look-lab renders of F4 (sets.<name>.actors.frames); threshold = midpoint of that floor and the smallest control, by R19's rule. The lab renders are made in the reference harness's browser (render.mjs: --use-gl=angle --use-angle=swiftshader), where Chrome rasterises a 2D canvas on the GPU as the mockup's was: under the checks' --use-gl=swiftshader every canvas is rasterised on the CPU, which dithers gradients (measured, F4 actor boxes: 0.50 against 0.12). T23.13 (coordinator, 2026-09-27: like-for-like per back end): the gpu set names its own reference and controls — the mockup rendered on D3D12 with the lab's own curve flattening applied to its canvas (controls/flatpatch.js: the D3D12 canvas draws roundRect/half-ellipses/stroked arcs wrong, T23.12) — and its floor is two D3D12 lab renders. The cross-back-end spread (SwiftShader lab vs D3D12 lab, rim on: 0.49) no longer places a threshold. Floor frames are T23.13's (rim passes on).",
     "scene": "F4",
     "reference": "reference/controls/F4-cast.png (castonly.js, no knob)",
     "controls": {

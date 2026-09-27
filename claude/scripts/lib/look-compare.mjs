@@ -264,6 +264,8 @@ export const DEFERRED = {
  */
 export const ACTOR_MUST_FAIL = ['exposure+10', 'exposure-10', 'bloom-off', 'fog-off', 'rim-off']
 
+const pick = (o, keys) => Object.fromEntries(keys.filter(k => o?.[k] !== undefined).map(k => [k, o[k]]))
+
 /** Mean ΔE2000 over the union of `boxes` (px inside any box, each once) — `compare`'s `deltaE_actors`, alone. */
 export function boxesDeltaE(a, b, boxes) {
   const blank = { width: a.width, height: a.height, data: new Uint8Array(a.width * a.height * 4) }
@@ -286,7 +288,9 @@ export function boxesDeltaE(a, b, boxes) {
  * actor set's reference (`th.actors`, F4 through the mockup without its fx and text). `load` as `labFloor`'s.
  */
 export function actorSet(th, name, load) {
-  const spec = th.actors
+  // T23.13 (coordinator, 2026-09-27: Level A on a back end is like-for-like): a set may name its own reference and
+  // controls — the mockup rendered on that back end — over the shared ones (the SwiftShader renders).
+  const spec = { ...th.actors, ...pick(th.sets[name].actors, ['reference', 'controls']) }
   const boxes = actorBoxes(spec.scene)
   const [a, b] = th.sets[name].actors.frames.map(f => load(f.split(' ')[0]))
   const floor = boxesDeltaE(a, b, boxes)
@@ -294,8 +298,8 @@ export function actorSet(th, name, load) {
   const controls = Object.fromEntries(Object.entries(spec.controls).map(([c, f]) => [c, boxesDeltaE(ref, load(f.split(' ')[0]), boxes)]))
   const [smallestControl, smallest] = ACTOR_MUST_FAIL.map(c => [c, controls[c]]).sort((p, q) => p[1] - q[1])[0]
   return smallest > floor
-    ? { floor, smallestControl, smallest, threshold: sig4((floor + smallest) / 2), controls }
-    : { floor, smallestControl, smallest, threshold: null, controls, dropped: `this set's floor is at or past ${smallestControl}` }
+    ? { floor, smallestControl, smallest, threshold: sig4((floor + smallest) / 2), measured: controls }
+    : { floor, smallestControl, smallest, threshold: null, measured: controls, dropped: `this set's floor is at or past ${smallestControl}` }
 }
 
 /**

@@ -3,8 +3,8 @@
  * only when its drawing changes (`cell.ts::cellKey`: the light is not in it — the shader applies that).
  *
  * The texture is `ATLAS_SIZE`² RGBA8, premultiplied, in **64-px base cells**; an actor's cell spans as many as
- * its images need (`cell.ts`, each its box's size, two to a row: under | mask, ink | fill extras, rim extras |
- * far-rim extras — the last three only for an actor with extras), first-fit on an
+ * its images need (`cell.ts`, each its box's size, two to a row: under | ink, then mask | extras for the fill, rim
+ * and far-rim passes — those three rows only for a lit actor), first-fit on an
  * occupancy grid. A cell unused for `EVICT_FRAMES` frames is freed when room is needed; if there is still none,
  * the atlas is cleared and this frame's cells drawn again (counted: `stats.resets`).
  *
@@ -12,7 +12,7 @@
  * changed — none when nothing did. The painter is injected: vitest runs this with a fake one (no canvas in node).
  */
 import type { Actor } from '../scene'
-import { actorRect, cellKey, drawRole, hasExtras, snapOffsets, type PassOffsets, type Role } from './cell'
+import { actorRect, cellKey, drawBaked, drawRole, hasExtras, snapOffsets, type Lighting, type PassOffsets, type Role } from './cell'
 import type { G } from './draw'
 
 /** The atlas texture's side, px. */
@@ -40,10 +40,12 @@ export interface Cell {
 /** A cell's images in order: index k sits at column k % 2, row ⌊k / 2⌋ (`layer.ts`'s `img(k)` reads them so). */
 export const IMAGES: readonly { role: Role; pass?: number }[] = [
   { role: 'under' },
-  { role: 'mask' },
   { role: 'ink' },
+  { role: 'mask', pass: 0 },
   { role: 'extras', pass: 0 },
+  { role: 'mask', pass: 1 },
   { role: 'extras', pass: 1 },
+  { role: 'mask', pass: 2 },
   { role: 'extras', pass: 2 },
 ]
 
@@ -69,11 +71,11 @@ export class ActorAtlas {
   }
 
   /**
-   * The cell for `a`, drawn now if its key has none; `offs` are its passes' offsets this frame (read only for
-   * an actor with extras). `null` if it cannot fit even in an empty atlas.
+   * The cell for `a`, drawn now if its key has none; `L` is its passes this frame (a lit actor's cell is drawn at
+   * their offsets — `cell.ts`). `null` if it cannot fit even in an empty atlas.
    */
-  cellFor(a: Actor, offs: PassOffsets | null = null): Cell | null {
-    const key = cellKey(a, offs)
+  cellFor(a: Actor, L: Lighting | null = null): Cell | null {
+    const key = cellKey(a, L)
     const have = this.cells.get(key)
     if (have) {
       have.lastUsed = this.frame
@@ -82,7 +84,8 @@ export class ActorAtlas {
     const r = actorRect(a)
     const w = r[2] - r[0]
     const h = r[3] - r[1]
-    const rows = hasExtras(a) ? 3 : 2
+    // Baked (extras) and unlit actors: under | ink alone. The rest: and a mask | extras row per pass.
+    const rows = a.lit && L && !hasExtras(a) ? 4 : 1
     const gw = Math.ceil((2 * w) / BASE_CELL)
     const gh = Math.ceil((rows * h) / BASE_CELL)
     if (gw > GRID || gh > GRID) return null
@@ -102,13 +105,14 @@ export class ActorAtlas {
     const cell: Cell = { x: at[0] * BASE_CELL, y: at[1] * BASE_CELL, w, h, gw, gh, lastUsed: this.frame }
     this.mark(at[0], at[1], gw, gh, 1)
     this.cells.set(key, cell)
-    this.draw(a, cell, rows, offs ? snapOffsets(offs) : null)
+    this.draw(a, cell, rows, L ? { ...L, offs: snapOffsets(L.offs) } : null)
     this.stats.cells = this.cells.size
     return cell
   }
 
-  private draw(a: Actor, c: Cell, rows: number, offs: PassOffsets | null): void {
+  private draw(a: Actor, c: Cell, rows: number, L: Lighting | null): void {
     const g = this.painter.begin(2 * c.w, rows * c.h)
+    const offs: PassOffsets | null = L?.offs ?? null
     IMAGES.slice(0, 2 * rows).forEach(({ role, pass }, k) => {
       const i = k % 2
       const j = Math.floor(k / 2)
@@ -117,7 +121,9 @@ export class ActorAtlas {
       g.rect(i * c.w, j * c.h, c.w, c.h)
       g.clip()
       g.translate(i * c.w, j * c.h)
-      drawRole(g, a, role, pass !== undefined && offs ? offs[pass] : [0, 0])
+      if (role === 'extras' && !hasExtras(a)) return g.restore()
+      if (role === 'ink' && L && a.lit && hasExtras(a)) drawBaked(g, a, L)
+      else if (!(role === 'under' && L && a.lit && hasExtras(a))) drawRole(g, a, role, pass !== undefined && offs ? offs[pass] : [0, 0])
       g.restore()
     })
     this.painter.upload(c.x, c.y)

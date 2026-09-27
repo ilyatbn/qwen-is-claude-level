@@ -217,6 +217,12 @@ export interface LitOpts {
   size: number
   halo: RgbString | null
   shadow: boolean
+  /**
+   * T23.13 (the game's actors): the halo to draw when the actor stands on the cave wall — F's `halo` option,
+   * decided per frame from the terrain's `back` field under the actor (`WorldRenderer`), so a figure in a tunnel is
+   * never ink on ink. Absent: `halo` as given (the mockup's scenes).
+   */
+  darkHalo?: RgbString
 }
 
 /** One `S.glow` of a flamethrower's flame, relative to the muzzle. */
@@ -337,6 +343,8 @@ export interface SceneDescription {
    * behind the rock. Absent: drawn, as in every mockup scene (the look-lab).
    */
   caveWall?: boolean
+  /** T23.13: draw `lit()`'s two rim passes on the actors (absent: drawn; the look-lab's `knob=actor-rim-off` is the control). */
+  actorRim?: boolean
   id: string
   camera: ViewRect
   /** The mask's size in px — known even while `masks` is null; the renderer's y flip reads `h`. */

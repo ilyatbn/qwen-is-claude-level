@@ -828,7 +828,7 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
 - [ ] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
-- [ ] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels
+- [x] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels
 - [ ] [T23.14](M23/T23.14-the-stick-figure.md) — The stick figure — poses, run cycle, continuous aim, scarf, space helmet; boots and wings redrawn, not removed
 - [ ] [T23.14B](M23/T23.14B-the-jetpack-look.md) — The jetpack's look — flame + space plume on the stick figure, lit (owner priority, out of T23.18)
 - [ ] [T23.15](M23/T23.15-no-themes-no-wearables.md) — No themes, no wearables — client only: the theme stamps collision and the join JSON still carries skins

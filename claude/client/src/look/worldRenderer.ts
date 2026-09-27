@@ -41,7 +41,7 @@ import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectCom
 import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import type { Background, Box, Light, SceneDescription, ViewRect } from './scene'
+import type { Actor, Background, Box, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere } from './atmosphere'
 import { ActorLayer } from './actors/layer'
 import { applyPost, buildPost, type Post } from './post'
@@ -374,7 +374,8 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.placeTerrain(view)
     this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
-    this.actorLayer.place(this.desc.actors, this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
+    this.actorLayer.rimOn = this.desc.actorRim !== false
+    this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     applyPost(this.post, this.desc.look, this.hidden)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
@@ -529,6 +530,35 @@ export class WorldRenderer implements SceneRenderer {
     }
     this.dirty = true
     return { max, mean: n ? sum / n : 0, px: n }
+  }
+
+  /**
+   * T23.13: `lit.darkHalo` resolved — the actor's halo is that colour where the terrain's `back` field (the cave wall,
+   * R17/R24) is set under its body (`lit()`'s halo centre, 14·size above the feet), none elsewhere.
+   */
+  private withDarkHalo(a: Actor): Actor {
+    const lit = a.lit
+    if (!lit?.darkHalo || lit.halo) return a
+    return this.backAt(a.x, a.y - 14 * lit.size) ? { ...a, lit: { ...lit, halo: lit.darkHalo } } : a
+  }
+
+  /** T23.13: is the terrain field's `back` channel set at mask px (x, y)? False before the fields are in. */
+  backAt(x: number, y: number): boolean {
+    const f = this.terrain.feed
+    const v = f?.view()
+    if (!f || !v) return false
+    const px = Math.floor(x)
+    const py = Math.floor(y)
+    if (px < 0 || py < 0 || px >= f.w || py >= f.h) return false
+    return v[(py * f.w + px) * 4 + 2]! > 127
+  }
+
+  /** T23.13/T23.14: this frame's actors (the scenes' cast); a changed list is a new picture. */
+  setActors(actors: Actor[]): void {
+    if (!this.desc) return
+    if (JSON.stringify(actors) === JSON.stringify(this.desc.actors)) return
+    this.desc.actors = actors
+    this.dirty = true
   }
 
   /** Dev (T23.12): the cast as last laid out — quads drawn and the atlas's counters. */
@@ -872,6 +902,8 @@ export interface GameWorld {
   setCaveWall(on: boolean): void
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
+  /** T23.13/T23.14: this frame's cast (`look/actors/`); dropped where three did not start. */
+  setActors(actors: Actor[]): void
 }
 
 /**
@@ -912,6 +944,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
     terrainSwapPending: () => renderer instanceof WorldRenderer && renderer.litTerrainWanted && !renderer.drawsTerrain,
     setLights: (lights) => {
       if (renderer instanceof WorldRenderer) renderer.setLights(lights)
+    },
+    setActors: (actors) => {
+      if (renderer instanceof WorldRenderer) renderer.setActors(actors)
     },
     detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
   }

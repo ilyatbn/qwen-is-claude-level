@@ -6,7 +6,7 @@
  */
 import type Phaser from 'phaser'
 import type { RenderStats, SceneRenderer } from './renderer'
-import type { Light, ViewRect } from './scene'
+import type { Actor, Light, ViewRect } from './scene'
 import type { WorldRenderer } from './worldRenderer'
 import { sameView } from './worldRenderer-math'
 import { hashProbe, readAlbedo, repaintAlbedo, scorchOnly, takeAlbedoPaints, terrainInfo } from './terrainDev'
@@ -88,6 +88,10 @@ export interface WorldHandle {
    * check draws the same frame with one light removed (`effect-lights`' control frame).
    */
   setLights(lights: Light[]): void
+  /** T23.13: replace the scene's cast (a check places a figure beside a light). */
+  setActors(actors: Actor[]): void
+  /** T23.13: the terrain's `back` field at mask px (x, y) — where the dark halo turns on. */
+  backAt(x: number, y: number): boolean
   /** T23.08: player boxes (mask px) the foreground leaves fade over. */
   setOccluders(boxes: [number, number, number, number][]): void
   /** T23.08: what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
@@ -314,6 +318,10 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three?.hideLayers(names)
     },
     lights: () => (three ? three.heldLights() : null),
+    setActors(actors) {
+      three?.setActors(actors)
+    },
+    backAt: (x, y) => three?.backAt(x, y) ?? false,
     setLights(lights) {
       three?.setLights(lights)
     },

@@ -7466,3 +7466,9 @@ Level A (new R25 actor set on F4 cast, castonly.js): swift floor 0 → max 0.176
 Findings: (1) owner's D3D12 Chrome canvas draws roundRect/ellipse/stroked arcs wrong (bow-tie jetpacks, flat beetle, no gate ring) → `flat.ts` flattens those; shots/t2312-gpu-canvas-bug-before-after.png. (2) checks' --use-gl=swiftshader rasterises canvas on CPU (dithered, 0.52) → actor-atlas uses render.mjs's flags in its own browser.
 Done-when EXIT 0 (vitest 1144/1144, actor-atlas ok). Plants red: no fill pass (0.69>0.176), cache defeated (vitest 2 red; 32→352 redraws). Controls red: exposure-up 1.19, bloom-off .41, fog-off 2.93, only=world 7.89.
 check.sh --changed HEAD --fast EXIT 0 (maps to all e2e; ran 13 look/world/context/sandbox checks 13/13). Retired: none (no old reader replaced yet).
+
+## T23.13 — rim-lit silhouettes (builder, 2026-09-27)
+lit()'s rim passes on (`actorRim`, lab knob `actor-rim-off`; knobs now combine). Masks drawn per pass at their offsets (resampling measured 0.37 > .176); actors with extras (jet flame, crystals, rocket, spider eye) baked whole in canvas (0.40 → 0.12 on theirs). `lit.darkHalo` keyed on the `back` field; `GameWorld.setActors`/`__world.setActors`/`backAt`.
+Level A: swift lab 0.1187 ≤ 0.1761 (rim-off knob 3.33 fails). Coordinator's like-for-like: gpu set now = mockup on D3D12 (+flatpatch.js) as reference/controls, floor two D3D12 labs (0) → max 0.1726; D3D12 lab 0.1915 FAILS — 0.12 of it is the world alone (lab F4 world vs mockup world, both D3D12, no cast: sky band sparse px ≤19 levels) — put to coordinator, not raised.
+Found: pow(0,0) NaN on D3D12 erased every full-strength-rimmed actor (powN guard). Live: laser rim teal +71 lit edge / +1.9 far edge; dark halo ring +4.7, open-ground control 0.0001.
+Done-when EXIT 0 (vitest 1144, rim-light + actor-atlas ok; node look-compare 16/16). Plants red: rim passes off (2.10, teal −0.08), dark halo off (+0.00). check.sh --changed EXIT 0; 13 look/world browser checks 13/13.

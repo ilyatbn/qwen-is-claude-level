@@ -11,15 +11,23 @@
  *            `lighter`, so a texel holds the **number** of strokes over it (a translucent pass darkens
  *            where strokes overlap: α = 1 − (1 − a)^n, which a coverage mask cannot give);
  *   ink    — the ink pass exactly as the mockup draws it (`DARK_INK`, the real accent, marker, flame);
- *   extras — only for an actor that has them (`hasExtras`): the fixed-colour parts every pass draws in their own
- *            colours (jet flame, crystal glow, rocket motor, spider eye: `draw.ts::setExtras`), with the rim
- *            opts, **one image per pass, drawn at that pass's offset** (fill, rim, far rim).
+ *   extras — the fixed-colour parts every pass draws in their own colours (jet flame, crystal glow, rocket motor,
+ *            spider eye: `draw.ts::setExtras`), with the rim opts; empty for an actor without (`hasExtras`).
  *
- * The shader (`layer.ts`) composites them per pass, sampling the mask at the pass's offset. The silhouette is
- * light-independent, so a cell is redrawn only when the actor's drawing changes (`key`) — except the extras,
- * which are drawn at their offsets rather than resampled: a resampled glow's 8-bit rounding lands on other
- * pixels than the mockup's re-drawn one (measured, F4's crystals: mean ΔE 1.24 on their box resampled). So an
- * actor with extras keys on its pass offsets too (1/8 px), and redraws when its key light turns.
+ * **Mask and extras are drawn once per pass, at that pass's offset** (fill, rim, far rim) — the shader (`layer.ts`)
+ * composites them with the pass's colour and alpha, which stay uniforms. Resampling one mask at the offsets
+ * instead was measured and is not the same picture: the canvas re-rasterises each pass, and a bilinear shift of a
+ * thin shape's edge is not that (F4, rim passes on: mean ΔE 0.37 on the actor boxes resampled — past the actor
+ * threshold, 0.176 — birds 1.3, being all edge; a resampled glow 1.24 on the crystals). So a lit actor's cell keys
+ * on its pass offsets (1/8 px): it redraws when its key light **turns** (or the actor moves round it), never when
+ * the light only brightens, dims or changes colour.
+ *
+ * **An actor with extras is baked instead** (`drawBaked`): its whole `lit()` — halo, shadow, the passes in their
+ * colours, the ink — drawn by the canvas into the ink image, as the mockup draws it. Its glows sit under and over
+ * its silhouette in every pass (a crystal's highlight over the shard, a spider's eye over the body) and are
+ * translucent over each other; composited from separate 8-bit images they round differently from one canvas —
+ * measured on F4 with rim passes on, those four actors were 0.40 mean ΔE on their boxes separated and the rest 0.13.
+ * Its key then holds the key light's colour and alpha too, so it also redraws when the light brightens or dims.
  */
 import type { Actor, ActorOpts, Box } from '../scene'
 import * as D from './draw'
@@ -38,6 +46,15 @@ export type Role = 'under' | 'mask' | 'ink' | 'extras'
 
 /** The three pass offsets (px): fill, rim, far rim — the order of the extras images. */
 export type PassOffsets = [[number, number], [number, number], [number, number]]
+
+/** One lit actor's passes this frame (`lit.ts::passes`): what a cell may depend on. */
+export interface Lighting {
+  offs: PassOffsets
+  rgb: string
+  a: number
+  fill: string
+  rim: boolean
+}
 
 /** Does `a` draw anything in a fixed colour in its rim and fill passes (`draw.ts`'s `extras` sites)? */
 export function hasExtras(a: Actor): boolean {
@@ -135,11 +152,34 @@ export function estimateBox(a: Actor): Box {
  * Everything the drawing depends on — and nothing the light does. The sub-pixel phase of the anchor is part
  * of it (at 1/8 px): the drawing is rasterised at that phase, the quad placed at whole px.
  */
-export function cellKey(a: Actor, offs: PassOffsets | null): string {
+export function cellKey(a: Actor, L: Lighting | null): string {
   const r = actorRect(a)
   const q = (v: number): number => Math.round(v * 8) / 8
-  const extra = hasExtras(a) && offs ? offs.map(([x, y]) => [q(x), q(y)]) : null
-  return JSON.stringify([a.kind, a.opts, a.lit, r[2] - r[0], r[3] - r[1], q(a.x - r[0]), q(a.y - r[1]), extra])
+  const offs = a.lit && L ? L.offs.map(([x, y]) => [q(x), q(y)]) : null
+  const baked = hasExtras(a) && L ? [L.rgb, Math.round(L.a * 256), L.fill, L.rim] : null
+  return JSON.stringify([a.kind, a.opts, a.lit, r[2] - r[0], r[3] - r[1], q(a.x - r[0]), q(a.y - r[1]), offs, baked])
+}
+
+/** `lit()` whole, into `g` whose (0, 0) is the cell rect's top-left (an actor with extras — see above). */
+export function drawBaked(g: D.G, a: Actor, L: Lighting): void {
+  const [far, rim, fill] = [L.offs[2], L.offs[1], L.offs[0]]
+  drawRole(g, a, 'under')
+  const pass = (ink: string, accent: string, off: [number, number]): void => {
+    const r = actorRect(a)
+    g.save()
+    g.lineCap = 'round'
+    g.lineJoin = 'round'
+    D.setInk(ink)
+    drawKind(g, a, rimOpts(a, accent), a.x - r[0] + off[0], a.y - r[1] + off[1])
+    D.setInk(DARK_INK)
+    g.restore()
+  }
+  if (L.rim) {
+    pass(`rgba(${L.rgb},${L.a * 0.35})`, `rgba(${L.rgb},${L.a * 0.3})`, far)
+    pass(`rgba(${L.rgb},${L.a})`, `rgba(${L.rgb},${L.a})`, rim)
+  }
+  pass(`rgba(${L.fill},0.35)`, `rgba(${L.fill},0.35)`, fill)
+  drawRole(g, a, 'ink')
 }
 
 /** The offsets an extras image is drawn at: `cellKey`'s 1/8 px, so the key and the drawing agree. */
@@ -148,11 +188,12 @@ export function snapOffsets(offs: PassOffsets): PassOffsets {
   return offs.map(([x, y]) => [q(x), q(y)]) as PassOffsets
 }
 
-/** Draw image `role` of `a` into `g`, whose (0, 0) is the cell rect's top-left; an extras image at `off`. */
+/** Draw image `role` of `a` into `g`, whose (0, 0) is the cell rect's top-left; a pass's mask or extras at `off`. */
 export function drawRole(g: D.G, a: Actor, role: Role, off: [number, number] = [0, 0]): void {
   const r = actorRect(a)
-  const x = a.x - r[0] + (role === 'extras' ? off[0] : 0)
-  const y = a.y - r[1] + (role === 'extras' ? off[1] : 0)
+  const shifted = role === 'extras' || role === 'mask'
+  const x = a.x - r[0] + (shifted ? off[0] : 0)
+  const y = a.y - r[1] + (shifted ? off[1] : 0)
   const lit = a.lit
   g.save()
   g.lineCap = 'round'

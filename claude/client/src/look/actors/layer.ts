@@ -24,7 +24,7 @@ import {
 import type { Actor, Light, Moon } from '../scene'
 import { toWorld } from '../worldRenderer-math'
 import { ATLAS_SIZE, ActorAtlas, type Painter } from './atlas'
-import { MASK_STEP, actorRect, hasExtras, type PassOffsets } from './cell'
+import { MASK_STEP, actorRect, hasExtras, type Lighting } from './cell'
 import { Flat, type G } from './flat'
 import { passes } from './lit'
 
@@ -32,15 +32,16 @@ import { passes } from './lit'
 export const ACTOR_ORDER = 7
 
 const VS = /* glsl */ `
-attribute vec2 aLocal; attribute vec4 aSlot; attribute vec4 aOff; attribute vec4 aRim; attribute vec4 aFill;
-varying vec2 vLocal; varying vec4 vSlot; varying vec4 vOff; varying vec4 vRim; varying vec4 vFill;
-void main(){ vLocal = aLocal; vSlot = aSlot; vOff = aOff; vRim = aRim; vFill = aFill;
+attribute vec2 aLocal; attribute vec4 aSlot; attribute vec4 aRim; attribute vec4 aFill;
+varying vec2 vLocal; varying vec4 vSlot; varying vec4 vRim; varying vec4 vFill;
+void main(){ vLocal = aLocal; vSlot = aSlot; vRim = aRim; vFill = aFill;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`
 
 const FS = /* glsl */ `
 uniform sampler2D atlas; uniform vec2 atlasSize; uniform float rimOn;
-varying vec2 vLocal; varying vec4 vSlot; varying vec4 vOff; varying vec4 vRim; varying vec4 vFill;
-// One of the cell's images (0 under, 1 mask, 2 ink, 3–5 the fill/rim/far-rim extras) at local px p, clamped to its rect.
+varying vec2 vLocal; varying vec4 vSlot; varying vec4 vRim; varying vec4 vFill;
+// One of the cell's images (0 under, 1 ink, then mask/extras pairs for the fill, rim and far-rim passes: 2/3, 4/5,
+// 6/7 — each already drawn at its pass's offset) at local px p, clamped to its rect.
 vec4 img(float k, vec2 p){
   vec2 at = vec2(mod(k, 2.), floor(k / 2.)) * vSlot.zw;
   vec2 q = clamp(p, vec2(0.5), vSlot.zw - 0.5);
@@ -49,16 +50,19 @@ vec4 img(float k, vec2 p){
 vec4 over(vec4 top, vec4 c){ return top + c * (1. - top.a); }
 // A flat pass's alpha from its stroke counts: n strokes of alpha a give 1 - (1 - a)^n; a partly covered
 // stroke (the fraction) adds a * frac, as one anti-aliased stroke does.
+// b^n for a whole n >= 0. GLSL leaves pow(0, 0) undefined, and a full-strength rim pass (a = 1) asks for it:
+// measured, D3D12 returned NaN and erased every actor lit that hard (SwiftShader returned 1).
+float powN(float b, float n){ return n < 0.5 ? 1. : pow(max(b, 1e-6), n); }
 float passAlpha(vec2 m, float ai, float aa){
   vec2 n = m * (255. / ${MASK_STEP}.);
-  float ti = pow(1. - ai, floor(n.x)) * (1. - ai * fract(n.x));
-  float ta = pow(1. - aa, floor(n.y)) * (1. - aa * fract(n.y));
+  float ti = powN(1. - ai, floor(n.x)) * (1. - ai * fract(n.x));
+  float ta = powN(1. - aa, floor(n.y)) * (1. - aa * fract(n.y));
   return 1. - ti * ta;
 }
-// One flat pass: its extras (image k, already drawn at the pass offset), then its silhouette, sampled at offset off.
-vec4 pass(vec4 c, vec2 p, float k, vec2 off, vec3 rgb, float ai, float aa){
-  if (vFill.a > 1.5) c = over(img(k, p), c);
-  float a = passAlpha(img(1., p - off).rg, ai, aa);
+// One flat pass (mask image k, its extras k + 1): the extras, then the silhouette in the pass's colour.
+vec4 pass(vec4 c, vec2 p, float k, vec3 rgb, float ai, float aa){
+  c = over(img(k + 1., p), c);
+  float a = passAlpha(img(k, p).rg, ai, aa);
   return over(vec4(rgb * a, a), c);
 }
 vec3 toLinear(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
@@ -67,12 +71,12 @@ void main(){
   vec4 c = img(0., p);
   if (vFill.a > 0.5) {
     if (rimOn > 0.5) {
-      c = pass(c, p, 5., vOff.xy * 1.7, vRim.rgb, vRim.a * 0.35, vRim.a * 0.3);
-      c = pass(c, p, 4., vOff.xy, vRim.rgb, vRim.a, vRim.a);
+      c = pass(c, p, 6., vRim.rgb, vRim.a * 0.35, vRim.a * 0.3);
+      c = pass(c, p, 4., vRim.rgb, vRim.a, vRim.a);
     }
-    c = pass(c, p, 3., vOff.zw, vFill.rgb, 0.35, 0.35);
+    c = pass(c, p, 2., vFill.rgb, 0.35, 0.35);
   }
-  c = over(img(2., p), c);
+  c = over(img(1., p), c);
   // The mockup's canvas holds 8-bit premultiplied values, and its CanvasTexture is uploaded unpremultiplied —
   // another 8-bit rounding, large where alpha is small (a halo's rim). Both roundings, as it does them.
   c = floor(clamp(c, 0., 1.) * 255. + 0.5) / 255.;
@@ -128,7 +132,7 @@ function canvasPainter(renderer: WebGLRenderer, tex: DataTexture): Painter {
 /** The scratch canvas's least size — the mockup's actor canvas. */
 const SCRATCH_MIN: [number, number] = [1280, 720]
 
-const FLOATS = { position: 3, aLocal: 2, aSlot: 4, aOff: 4, aRim: 4, aFill: 4 } as const
+const FLOATS = { position: 3, aLocal: 2, aSlot: 4, aRim: 4, aFill: 4 } as const
 type AttrName = keyof typeof FLOATS
 
 export class ActorLayer {
@@ -198,15 +202,14 @@ export class ActorLayer {
     const pos = at('position')
     const loc = at('aLocal')
     const slot = at('aSlot')
-    const off = at('aOff')
     const rim = at('aRim')
     const fill = at('aFill')
     let n = 0
     if (actors.length) this.atlas.beginFrame()
     for (const a of actors) {
       const ps = a.lit ? passes(lights, moon, a.x, a.y, a.lit.size) : null
-      const offs: PassOffsets | null = ps ? [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]] : null
-      const cell = this.atlas.cellFor(a, offs)
+      const L: Lighting | null = ps ? { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: this.rim } : null
+      const cell = this.atlas.cellFor(a, L)
       if (!cell) continue
       const r = actorRect(a)
       const corners: [number, number][] = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
@@ -216,10 +219,9 @@ export class ActorLayer {
         pos.set([w.x, w.y, 0], v * 3)
         loc.set([x - r[0], y - r[1]], v * 2)
         slot.set([cell.x, cell.y, cell.w, cell.h], v * 4)
-        off.set(ps ? [ps.off[0], ps.off[1], ps.fillOff[0], ps.fillOff[1]] : [0, 0, 0, 0], v * 4)
         rim.set(ps ? [...ps.rim, ps.a] : [0, 0, 0, 0], v * 4)
-        // .a: 0 unlit, 1 lit, 2 lit with extras images.
-        fill.set(ps ? [...ps.fill, hasExtras(a) ? 2 : 1] : [0, 0, 0, 0], v * 4)
+        // .a: 0 unlit or baked (the ink image is the whole picture), 1 lit: passes composited here.
+        fill.set(ps && !hasExtras(a) ? [...ps.fill, 1] : [0, 0, 0, 0], v * 4)
       })
       n++
     }
@@ -229,8 +231,10 @@ export class ActorLayer {
     this.mesh.visible = n > 0
   }
 
-  /** T23.13: draw `lit()`'s two rim passes. */
+  private rim = true
+  /** T23.13: draw `lit()`'s two rim passes (a baked cell keys on it). */
   set rimOn(on: boolean) {
+    this.rim = on
     this.material.uniforms['rimOn']!.value = on ? 1 : 0
   }
 

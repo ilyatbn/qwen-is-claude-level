@@ -63,6 +63,9 @@ export const CHECKS = [
     url: '?look=F4',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.13: rim-lit silhouettes — lit()'s rim passes at Level A on F4's actor boxes (rim-off must fail), then live
+  // in the sandbox: a laser light rims the figure's near side only; the dark halo on a cave-wall spot only.
+  { name: 'rim-light', file: 'scripts/checks/rim-light.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04: the sky — the look-lab's F1/F5 sky alone against the mockup's sky alone at Level A
   // (full tier, every look-thresholds.json metric, F5's sky as the must-fail control), then live
   // in the sandbox: each band's pan shift = pan × zoom × parallax, far < near, a moon fixed;

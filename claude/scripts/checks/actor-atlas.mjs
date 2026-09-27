@@ -25,7 +25,7 @@
  *
  * ## 3. Must-fail controls through the lab
  *
- * `&knob=exposure-up`, `bloom-off`, `fog-off` (R19's, lab side) must each fail `deltaE_actors` — `bloom-off` is the
+ * `&knob=actor-rim-off,` + `exposure-up`, `bloom-off`, `fog-off` (R19's, lab side) must each fail `deltaE_actors` — `bloom-off` is the
  * smallest control, so this is the tight one. And `&only=world` (no cast described) must fail: a metric that passed
  * it could not see the cast at all.
  *
@@ -82,7 +82,7 @@ function sideBySide(a, b, name) {
 export default async function ({ page, shot, log }) {
   const origin = new URL(page.url()).origin
   const boxes = actorBoxes('F4')
-  const rimOff = loadPng(ref('controls/F4-cast-rim-off.png'))
+  let rimOff = loadPng(ref('controls/F4-cast-rim-off.png'))
   const problems = []
   const browser = await chromium.launch({ executablePath: chromePath, env: { ...process.env, LD_LIBRARY_PATH: libDir }, headless: true, args: REFERENCE_ARGS })
   try {
@@ -91,10 +91,14 @@ export default async function ({ page, shot, log }) {
     await own.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
 
     // ------------------------------------------------------------ 1. Level A, full tier
-    const full = await lab(own, origin, '')
+    // T23.13 draws the rim passes by default: this leg is T23.12's picture, the rim switched off.
+    const full = await lab(own, origin, '&knob=actor-rim-off')
     const TH = thresholdsFor(RAW, full.info.gpu)
     const T = TH.actors
     if (!(T?.threshold > 0)) throw new Error(`look-thresholds.json's ${TH.backEnd} set places no actor threshold: ${JSON.stringify(T)}`)
+    // Like for like (T23.13): a set with its own references (gpu: the mockup on D3D12) is compared with its own.
+    const own_ = { ...RAW.actors.controls, ...(RAW.sets[TH.backEnd].actors.controls ?? {}) }['rim-off'].split(' ')[0]
+    rimOff = loadPng(join(root, 'tasks/M23', own_))
     log(`renderer ${JSON.stringify(full.info.gpu)} → the ${TH.backEnd} set: deltaE_actors max ${T.threshold} (floor ${T.floor.toPrecision(3)}, ${T.smallestControl} ${T.smallest.toPrecision(3)})`)
     const i = full.info
     if (i.tier !== 'full' || i.buffer[0] !== 1280 || i.buffer[1] !== 720 || i.samples !== 4) throw new Error(`want the full tier (1280x720, MSAA 4), got ${JSON.stringify(i)}`)
@@ -120,7 +124,7 @@ export default async function ({ page, shot, log }) {
 
     // ------------------------------------------------------------ 3. must-fail controls
     for (const knob of ['exposure-up', 'bloom-off', 'fog-off']) {
-      const c = await lab(own, origin, `&knob=${knob}`)
+      const c = await lab(own, origin, `&knob=actor-rim-off,${knob}`)
       const dc = boxesDeltaE(c.frame, rimOff, boxes)
       log(`3. control knob=${knob}: deltaE_actors ${dc.toFixed(4)} ${dc > T.threshold ? 'fails, as it must' : 'PASSES — the metric cannot see it'}`)
       if (!(dc > T.threshold)) problems.push(`control ${knob} passed (${dc.toFixed(4)} ≤ ${T.threshold})`)
@@ -131,16 +135,16 @@ export default async function ({ page, shot, log }) {
     log(`3. control only=world (no cast): deltaE_actors ${dw.toFixed(4)} ${dw > T.threshold ? 'fails, as it must' : 'PASSES — the metric cannot see the cast'}`)
     if (!(dw > T.threshold)) problems.push(`control only=world passed (${dw.toFixed(4)})`)
     const rimOn = boxesDeltaE(full.frame, loadPng(ref('controls/F4-cast.png')), boxes)
-    log(`4. (T23.13's) lab vs the rim-on F4-cast.png: ${rimOn.toFixed(4)} — no rim passes drawn yet`)
+    log(`4. the rim-off lab vs the rim-on F4-cast.png: ${rimOn.toFixed(4)} (rim-light gates the rim)`)
   } finally {
     await browser.close()
   }
 
   // ------------------------------------------------------------ 4. the suite's browser (not gating)
   await page.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
-  const suite = await lab(page, origin, '')
+  const suite = await lab(page, origin, '&knob=actor-rim-off')
   await shot('actor-atlas')
-  const ds = boxesDeltaE(suite.frame, rimOff, boxes)
+  const ds = boxesDeltaE(suite.frame, loadPng(ref('controls/F4-cast-rim-off.png')), boxes)
   log(`4. the suite's browser (${suite.info.tier}, CPU-rastered canvas): deltaE_actors ${ds.toFixed(4)}, ${suite.actors.quads} quads — reported, not gating`)
   if (suite.actors.quads !== F4_ACTORS) problems.push(`the suite's page laid out ${suite.actors.quads} quads`)
   if (problems.length) throw new Error(`actor-atlas: ${problems.join('; ')}`)
