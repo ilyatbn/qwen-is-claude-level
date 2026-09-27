@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use game_core::player::state::PlayerId;
 use socketioxide::extract::{Data, SocketRef};
+use socketioxide::handler::ConnectHandler;
 use socketioxide::socket::Sid;
 use socketioxide::SocketIo;
 
@@ -333,7 +334,17 @@ pub fn sanitise_name(raw: &str) -> Option<String> {
 pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, config: Arc<Config>) {
     let io2 = io.clone();
     let ctx0 = Ctx { registry };
-    io.ns("/", move |socket: SocketRef| {
+    // T22.00E: **the handlers are registered in a connect middleware, not in the connect handler.**
+    // socketioxide 0.18 awaits a namespace's middlewares, *then* sends the client its CONNECT ack, *then*
+    // `tokio::spawn`s the (always async) connect handler. Registered in the handler, the `socket.on`s below
+    // raced that spawn: a client that emits the moment it is acked (every test client; any browser that
+    // sends on `connect`) could reach a socket with no handlers, and socketioxide drops an event with no
+    // handler without a word. Seen once in a server trace on a loaded box — `reading event="quick_match"`
+    // 0.7 ms after the CONNECT, no reply until the test's 12 s retry — and forced by a 50 ms delay in the
+    // handler (23 of 24 clients unanswered, `lobby.rs::the_first_event_after_the_connect_ack_is_never_dropped`).
+    // Rare: 0 in ~6 500 traced sockets after; the socket-flake family's main cause was the test client's
+    // heartbeat (`tests/common::open`). A middleware runs before the ack, so no event can beat its handler.
+    let register_handlers = move |socket: SocketRef| {
         let ctx = ctx0.clone();
         let config = config.clone();
         let io = io2.clone();
@@ -803,7 +814,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 socket.on("input", move |socket: SocketRef, Data::<String>(b64)| {
                     if let Some((_, room, sessions)) = ctx.resolve(socket.id) {
                         if let Some(id) = sessions.player_of(socket.id) {
-                            match crate::codec::b64_decode(&b64).map(|buf| (decode_input_batch(&buf), buf.len())) {
+                            match crate::codec::b64_decode(&b64)
+                                .map(|buf| (decode_input_batch(&buf), buf.len()))
+                            {
                                 Some((Ok(inputs), _)) => room.send(Command::Input(id, inputs)),
                                 // Malformed is far more likely to be version skew than
                                 // an attack: log and drop, never disconnect
@@ -842,7 +855,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     "use_item",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
                         let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
-                        ctx.send_as_player(socket.id, |id| Command::UseItem(id, slot.min(255) as u8));
+                        ctx.send_as_player(socket.id, |id| {
+                            Command::UseItem(id, slot.min(255) as u8)
+                        });
                         async {}
                     },
                 );
@@ -853,7 +868,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     "select_slot",
                     move |socket: SocketRef, Data::<serde_json::Value>(p)| {
                         let slot = p.get("slot").and_then(|v| v.as_u64()).unwrap_or(255);
-                        ctx.send_as_player(socket.id, |id| Command::SelectSlot(id, slot.min(255) as u8));
+                        ctx.send_as_player(socket.id, |id| {
+                            Command::SelectSlot(id, slot.min(255) as u8)
+                        });
                         async {}
                     },
                 );
@@ -1221,9 +1238,15 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     }
                 });
             }
+            Ok::<(), std::convert::Infallible>(())
         }
-    });
+    };
+    io.ns("/", connected.with(register_handlers));
 }
+
+/// The namespace's connect handler: everything it would do is `register_handlers`, run as a middleware so it
+/// finishes before the client is acked (T22.00E).
+async fn connected(_socket: SocketRef) {}
 
 /// Free everything a socket holds: its seat in the room, its row in the session
 /// map, and its place in the registry's human count.

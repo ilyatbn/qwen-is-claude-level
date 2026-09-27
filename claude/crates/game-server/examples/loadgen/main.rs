@@ -295,6 +295,11 @@ impl Rng {
 // ---------------------------------------------------------------------------
 
 fn connect(addr: SocketAddr, log: &Log, t0: Instant) -> rust_socketio::client::Client {
+    // A fresh builder per attempt: `common::open` may replace a session closed at connect (T22.00E).
+    common::open(|| builder_for(addr, log, t0))
+}
+
+fn builder_for(addr: SocketAddr, log: &Log, t0: Instant) -> rust_socketio::ClientBuilder {
     let mut b = common::builder(addr);
     for ev in EVENTS {
         let (log, name) = (log.clone(), (*ev).to_string());
@@ -318,7 +323,7 @@ fn connect(addr: SocketAddr, log: &Log, t0: Instant) -> rust_socketio::client::C
             },
         );
     }
-    common::open(b)
+    b
 }
 
 /// Emit, and do not die if it is refused.

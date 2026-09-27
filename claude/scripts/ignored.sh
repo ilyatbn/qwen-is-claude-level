@@ -122,14 +122,8 @@ MANIFEST=(
   "render_fields_bench|game-wasm src/render_fields.rs|guard"
   "how_many_rooms_fit|game-server tests/capacity.rs|guard"
   "rooms_do_not_get_more_expensive_as_more_are_added|game-server tests/capacity.rs|guard"
-  # Parked as flaky on 2026-09-14, not for cost — see tasks/flaky-test.md.
-  "a_lobby_room_has_no_bots|game-server tests/lobby.rs|guard"
-  "a_second_client_joins_a_private_room_by_its_code|game-server tests/lobby.rs|guard"
-  # Parked as flaky on 2026-09-21 (T22.01), not for cost — see tasks/flaky-test.md.
-  "a_seventh_client_is_told_the_room_is_full|game-server tests/integration.rs|guard"
-  # Parked as flaky on 2026-09-21 (T22.03), not for cost — see tasks/flaky-test.md.
-  # The third `AlreadyClosed` in this one file.
-  "lobby_state_names_everyone_in_the_room_including_yourself|game-server tests/lobby.rs|guard"
+  # (T22.00E, 2026-09-27: the four socket-flake parks are gone — the harness cause is fixed, see
+  # tasks/flaky-test.md's R40 note.)
 )
 
 # Tests whose recorded verdict is not `ok`. **Empty, and that is the finding.**

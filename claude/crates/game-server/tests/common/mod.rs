@@ -156,26 +156,150 @@ pub fn subscribe(
     b
 }
 
+static NEXT_CLIENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// T22.00E instrument: `SOCKET_TRACE=1` prints the server's engine.io / socket.io tracing into the test's
+/// captured output (shown only for a failing test).
+fn trace_init() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var("SOCKET_TRACE").is_ok() {
+            let _ = tracing_subscriber::fmt()
+                .with_test_writer()
+                .with_env_filter("engineioxide=trace,socketioxide=debug,game=debug")
+                .try_init();
+        }
+    });
+}
+
 /// How long a client is given to report `open` before the fixture gives up.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Connect, and **wait for `open` before returning**.
+/// How many fresh sessions `open` tries before it gives up. Each failed attempt is a session the server
+/// closed at its first heartbeat (below); measured at 3 in 1 920 connects on a loaded box, so two in a row
+/// is already about one in 400 000 and five is a server that is really refusing.
+const OPEN_ATTEMPTS: usize = 5;
+
+/// Connect, and return only a session that has **answered a round trip**.
 ///
-/// `rust_socketio`'s `connect()` returns once engine.io is up while the
-/// socket.io namespace CONNECT is still in flight, so an emit on the next line
-/// is dropped with no error. That produced a 50 % flaky suite and cost a whole
-/// session (`docs/70-amendments-v2.md` §A28). `socket.io-client` buffers emits
-/// until connected; this one does not.
-pub fn open(b: ClientBuilder) -> rust_socketio::client::Client {
-    let (open_tx, open_rx) = mpsc::channel::<()>();
-    let b = b.on("open", move |_: Payload, _: RawClient| {
-        let _ = open_tx.send(());
-    });
-    let client = b.connect().expect("socket.io connect");
-    open_rx
-        .recv_timeout(OPEN_TIMEOUT)
-        .expect("socket.io never reported `open`");
-    client
+/// Two waits, each for a failure measured here:
+///
+/// 1. **`open`** — `rust_socketio`'s `connect()` returns once engine.io is up while the socket.io
+///    namespace CONNECT is still in flight, so an emit on the next line was dropped with no error (a
+///    50 % flaky suite, `docs/70-amendments-v2.md` §A28). `socket.io-client` buffers emits until
+///    connected; this one does not.
+/// 2. **A `ping_rtt` → `pong_rtt` echo** (T22.00E) — the R40 socket-flake family (`tasks/flaky-test.md`).
+///    `rust_engineio` 0.6 sends an unsolicited Pong the moment it connects *and* answers the server's
+///    first Ping (sent at t = 0) with another; `engineioxide` 0.17 queues pongs in a channel of
+///    **capacity one** and treats a full channel as `HeartbeatTimeout`. When the server's heartbeat
+///    task has not taken the first pong before the second arrives — a loaded box — it closes the
+///    session in the same millisecond as the CONNECT (traced: `error when handling packet:
+///    HeartbeatTimeout`, `close_session{reason=HeartbeatTimeout}`). The test then emitted into a closed
+///    socket (`AlreadyClosed`, `SendAfterClosing`), or its event was dropped (`cannot find socketio
+///    socket`) and `rust_socketio` silently reconnected a fresh, unjoined session (`saw []`, an empty
+///    inbox). The shipping browser client sends no unsolicited Pong, so this is the test client's,
+///    not the game's. Both pongs are on the wire before `open` fires (the client handles the Ping
+///    before the CONNECT ack that follows it), and the server reads our echo after them — so an
+///    answered echo is a session that survived; an unanswered one is replaced by a fresh session
+///    before the test has sent anything. `reconnect(false)`: a session that dies later fails loudly
+///    instead of being swapped for an empty one.
+///
+/// `open` owns `pong_rtt` on the builder it is given (a caller subscribing to it would be overwritten).
+///
+/// **`make` builds a fresh builder per attempt.** A `ClientBuilder`'s callbacks live behind an `Arc`
+/// its clones share, so a retry off a clone re-registered this attempt's `close` on the dead
+/// session's map too, and the dead one's late close ended the live one's wait (measured in
+/// `open_replaces_a_session_closed_at_connect`: every attempt after the first "closed" in 1.4 ms).
+pub fn open(make: impl Fn() -> ClientBuilder) -> rust_socketio::client::Client {
+    trace_init();
+    let mut last = String::new();
+    for attempt in 1..=OPEN_ATTEMPTS {
+        let id = NEXT_CLIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t0 = Instant::now();
+        let (open_tx, open_rx) = mpsc::channel::<()>();
+        let (pong_tx, pong_rx) = mpsc::channel::<serde_json::Value>();
+        // A close of this session ends the wait for its echo at once.
+        let (dead_tx, dead_rx) = mpsc::channel::<()>();
+        let client = make()
+            .reconnect(false)
+            .on("open", move |_: Payload, _: RawClient| {
+                let _ = open_tx.send(());
+            })
+            .on("pong_rtt", move |p: Payload, _: RawClient| {
+                let _ = pong_tx.send(text_of(p));
+            })
+            .on("error", move |p: Payload, _: RawClient| {
+                // Not a death signal: `rust_engineio` reports benign errors while it connects.
+                println!("[socket#{id} +{:?}] error: {}", t0.elapsed(), text_of(p));
+            })
+            .on("close", move |_: Payload, _: RawClient| {
+                println!("[socket#{id} +{:?}] close", t0.elapsed());
+                let _ = dead_tx.send(());
+            })
+            .connect()
+            .expect("socket.io connect");
+        // A session closed before its CONNECT was read is never acked — inferred to be the same close one
+        // step earlier, not traced
+        // (measured: `socket.io never reported open` once in 240 runs once the echo was in). Retried
+        // like the rest — nothing has been sent on it.
+        if open_rx.recv_timeout(OPEN_TIMEOUT).is_err() {
+            let e = format!("no `open` in {}s", OPEN_TIMEOUT.as_secs());
+            println!(
+                "OPEN_RETRY socket#{id} attempt {attempt}: session did not survive connect: {e}"
+            );
+            last = e;
+            let _ = client.disconnect();
+            continue;
+        }
+        let nonce = serde_json::json!(format!("open#{id}"));
+        let echoed = match emit_ready(&client, "ping_rtt", &nonce) {
+            Err(e) => Err(format!("the echo could not be sent: {e}")),
+            Ok(()) => {
+                let deadline = Instant::now() + OPEN_TIMEOUT;
+                loop {
+                    if dead_rx.try_recv().is_ok() {
+                        break Err("the session closed before the echo came back".to_string());
+                    }
+                    match pong_rx.recv_timeout(Duration::from_millis(20)) {
+                        Ok(v) if v == nonce => break Ok(()),
+                        Ok(_) => continue,
+                        Err(_) if Instant::now() >= deadline => {
+                            break Err(format!("no echo in {}s", OPEN_TIMEOUT.as_secs()))
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            }
+        };
+        match echoed {
+            Ok(()) => return client,
+            Err(e) => {
+                // Printed, not silent: `--nocapture` counts how often the fixture had to do this.
+                println!("OPEN_RETRY socket#{id} attempt {attempt}: session did not survive connect: {e}");
+                last = e;
+                let _ = client.disconnect();
+            }
+        }
+    }
+    panic!("no socket.io session survived its connect in {OPEN_ATTEMPTS} attempts; last: {last}");
+}
+
+/// `emit`, waiting out only the client's own not-yet-sendable window, and returning any other error.
+#[allow(clippy::result_large_err)] // rust_socketio's own error type
+fn emit_ready(
+    c: &rust_socketio::client::Client,
+    ev: &str,
+    payload: &serde_json::Value,
+) -> Result<(), rust_socketio::Error> {
+    let deadline = Instant::now() + EMIT_READY_WINDOW;
+    loop {
+        match c.emit(ev, payload.clone()) {
+            Err(rust_socketio::Error::IllegalActionBeforeOpen()) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
 }
 
 /// The shape four files had a copy of: subscribe into an inbox the caller owns.
@@ -184,7 +308,7 @@ pub fn connect(
     events: &[&'static str],
     inbox: &Inbox,
 ) -> rust_socketio::client::Client {
-    open(subscribe(builder(addr), events, inbox, None))
+    open(|| subscribe(builder(addr), events, inbox, None))
 }
 
 /// The shape the other three had: the inbox plus a channel that names each
@@ -195,7 +319,7 @@ pub fn connect_watching(
 ) -> (rust_socketio::client::Client, Inbox, mpsc::Receiver<String>) {
     let inbox: Inbox = Arc::default();
     let (tx, rx) = mpsc::channel::<String>();
-    let client = open(subscribe(builder(addr), events, &inbox, Some(tx)));
+    let client = open(|| subscribe(builder(addr), events, &inbox, Some(tx.clone())));
     (client, inbox, rx)
 }
 

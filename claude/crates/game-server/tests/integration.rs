@@ -180,10 +180,11 @@ fn connect_logging_snapshots(
     let inbox: Inbox = Arc::default();
     let (tx, rx) = mpsc::channel::<String>();
     let log = SnapshotLog::default();
-    let mut b = common::subscribe(common::builder(addr), events, &inbox, Some(tx));
-    {
+    // A fresh builder per attempt: `common::open` may replace a session closed at connect (T22.00E).
+    let make = || {
+        let b = common::subscribe(common::builder(addr), events, &inbox, Some(tx.clone()));
         let log = log.clone();
-        b = b.on("snapshot", move |payload: Payload, _: RawClient| {
+        b.on("snapshot", move |payload: Payload, _: RawClient| {
             let text = match payload {
                 Payload::Text(v) => v
                     .first()
@@ -199,9 +200,9 @@ fn connect_logging_snapshots(
                     log.seqs.lock().expect("poisoned").push(view.last_input_seq);
                 }
             }
-        });
-    }
-    (common::open(b), inbox, rx, log)
+        })
+    };
+    (common::open(make), inbox, rx, log)
 }
 
 /// Join, then wait for the map, then declare ready. The sequence every client runs.
@@ -240,7 +241,6 @@ fn join_and_ready(
 /// refused. "Full" is a property of *a specific room*, and joining one by its
 /// code is how a player asks for that room in particular.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "flaky: no `welcome` within 15 s under a loaded gate — see tasks/flaky-test.md"]
 async fn a_seventh_client_is_told_the_room_is_full() {
     let cfg = Config {
         max_players: 3,

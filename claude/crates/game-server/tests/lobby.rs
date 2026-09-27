@@ -293,7 +293,6 @@ fn wait_for(inbox: &Inbox, ev: &str, n: usize, label: &str) {
 /// Create a private room, read the code **off the wire**, and join it with a
 /// second client. Both must land in the same world.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "flaky: AlreadyClosed at first emit — see tasks/flaky-test.md"]
 async fn a_second_client_joins_a_private_room_by_its_code() {
     let h = spawn_server().await;
     let addr = h.addr;
@@ -903,7 +902,6 @@ async fn two_humans_start_on_their_own() {
 /// at construction — which is the bug §C18 exists to fix. Falsified by restoring
 /// `seat_bots` to `Room::new_async`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "flaky: AlreadyClosed under a loaded gate — see tasks/flaky-test.md"]
 async fn a_lobby_room_has_no_bots() {
     let mut cfg = test_config();
     cfg.bot_count = 4;
@@ -1071,7 +1069,6 @@ async fn starting_a_round_announces_the_bots_it_seats() {
 /// The second client is the control. Without it, "the roster has names" also
 /// passes for a server that only ever names the one player it is talking to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "flaky: AlreadyClosed under a loaded gate — see tasks/flaky-test.md"]
 async fn lobby_state_names_everyone_in_the_room_including_yourself() {
     let h = spawn_server().await;
     let addr = h.addr;
@@ -1599,4 +1596,164 @@ async fn hopping_to_a_new_room_frees_the_seat_in_the_old_one() {
     .await
     .expect("disconnect");
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// Clients in `the_first_event_after_the_connect_ack_is_never_dropped`, all at once. Enough that a busy
+/// runtime has several connect handlers in flight together, which is when the old race was lost.
+const ACK_RACE_CLIENTS: usize = 24;
+
+/// **T22.00E — an event sent the instant a client is acked is answered, sent once.**
+///
+/// The R40 socket-flake family (`tasks/flaky-test.md`): socketioxide acks a namespace CONNECT and
+/// then spawns the connect handler, and while `session.rs` registered its `socket.on`s in that
+/// handler, a client emitting on the ack could reach a socket with no handlers — the event was
+/// dropped with no error. Every other test here hides that behind `emit_until`'s 12 s retry (or
+/// failed at its deadline where it had none). This one sends each `quick_match` exactly once, from
+/// many clients at once, and requires every one answered.
+///
+/// Falsified at the live site: `register_handlers` moved back into the connect handler behind a
+/// 50 ms delay (a busy runtime, made certain) fails this with most clients silent; the same delay
+/// inside the middleware passes, because the ack waits for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_event_after_the_connect_ack_is_never_dropped() {
+    let h = spawn_server().await;
+    let addr = h.addr;
+
+    // A reply of either kind is an answer: with this many arrivals at once a quick match can also be
+    // refused (`join_error`), and a refusal is still proof the handler existed. Silence is the bug.
+    let answered = |i: &Inbox| count(i, "welcome") + count(i, "join_error") > 0;
+    let (answered, silent) = tokio::task::spawn_blocking(move || {
+        let clients: Vec<_> = (0..ACK_RACE_CLIENTS)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let inbox: Inbox = Arc::default();
+                    let c = connect(addr, inbox.clone());
+                    // Once. `emit_when_ready` only waits out the client's own not-yet-sendable
+                    // window (an `Err`, nothing sent); it never re-sends a delivered event.
+                    common::emit_when_ready(
+                        &c,
+                        "quick_match",
+                        serde_json::json!({ "name": format!("p{i}") }),
+                    );
+                    (c, inbox)
+                })
+            })
+            .collect();
+        let clients: Vec<_> = clients
+            .into_iter()
+            .map(|t| t.join().expect("client thread"))
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms());
+        while std::time::Instant::now() < deadline && clients.iter().any(|(_, i)| !answered(i)) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let silent: Vec<String> = (0..clients.len())
+            .filter(|&k| !answered(&clients[k].1))
+            .map(|k| {
+                let heard: Vec<String> = clients[k]
+                    .1
+                    .lock()
+                    .map(|g| g.iter().map(|(e, v)| format!("{e}x{}", v.len())).collect())
+                    .unwrap_or_default();
+                format!("p{k} heard [{}]", heard.join(" "))
+            })
+            .collect();
+        for (c, _) in &clients {
+            let _ = c.disconnect();
+        }
+        (clients.len() - silent.len(), silent)
+    })
+    .await
+    .expect("client thread");
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+
+    // The control: the server answers quick match at all (a server that seats nobody makes every
+    // client "silent" for a different reason, and this names it).
+    assert!(
+        answered > 0,
+        "no client was answered — quick match itself is broken"
+    );
+    assert!(
+        silent.is_empty(),
+        "{} of {ACK_RACE_CLIENTS} clients sent `quick_match` once, on the connect ack, and were never \
+         answered ({silent:?}): the event reached a socket whose handlers were not registered yet",
+        silent.len()
+    );
+}
+
+/// **T22.00E — the fixture never hands a test a session the server has already closed.**
+///
+/// The R40 family's cause (`common::open`): on a loaded box `engineioxide` closed a session at its
+/// first heartbeat, in the millisecond of the CONNECT, and the old fixture returned it anyway — the
+/// test then emitted into a dead socket (`AlreadyClosed`) or was silently reconnected to an empty
+/// one (`saw []`). That close is a race nobody can order on demand, so this server makes it certain:
+/// it disconnects the **first** session right after acking it, and answers `ping_rtt` on the rest.
+/// `open` must come back with a live session — a second one — and that session must answer.
+///
+/// Falsified: `open` without its echo returns the first, closed session and the check below times out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_replaces_a_session_closed_at_connect() {
+    use socketioxide::extract::{Data, SocketRef};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (layer, io) = socketioxide::SocketIo::new_layer();
+    let sessions = Arc::new(AtomicUsize::new(0));
+    let seen = sessions.clone();
+    io.ns("/", move |s: SocketRef| {
+        let n = seen.fetch_add(1, Ordering::SeqCst);
+        async move {
+            s.on("ping_rtt", |s: SocketRef, Data::<String>(t)| async move {
+                let _ = s.emit("pong_rtt", &t);
+            });
+            // The test's own check, on an event `open` does not itself subscribe to.
+            s.on("probe", |s: SocketRef, Data::<String>(t)| async move {
+                let _ = s.emit("probe_back", &t);
+            });
+            if n == 0 {
+                let _ = s.disconnect();
+            }
+        }
+    });
+    let router = axum::Router::new().layer(layer);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let answered = tokio::task::spawn_blocking(move || {
+        let inbox: Inbox = Arc::default();
+        let c = common::connect(addr, &["probe_back"], &inbox);
+        c.emit("probe", serde_json::json!("after-open"))
+            .expect("emit on the session open returned");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = false;
+        while std::time::Instant::now() < deadline && !got {
+            got = inbox
+                .lock()
+                .map(|g| {
+                    g.get("probe_back")
+                        .is_some_and(|v| v.iter().any(|x| x == "after-open"))
+                })
+                .unwrap_or(false);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = c.disconnect();
+        got
+    })
+    .await
+    .expect("client thread");
+
+    // The control: the first session really was closed, so a second one was needed.
+    assert!(
+        sessions.load(Ordering::SeqCst) >= 2,
+        "only {} session(s) — the server did not close the first, so nothing here is tested",
+        sessions.load(Ordering::SeqCst)
+    );
+    assert!(
+        answered,
+        "the session `open` returned did not answer — the fixture handed back a closed socket"
+    );
 }
