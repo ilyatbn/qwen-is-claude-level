@@ -157,7 +157,6 @@ async fn a_join_by_code_into_a_started_match_is_refused_and_seats_nobody() {
     let out = tokio::task::spawn_blocking(move || {
         let ia: Inbox = Arc::default();
         let (code, room_id, _a) = host_and_start(addr, &ia);
-        let joins_before = count(&ia, "player_join");
 
         // bo has the right code for a room that has begun.
         let ib: Inbox = Arc::default();
@@ -175,7 +174,28 @@ async fn a_join_by_code_into_a_started_match_is_refused_and_seats_nobody() {
         // a seat not being taken.
         std::thread::sleep(Duration::from_millis(300));
         let bo_welcomes = count(&ib, "welcome");
-        let joins_after = count(&ia, "player_join");
+        // **Counted by name, not in total** (T22.00F). The room's one bot is
+        // announced with `player_join` in the same room-loop pass that sends
+        // `map_init` (`room.rs`, after `broadcast_map_init`), so a total read the
+        // instant `map_init` lands can precede it: loaded, `joins_before` read 0
+        // and `joins_after` 1 — the bot, not bo, which would have made it 2.
+        let bo_joins = |i: &Inbox| {
+            i.lock()
+                .ok()
+                .and_then(|g| g.get("player_join").cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter(|p| p["name"].as_str() == Some("bo"))
+                .count()
+        };
+        let joins_after = bo_joins(&ia);
+        // The presence control: ana's inbox does record announcements — the bot's.
+        wait_for(&ia, "player_join", 1, "ana (the bot's player_join)");
+        let announced = ia
+            .lock()
+            .ok()
+            .and_then(|g| g.get("player_join").cloned())
+            .unwrap_or_default();
 
         // The control: a *lobby* on the same server still admits a joiner. If
         // this fails, the refusal above says nothing about phase.
@@ -204,8 +224,8 @@ async fn a_join_by_code_into_a_started_match_is_refused_and_seats_nobody() {
         (
             reason,
             bo_welcomes,
-            joins_before,
             joins_after,
+            announced,
             room_id,
             _a,
             b,
@@ -216,7 +236,7 @@ async fn a_join_by_code_into_a_started_match_is_refused_and_seats_nobody() {
     .await
     .expect("blocking");
 
-    let (reason, bo_welcomes, joins_before, joins_after, room_id, ..) = out;
+    let (reason, bo_welcomes, joins_after, announced, room_id, ..) = out;
 
     assert_eq!(
         reason.as_str(),
@@ -230,9 +250,9 @@ async fn a_join_by_code_into_a_started_match_is_refused_and_seats_nobody() {
         "bo was refused and welcomed: the refusal seated a player anyway"
     );
     assert_eq!(
-        joins_after, joins_before,
+        joins_after, 0,
         "a `player_join` was announced for a refused joiner, so a seat was \
-         allocated before the refusal"
+         allocated before the refusal (announced: {announced:?})"
     );
 
     // The started room's human count is unchanged, read from the registry

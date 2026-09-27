@@ -1664,7 +1664,20 @@ async fn seat(
     //
     // Dormant with the `map_init` catch-up above, for the same reason and kept for
     // the same one: reconnection needs the world as it stands.
-    if let Some(events) = room.inspect(catch_up_world).await {
+    //
+    // **Gated on the snapshot `welcome` described, not on the room as it is now**
+    // (T22.00F). `welcome` goes out before these reads, so a lobby started in
+    // between — the host pressing start the instant a joiner is welcomed — gave
+    // them a world, and a socket already covered by the match-start broadcasts
+    // (it was in `sessions` before `join_info`) was sent everything twice: 33 of 48
+    // loaded runs of `integration.rs::a_joiner_never_receives_another_player_s_
+    // inventory` saw two identical own `inventory` payloads at one tick.
+    let seated_into_a_world = map_bytes.is_some();
+    if let Some(events) = if seated_into_a_world {
+        room.inspect(catch_up_world).await
+    } else {
+        None
+    } {
         for (name, payload) in &events {
             emit(&socket, name, payload);
         }
@@ -1692,11 +1705,15 @@ async fn seat(
     // One builder, shared with the match-start broadcast (§E1 gave it a second
     // caller): a lobby has no world here, so this sends nothing and
     // `broadcast_inventories` covers it the moment the match begins.
-    if let Some(inv) = room
-        .inspect(move |w| crate::events::inventory_payload(w, id))
-        .await
-        .flatten()
-    {
+    // Same gate as the world catch-up above, for the same race.
+    let inventory = if seated_into_a_world {
+        room.inspect(move |w| crate::events::inventory_payload(w, id))
+            .await
+            .flatten()
+    } else {
+        None
+    };
+    if let Some(inv) = inventory {
         emit(&socket, "inventory", &inv);
     }
 

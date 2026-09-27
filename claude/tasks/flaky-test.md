@@ -40,6 +40,10 @@ a_joiner_that_delays_ready_still_gets_every_carve` 3/130 (*"should have seen the
 not with the server at seq 143"*); `in_progress.rs::a_join_by_code_into_a_started_match_is_refused_and_seats_nobody`
 1/130 (*"a `player_join` was announced for a refused joiner"*). All green in the plain `cargo test -p game-server`.
 The last two assert server behaviour, not timing, and deserve a look of their own — the coordinator's call.
+**Resolved by T22.00F (2026-09-27):** the mask mismatch was the test reading the server before its inboxes (one carve
+past, traced; now cut at the server's sequence); the refused-joiner count read the bot's own `player_join` late (now by
+name); the inventory count was a real seat-path duplicate (`session.rs::seat`, fixed: 33/48 → 0/48); the ready-window
+count is a 400 ms settle budget, still asserted, now self-reporting. Same loaded loop: 34 reds in 144 → 0 in 144.
 
 **Not parked, noted (T22.08E, 2026-09-24): `game-server/tests/bots.rs::bots_actually_move`.** Red once in
 `check.sh --changed HEAD --fast` (`gate-t2208e-changed.txt`): *"no bot moved in two seconds: [1920.0, 96.0] ->

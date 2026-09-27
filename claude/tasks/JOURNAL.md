@@ -7497,3 +7497,10 @@ Instrumented (`SOCKET_TRACE=1` server trace + per-socket close/error prints in `
 Fix (harness): `common::open(make)` returns a session only after a `ping_rtt` echo, retrying fresh; reconnect off. Also a server race: handlers registered in the spawned connect handler (after the ack) → now a connect middleware. Two new lobby.rs tests, each red under its plant.
 Loops: 5 binaries ×130 before 3 reds / after 0 (27 dead sessions replaced); probe 1/320 vs 0/320. Four parks removed (ignored.sh 27 = 27), ten rows → one. Done-when EXIT 0 both halves; check.sh --changed --fast EXIT 0; lobby-flow e2e 7/7.
 Noted, not fixed: inventory-count 19/130 at load ~90; checksum carve/mask and in_progress player_join reds under load (flaky-test.md).
+
+## T22.00F — two server asserts under load: neither is determinism (builder, 2026-09-27)
+Instrumented, then T22.00E's loaded loop (3 binaries ×4 ×12 rounds + 12 spinners, load ~84; `gate-t2200f-*.txt`).
+Mask mismatch: **test-side read race** — traced `server_seq 144, clients 145, cut replay == server`; `client_hash_at` cuts at the server's seq; forced test red under the uncut plant. game-core untouched.
+Refused-joiner announce: the bot's `player_join` counted late (before 0 / after 1); counted by name now, presence control, server-announce plant red.
+Inventory 2-vs-1: **real server duplicate** — `seat` read the world after `welcome`, a start in between re-sent inventory + catch-up; gated on the welcome snapshot. 33/48 → 0/48.
+Ready-window count: a 400 ms settle budget, 1/48 → 0/48, message now self-measuring. Totals 34/144 → 0/144. Done-when EXIT 0 both; check.sh --changed HEAD --fast EXIT 0; lobby-start/lobby/quick-rejoin/rematch/round-end 5/5.

@@ -153,6 +153,11 @@ fn replay_meta() -> game_core::map::MapMeta {
 /// whole stream against the first mask was applying carves twice and missing the
 /// ones dropped from the queue. This fixture did exactly that.
 fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
+    replay_upto(map_init_b64, carves, u64::MAX)
+}
+
+/// [`replay`] cut at `upto`: carves above it are left out.
+fn replay_upto(map_init_b64: &str, carves: &[serde_json::Value], upto: u64) -> String {
     let bytes = game_server::codec::b64_decode(map_init_b64).expect("map_init decodes");
     let parts = game_server::codec::decode_map_init_parts(&bytes).expect("map_init decodes");
     let baked = parts.carve_seq as u64;
@@ -171,6 +176,7 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
     let mut ordered: Vec<&serde_json::Value> = carves
         .iter()
         .filter(|c| c["seq"].as_u64().unwrap_or(0) > baked)
+        .filter(|c| c["seq"].as_u64().unwrap_or(0) <= upto)
         .collect();
     ordered.sort_by_key(|c| c["seq"].as_u64().unwrap_or(0));
     for c in ordered {
@@ -197,6 +203,16 @@ fn replay(map_init_b64: &str, carves: &[serde_json::Value]) -> String {
         }
     }
     map.mask.hash_hex()
+}
+
+/// A client's mask **at the server's sequence** — the one comparison every
+/// client-to-server hash check here makes (T22.00F).
+///
+/// The server is read first and the inbox after it, and the inbox keeps filling
+/// in between, so the inbox may hold carves the server's hash does not. Cutting
+/// the replay at `server_seq` compares one moment with one moment.
+fn client_hash_at(map_init_b64: &str, carves: &[serde_json::Value], server_seq: u32) -> String {
+    replay_upto(map_init_b64, carves, u64::from(server_seq))
 }
 
 /// Start a room's match and wait for its world.
@@ -438,17 +454,25 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         a1 = max_of(&n1);
         a2 = max_of(&n2);
         if a1 >= u64::from(server_seq) && a2 >= u64::from(server_seq) {
-            let h = replay(b1, &n1);
+            // **Replayed up to the server's sequence, not up to whatever the
+            // inboxes hold** (T22.00F). The inboxes are read *after* the server,
+            // so a carve landing in between — the room still draining a loaded
+            // command queue after the last fire — is in both clients and not in
+            // the hash it is compared with. Traced under load: `server_seq 144
+            // a1 145 a2 145`, one carve above in each, and the replay cut at 144
+            // matched the server exactly. `the_comparison_is_cut_at_the_server_s_
+            // sequence` forces that carve.
+            let h = client_hash_at(b1, &n1, server_seq);
             assert_eq!(
                 h,
-                replay(b2, &n2),
+                client_hash_at(b2, &n2, server_seq),
                 "two clients diverged from each other at seq {server_seq}"
             );
             assert_eq!(
                 h, server_hash,
                 "clients agreed with each other but not with the server at \
-                 seq {server_seq} — genuinely different pixels, not a client \
-                 reading early"
+                 seq {server_seq} (ana at {a1}, bo at {a2}) — genuinely different \
+                 pixels, not a client reading early"
             );
             break;
         }
@@ -471,6 +495,105 @@ async fn two_clients_agree_on_the_mask_after_a_hundred_carves() {
         last["hash"].as_str().is_some(),
         "mask_checksum carries a hash field"
     );
+}
+
+/// The read race `two_clients_agree_on_the_mask_after_a_hundred_carves` lost once
+/// in 130 loaded runs (T22.00F), forced instead of waited for.
+///
+/// Read the server, then carve once more — the carve a loaded room lands after
+/// the fires have stopped — and let it reach the client. The client's inbox is
+/// now one carve past the hash it is compared with. Cut at the server's sequence
+/// it matches; the control shows the extra carve changed pixels, so the uncut
+/// replay is exactly the `clients agreed with each other but not with the server`
+/// failure. Red with `client_hash_at` replaying the whole inbox.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_comparison_is_cut_at_the_server_s_sequence() {
+    let s = spawn_server().await;
+    let addr = s.addr;
+    let room = s.room.clone();
+
+    let (c1, i1) = tokio::task::spawn_blocking(move || {
+        let evs = ["welcome", "map_init", "carve", "carve_capsule"];
+        let (c1, i1, r1) = connect(addr, &evs);
+        emit_when_ready(&c1, "join", serde_json::json!({ "name": "ana" }));
+        wait_for(&r1, "welcome", 15);
+        emit_when_ready(&c1, "start_with_bots", serde_json::json!({}));
+        wait_for(&r1, "map_init", 30);
+        emit_when_ready(&c1, "ready", serde_json::json!({}));
+        (c1, i1)
+    })
+    .await
+    .expect("client thread");
+
+    let (server_hash, server_seq) = room
+        .inspect(|w| (w.map.mask.hash_hex(), w.carve_seq()))
+        .await
+        .expect("room alive");
+
+    // One blast on the first column whose surface takes it (a pad or platform
+    // footprint refuses a carve, so the sequence moving is the proof it landed).
+    let late = room
+        .inspect(|w| {
+            let now = w.round_time;
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            for x in (mw / 8..mw - mw / 8).step_by(64) {
+                let Some(y) = (0..mh).find(|&y| w.map.mask.get(x, y)) else {
+                    continue;
+                };
+                let before = w.carve_seq();
+                w.explode_for_test(
+                    game_core::math::Vec2::new(x as f32, y as f32),
+                    game_core::items::registry::WEAPON_BAZOOKA,
+                    u8::MAX,
+                    now,
+                );
+                if w.carve_seq() > before {
+                    return w.carve_seq();
+                }
+            }
+            0
+        })
+        .await
+        .expect("room alive");
+    assert!(late > server_seq, "no carve landed after the server read");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let inbox = loop {
+        let now = carves(&i1);
+        if now
+            .iter()
+            .filter_map(|c| c["seq"].as_u64())
+            .max()
+            .unwrap_or(0)
+            >= u64::from(late)
+        {
+            break now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the late carve {late} never reached the client"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let b1 = got(&i1, "map_init")
+        .last()
+        .and_then(|m| m.as_str().map(str::to_string))
+        .expect("a map_init");
+
+    // The control: the late carve moved pixels, so reading past the server is a
+    // real mismatch and not a no-op this test would pass anyway.
+    assert_ne!(
+        replay(&b1, &inbox),
+        server_hash,
+        "the late carve changed nothing, so this proves nothing"
+    );
+    assert_eq!(
+        client_hash_at(&b1, &inbox, server_seq),
+        server_hash,
+        "the client's mask was compared past the server's sequence {server_seq} \
+         (inbox reaches {late})"
+    );
+    drop(c1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -759,11 +882,22 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
 
     // The control: without carves in the window this test passes against a server
     // that drops every one of them.
-    assert!(
-        carves2.len() >= 10,
-        "the joiner should have seen the fires during its ready window; got {}",
-        carves2.len()
-    );
+    //
+    // **Measured under load, not fixed** (T22.00F): 3/130 and 1/48 read 7–8 here.
+    // The count is taken when the stream has been quiet for the settle loop's
+    // 400 ms (8 x 50 ms), and a loaded room can stall that long mid-stream. So a
+    // short count also reports what arrived after the settle and the server's own
+    // sequence, which is what tells a stalled read from carves never sent.
+    if carves2.len() < 10 {
+        std::thread::sleep(Duration::from_secs(3));
+        let later = carves(&i2).len();
+        let server = room.inspect(|w| w.carve_seq()).await;
+        panic!(
+            "the joiner should have seen the fires during its ready window; got {} at \
+             the settle, {later} three seconds later, server carve_seq {server:?}",
+            carves2.len()
+        );
+    }
 
     // No hole in the sequence. This is the property, not a count: one missing
     // `seq` is what costs a full map resync.
@@ -815,7 +949,8 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             .filter_map(|c| c["seq"].as_u64())
             .max()
             .unwrap_or(0);
-        client_hash = replay(b2, &now);
+        // Cut at the server's sequence, for the reason the test above gives.
+        client_hash = client_hash_at(b2, &now, server_seq);
 
         if client_seq >= u64::from(server_seq) {
             break;

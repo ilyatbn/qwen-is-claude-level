@@ -619,7 +619,7 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
     let s = spawn_server(cfg).await;
     let addr = s.addr;
 
-    let (first_id, second_id, seen) = tokio::task::spawn_blocking(move || {
+    let (first_id, second_id, seen, own_changes, detail) = tokio::task::spawn_blocking(move || {
         // §E2: both seat into the lobby first — a client that arrives after the
         // match starts is skipped into a different room — and then it begins.
         //
@@ -635,7 +635,7 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
         // discriminates beats two where one is green for the wrong reason.
         let (a, a_in, a_rx) = join_and_ready(addr, "ana", &["inventory"]);
         let a_id = got(&a_in, "welcome")[0]["player_id"].as_i64().expect("id");
-        let (b, b_in, b_rx) = join_and_ready(addr, "bo", &["inventory"]);
+        let (b, b_in, b_rx) = join_and_ready(addr, "bo", &["inventory", "item_pickup", "death"]);
         let b_id = got(&b_in, "welcome")[0]["player_id"].as_i64().expect("id");
 
         a.emit("start_with_bots", serde_json::json!({}))
@@ -644,18 +644,41 @@ async fn a_joiner_never_receives_another_player_s_inventory() {
         wait_for(&b_rx, "inventory", 30);
 
         // Everything the second client was told about an inventory.
+        // Everything the second client was told about an inventory — read
+        // **before** the events that can legitimately cause one of its own, so
+        // every own-change that produced a counted `inventory` is also counted.
         let seen = got(&b_in, "inventory").len();
+        let own_changes = got(&b_in, "item_pickup")
+            .iter()
+            .filter(|e| e["player_id"].as_i64() == Some(b_id))
+            .count()
+            + got(&b_in, "death")
+                .iter()
+                .filter(|e| e["victim"].as_i64() == Some(b_id))
+                .count();
+        let detail = format!(
+            "{seen} inventory events, {own_changes} own pickups/deaths; inventories {:?}",
+            got(&b_in, "inventory")
+        );
         let _ = a.disconnect();
         let _ = b.disconnect();
-        (a_id, b_id, seen)
+        (a_id, b_id, seen, own_changes, detail)
     })
     .await
     .expect("client thread");
 
     assert_ne!(first_id, second_id, "the two clients got the same id");
-    assert_eq!(
-        seen, 1,
-        "the second client received {seen} inventory events; exactly one — its own — is correct"
+    // Exactly one at match start, plus one per change of its own that the wire
+    // also announced (a player seated on a pickup takes it on the first ticks).
+    // Both loadouts are identical, so a payload cannot be told apart by content:
+    // the count at both ends is the instrument. Two identical payloads at one
+    // tick with no pickup was T22.00F's seat-path duplicate (`session.rs::seat`).
+    // `<=`, not `==`: a pickup read after the inventories may not have had its
+    // `inventory` counted yet, and it is pushed first on the same socket, so it
+    // can only be counted in excess, never missed.
+    assert!(
+        seen >= 1 && seen <= 1 + own_changes,
+        "the second client was sent an inventory that was not its own change: {detail}"
     );
 }
 
