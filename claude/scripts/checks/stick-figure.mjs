@@ -16,6 +16,11 @@
  * (the control). (b) Pixels: the scene frozen, the live figure is stepped through `pose.ts` at run speed on the
  * spot (a treadmill: the pose moves, the world does not) and the leg patch changes over 8 drawn frames; stepped at
  * speed 0 it does not change at all (the control).
+ *
+ * ## 3. Identity: two seats' scarves differ on screen (T23.14D F12)
+ *
+ * Seats 0 and 1 side by side, each figure's box counted for its own seat's scarf hue and the other's. Control: both
+ * seat 0, and the right box reads seat 0 — the count is of the colour, not the place.
  */
 import { writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -149,5 +154,104 @@ export default async function ({ page, shot, log }) {
     window.__world.setActors(null)
     window.__game.freeze(false)
   })
+
+  // ------------------------------------------------------------ 3. identity: two seats' scarves differ on screen
+  // T23.14D F12. Skins are drawn as nothing (R8), so a player is told apart by the seat's scarf (R10) — read off the
+  // world canvas: seats 0 and 1 stood side by side (`showSkins` builds them through `PlayerView`, the path every scene
+  // draws players with); in each figure's box, the pixels of its own seat's hue and of the other's are counted.
+  // Control: both figures seat 0 — the right one's box then shows seat 0's hue, not seat 1's (the count reads the
+  // colour, not the place).
+  const scarves = await identity(page, [0, 1], 'shots/stick-figure-scarves.png')
+  const same = await identity(page, [0, 0])
+  log(`3. scarves, seats 0 | 1: left ${JSON.stringify(scarves[0])}, right ${JSON.stringify(scarves[1])}; control seats 0 | 0: right ${JSON.stringify(same[1])}`)
+  if (!(scarves[0].own >= SCARF_MIN && scarves[0].other <= SCARF_STRAY)) problems.push(`seat 0's figure does not show seat 0's scarf alone: ${JSON.stringify(scarves[0])}`)
+  if (!(scarves[1].own >= SCARF_MIN && scarves[1].other <= SCARF_STRAY)) problems.push(`seat 1's figure does not show seat 1's scarf alone: ${JSON.stringify(scarves[1])}`)
+  if (!(same[1].other >= SCARF_MIN && same[1].own <= SCARF_STRAY)) problems.push(`control: a seat-0 figure on the right did not read as seat 0: ${JSON.stringify(same[1])}`)
   if (problems.length) throw new Error(`stick-figure: ${problems.join('; ')}`)
+}
+
+/** §3: a figure's box must hold this many px of its seat's scarf hue, and at most this many of the other seat's. */
+const SCARF_MIN = 6
+const SCARF_STRAY = 1
+/** §3: a pixel "is" a seat's colour within this many degrees of its hue, at saturation and value over these. */
+const HUE_TOL = 20
+const SAT_MIN = 0.35
+const VAL_MIN = 0.25
+/** §3: the two figures stand this far either side of the runway spot (world px). */
+const APART = 60
+
+function hsv(r, g, b) {
+  const mx = Math.max(r, g, b)
+  const mn = Math.min(r, g, b)
+  const d = mx - mn
+  let h = 0
+  if (d > 0) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4
+  return { h: (h * 60 + 360) % 360, s: mx ? d / mx : 0, v: mx / 255 }
+}
+const hueGap = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b))
+
+/** Stand seats `pair` left and right of the runway, freeze, and count each box's seat-0 / seat-1 hue pixels. */
+async function identity(page, pair, save = null) {
+  const { colours, feetDy } = await page.evaluate(async () => {
+    const V = await import('/src/render/playerView.ts')
+    return { colours: [...V.SCARF_COLOURS], feetDy: window.__game.constants().PLAYER_H / 2 }
+  })
+  const hue = (hex) => hsv(parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)).h
+  const hues = [hue(colours[0]), hue(colours[1])]
+  const [cx, cy] = RUNWAY
+  await page.evaluate(([pair, cx, cy, apart]) => {
+    window.__game.place(cx, cy - 200)
+    window.__game.showSkins([{ skin: pair[0], x: cx - apart, y: cy }, { skin: pair[1], x: cx + apart, y: cy }])
+  }, [pair, cx, cy, APART])
+  const raf = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  await raf()
+  await page.evaluate(() => window.__game.freeze(true))
+  await raf()
+  const f = decode(await page.evaluate(() => window.__world.readFrame()))
+  await page.evaluate(() => {
+    window.__game.showSkins(null)
+    window.__game.freeze(false)
+  })
+  const k = f.width / f.view.w
+  if (save) {
+    // The frame the counts read, cropped round the pair (both boxes), at 4×.
+    const Z = 4
+    const x0 = Math.max(0, Math.floor((cx - APART - 40 - f.view.x) * k))
+    const x1 = Math.min(f.width, Math.ceil((cx + APART + 40 - f.view.x) * k))
+    const y0 = Math.max(0, Math.floor((cy - 50 - f.view.y) * k))
+    const y1 = Math.min(f.height, Math.ceil((cy + feetDy + 12 - f.view.y) * k))
+    const out = new PNG({ width: (x1 - x0) * Z, height: (y1 - y0) * Z })
+    for (let y = 0; y < out.height; y++) {
+      for (let x = 0; x < out.width; x++) {
+        const o = ((y0 + Math.floor(y / Z)) * f.width + x0 + Math.floor(x / Z)) * 4
+        const q = (y * out.width + x) * 4
+        for (let c = 0; c < 3; c++) out.data[q + c] = f.data[o + c]
+        out.data[q + 3] = 255
+      }
+    }
+    writeFileSync(join(root, save), PNG.sync.write(out))
+  }
+  return [-1, 1].map((side, i) => {
+    const x = cx + side * APART
+    const feet = cy + feetDy
+    const box = [x - 28, feet - 48, x + 28, feet + 4]
+    const n = { own: 0, other: 0 }
+    const seat = pair[i]
+    for (let y = 0; y < f.height; y++) {
+      const my = f.view.y + (y + 0.5) / k
+      if (my < box[1] || my >= box[3]) continue
+      for (let px = 0; px < f.width; px++) {
+        const mx = f.view.x + (px + 0.5) / k
+        if (mx < box[0] || mx >= box[2]) continue
+        const o = (y * f.width + px) * 4
+        const c = hsv(f.data[o], f.data[o + 1], f.data[o + 2])
+        if (c.s < SAT_MIN || c.v < VAL_MIN) continue
+        // `own` is the hue of the seat this box's figure is meant to wear (seat 1 on the right of the real pair).
+        const want = i === 1 ? 1 : 0
+        if (hueGap(c.h, hues[want]) <= HUE_TOL) n.own++
+        else if (hueGap(c.h, hues[1 - want]) <= HUE_TOL) n.other++
+      }
+    }
+    return { seat, ...n }
+  })
 }

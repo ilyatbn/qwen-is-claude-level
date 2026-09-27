@@ -146,6 +146,8 @@ export const CHECKS = [
   // frames — the cause it was parked for); unparked.
   { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242' },
   // T23.14: the stick figure — Level A on F7's pose boxes; running redraws and moves the legs, standing does not.
+  // T23.14D F12: and §3, identity — two seats side by side wear their own scarf colours on screen (control: two of
+  // seat 0 read as seat 0). This is the scarf check `skins-ingame`'s retirement note points at.
   { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
   // T23.19A: the figure on a turret, in a gate and over a pickup, photographed on the page (both canvases).
   { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337' },

@@ -30,6 +30,7 @@ void main(){
 }`
 
 const FLOATS = { position: 3, aUv: 2, aColor: 3 } as const
+const NONE: readonly ActorGlow[] = []
 type AttrName = keyof typeof FLOATS
 
 export class GlowLayer {
@@ -71,29 +72,44 @@ export class GlowLayer {
     this.geometry.setIndex(new BufferAttribute(idx, 1))
   }
 
-  /** Lay out every glow of this frame's actors; `maskH` for the y flip. */
+  /**
+   * Lay out every glow of this frame's actors; `maskH` for the y flip. T23.14D F13: counted and written in place — no
+   * per-frame list of glows or corner arrays.
+   */
   place(actors: readonly Actor[], maskH: number): void {
-    const glows: ActorGlow[] = actors.flatMap((a) => a.glows ?? [])
-    if (glows.length > this.capacity) this.grow(Math.max(glows.length, this.capacity * 2))
+    let count = 0
+    for (const a of actors) count += a.glows?.length ?? 0
+    if (count > this.capacity) this.grow(Math.max(count, this.capacity * 2))
     const at = (k: AttrName): Float32Array => (this.geometry.getAttribute(k) as BufferAttribute).array as Float32Array
     const pos = at('position')
     const uv = at('aUv')
     const col = at('aColor')
-    glows.forEach((s, n) => {
-      const h = s.size / 2
-      const corners: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
-      corners.forEach(([u, v], k) => {
-        const i = n * 4 + k
-        const w = toWorld(s.x + u * h, s.y + v * h, maskH)
-        pos.set([w.x, w.y, 0], i * 3)
-        uv.set([u, v], i * 2)
-        col.set([s.color[0] * s.alpha, s.color[1] * s.alpha, s.color[2] * s.alpha], i * 3)
-      })
-    })
+    let n = 0
+    for (const a of actors) {
+      for (const s of a.glows ?? NONE) {
+        const h = s.size / 2
+        for (let k = 0; k < 4; k++) {
+          // Corners (-1,-1) (1,-1) (1,1) (-1,1): clockwise in mask px, as `layer.ts`.
+          const u = k === 1 || k === 2 ? 1 : -1
+          const v = k >= 2 ? 1 : -1
+          const i = n * 4 + k
+          const w = toWorld(s.x + u * h, s.y + v * h, maskH)
+          pos[i * 3] = w.x
+          pos[i * 3 + 1] = w.y
+          pos[i * 3 + 2] = 0
+          uv[i * 2] = u
+          uv[i * 2 + 1] = v
+          col[i * 3] = s.color[0] * s.alpha
+          col[i * 3 + 1] = s.color[1] * s.alpha
+          col[i * 3 + 2] = s.color[2] * s.alpha
+        }
+        n++
+      }
+    }
     for (const k of Object.keys(FLOATS)) (this.geometry.getAttribute(k) as BufferAttribute).needsUpdate = true
-    this.geometry.setDrawRange(0, glows.length * 6)
-    this.drawn = glows.length
-    this.mesh.visible = glows.length > 0
+    this.geometry.setDrawRange(0, n * 6)
+    this.drawn = n
+    this.mesh.visible = n > 0
   }
 
   /**

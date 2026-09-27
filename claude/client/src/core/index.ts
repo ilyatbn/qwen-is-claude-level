@@ -474,10 +474,6 @@ export interface Constants {
   SMOKE_RADIUS: number
   FOV_SMOKE_MULT: number
   SMOKE_SHADER_SCALE: number
-  /** T22.04 — the thruster plume, drawing only. */
-  THRUSTER_PLUME_LENGTH: number
-  THRUSTER_PLUME_WIDTH: number
-  THRUSTER_PLUME_MIN_SPEED: number
   /** T22.09B — one radiation damage entry per this many seconds; the glow's pulse. */
   RADIATION_LOG_INTERVAL: number
   /** T22.10B — the breach vortex's drawing radii; drawing only (the pull is `env_at`). */
@@ -1367,6 +1363,23 @@ export class Core {
     const x = a[0] ?? 0
     const y = a[1] ?? 0
     return x === 0 && y === 0 ? null : { x, y }
+  }
+
+  /**
+   * T23.14D F5: the push that burns a full jet flame in this core's gravity mode, px/s² (`GameCore::full_thrust`:
+   * the pack's strongest axis at the mode's scale). Every client divides by the same number.
+   */
+  fullThrust(): number {
+    return this.inner.full_thrust()
+  }
+
+  /**
+   * T23.14D F4: what pulls a body at `(x, y)`, px/s² `[ax, ay]` — the field plus the mode's gravity on it (wings from
+   * `moveModBits`, the jetting scale when `jetting`). A remote's push is its acceleration less this (R3: no input on
+   * the wire).
+   */
+  bodyPullAt(x: number, y: number, moveModBits: number, jetting: boolean): Float32Array {
+    return this.inner.body_pull_at(x, y, moveModBits, jetting)
   }
 
   give(id: number, item: number, count: number): void {

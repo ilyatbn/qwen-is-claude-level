@@ -12,7 +12,7 @@
  * changed — none when nothing did. The painter is injected: vitest runs this with a fake one (no canvas in node).
  */
 import type { Actor } from '../scene'
-import { actorRect, cellKey, drawBaked, drawRole, hasExtras, snapOffsets, type Lighting, type PassOffsets, type Role } from './cell'
+import { actorRect, atAnchor, cellKey, drawBaked, drawRole, hasExtras, snapOffsets, type Lighting, type PassOffsets, type Role } from './cell'
 import type { G } from './draw'
 
 /** The atlas texture's side, px. */
@@ -75,13 +75,15 @@ export class ActorAtlas {
    * The cell for `a`, drawn now if its key has none; `L` is its passes this frame (a lit actor's cell is drawn at
    * their offsets — `cell.ts`). `null` if it cannot fit even in an empty atlas.
    */
-  cellFor(a: Actor, L: Lighting | null = null): Cell | null {
-    const key = cellKey(a, L)
+  cellFor(actor: Actor, L: Lighting | null = null, pixelPhase = false): Cell | null {
+    const key = cellKey(actor, L, pixelPhase)
     const have = this.cells.get(key)
     if (have) {
       have.lastUsed = this.frame
       return have
     }
+    // T23.14D F13: drawn at the anchor (`cell.ts::atAnchor`); the layer places the quad where the actor is.
+    const a = atAnchor(actor, pixelPhase)
     const r = actorRect(a)
     const w = r[2] - r[0]
     const h = r[3] - r[1]

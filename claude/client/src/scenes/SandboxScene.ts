@@ -302,7 +302,8 @@ export class SandboxScene extends Phaser.Scene {
       if (inv) {
         const ev = this.core.fire(0, this.simTime)
         const sel = inv.slots[inv.selected]
-        this.player?.firedWith(sel?.key)
+        // T23.14D F8: the figure swings or throws only for a use the sim accepted.
+        if (!ev.rejected) this.player?.firedWith(sel?.key)
         if (ev.hitscan?.length) {
           const first = ev.hitscan[0]
           if (first) this.cue('fire_smg', first.x0, first.y0)
@@ -1085,7 +1086,7 @@ export class SandboxScene extends Phaser.Scene {
         const inv = self.core.inventory(0)
         const sel = inv?.slots[inv.selected]
         const ev = self.core.fire(0, self.simTime)
-        self.player?.firedWith(sel?.key)
+        if (!ev.rejected) self.player?.firedWith(sel?.key)
         if (ev.hitscan?.length) {
           for (const s of ev.hitscan) self.world.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
           const first = ev.hitscan[0]
@@ -1289,6 +1290,7 @@ export class SandboxScene extends Phaser.Scene {
             boots: false,
             space: false,
             thrust: null,
+            thrustMax: self.core.fullThrust(),
             // T22.19: a line-up of skins, posed upright.
             tilt: 0,
           })
@@ -1560,6 +1562,7 @@ export class SandboxScene extends Phaser.Scene {
         space: this.gravity === SPACE_GRAVITY,
         // T22.04C: the push the mirror stepped with, not the travel.
         thrust: this.core.thrustAt(0),
+        thrustMax: this.core.fullThrust(),
       })
       this.crosshair.update(body.x, body.y, aim)
       // `watchPoint` is the e2e `watch` hook's, and only that (T21.31).

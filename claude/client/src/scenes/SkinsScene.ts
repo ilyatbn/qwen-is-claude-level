@@ -187,6 +187,7 @@ export class SkinsScene extends Phaser.Scene {
       iframes: false,
       space: false,
       thrust: null,
+      thrustMax: 0,
       // T22.19: the picker shows the figure upright.
       tilt: 0,
     })

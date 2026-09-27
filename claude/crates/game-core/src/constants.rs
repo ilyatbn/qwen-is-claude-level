@@ -241,18 +241,8 @@ pub const SPACE_JUMP_FUEL: f32 = JETPACK_DRAIN * SPACE_JUMP_BURN_SECONDS;
 // The escape ceiling `T22.11` feared this number would set is against thrust
 // *acceleration* (`M22-RULINGS` R46, `SPACE_WELL_ACCEL_MAX`), not against fuel.
 
-/// T22.04: the plume's length from the edge of the body outward, px. Longer than
-/// the body, so the burst reads past the head it starts behind (the drawn sprite
-/// overshoots `PLAYER_H` and covers the nozzle end).
-pub const THRUSTER_PLUME_LENGTH: f32 = PLAYER_H * 1.4;
-/// T22.04: the plume's width at its base, px — one body width, so a sideways
-/// plume is no taller than the legs it comes out beside.
-pub const THRUSTER_PLUME_WIDTH: f32 = PLAYER_W;
-/// T22.04: below this speed, px/s, velocity has no direction worth drawing and
-/// the plume points down — see `thrusterPlume-math.ts::plumeDir`. One tick of the
-/// weakest thrust (`SPACE_THRUST_DOWN * SIM_DT` = 7.5 px/s in space since T22.20;
-/// 15 under gravity) clears it.
-pub const THRUSTER_PLUME_MIN_SPEED: f32 = 1.0;
+// T23.14D F14: `THRUSTER_PLUME_LENGTH` / `_WIDTH` / `_MIN_SPEED` (T22.04's Phaser plume) retired with their last
+// reader — the plume went in T23.14B (the jet is the figure's own flame); `thrusters` keeps its own speed floor.
 
 // ---------------------------------------------------------------------------
 // Aiming

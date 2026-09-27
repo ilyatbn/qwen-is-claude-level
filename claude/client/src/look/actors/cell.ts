@@ -62,7 +62,7 @@ export interface Lighting {
 /** Does `a` draw anything in a fixed colour in its rim and fill passes (`draw.ts`'s `extras` sites)? */
 export function hasExtras(a: Actor): boolean {
   if (!a.lit) return false
-  return (a.kind === 'stick' && !!a.opts.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider'
+  return (a.kind === 'stick' && !!a.opts.jet) || (a.kind === 'figure' && !!a.opts.J?.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider'
 }
 
 /** The scene lambdas' rim-pass options (`f_scene.js` / `variant_F4.js`: `rc ? … : …`). */
@@ -171,10 +171,40 @@ export function estimateBox(a: Actor): Box {
 }
 
 /**
- * Everything the drawing depends on — and nothing the light does. The sub-pixel phase of the anchor is part
- * of it (at 1/8 px): the drawing is rasterised at that phase, the quad placed at whole px.
+ * T23.14D F13: **where an actor stands is not part of its drawing.** A cell is drawn with its actor's anchor at
+ * `CELL_ANCHOR` (a multiple of `CELL_ALIGN`), and the layer moves the quad to where the actor is (`layer.ts`), the
+ * sub-pixel fraction sampled bilinearly. The key held the position to 1/8 px, so a figure rising on its jet or falling
+ * in one pose was a new cell every frame: 120 frames of a jet climb were 120 cells for 39 drawings, now 39.
+ *
+ * **The look-lab keeps the mockup's pixel phase** (`pixelPhase`, `SceneDescription.actorPixelPhase`): the cell is
+ * drawn at the actor's whole-pixel position mod `CELL_ALIGN`, as before. Measured: at one anchor, F4's cast went from
+ * 0.1187 to 0.2834 mean ΔE on its actor boxes (max 0.1761) — Chrome dithers a Canvas2D gradient (a halo, a contact
+ * shadow, a flame) on a pattern fixed to the canvas's pixel grid, and the mockup's canvas is the screen. With the
+ * phase kept, the same climb is 114 cells of 120 frames, so the game does not keep it: its gradients dither on
+ * another phase than the mockup's would, 1–4 levels at alternate pixels, which no player compares.
+ * `atAnchor(a, pixelPhase)` is `a` moved to its cell anchor; its `box` and a smoke's points move with it.
  */
-export function cellKey(a: Actor, L: Lighting | null): string {
+export const CELL_ANCHOR = 0
+export function atAnchor(a: Actor, pixelPhase = false): Actor {
+  const at = (v: number): number => {
+    if (!pixelPhase) return CELL_ANCHOR
+    const w = Math.round(v)
+    return CELL_ANCHOR + w - Math.floor(w / CELL_ALIGN) * CELL_ALIGN
+  }
+  const dx = at(a.x) - a.x
+  const dy = at(a.y) - a.y
+  if (dx === 0 && dy === 0) return a
+  const out: Actor = { ...a, x: a.x + dx, y: a.y + dy, box: a.box ? [a.box[0] + dx, a.box[1] + dy, a.box[2] + dx, a.box[3] + dy] : null }
+  if (a.kind === 'smoke' && a.opts.pts) out.opts = { ...a.opts, pts: a.opts.pts.map(([x, y]): [number, number] => [x + dx, y + dy]) }
+  return out
+}
+
+/**
+ * Everything the drawing depends on — and nothing the light does, nor (T23.14D F13) where the actor stands: the
+ * key is `a`'s at the anchor (`atAnchor`). The pass offsets are part of it at 1/8 px (the masks are drawn at them).
+ */
+export function cellKey(actor: Actor, L: Lighting | null, pixelPhase = false): string {
+  const a = atAnchor(actor, pixelPhase)
   const r = actorRect(a)
   const q = (v: number): number => Math.round(v * 8) / 8
   const offs = a.lit && L ? L.offs.map(([x, y]) => [q(x), q(y)]) : null

@@ -22,7 +22,7 @@
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { boxesDeltaE, loadPng, thresholdsFor } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 import { chromePath, libDir } from '../lib/browser-args.mjs'
@@ -32,6 +32,7 @@ import { decode } from './figure-frames.mjs'
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(join(root, 'client/package.json'))
 const { chromium } = require('playwright-core')
+const { PNG } = require('pngjs')
 const RAW = JSON.parse(readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
 
 /** The scenes whose flames have a cast-only reference, and that reference. */
@@ -53,6 +54,24 @@ const MIN_ROCK = 150
 /** The burn: placed this far above the ground, and the light's near disc searched this far above it for rock. */
 const HOVER = 20
 const RISE = 60
+
+/** A failing box, looked at: lab | reference | |difference| ×8, each at 3×. */
+function cropSheet(a, b, [x0, y0, x1, y1]) {
+  const w = x1 - x0
+  const h = y1 - y0
+  const Z = 3
+  const out = new PNG({ width: 3 * w * Z, height: h * Z })
+  for (let y = 0; y < h * Z; y++) {
+    for (let x = 0; x < 3 * w * Z; x++) {
+      const k = Math.floor(x / (w * Z))
+      const o = ((y0 + Math.floor(y / Z)) * a.width + x0 + Math.floor((x % (w * Z)) / Z)) * 4
+      const p = (y * out.width + x) * 4
+      for (let c = 0; c < 3; c++) out.data[p + c] = k === 0 ? a.data[o + c] : k === 1 ? b.data[o + c] : Math.min(255, 8 * Math.abs(a.data[o + c] - b.data[o + c]))
+      out.data[p + 3] = 255
+    }
+  }
+  return PNG.sync.write(out)
+}
 
 const luma = (d, o) => 0.2126 * d[o] + 0.7152 * d[o + 1] + 0.0722 * d[o + 2]
 
@@ -88,7 +107,18 @@ export default async function ({ page, shot, log }) {
       const off = await lab(own, origin, id, 'actor-jet-off')
       const dOff = boxesDeltaE(off.frame, ref, boxes)
       log(`1. ${id} flame boxes ${JSON.stringify(boxes)}: deltaE_actors ${d.toFixed(4)} (max ${T.actors.threshold}) ${d <= T.actors.threshold ? 'ok' : 'FAIL'}; control actor-jet-off ${dOff.toFixed(4)} ${dOff > T.actors.threshold ? 'fails, as it must' : 'PASSES — the boxes cannot see the flame'}`)
-      for (const b of boxes) log(`   box ${JSON.stringify(b)}: ${boxesDeltaE(on.frame, ref, [b]).toFixed(4)} (jet off ${boxesDeltaE(off.frame, ref, [b]).toFixed(4)})`)
+      // T23.14D F9: each flame box is gated on its own, with its own must-fail — a mean over the scene's flame boxes let
+      // F7's space flame (0.1909) ride under the max on its jet neighbour (0.1396).
+      for (const b of boxes) {
+        const db = boxesDeltaE(on.frame, ref, [b])
+        const dbOff = boxesDeltaE(off.frame, ref, [b])
+        log(`   box ${JSON.stringify(b)}: ${db.toFixed(4)} ${db <= T.actors.threshold ? 'ok' : 'FAIL'} (jet off ${dbOff.toFixed(4)} ${dbOff > T.actors.threshold ? 'fails, as it must' : 'PASSES'})`)
+        if (!(db <= T.actors.threshold)) {
+          problems.push(`${id}: Level A on flame box ${JSON.stringify(b)} ${db.toFixed(4)} > ${T.actors.threshold}`)
+          writeFileSync(join(root, `shots/jet-flame-${id}-box-${b.join('_')}.png`), cropSheet(on.frame, ref, b))
+        }
+        if (!(dbOff > T.actors.threshold)) problems.push(`${id}: control actor-jet-off passed on box ${JSON.stringify(b)} (${dbOff.toFixed(4)})`)
+      }
       if (!(d <= T.actors.threshold)) problems.push(`${id}: Level A on the flame boxes ${d.toFixed(4)} > ${T.actors.threshold}`)
       if (!(dOff > T.actors.threshold)) problems.push(`${id}: control actor-jet-off passed (${dOff.toFixed(4)})`)
     }

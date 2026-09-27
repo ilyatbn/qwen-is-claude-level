@@ -12,6 +12,7 @@
  */
 import { SH, TH, type Pose } from './figure'
 import { WEAPONS } from './weapons'
+import { deriveAnimState, type AnimState } from '../../render/playerView-math'
 
 type P = [number, number]
 
@@ -34,7 +35,8 @@ export const MELEE_S = 0.28
 export const THROW_S = 0.3
 export const HIT_S = 0.25
 /** The aim a cell is drawn at is rounded to this (rad, ½°): finer than any aim a player can tell apart, coarse
- * enough that a still mouse is a still picture (a redraw per quantum, not per frame). */
+ * enough that a still mouse is a still picture (a redraw per quantum, not per frame). T23.14D F13 measured a 1° quantum
+ * in a 6-player match: redraws 1156 → 1137 in 5 s — a bot's aim moves more than a degree a frame — so it stays ½°. */
 export const AIM_QUANTUM = Math.PI / 360
 /**
  * T23.14B, the jet flame: its flicker — the flame's length varies by up to this fraction, from two incommensurate
@@ -61,11 +63,28 @@ export const STEP_REACH = 5.5
 const STEP_LIFT = 3
 /** Standing, a foot this far (figure units) from its stance spot steps back to it. */
 const SETTLE = 1.2
+/**
+ * T23.14D F6: a step taken at rest (settling back to the stance, or a stride the body stopped in the middle of) is
+ * clocked by time, not by distance — the body covers none — and takes this long, s: a walking step's length at walk
+ * speed (`2 · STEP_REACH · FIGURE_SCALE` px at 120 px/s ≈ 0.1 s), a little slower.
+ */
+export const SETTLE_STEP_S = 0.12
+/**
+ * T23.14D F13: a drawn leg's or arm's angle is rounded to this (rad), and the hip's height to `HIP_QUANTUM` (figure
+ * units), so a figure whose pose barely moves is the same picture — and the same atlas cell — frame after frame. A
+ * foot moves at most `(TH + SH) · LEG_QUANTUM / 2` units for it (0.07 units, 0.08 px at `FIGURE_SCALE`).
+ */
+export const LEG_QUANTUM = 0.01
+export const HIP_QUANTUM = 0.05
 
-/** One of the walker's feet: planted at x, or stepping from `from` to `to` as the body covers `span` px. */
+/**
+ * One of the walker's feet: planted at x, or stepping from `from` to `to` — as the body covers `span` px from `start`
+ * (a stride), or over `SETTLE_STEP_S` (`t`, its progress 0…1: a step at rest) — lifted `lift` units at mid-step, set
+ * when the step starts (a stride stopped half-way keeps its height rather than dropping with the speed).
+ */
 interface Foot {
   x: number
-  step: { from: number; to: number; start: number; span: number } | null
+  step: { from: number; to: number; start: number; span: number; t: number | null; lift: number } | null
 }
 
 export type Action = 'melee' | 'throw' | 'hit'
@@ -80,13 +99,20 @@ export interface FigureInputs {
   grounded: boolean
   jetpack: boolean
   space: boolean
-  /** The push applied (space), px/s² — or null: velocity stands in (a remote). */
+  /**
+   * The pack's push, px/s² — the one applied (the local player, `Core.thrustAt`) or estimated (a remote:
+   * `push.ts::PushEstimate`, its acceleration less the pull) — or null: none known. Space turns the body against it;
+   * its size sets the flame's length. T23.14D F4: velocity no longer stands in (braking drew an accelerating flame).
+   */
   thrust: { x: number; y: number } | null
   weapon: string | null
   boots: boolean
   wings: boolean
-  /** The push that burns a full flame (px/s²; the sim's strongest thrust); a weaker `thrust` burns a shorter one. */
-  thrustMax?: number
+  /**
+   * The push that burns a full flame (px/s²; `Core.fullThrust`, the same number on every client — T23.14D F5); a
+   * weaker `thrust` burns a shorter one, down to `JET_MIN_FRACTION`, which is also what a burn with no known push draws.
+   */
+  thrustMax: number
   /** Walk speed (the sim's `WALK_SPEED`): what "full stride" and the scarf's full trail are measured against. */
   walkSpeed: number
   /** The ground at world dx px from the feet (+ right), px relative to the feet line (+ down), or null (none near). */
@@ -120,6 +146,8 @@ export interface Drawn {
   helmet: boolean
   /** The contact shadow is for grounded figures only (`lit()`'s shadow; F7 drops it for jump/jet/fall). */
   shadow: boolean
+  /** T23.14D F8: the animation state the pose was chosen by (`deriveAnimState`, the one derivation). */
+  state: AnimState
 }
 
 const clamp = (v: number, a: number, b: number): number => Math.min(b, Math.max(a, v))
@@ -174,7 +202,7 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
   st.jetT += inp.dt
   // The flame's length at full push, flickering (T23.14B): `jet(len)` for a pose that burns.
   const wob = 0.5 * (Math.sin(st.jetT * 2 * Math.PI * FLICKER_HZ[0]) + Math.sin(st.jetT * 2 * Math.PI * FLICKER_HZ[1] + 1.3))
-  const strength = inp.thrust && inp.thrustMax ? clamp(Math.hypot(inp.thrust.x, inp.thrust.y) / inp.thrustMax, JET_MIN_FRACTION, 1) : 1
+  const strength = inp.thrust && inp.thrustMax > 0 ? clamp(Math.hypot(inp.thrust.x, inp.thrust.y) / inp.thrustMax, JET_MIN_FRACTION, 1) : JET_MIN_FRACTION
   const jet = (len: number): number => q(len * strength * (1 + FLICKER * wob), JET_QUANTUM)
   // The scarf follows the motion with a lag.
   const k = clamp(Math.abs(inp.vx) / inp.walkSpeed, 0, 1)
@@ -191,13 +219,18 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
   let helmet = inp.space
   if (!inp.space || !inp.alive) st.rot = 0
   let shadow = inp.grounded
-  if (!inp.alive) {
+  // T23.14D F8: the state is `deriveAnimState`'s — the table `PlayerView.state` reports — and the pose follows it.
+  const state = deriveAnimState({ alive: inp.alive, grounded: inp.grounded, jetpack: inp.jetpack, vx: inp.vx, vy: inp.vy })
+  const walking = inp.groundDy && inp.x !== undefined ? { x: inp.x, groundDy: inp.groundDy } : null
+  // T23.14D F6: a figure off the ground has no planted feet: they are placed afresh at the stance where it lands.
+  if (!walking || (state !== 'walk' && state !== 'idle')) st.feet = null
+  if (state === 'dead') {
     J = { legs: [[0.25, -0.35], [0.6, 0.65]], arms: [[1.9, 0.7], [0.35, -0.5]], scarf: [0, -0.6], wave: 0.3, toe: [0.6, 1.4], boots: inp.boots, wings: false, weapon: null }
     rot = -1.5
     shadow = false
   } else if (inp.space) {
     // F7 `space`: the body leans along the push (its feet away from it); a coasting body floats upright.
-    const push = inp.thrust ?? (inp.jetpack ? { x: inp.vx, y: inp.vy } : null)
+    const push = inp.thrust
     const on = inp.jetpack && !!push && Math.hypot(push.x, push.y) > 1e-3
     J = { ...base, legs: [[0.06, 0.12], [-0.06, 0.05]], jet: on ? jet(SPACE_JET_LEN) : 0, scarf: on ? [0.7, 0.8] : scarf, wave: 2.8 }
     // The turn is applied in screen space before the facing flip (`figure`): the head leans into the push on screen
@@ -213,14 +246,21 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
     rot = q(st.rot, 0.02)
     helmet = true
     shadow = false
-  } else if (inp.jetpack) {
+  } else if (state === 'jetpack') {
     J = { ...base, legs: [[0.28, 0.5], [-0.12, 0.35]], jet: jet(JET_LEN), wave: 2 }
     shadow = false
-  } else if (!inp.grounded) {
-    J = inp.vy < 0 ? { ...base, legs: [[1.25, 1.9], [0.55, 1.5]], lean: -0.05 } : { ...base, legs: [[0.7, -0.25], [-0.75, 0.45]], lean: -0.1, arms: W ? [] : [[2.7, 0.5]] }
+  } else if (state === 'jump' || state === 'fall') {
+    J = state === 'jump' ? { ...base, legs: [[1.25, 1.9], [0.55, 1.5]], lean: -0.05 } : { ...base, legs: [[0.7, -0.25], [-0.75, 0.45]], lean: -0.1, arms: W ? [] : [[2.7, 0.5]] }
     shadow = false
-  } else if (st.landT < LAND_S) {
+  } else if (st.landT < LAND_S && !walking) {
     J = { ...base, hipY: -8.4, legs: [[1.05, 1.95], [-0.15, 1.35]], lean: 0.38 }
+  } else if (st.landT < LAND_S && walking) {
+    // T23.14D F6: the landing crouch on the walker — F7's `land` hip (−8.4) and lean, rising back to the stand's over
+    // `LAND_S`, the feet planted at the stance where the body landed and the knees solved to them (F7's fixed land legs
+    // then a cut to the stand was a pop at both ends).
+    const u = 1 - st.landT / LAND_S
+    const stand: Pose = { ...base, legs: [blendLeg(0, 0, 0), blendLeg(Math.PI, 0, 1)], hipY: mix(-13, -8.4, u), lean: 0.38 * u, wave: 0.8 }
+    J = walk(st, stand, walking.x, 0, face, s, 0, walking.groundDy, inp.dt)
   } else {
     // Stand ↔ run by speed. Without a ground (the tests' FK, a scene with no probe) F7's leg curve by phase; with one,
     // the stepping walker (`walk`): feet planted on the ground where they land, stepping ahead as the body passes.
@@ -229,8 +269,7 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
     const legs: [number, number][] = [blendLeg(ph, k, 0), blendLeg(ph + Math.PI, k, 1)]
     J = { ...base, legs, lean: 0.2 * k, hipY: -13 + k * (0.55 * Math.abs(Math.cos(ph)) - 0.2), wave: k > 0 ? q(1.6 * Math.sin(ph * 2), 0.1) : 0.8 }
     if (!W) J.arms = [[-0.7 * Math.sin(ph) * k - 0.1, 1.1], [0.7 * Math.sin(ph) * k - 0.1, 1.1]]
-    if (inp.groundDy && inp.x !== undefined) J = walk(st, J, inp.x, inp.vx, face, s, k, inp.groundDy)
-    else st.feet = null
+    if (walking) J = walk(st, J, walking.x, inp.vx, face, s, k, walking.groundDy, inp.dt)
   }
   if (!W && !J.arms && inp.alive) J.arms = [[0.3, 0.5], [-0.2, 0.4]]
   // Actions play over the pose.
@@ -244,7 +283,17 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
       J = { ...J, lean: -0.45, headDX: -0.6, aim: 1.0 }
     }
   }
-  return { J: { ...J, helmet }, face, rot, helmet, shadow }
+  return { J: quantize({ ...J, helmet }), face, rot, helmet, shadow, state }
+}
+
+/** T23.14D F13: the pose's continuous angles and the hip rounded (`LEG_QUANTUM`, `HIP_QUANTUM`). */
+function quantize(J: Pose): Pose {
+  const qa = (l: [number, number][]): [number, number][] => l.map(([a, b]) => [q(a, LEG_QUANTUM), q(b, LEG_QUANTUM)])
+  const out: Pose = { ...J, legs: qa(J.legs) }
+  if (J.arms) out.arms = qa(J.arms)
+  if (J.hipY !== undefined) out.hipY = q(J.hipY, HIP_QUANTUM)
+  if (J.lean !== undefined) out.lean = q(J.lean, LEG_QUANTUM)
+  return out
 }
 
 
@@ -254,50 +303,72 @@ const restX = (i: number): number => footOf(STAND[i]![0], STAND[i]![1])[0]
 /**
  * The stepping walker. Each foot is planted at a world x — where it landed — and stays there: it cannot slide. When
  * the body has passed a planted foot by `STEP_REACH` and the other foot is down, that foot steps: it lifts and swings
- * to `STEP_REACH` ahead of the body, arriving as the body covers the same distance. Standing, a foot away from its
- * stance spot steps back to it. Feet sit on the ground under them (`groundDy`); the legs are solved by `reach` with
- * the hip dropped where a foot is too far below to reach (a downhill foot).
+ * to `STEP_REACH` ahead of the body, arriving as the body covers the same distance. Feet sit on the ground under them
+ * (`groundDy`); the legs are solved by `reach` with the hip dropped where a foot is too far below to reach (a downhill
+ * foot).
+ *
+ * T23.14D F6 — nothing teleports: standing, a foot away from its stance spot **steps** back to it (lifted, over
+ * `SETTLE_STEP_S`), and a stride the body stops in the middle of finishes the same way from where the foot is; a foot
+ * with no ground under it (a ledge's edge) **hangs** — the pose's own leg (`J.legs`, forward kinematics) — and is
+ * pinned where it hangs, so it comes down where it is when ground is under it again.
  */
-function walk(st: FigureState, J: Pose, x: number, vx: number, face: number, s: number, k: number, groundDy: (dxPx: number) => number | null): Pose {
+function walk(st: FigureState, J: Pose, x: number, vx: number, face: number, s: number, k: number, groundDy: (dxPx: number) => number | null, dt: number): Pose {
   const u = s // px per figure unit
+  const lean = J.lean ?? 0
+  const rest = (i: number): number => x + restX(i) * u * face
   if (!st.feet || st.feet.some((f) => Math.abs(f.x - x) > 4 * STEP_REACH * u)) {
-    st.feet = [0, 1].map((i) => ({ x: x + restX(i) * u * face, step: null }))
+    st.feet = [0, 1].map((i) => ({ x: rest(i), step: null }))
   }
   const feet = st.feet
   const dir = Math.sign(vx) || 0
-  // Advance steps in flight by the distance covered.
-  for (const f of feet) {
-    if (!f.step) continue
-    const t = Math.min(1, Math.abs(x - f.step.start) / f.step.span)
-    f.x = f.step.from + (f.step.to - f.step.from) * t
-    if (t >= 1) f.step = null
-  }
-  const stepping = feet.some((f) => f.step)
-  if (!stepping) {
-    if (k > 0.05 && dir !== 0) {
+  const moving = k > 0.05 && dir !== 0
+  const progress = (f: Foot): number => (f.step ? (f.step.t ?? Math.min(1, Math.abs(x - f.step.start) / f.step.span)) : 0)
+  // Advance steps in flight: a stride by the distance covered — or, the body stopped under it, by time from here.
+  feet.forEach((f, i) => {
+    const step = f.step
+    if (!step) return
+    if (step.t === null && !moving) {
+      // The body stopped under a stride: the foot finishes as the second half of a step at rest from where it is (at
+      // its height) to its stance spot — re-based to half-way, so it neither jumps nor lands on the stride's far end.
+      const h = Math.sin(Math.PI * progress(f)) * step.lift
+      const to = rest(i)
+      f.step = { from: 2 * f.x - to, to, start: x, span: 1, t: 0.5, lift: h }
+    } else if (step.t !== null) step.t = Math.min(1, step.t + dt / SETTLE_STEP_S)
+    const p = progress(f)
+    f.x = f.step!.from + (f.step!.to - f.step!.from) * p
+    if (p >= 1) f.step = null
+  })
+  if (!feet.some((f) => f.step)) {
+    if (moving) {
       // The foot furthest behind (in the travel direction) steps, once the body has passed it by STEP_REACH.
       const behind = feet.reduce((a, b) => ((a.x - x) * dir < (b.x - x) * dir ? a : b))
       if ((behind.x - x) * dir < -STEP_REACH * u) {
         const span = 2 * STEP_REACH * u
-        behind.step = { from: behind.x, to: x + dir * (STEP_REACH * u + span), start: x, span }
+        behind.step = { from: behind.x, to: x + dir * (STEP_REACH * u + span), start: x, span, t: null, lift: STEP_LIFT * Math.max(k, 0.3) }
       }
     } else {
-      // At rest: a foot off its stance spot steps back to it (one at a time, over a short span of zero travel).
-      const i = feet.findIndex((f, j) => Math.abs(f.x - (x + restX(j) * u * face)) > SETTLE * u)
-      if (i >= 0) feet[i]!.x = x + restX(i) * u * face
+      // At rest: a foot off its stance spot steps back to it, one at a time.
+      const i = feet.findIndex((f, j) => Math.abs(f.x - rest(j)) > SETTLE * u)
+      if (i >= 0) feet[i]!.step = { from: feet[i]!.x, to: rest(i), start: x, span: 1, t: 0, lift: STEP_LIFT * 0.3 }
     }
   }
-  const lean = J.lean ?? 0
   let hy = J.hipY ?? -13
   const R = TH + SH - 0.25
-  const targets = feet.map((f) => {
-    const fx = ((f.x - x) * face) / u
-    const g = groundDy((f.x - x))
-    const lift = f.step ? Math.sin(Math.PI * Math.min(1, Math.abs(x - f.step.start) / f.step.span)) * STEP_LIFT * Math.max(k, 0.3) : 0
-    return [fx, (g ?? 0) / u - lift] as P
+  const targets = feet.map((f, i) => {
+    const g = groundDy(f.x - x)
+    if (g === null) {
+      // No ground under it: the pose's own leg, and the foot pinned where that puts it.
+      const [a, b] = J.legs[i]!
+      f.x = x + footOf(a - lean, b)[0] * u * face
+      f.step = null
+      return null
+    }
+    const lift = f.step ? Math.sin(Math.PI * progress(f)) * f.step.lift : 0
+    return [((f.x - x) * face) / u, g / u - lift] as P
   })
-  for (const t of targets) hy = Math.max(hy, t[1] - Math.sqrt(Math.max(0, R * R - t[0] * t[0])))
-  const legs = targets.map((t) => {
+  for (const t of targets) if (t) hy = Math.max(hy, t[1] - Math.sqrt(Math.max(0, R * R - t[0] * t[0])))
+  const legs = targets.map((t, i) => {
+    if (!t) return J.legs[i]!
     const r = reach([t[0], t[1] - hy])
     return [r[0] + lean, r[1]] as [number, number]
   })

@@ -117,6 +117,10 @@ import { VortexFx } from '../render/vortexFx'
 import { BlackHoleFx } from '../render/blackHoleFx'
 import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
+import { PushEstimate } from '../look/actors/push'
+
+/** T23.14D F4: the pull handed to a remote's push estimate while it is not jetting (unread then). */
+const NO_PULL = [0, 0] as const
 
 interface RemoteView {
   view: PlayerView
@@ -372,6 +376,8 @@ export class GameScene extends Phaser.Scene {
    */
   private localTrack: TiltTrack | null = null
   private readonly remoteTilts = new Map<number, TiltTrack>()
+  /** T23.14D F4: each remote's jet push, estimated from its motion (its input is not on the wire). */
+  private readonly remotePushes = new Map<number, PushEstimate>()
   private get localTilt(): number {
     return this.localTrack?.theta ?? 0
   }
@@ -703,6 +709,7 @@ export class GameScene extends Phaser.Scene {
     // T22.19: a new round's figures start upright.
     this.localTrack = null
     this.remoteTilts.clear()
+    this.remotePushes.clear()
     this.frameDt = 0
     this.fuel = 0
     this.fuelShown = 0
@@ -1126,6 +1133,8 @@ export class GameScene extends Phaser.Scene {
       this.conn.on(ev, (raw) => {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
+        // T23.14D F8: a thrown weapon leaving a hand throws its figure — the server's word, anyone's.
+        if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'])
         if (ev === 'carve' || ev === 'carve_capsule') {
           this.minimap?.setTerrainDirty()
           // The terrain re-bake needs nothing here: `WorldView.update()` drains the core's dirty set
@@ -1227,6 +1236,7 @@ export class GameScene extends Phaser.Scene {
       const x = Number(p['x'] ?? 0)
       const y = Number(p['y'] ?? 0)
       this.observed.swings++
+      this.swingOf(p['owner'], p['weapon'])
       this.fx.addSwing(
         x,
         y,
@@ -1393,11 +1403,9 @@ export class GameScene extends Phaser.Scene {
         return
       }
       this.conn.sendFire()
-      this.localView?.firedWith(this.slots[this.selectedSlot]?.key)
     })
     this.input.keyboard?.on('keydown-F', () => {
       this.conn.sendFire()
-      this.localView?.firedWith(this.slots[this.selectedSlot]?.key)
     })
 
     // Slot selection and item use. `Connection` has had `sendSelectSlot` and
@@ -1880,6 +1888,18 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * T23.14D F8: the figure of `owner` swings or throws `weapon` (`WEAPON_KEYS` id) — driven by the server's `melee`
+   * and `projectile_spawn`, which every client receives, so a remote's swing plays and your own plays only for a
+   * swing the server accepted (it played on the click, refused or not). A gun changes nothing (`firedWith`).
+   */
+  private swingOf(owner: unknown, weapon: unknown): void {
+    if (typeof owner !== 'number' || typeof weapon !== 'number') return
+    const key = WEAPON_KEYS[weapon]
+    const view = owner === this.me ? this.localView : this.remotes.get(owner)?.view
+    view?.firedWith(key)
+  }
+
   private dropRemote(id: number): void {
     const r = this.remotes.get(id)
     if (r) {
@@ -1887,6 +1907,7 @@ export class GameScene extends Phaser.Scene {
       this.remotes.delete(id)
     }
     this.remoteTilts.delete(id)
+    this.remotePushes.delete(id)
     this.scores.delete(id)
   }
 
@@ -2087,8 +2108,6 @@ export class GameScene extends Phaser.Scene {
     )
     const shots = this.repeatFire.update({ dt, held, ...source })
     for (let i = 0; i < shots; i++) this.conn.sendFire()
-    // T23.14: a held melee weapon swings its figure (the first request is the press's, above).
-    if (shots > 0) this.localView?.firedWith(sel?.key)
   }
 
   override update(_time: number, delta: number): void {
@@ -2215,7 +2234,8 @@ export class GameScene extends Phaser.Scene {
       this.localView.overPhaser = this.overPhaserLayer(rp.x, rp.y)
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         tilt: this.localTilt,
-        alive: true,
+        // T23.14D F8: the server's word (§B4) — your own body draws the dead pose. It was the literal `true`.
+        alive: this.meAlive,
         grounded: body.grounded,
         // `&& meAlive` for T22.04: `alive` above is a literal, and the mirror
         // stops stepping a dead player, so without it a body killed mid-burn
@@ -2241,6 +2261,7 @@ export class GameScene extends Phaser.Scene {
         // T22.04C: the push the mirror stepped with (the predictor's replay included),
         // so braking draws the exhaust on the side the push comes from.
         thrust: this.core.thrustAt(this.me),
+        thrustMax: this.core.fullThrust(),
       })
       this.crosshair.update(rp.x, rp.y, aim)
       this.crosshairAt = { x: rp.x + Math.cos(aim) * C().AIM_RADIUS, y: rp.y + Math.sin(aim) * C().AIM_RADIUS }
@@ -2667,6 +2688,11 @@ export class GameScene extends Phaser.Scene {
       const sel = this.mirror.players.get(id)?.selectedItem ?? null
       r.view.setWeapon(sel === null ? '' : (this.itemKeys().get(sel) ?? ''))
       r.view.overPhaser = this.overPhaserLayer(p.x, p.y)
+      const full = this.core.fullThrust()
+      const jetting = flag(p.flags, FLAG.jetpack) && flag(p.flags, FLAG.alive)
+      let est = this.remotePushes.get(id)
+      if (!est) this.remotePushes.set(id, (est = new PushEstimate()))
+      const push = est.step(jetting, p.vx, p.vy, jetting ? this.core.bodyPullAt(p.x, p.y, p.moveMods, true) : NO_PULL, this.frameDt, full)
       r.view.setState(p.x, p.y, p.vx, p.vy, p.aim, {
         tilt: rtrack.theta,
         alive: flag(p.flags, FLAG.alive),
@@ -2677,8 +2703,9 @@ export class GameScene extends Phaser.Scene {
         boots: flag(p.moveMods, MOVE_MOD.boots),
         wings: flag(p.moveMods, MOVE_MOD.wings),
         space: this.gravity === SPACE_GRAVITY,
-        // T22.04C: a remote's input is not on the wire, so its flame stays on velocity.
-        thrust: null,
+        // T23.14D F4: a remote's input is not on the wire, so its push is estimated from its motion.
+        thrust: push,
+        thrustMax: full,
       })
     }
 
@@ -2687,6 +2714,7 @@ export class GameScene extends Phaser.Scene {
         r.view.destroy()
         this.remotes.delete(id)
         this.remoteTilts.delete(id)
+        this.remotePushes.delete(id)
       }
     }
   }

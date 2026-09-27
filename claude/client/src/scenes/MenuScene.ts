@@ -42,6 +42,13 @@ import { MAX_NAME, loadIdentity, nameOrNull, saveName, storedName } from '../ui/
 import { devSurface } from '../dev'
 import { C } from '../core'
 
+/**
+ * T23.14D F12: the Skins screen is hidden until T23.15. Its preview is a `PlayerView`, an actor of the world
+ * renderer, and the Skins scene has none — so the screen showed a name tag over nothing (R8: skins are drawn as
+ * nothing; the seat's scarf is a player's identity now). T23.15 decides what the screen becomes; this is its switch.
+ */
+const SKINS_SCREEN = false
+
 
 /**
  * The screens on which this scene holds a live socket and occupies a seat on the
@@ -307,7 +314,7 @@ export class MenuScene extends Phaser.Scene {
         <div class="actions">
           <button id="quick" autofocus>Quick Game</button>
           <button id="private">Private Game</button>
-          <button id="skins">Skins</button>
+          ${SKINS_SCREEN ? '<button id="skins">Skins</button>' : ''}
         </div>
         ${err}`
       el.querySelector('#quick')?.addEventListener('click', () => this.quickMatch())

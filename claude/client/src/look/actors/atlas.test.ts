@@ -47,23 +47,30 @@ describe('the actor atlas (T23.12)', () => {
     expect(p.uploads).toHaveLength(1)
   })
 
-  it('redraws when the drawing changes — aim, position phase, the key light turning — and not below the 1/8 px key', () => {
+  it('redraws when the drawing changes — aim, the key light turning — and not where it stands, nor below the 1/8 px key', () => {
     const atlas = new ActorAtlas(countingPainter())
     atlas.beginFrame()
     atlas.cellFor(standing, offs(1))
     atlas.cellFor({ ...standing, opts: { ...standing.opts, aim: 0.31 } }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
-    // The same drawing one whole cell grain along: the same cell (the quad moves, not the raster).
+    // T23.14D F13: the same drawing anywhere — a cell grain, a quarter px, one px, far off — is the same cell (the quad
+    // moves; `cell.ts::atAnchor`). It was a new cell per 1/8 px: a moving figure redrew every frame.
     atlas.cellFor({ ...standing, x: standing.x + CELL_ALIGN }, offs(1))
-    expect(atlas.stats.redraws).toBe(2)
-    // A quarter px along: a new raster phase, a new cell.
     atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1))
+    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1))
+    atlas.cellFor({ ...standing, x: standing.x + 313.6, y: standing.y - 41.3 }, offs(1))
+    expect(atlas.stats.redraws).toBe(2)
+    // The look-lab's pixel phase (the control that the anchor is what did it): one whole px along is another cell.
+    atlas.cellFor(standing, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 0.2 }, offs(1), true)
     expect(atlas.stats.redraws).toBe(3)
+    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1), true)
+    expect(atlas.stats.redraws).toBe(4)
     // The key light turned: the passes are drawn at new offsets.
     atlas.cellFor(standing, offs(2))
-    expect(atlas.stats.redraws).toBe(4)
+    expect(atlas.stats.redraws).toBe(5)
     atlas.cellFor(standing, offs(2.01))
-    expect(atlas.stats.redraws).toBe(4)
+    expect(atlas.stats.redraws).toBe(5)
   })
 
   it('an actor with extras is baked: it keys on the light\'s colour and alpha too, one without does not', () => {

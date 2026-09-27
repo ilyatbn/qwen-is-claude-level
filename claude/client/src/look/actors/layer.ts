@@ -24,7 +24,7 @@ import {
 import type { Actor, Light, Moon } from '../scene'
 import { toWorld } from '../worldRenderer-math'
 import { ATLAS_SIZE, ActorAtlas, type Painter } from './atlas'
-import { MASK_STEP, actorRect, hasExtras, type Lighting } from './cell'
+import { MASK_STEP, actorRect, atAnchor, hasExtras, type Lighting } from './cell'
 import { Flat, type G } from './flat'
 import { passes } from './lit'
 
@@ -194,7 +194,11 @@ export class ActorLayer {
     this.geometry.setIndex(new BufferAttribute(idx, 1))
   }
 
-  /** Lay this frame's actors out, lit by `lights`/`moon`; `maskH` for the y flip. */
+  /**
+   * Lay this frame's actors out, lit by `lights`/`moon`; `maskH` for the y flip. T23.14D F13: each cell is drawn with
+   * its actor at the cell anchor (`cell.ts::atAnchor`), so the quad is that rect moved to where the actor is — whole
+   * px, and the sub-pixel fraction, the cell's texels sampled bilinearly. Written straight into the attributes.
+   */
   place(actors: readonly Actor[], lights: readonly Light[], moon: Moon, maskH: number): void {
     if (actors.length > this.capacity) this.grow(Math.max(actors.length, this.capacity * 2))
     const at = (k: AttrName): Float32Array => (this.geometry.getAttribute(k) as BufferAttribute).array as Float32Array
@@ -208,20 +212,37 @@ export class ActorLayer {
     for (const a of actors) {
       const ps = a.lit ? passes(lights, moon, a.x, a.y, a.lit.size) : null
       const L: Lighting | null = ps ? { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: this.rim } : null
-      const cell = this.atlas.cellFor(a, L)
+      const cell = this.atlas.cellFor(a, L, this.pixelPhase)
       if (!cell) continue
-      const r = actorRect(a)
-      const corners: [number, number][] = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
-      corners.forEach(([x, y], k) => {
+      const c = atAnchor(a, this.pixelPhase)
+      const r = actorRect(c)
+      const dx = a.x - c.x
+      const dy = a.y - c.y
+      const lit = ps && !hasExtras(a)
+      for (let k = 0; k < 4; k++) {
+        const x = k === 1 || k === 2 ? r[2] : r[0]
+        const y = k >= 2 ? r[3] : r[1]
         const v = n * 4 + k
-        const w = toWorld(x, y, maskH)
-        pos.set([w.x, w.y, 0], v * 3)
-        loc.set([x - r[0], y - r[1]], v * 2)
-        slot.set([cell.x, cell.y, cell.w, cell.h], v * 4)
-        rim.set(ps ? [...ps.rim, ps.a] : [0, 0, 0, 0], v * 4)
+        const w = toWorld(x + dx, y + dy, maskH)
+        pos[v * 3] = w.x
+        pos[v * 3 + 1] = w.y
+        pos[v * 3 + 2] = 0
+        loc[v * 2] = x - r[0]
+        loc[v * 2 + 1] = y - r[1]
+        slot[v * 4] = cell.x
+        slot[v * 4 + 1] = cell.y
+        slot[v * 4 + 2] = cell.w
+        slot[v * 4 + 3] = cell.h
+        rim[v * 4] = ps ? ps.rim[0] : 0
+        rim[v * 4 + 1] = ps ? ps.rim[1] : 0
+        rim[v * 4 + 2] = ps ? ps.rim[2] : 0
+        rim[v * 4 + 3] = ps ? ps.a : 0
         // .a: 0 unlit or baked (the ink image is the whole picture), 1 lit: passes composited here.
-        fill.set(ps && !hasExtras(a) ? [...ps.fill, 1] : [0, 0, 0, 0], v * 4)
-      })
+        fill[v * 4] = lit ? ps.fill[0] : 0
+        fill[v * 4 + 1] = lit ? ps.fill[1] : 0
+        fill[v * 4 + 2] = lit ? ps.fill[2] : 0
+        fill[v * 4 + 3] = lit ? 1 : 0
+      }
       n++
     }
     for (const k of Object.keys(FLOATS)) (this.geometry.getAttribute(k) as BufferAttribute).needsUpdate = true
@@ -229,6 +250,9 @@ export class ActorLayer {
     this.drawn = n
     this.mesh.visible = n > 0
   }
+
+  /** T23.14D F13: draw cells at each actor's own pixel phase — the look-lab (`SceneDescription.actorPixelPhase`). */
+  pixelPhase = false
 
   private rim = true
   /** T23.13: draw `lit()`'s two rim passes (a baked cell keys on it). */

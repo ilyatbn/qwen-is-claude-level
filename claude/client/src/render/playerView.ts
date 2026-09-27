@@ -45,8 +45,13 @@ export interface PlayerFlags {
   wings: boolean
   /** T22.04: the match is zero-g (the helmet, the space pose, the plume). Required: a forgotten one would compile. */
   space: boolean
-  /** T22.04C: the local player's applied thrust (`Core.thrustAt`), or null — a remote's input is not on the wire. */
+  /**
+   * The pack's push, px/s²: the local player's applied thrust (`Core.thrustAt`), a remote's estimate
+   * (`look/actors/push.ts`, T23.14D F4 — its input is not on the wire), or null (none known).
+   */
   thrust: { x: number; y: number } | null
+  /** T23.14D F5: the push that burns a full flame, `Core.fullThrust()` — the same on every client. */
+  thrustMax: number
   /** T22.19 (R107): the figure's turn about its feet, radians, visual only. */
   tilt: number
 }
@@ -72,6 +77,8 @@ const SPACE_MOON = { dx: 0.6, dy: -0.8, rgb: '185,195,245', w: 0.75, fill: '90,8
 const SPACE_CANVAS = 192
 const SPACE_FEET: [number, number] = [96, 132]
 let spaceTextures = 0
+/** T23.14D F13: how long a foot's ground probe is reused, ms. */
+const GROUND_CACHE_MS = 200
 
 /**
  * F1's jet glow (`f_scene.js::combatF`: `sprite(softTex(), ex - 3, wy(ey - 6), 43, 16, Color(2.2, 1.0, 0.3), 0.7,
@@ -94,8 +101,9 @@ export class PlayerView {
   /** T23.14B: the flame as last drawn — world px (glow centre, nozzle → tip direction) — or null; and the e2e switch. */
   private flameNow: { x: number; y: number; dir: { x: number; y: number }; jet: number } | null = null
   private flameHidden = false
-  /** The strongest push this view has seen (px/s²): the full flame's push — the sim's thrust table is not on `C()`. */
-  private thrustPeak = 0
+  /** T23.14D F13: `groundDyAt` per foot probe, keyed on the probe's whole px (the feet stand still more than they move). */
+  private readonly groundCache = new Map<number, number | null>()
+  private groundCacheAt = 0
   private spaceGlow: Phaser.GameObjects.Image | null = null
   private readonly nameLabel: Phaser.GameObjects.Text
   /** The figure's animation state (`pose.ts`) and what it was last posed as. */
@@ -166,7 +174,6 @@ export class PlayerView {
     this.container.setRotation(tilt)
     const tag = uprightLocal(tilt, feet, 0, -c.PLAYER_H / 2 - 6)
     this.nameLabel.setPosition(tag.x, tag.y).setRotation(-tilt)
-    this.animState = deriveAnimState({ alive: flags.alive, grounded: flags.grounded, jetpack: flags.jetpack, vx, vy })
     this.shieldBubble.setVisible(flags.shield)
 
     // The figure: posed from the frame's state, in the figure's own frame (aim and motion turned by the tilt).
@@ -177,7 +184,6 @@ export class PlayerView {
     const vel = toLocal(tilt, vx, vy)
     const upright = Math.abs(tilt) < 1e-3
     const thrustLocal = flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null
-    if (thrustLocal) this.thrustPeak = Math.max(this.thrustPeak, Math.hypot(thrustLocal.x, thrustLocal.y))
     const d = stepFigure(this.fig, {
       dt,
       vx: vel.x,
@@ -188,14 +194,16 @@ export class PlayerView {
       jetpack: flags.jetpack,
       space: flags.space,
       thrust: thrustLocal,
-      thrustMax: this.thrustPeak,
+      thrustMax: flags.thrustMax,
       weapon: this.weaponKey || null,
       boots: flags.boots,
       wings: flags.wings,
       walkSpeed: c.WALK_SPEED,
       s: FIGURE_SCALE,
-      ...(upright ? { x: fx, groundDy: (dx: number) => groundDyAt(this.scene, fx + dx, fy) } : {}),
+      ...(upright ? { x: fx, groundDy: (dx: number) => this.groundAt(fx + dx, fy) } : {}),
     })
+    // T23.14D F8: one derivation — the state the pose was chosen by.
+    this.animState = d.state
     const accent = SCARF_COLOURS[this.seat]!
     const J = this.flameHidden ? { ...d.J, jet: 0 } : d.J
     // T23.14B: a pose turn (space) is about the body's middle, not its feet — the feet move so the hip stays put, or a
@@ -230,6 +238,25 @@ export class PlayerView {
     // Space: the canvas holds the figure turned by its pose only (the container carries the tilt), feet at SPACE_FEET.
     this.drawSpace(phaser ? { kind: fig.kind, lit: fig.lit, box: fig.box, x: SPACE_FEET[0] + pivot.x, y: SPACE_FEET[1] + pivot.y, opts: { ...fig.opts, rot: d.rot } } : null)
     this.drawSpaceGlow(phaser && this.flameNow ? { x: this.flameNow.x - fx, y: this.flameNow.y - fy, size: fig.glows?.[0]?.size ?? 0 } : null)
+  }
+
+  /**
+   * `groundDyAt` at world (x, feetY), remembered per whole px for `GROUND_CACHE_MS` — the mask changes only on a carve,
+   * so a foot beside a fresh crater is placed on the old ground for at most that long (the body's own fall is the
+   * sim's, and a falling figure's feet are not on the walker).
+   */
+  private groundAt(x: number, feetY: number): number | null {
+    const now = this.scene.time.now
+    if (now - this.groundCacheAt >= GROUND_CACHE_MS || this.groundCache.size > 16) {
+      this.groundCache.clear()
+      this.groundCacheAt = now
+    }
+    const key = Math.round(x) * 65536 + Math.round(feetY)
+    const have = this.groundCache.get(key)
+    if (have !== undefined) return have
+    const g = groundDyAt(this.scene, x, feetY)
+    this.groundCache.set(key, g)
+    return g
   }
 
   /**
@@ -284,7 +311,8 @@ export class PlayerView {
     s.img.setVisible(true)
     const ps = passes([], SPACE_MOON, a.x, a.y, a.lit?.size ?? 1)
     const L: Lighting = { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: true }
-    const key = cellKey(a, L)
+    // `cellKey` leaves out where the actor stands (T23.14D F13: the atlas places its quad); this canvas does not move.
+    const key = `${cellKey(a, L)}@${a.x},${a.y}`
     if (key === s.key) return
     s.key = key
     const g = s.tex.getContext()

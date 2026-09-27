@@ -46,6 +46,12 @@ const NEAR = 0.25
 /** …and are this many flame lengths long, and half as wide as this fraction of one. */
 const FAR = 1
 const HALF_W = 0.3
+/**
+ * T23.14D F14: the check's own speed floor, px/s — a body slower than this has no direction worth judging (was the
+ * retired `THRUSTER_PLUME_MIN_SPEED`, the Phaser plume's, 1). One tick of the weakest push clears it many times over:
+ * `SPACE_THRUST_DOWN · SIM_DT` = 7.5 px/s in space.
+ */
+const MIN_SPEED = 1
 
 export default async function ({ page, shot, log }) {
   const dbg = () => page.evaluate(() => window.__game.debug())
@@ -224,7 +230,7 @@ export default async function ({ page, shot, log }) {
           const p = window.__game.debug().player
           return p.moveState === 2 && (down ? p.vy > min * 4 : p.vy < -min * 4)
         },
-        [key === 's', k.THRUSTER_PLUME_MIN_SPEED],
+        [key === 's', MIN_SPEED],
         `${label}: the thrusters never fired`,
       )
       // The body turns to put its pack behind the push over a few frames (`pose.ts::SPACE_TURN_S`).
@@ -273,7 +279,7 @@ export default async function ({ page, shot, log }) {
           if (braking) window.__game.freeze(true)
           return braking
         },
-        [peak, k.THRUSTER_PLUME_MIN_SPEED],
+        [peak, MIN_SPEED],
         `${label}: never caught braking, turned to the push, while still moving right`,
       )
     } finally {
@@ -282,7 +288,7 @@ export default async function ({ page, shot, log }) {
     try {
       const d = await dbg()
       log(`${label}: caught ${Date.now() - t0} ms after LEFT went down (wall clock), vx ${d.player.vx.toFixed(0)} from ${peak.toFixed(0)}, flame ${JSON.stringify(d.flame.dir)}`)
-      if (!(d.player.vx > k.THRUSTER_PLUME_MIN_SPEED)) throw new Error(`${label}: frozen with vx ${d.player.vx}, not still moving right`)
+      if (!(d.player.vx > MIN_SPEED)) throw new Error(`${label}: frozen with vx ${d.player.vx}, not still moving right`)
       await photograph(`${label} (vx ${d.player.vx.toFixed(0)} from ${peak.toFixed(0)})`, d.player, [1, 0], F.space, `thrusters-${tag}-braking`)
     } finally {
       await page.evaluate(() => window.__game.freeze(false))

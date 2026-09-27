@@ -1282,6 +1282,35 @@ impl GameCore {
         Box::new([x / SIM_DT, y / SIM_DT])
     }
 
+    /// T23.14D F5: **the push that burns a full jet flame**, px/s², in this core's gravity mode — the pack's
+    /// strongest axis (`JETPACK_THRUST_UP`) at the mode's scale (`jetpack::thrust_scale`: `SPACE_THRUST_SCALE` in
+    /// space). The flame's length is a push over this, so every client draws the same flame for the same push (it
+    /// was the strongest push each view had seen, which reset on a rebuild and was never set for a remote). A push
+    /// past it (a diagonal, or braking at `SPACE_BRAKE_SCALE`) burns a full flame.
+    pub fn full_thrust(&self) -> f32 {
+        game_core::constants::JETPACK_THRUST_UP
+            * game_core::player::jetpack::thrust_scale(self.gravity)
+    }
+
+    /// T23.14D F4: **what pulls a body at `(x, y)`**, px/s², `[ax, ay]` — the field (`env_at` with every
+    /// attractor this core holds, R100's wings from `move_mod_bits`) plus the mode's gravity on that body
+    /// (`jetpack::gravity_scale`: none on wings, `JETPACK_GRAVITY_SCALE` while `jetting`). A remote's
+    /// input is not on the wire (R3), so its push is estimated as its interpolated acceleration minus this;
+    /// asked of the core so the estimate uses the pull the simulation applies, not a TypeScript copy.
+    pub fn body_pull_at(&self, x: f32, y: f32, move_mod_bits: u8, jetting: bool) -> Box<[f32]> {
+        let mut st = PlayerState::new(0, Vec2::new(x, y), 0);
+        st.set_move_mod_bits(move_mod_bits);
+        let flying = st.move_mods().flying;
+        let field = self.field_for(x, y, flying);
+        let jet = JetpackState {
+            active: jetting,
+            ..JetpackState::default()
+        };
+        let g = game_core::constants::GRAVITY
+            * game_core::player::jetpack::gravity_scale(&jet, flying, self.gravity);
+        Box::new([field.x, field.y + g])
+    }
+
     /// Put charge in a player's battery. Sandbox only, like `give` (T20.08).
     ///
     /// Through `PlayerState::add_battery`, so `BATTERY_MAX`'s clamp applies here
@@ -2534,10 +2563,6 @@ pub fn constants_json() -> String {
         SMOKE_RADIUS => c::SMOKE_RADIUS,
         FOV_SMOKE_MULT => c::FOV_SMOKE_MULT,
         SMOKE_SHADER_SCALE => c::SMOKE_SHADER_SCALE,
-        // T22.04: the thruster plume's size, so `thrusters` aims its patches off it.
-        THRUSTER_PLUME_LENGTH => c::THRUSTER_PLUME_LENGTH,
-        THRUSTER_PLUME_WIDTH => c::THRUSTER_PLUME_WIDTH,
-        THRUSTER_PLUME_MIN_SPEED => c::THRUSTER_PLUME_MIN_SPEED,
         // T22.09B: the radiation glow pulses once per damage entry.
         RADIATION_LOG_INTERVAL => c::RADIATION_LOG_INTERVAL,
         // T22.08B: the flare's painted size and its burn, drawing only — the ribbon's
@@ -3104,6 +3129,102 @@ mod tests {
             &*core.thrust_at(1),
             &[0.0, 0.0],
             "control: nothing held, a thrust"
+        );
+    }
+
+    /// T23.14D F5: **the full flame's push is the pack's strongest axis at the mode's scale** — read off the
+    /// author (`thrust_delta` of UP held, from rest) in every mode, not off the constants, so a change to the
+    /// thrust table moves it. Space's is `SPACE_THRUST_SCALE` of standard's (the control that the mode is read).
+    #[test]
+    fn full_thrust_is_ups_push_in_every_mode() {
+        use game_core::player::input::button;
+        let up = Input {
+            seq: 1,
+            buttons: button::UP,
+            aim: 0,
+        };
+        let mut seen = vec![];
+        for g in [GravityMode::Standard, GravityMode::Low, GravityMode::Space] {
+            let mut core = GameCore::new();
+            assert!(core.set_gravity(g.as_str()));
+            let (_, y) = game_core::player::jetpack::thrust_delta(&up, g, Vec2::ZERO, SIM_DT);
+            let want = -y / SIM_DT;
+            assert!(
+                (core.full_thrust() - want).abs() < 0.05,
+                "{g:?}: full_thrust {} vs UP's push {want}",
+                core.full_thrust()
+            );
+            seen.push(core.full_thrust());
+        }
+        assert!(
+            (seen[2] - seen[0] * game_core::constants::SPACE_THRUST_SCALE).abs() < 1e-3,
+            "space's full flame is not the scaled push: {seen:?}"
+        );
+    }
+
+    /// T23.14D F4: **a body's acceleration minus `body_pull_at` is the push it was stepped with** — the
+    /// identity the remote flame's estimate rests on. A body drifting right in open space, braking with LEFT
+    /// and then pushing UP + RIGHT: each tick's velocity change / `SIM_DT`, less the pull, equals `thrust_at`.
+    /// And the pull itself: standard gravity is `GRAVITY` on a walker, `JETPACK_GRAVITY_SCALE` of it on a
+    /// jetting body, nothing on wings (the controls that the flags are read).
+    #[test]
+    fn acceleration_less_the_pull_is_the_push() {
+        use game_core::constants::{GRAVITY, JETPACK_GRAVITY_SCALE, PLAYER_H};
+        use game_core::player::input::button;
+        let mut core = GameCore::new();
+        assert!(core.generate_for_gravity(4242, 0, 0, 0, GravityMode::Space.as_str()));
+        let clear = |c: &GameCore, x: f32, y: f32| {
+            let pad = 3.0 * PLAYER_H;
+            (0..=12).all(|i| {
+                (0..=12).all(|j| {
+                    let px = x - pad + i as f32 * pad / 6.0;
+                    let py = y - pad + j as f32 * pad / 6.0;
+                    !game_core::physics::collide::solid_at(&c.map, px as i32, py as i32)
+                })
+            })
+        };
+        let (w, h) = (core.map.mask.w as f32, core.map.mask.h as f32);
+        let at = (1..20)
+            .flat_map(|i| (1..20).map(move |j| (w * i as f32 / 20.0, h * j as f32 / 20.0)))
+            .find(|&(x, y)| clear(&core, x, y))
+            .expect("open air on the space map");
+        core.add_player(1, at.0, at.1);
+        core.set_player_state(1, at.0, at.1, 200.0, 0.0, false, 5.0, 100.0, true, 0);
+        let mut seq = 0;
+        let mut pushes = 0;
+        for buttons in [button::LEFT, button::LEFT, button::UP | button::RIGHT, 0] {
+            let s0 = core.player_state(1);
+            let pull = core.body_pull_at(s0[0], s0[1], 0, true);
+            seq += 1;
+            core.apply_input(1, seq, buttons, 0, SIM_DT);
+            let s1 = core.player_state(1);
+            let t = core.thrust_at(1);
+            let est = [
+                (s1[2] - s0[2]) / SIM_DT - pull[0],
+                (s1[3] - s0[3]) / SIM_DT - pull[1],
+            ];
+            assert!(
+                (est[0] - t[0]).abs() < 1.0 && (est[1] - t[1]).abs() < 1.0,
+                "buttons {buttons}: estimated {est:?}, stepped {t:?}"
+            );
+            if t[0] != 0.0 || t[1] != 0.0 {
+                pushes += 1;
+            }
+        }
+        assert_eq!(pushes, 3, "control: the pushed ticks pushed");
+        let mut std_core = GameCore::new();
+        assert!(std_core.set_gravity(GravityMode::Standard.as_str()));
+        assert_eq!(
+            &*std_core.body_pull_at(10.0, 10.0, 0, false),
+            &[0.0, GRAVITY]
+        );
+        assert_eq!(
+            &*std_core.body_pull_at(10.0, 10.0, 0, true),
+            &[0.0, GRAVITY * JETPACK_GRAVITY_SCALE]
+        );
+        assert_eq!(
+            &*std_core.body_pull_at(10.0, 10.0, game_core::player::state::MOVE_MOD_WINGS, false),
+            &[0.0, 0.0]
         );
     }
 
