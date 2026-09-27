@@ -1,5 +1,5 @@
 /**
- * Mask → stencil → textured chunk.
+ * Mask → stencil → chunk (flat since T23.07 — see `BakeLayers`).
  *
  * The only per-pixel loop in the renderer, so it is the one place in the client
  * where micro-decisions matter (`docs/12-map-render.md` §8):
@@ -15,6 +15,7 @@
 
 import type { Core } from '../core'
 import { C } from '../core'
+import { TERRAIN_PALETTE } from '../look/albedo'
 import {
   BackdropMask,
   CORE_HEART_FRAC,
@@ -25,19 +26,14 @@ import {
   CORE_RIM,
   backdropBits,
   coresInChunk,
-  edgeBits,
   stencilBits,
-  tileOffset,
   type CoreDisc,
 } from './chunkBake-math'
-import { drawObjects, type ObjectArt, type ObjectIndex } from './objects'
 
 export {
   chunkOrigin,
-  edgeBits,
   solidIn,
   stencilBits,
-  tileOffset,
   MaskSnapshot,
   BackdropMask,
   backdropBits,
@@ -87,51 +83,25 @@ export function buildStencil(
   scratch.stencilCtx.putImageData(scratch.imageData, 0, 0)
 }
 
-/** Mark the top `EDGE_BAND_PX` solid pixels below each air→solid transition. */
-export function buildEdgeStencil(
-  core: Core,
-  chunkX: number,
-  chunkY: number,
-  scratch: BakeScratch,
-): void {
-  edgeBits(core, chunkX, chunkY, C().CHUNK_SIZE, C().EDGE_BAND_PX, scratch.edgePixels)
-  scratch.edgeCtx.putImageData(scratch.edgeImageData, 0, 0)
-}
-
-/** Tile `image` across the whole chunk, offset so the pattern crosses seams. */
-function drawTiled(
-  ctx: CanvasRenderingContext2D,
-  image: CanvasImageSource,
-  chunkX: number,
-  chunkY: number,
-  size: number,
-): void {
-  const texW = Number((image as HTMLCanvasElement).width) || size
-  const texH = Number((image as HTMLCanvasElement).height) || size
-  const off = tileOffset(chunkX, chunkY, size, texW, texH)
-
-  for (let y = -off.y; y < size; y += texH) {
-    for (let x = -off.x; x < size; x += texW) {
-      ctx.drawImage(image, x, y, texW, texH)
-    }
-  }
-}
-
 /**
- * Bake one chunk: tiled fill, punched to the mask's shape, with the edge texture
- * composited over the upward-facing band.
+ * **Phaser's rock since T23.07: flat.** The lit terrain (`look/terrainMaterial.ts`, three.js) draws the
+ * rock once its picture is whole (`GameWorld.terrainReady`); until then, and where three cannot start,
+ * this bake does — one flat colour of the one palette (R5), the cave wall a darker one, and the space
+ * rocks' cores and iron over it. The textured fill, the grass edge band and the object atlas it drew
+ * before retired with their last reader (R15).
  */
+/** T23.07: Phaser's flat rock — the one palette's (`world.js::THEMES.dusk`, R5) first rock colour. */
+export const FLAT_ROCK = `rgb(${TERRAIN_PALETTE.rock[0].join(', ')})`
+/** T23.07: Phaser's flat cave wall — the palette's first back colour. */
+export const FLAT_BACK = `rgb(${TERRAIN_PALETTE.back[0].join(', ')})`
+
 export interface BakeLayers {
-  fill: CanvasImageSource
-  edge: CanvasImageSource | null
-  /** Dark rock seen through craters and inside caves. */
-  back?: CanvasImageSource | null
+  /** The rock, a CSS colour. */
+  fill: string
+  /** The cave wall seen through craters and inside caves, a CSS colour. */
+  back?: string | null
   /** The dilated silhouette that decides where "inside the landmass" is. */
   backSource?: BackdropMask | null
-  /** Scenery overlapping this chunk (§D6), or null before map_init arrives. */
-  objects?: ObjectIndex | null
-  /** Resolves an object frame to art, or null with no atlas (`docs/50` §8). */
-  objectArt?: ObjectArt | null
   /** T22.16 (R102): the asteroids' core discs, world px (`Core.coreDiscs`). */
   cores?: readonly CoreDisc[] | null
   /** T22.21 (R113): the iron asteroids, world px (`Core.ironDiscs`). */
@@ -200,7 +170,6 @@ export function bakeChunk(
 ): void {
   const size = C().CHUNK_SIZE
   const ctx = texture.context
-  const { fill: fillImage, edge: edgeImage } = layers
 
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
@@ -213,33 +182,25 @@ export function bakeChunk(
     const ectx = scratch.edgeCtx
     ectx.save()
     ectx.globalCompositeOperation = 'source-in'
-    drawTiled(ectx, layers.back, chunkX, chunkY, size)
+    ectx.fillStyle = layers.back
+    ectx.fillRect(0, 0, size, size)
     ectx.restore()
     ctx.drawImage(scratch.edgeCanvas, 0, 0)
   }
 
   buildStencil(core, chunkX, chunkY, scratch)
 
-  // 1. the rock body and 2b the objects, both punched to the live mask.
+  // 1. the rock body, the iron and the cores, all punched to the live mask.
   //
-  // **Fill, then objects, then `destination-in`** — the order `docs/12` §2 and
-  // §D6 both give, and it is load-bearing rather than stylistic. This used to
-  // read stencil-then-`source-in`-fill, which clips one layer correctly and
-  // cannot clip two: `source-in` keeps only where the *new* drawing lands, so
-  // objects drawn that way would erase the rock everywhere they are not.
-  //
-  // Drawing the objects before the punch-out is the whole of §D1's payoff.
-  // Destruction needs no per-object work at all: `buildStencil` read the live
-  // mask a few lines up, so a carve that took half a rock has already removed
-  // those bits, and `destination-in` drops the art over them with it.
+  // **Fill, then the discs, then `destination-in`**: the discs are drawn before the punch, so a
+  // carve that took half a core has already removed those bits (`buildStencil` read the live mask
+  // above), and `destination-in` drops the colour over them with it.
   const body = scratch.edgeCtx
   body.save()
   body.globalCompositeOperation = 'source-over'
   body.clearRect(0, 0, size, size)
-  drawTiled(body, fillImage, chunkX, chunkY, size)
-  if (layers.objects && layers.objectArt) {
-    drawObjects(body, layers.objects, layers.objectArt, chunkX, chunkY, size)
-  }
+  body.fillStyle = layers.fill
+  body.fillRect(0, 0, size, size)
   if (layers.irons && layers.irons.length > 0) {
     drawIron(body, layers.irons, chunkX, chunkY, size)
   }
@@ -250,22 +211,6 @@ export function bakeChunk(
   body.drawImage(scratch.stencilCanvas, 0, 0)
   body.restore()
   ctx.drawImage(scratch.edgeCanvas, 0, 0)
-
-  // 2. the grass rim, clipped to the terrain that already exists
-  if (edgeImage) {
-    buildEdgeStencil(core, chunkX, chunkY, scratch)
-    // Draw the edge texture into the edge scratch, masked by the band stencil,
-    // then composite that over the fill with source-atop so it never spills into
-    // air.
-    const ectx = scratch.edgeCtx
-    ectx.save()
-    ectx.globalCompositeOperation = 'source-in'
-    drawTiled(ectx, edgeImage, chunkX, chunkY, size)
-    ectx.restore()
-
-    ctx.globalCompositeOperation = 'source-atop'
-    ctx.drawImage(scratch.edgeCanvas, 0, 0)
-  }
 
   ctx.globalCompositeOperation = 'source-over'
   ctx.restore()

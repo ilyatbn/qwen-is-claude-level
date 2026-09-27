@@ -32,27 +32,6 @@
       "stand": "stand.png"
     }
   },
-  "decor": {
-    "_note": "Decoration kinds are theme*6 + 0..5 (crates/game-core/src/map/meta.rs), so grassland is 0-5, desert 6-11, frost 12-17. Frame names are ours; a theme with no art for a kind simply skips it (docs/50 \u00a76).",
-    "decor_0": "pixel-platformer/Tiles/tile_0124.png",
-    "decor_1": "pixel-platformer/Tiles/tile_0125.png",
-    "decor_2": "pixel-platformer/Tiles/tile_0096.png",
-    "decor_3": "pixel-platformer/Tiles/tile_0098.png",
-    "decor_4": "pixel-platformer/Tiles/tile_0007.png",
-    "decor_5": "pixel-platformer/Tiles/tile_0128.png",
-    "decor_6": "pixel-platformer/Tiles/tile_0127.png",
-    "decor_7": "pixel-platformer/Tiles/tile_0008.png",
-    "decor_8": "pixel-platformer/Tiles/tile_0068.png",
-    "decor_9": "pixel-platformer/Tiles/tile_0084.png",
-    "decor_10": "pixel-platformer/Tiles/tile_0007.png",
-    "decor_11": "pixel-platformer/Tiles/tile_0110.png",
-    "decor_12": "pixel-platformer/Tiles/tile_0153.png",
-    "decor_13": "pixel-platformer/Tiles/tile_0154.png",
-    "decor_14": "pixel-platformer/Tiles/tile_0145.png",
-    "decor_15": "pixel-platformer/Tiles/tile_0126.png",
-    "decor_16": "pixel-platformer/Tiles/tile_0008.png",
-    "decor_17": "pixel-platformer/Tiles/tile_0146.png"
-  },
   "items": {
     "_note": "Frames named for ItemDef.sprite (crates/game-core/src/items/registry.rs), which has been populated since T4.01 and unreadable by the client until item_registry_json() exported it. A missing frame falls back to a tinted box and logs once (docs/50 \u00a78).",
     "item_medkit": "pixel-platformer/Tiles/tile_0044.png",

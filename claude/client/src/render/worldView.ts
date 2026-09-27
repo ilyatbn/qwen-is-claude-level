@@ -23,11 +23,8 @@ import type { Core } from '../core'
 import { TerrainRenderer } from './terrain'
 import { CameraRig } from './cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from './backdrop'
-import { resolveTheme } from '../render/themes-math'
-import { makeBackTexture, makeEdgeTexture, makeFillTexture } from './procTextures'
 import { imagePortal } from './assets'
-import { DecorationLayer } from './decorations'
-import { fromMeta } from './decorations-math'
+import { FLAT_BACK, FLAT_ROCK } from './chunkBake'
 import { ItemLayer } from './itemSprites'
 import { GATE_KEY, PadLayer, type PadView } from './pads'
 import { PlatformLayer, type PlatformView } from './platforms'
@@ -43,7 +40,6 @@ export interface WorldViewTimings {
 export class WorldView {
   readonly terrain: TerrainRenderer
   readonly rig: CameraRig
-  readonly decorations: DecorationLayer
   /**
    * Ordnance in flight. Owned here rather than per-scene for the reason the whole
    * class exists: the layer already existed and the game never called
@@ -75,17 +71,6 @@ export class WorldView {
    */
   readonly pads: PadLayer
   readonly platforms: PlatformLayer
-  /**
-   * The seed the terrain tiles were actually built from (T21.15).
-   *
-   * Recorded so a check can count it **at both ends** — the map's seed against
-   * the one the textures used. The regression this exists for is dropping the
-   * argument at the call site below, which makes every map wear the same rock
-   * and which no rendered-pixel comparison of two maps can see: two seeds
-   * generate different *geometry*, so the frame differs either way. Measured: a
-   * pixel comparison of two maps reported 44.1 with the bug fully restored.
-   */
-  readonly tileSeed: number
   readonly timings: WorldViewTimings = { buildAllMs: 0, lastRebakeMs: 0 }
 
   private readonly backdrop: Backdrop
@@ -106,33 +91,15 @@ export class WorldView {
    * map's pixels — call `destroy()` before constructing another (T3.05).
    */
   /**
-   * `mapSeed` and `themeId` are **passed in, not read off `core.meta`** — and
-   * that is the whole of the 2026-09-16 terrain-texture fix.
-   *
-   * A networked client never runs the generator. `WorldMirror.applyMapInit`
-   * calls `Core.loadMask`, which clones the *existing* meta and replaces only
-   * the surface points, so `core.meta.seed` and `core.meta.theme` keep whatever
-   * the client's throwaway startup map had — measured live across four rounds
-   * with four different `roundSeed`s: `meta.seed` read **1** every time, and
-   * `GameScene`'s own comment recorded `meta.theme` as always 0.
-   *
-   * So T21.15's fix — stop passing the literals 7/23/41, pass the map seed —
-   * was correct in `procTextures.ts` and landed on a constant here. The rock,
-   * the rim and the cave-back were still byte-identical in every networked
-   * round, and so was the palette, which is why it was reported a second time.
-   * *A fix that changes the code without changing the picture looks exactly
-   * like a fix that worked.*
-   *
-   * Both values are on the wire already (`codec.rs` writes seed and theme into
-   * `map_init`; `codec.ts` decodes them). `SandboxScene` generates its own map,
-   * so its `core.meta` is real — hence the defaults.
+   * T23.07: the rock is drawn flat here (`chunkBake.ts::FLAT_ROCK`, R5's one palette) — the lit terrain
+   * (three.js) replaces it once its picture is whole (`setRockVisible`). The seed- and theme-keyed
+   * textures this took `mapSeed` and `themeId` for retired with `procTextures.ts` (R15); the
+   * non-colliding decorations retired with the `decor` atlas.
    */
   constructor(
     scene: Phaser.Scene,
     core: Core,
     weaponKeys: string[] = WEAPON_KEYS,
-    mapSeed: number = Number(core.meta.seed),
-    themeId: number = core.meta.theme,
     /**
      * T22.06 (`R33`): a space map is never painted as a cave. Its rim is closed, so
      * no interior air is reachable from the sky and the backdrop classifier would
@@ -146,8 +113,6 @@ export class WorldView {
     this.backdrop = new Backdrop(scene, DEFAULT_THEME, mapW, mapH)
     this.container = scene.add.container(0, 0).setDepth(DEPTH.terrain)
 
-    // Seeded from the map, so a seed always looks the same (`docs/12` §4).
-    const theme = resolveTheme(themeId)
     this.terrain = new TerrainRenderer(
       scene.textures,
       {
@@ -158,18 +123,12 @@ export class WorldView {
         },
       },
       core,
-      // **Seeded by the map** (T21.15, corrected 2026-09-16). These took a
-      // hardcoded literal; then they took `core.meta.seed`, which is a constant
-      // on a networked client. `mapSeed` is the one the server actually built
-      // the map from — see the constructor doc.
-      makeFillTexture(256, theme, mapSeed),
-      makeEdgeTexture(256, theme, mapSeed),
+      FLAT_ROCK,
       undefined,
-      makeBackTexture(256, theme, mapSeed),
+      FLAT_BACK,
     )
 
     if (space) this.terrain.lockCaveBackdropOff()
-    this.tileSeed = mapSeed
     const t0 = performance.now()
     this.terrain.buildAll()
     this.timings.buildAllMs = performance.now() - t0
@@ -180,13 +139,6 @@ export class WorldView {
     this.core.takeDirtyChunks()
 
     this.rig = new CameraRig(scene.cameras.main, mapW, mapH)
-
-    // Props last, so they are placed against the mask the chunks were baked
-    // from. Built here rather than in each scene for the same reason the rest of
-    // this class exists: two render paths that differ are two render paths that
-    // drift.
-    this.decorations = new DecorationLayer(scene)
-    this.decorations.build(fromMeta(core.meta.decorations), (x, y) => core.solidAt(x, y))
 
     this.ordnance = new OrdnanceLayer(scene)
     // T21.31: the live mask, so a raindrop dies at the first rock it reaches.
@@ -209,16 +161,12 @@ export class WorldView {
   }
 
   /**
-   * Carve the mask **and** show it. One call, so a caller cannot do half of it.
-   *
-   * Returns the number of props removed. Callers that carve through some other
-   * path are still covered — `update()` drains the core's dirty set regardless —
-   * but they lose the decoration removal, which needs the carve's position.
+   * Carve the mask **and** show it. One call, so a caller cannot do half of it (callers that carve
+   * through some other path are still covered — `update()` drains the core's dirty set regardless).
    */
-  applyCarve(x: number, y: number, r: number): number {
+  applyCarve(x: number, y: number, r: number): void {
     this.core.carve(x, y, r)
     this.drainDirty()
-    return this.decorations.onCarve(x, y, r)
   }
 
   /**
@@ -227,24 +175,23 @@ export class WorldView {
    * capsule as a circle produces a different mask, and a client whose mask differs
    * from the server's gets shot through walls it can still see.
    */
-  applyCarveCapsule(x0: number, y0: number, x1: number, y1: number, r: number): number {
+  applyCarveCapsule(x0: number, y0: number, x1: number, y1: number, r: number): void {
     this.core.carveCapsule(x0, y0, x1, y1, r)
     this.drainDirty()
-    // The swept region, approximated by its midpoint and half-length, is enough
-    // for props: they are cosmetic, and over-removing one is invisible where
-    // leaving one floating over a channel is not.
-    const mx = (x0 + x1) / 2
-    const my = (y0 + y1) / 2
-    const reach = Math.hypot(x1 - x0, y1 - y0) / 2 + r
-    return this.decorations.onCarve(mx, my, reach)
   }
 
   /**
-   * A carve landed somewhere else. Re-bakes are handled by `update()`; this
-   * removes the props that were standing on what just left.
+   * T23.07: show Phaser's flat rock, or not. The scenes hide it once the lit terrain's picture is whole
+   * (`GameWorld.terrainReady`) and show it otherwise — before that, and where three cannot start — so the
+   * rock is never absent. Space maps keep it (`litTerrain` is off there until T23.20).
    */
-  onCarve(x: number, y: number, r: number): number {
-    return this.decorations.onCarve(x, y, r)
+  setRockVisible(on: boolean): void {
+    if (this.container.visible !== on) this.container.setVisible(on)
+  }
+
+  /** Whether Phaser's rock is drawn (dev: `look-terrain`'s "hidden only when ready"). */
+  get rockVisible(): boolean {
+    return this.container.visible
   }
 
   /**
@@ -393,7 +340,6 @@ export class WorldView {
     this.items.destroy()
     this.weather.destroy()
     this.ordnance.destroy()
-    this.decorations.destroy()
     this.pads.destroy()
     this.platforms.destroy()
     this.terrain.destroy()

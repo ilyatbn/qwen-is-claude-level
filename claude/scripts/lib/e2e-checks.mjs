@@ -98,9 +98,11 @@ export const CHECKS = [
   // could not tell the fill from its absence (measured). Seed 7 is grassland with
   // all six pads on ground and four such ends.
   { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7' },
-  // §C0's gate: destroying terrain must change the picture, not just the mask.
-  { name: 'terrain-render', file: 'scripts/checks/terrain-render.mjs', url: '?sandbox=1&seed=4242', flaky: true },
-  { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=0' },
+  // T23.07 retired `terrain-render` (§C0: a crater changes the picture — photographed on Phaser's rock,
+  // parked flaky; `look-terrain`'s live half now asserts the crater lit in the very frame it is carved,
+  // against a from-scratch repaint) and `terrain-seed` (two seeds wear different procTextures tiles —
+  // the lit terrain's albedo is keyed by world position, as the mockup's is, so the property retired
+  // with the tiles).
   { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
   // clouds) and the ambient rain that fell from them.
@@ -185,9 +187,9 @@ export const CHECKS = [
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.
   { name: 'wings-visible', file: 'scripts/checks/wings-visible.mjs', url: '?sandbox=1&seed=4242' },
-  // §D1's gate: destroying terrain must take the SCENERY's pixels with it.
-  // Standalone — it needs a real round for `map_init` to carry the objects.
-  { name: 'objects', file: 'scripts/checks/objects.mjs', standalone: true },
+  // T23.07 retired `objects` (§D1: the scenery's atlas art goes with the carve) with the art: stamped
+  // objects are rock in the mask and drawn as the lit rock (R5), so a carve through one is a carve
+  // through rock — `look-terrain`'s live crater.
   // §C4/§C23: you must be able to see what you fired — in the GAME, and for both
   // delivery kinds. Standalone and on a real server since T13.06.6: it ran on
   // `?sandbox=1`, and the sandbox is the one scene that calls
@@ -227,7 +229,7 @@ export const CHECKS = [
   // 0.250 against a predicted 0.561-0.894, an impact speed from a starved frame
   // clock — and green in both `--jobs 1` runs.
   { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345', serial: true },
-  { name: 'decorations', file: 'scripts/checks/decorations.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.07 retired `decorations` with the `decor` atlas and `decorations.ts` (R15).
   // `flaky` (parked, tasks/flaky-test.md): red once at `--jobs 4` in a full gate
   // ("the mean moved only 2.2"), green alone.
   { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242', flaky: true },

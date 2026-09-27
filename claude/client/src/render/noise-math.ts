@@ -1,11 +1,6 @@
 /**
- * Value noise on a wrapping lattice — **one implementation, two callers**.
- *
- * This was private to `procTextures.ts`, which needs a seamless rock tile. T15.03
- * needs the same noise for a mountain ridge that repeats without a seam, and
- * `docs/70` §A24 is explicit that the answer to "I need noise over here too" is
- * to share the function, not to write a second one that agrees with the first
- * until somebody changes one of them.
+ * Value noise on a wrapping lattice, and the seed helpers the space sky reads (`spaceSky-math.ts`).
+ * (It began as `procTextures.ts`'s rock tile noise; that retired with the tiles in T23.07.)
  *
  * Phaser-free and DOM-free (§A8), so both the tile tests and the sky tests can
  * import it under node.
@@ -75,40 +70,4 @@ export function clientTagSeed(seed: number, tag: string): number {
     h = Math.imul(h, 0x01000193) >>> 0
   }
   return ((seed | 0) ^ h) | 0
-}
-
-/**
- * The pixels of a seamless mottled tile, as RGBA (T21.15).
- *
- * **Extracted from `procTextures.ts::makeNoiseTile` so it can be tested.**
- * `vitest` runs with `environment: 'node'`, so anything that touches
- * `document.createElement('canvas')` cannot be driven from a unit test — which
- * is why the terrain tiles had no test at all, and why "every map wears the same
- * rock" survived to be reported from play. The canvas half stays in
- * `procTextures`; the arithmetic is here, where the `-math` convention puts it.
- *
- * Two octaves on wrapping lattices, so the tile is seamless: `tileWrapsSeamlessly`
- * is the assertion, and a seam is invisible in a unit test and glaring at every
- * 256 px boundary in the game.
- */
-export function noiseTilePixels(
-  size: number,
-  base: { r: number; g: number; b: number },
-  spread: number,
-  seed: number,
-): Uint8ClampedArray {
-  const px = new Uint8ClampedArray(size * size * 4)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const n =
-        0.65 * wrappedNoise(x, y, 8, size, seed) + 0.35 * wrappedNoise(x, y, 32, size, seed + 17)
-      const v = (n - 0.5) * spread
-      const i = (y * size + x) * 4
-      px[i] = Math.max(0, Math.min(255, base.r + v))
-      px[i + 1] = Math.max(0, Math.min(255, base.g + v))
-      px[i + 2] = Math.max(0, Math.min(255, base.b + v))
-      px[i + 3] = 255
-    }
-  }
-  return px
 }

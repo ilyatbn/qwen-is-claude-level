@@ -82,6 +82,8 @@ export class SandboxScene extends Phaser.Scene {
   private spaceSky!: SpaceSky
   /** T23.03 (R1): three.js under Phaser's canvas — the sky since T23.04; `null` until its chunk has loaded (T23.03B, F10). */
   private worldRenderer: GameWorld | null = null
+  /** T23.07: the world renderer's chunk has loaded (or failed to) — until then a lit-terrain swap may be coming. */
+  private worldSettled = false
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
   private terrainFields: TerrainFields | null = null
   /** T23.06B: counts regenerates — part of the fields' map key, so only a resync is the same map. */
@@ -209,6 +211,7 @@ export class SandboxScene extends Phaser.Scene {
     this.spaceSky.setSeed(this.core.meta.seed)
     this.worldRenderer = null
     void loadWorldRenderer(this).then((m) => {
+      this.worldSettled = true
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
       this.worldRenderer?.setTerrain(this.terrainFields)
     })
@@ -418,7 +421,7 @@ export class SandboxScene extends Phaser.Scene {
     const { width: mapW, height: mapH } = this.core
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
-    this.world = new WorldView(this, this.core, undefined, undefined, undefined, this.gravity === SPACE_GRAVITY)
+    this.world = new WorldView(this, this.core, undefined, this.gravity === SPACE_GRAVITY)
     // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
     // and until its chunk loads; it is then described from the core as it stands.
     this.worldRenderer?.mapChanged(this.gameMap())
@@ -825,6 +828,9 @@ export class SandboxScene extends Phaser.Scene {
           // and whether the new terrain's picture is whole (T23.07's switch from Phaser's rock).
           terrainWarning: self.terrainFields?.stats.warning ?? '',
           terrainReady: self.worldRenderer?.terrainReady() ?? false,
+          rockVisible: self.world.rockVisible,
+          // T23.07: the rock will still change on its own (Phaser's → the lit terrain) — the checks' ready waits it out.
+          terrainSwapPending: !self.worldSettled || (self.worldRenderer?.terrainSwapPending() ?? false),
           // T22.06: the space sky's bodies and stars, or null while it is not shown (not a space map).
           spaceSky: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
           darkness: self.darkness(),
@@ -894,9 +900,6 @@ export class SandboxScene extends Phaser.Scene {
           if (typeof d === 'number' && d <= DEPTH.lightmap) seen.add(d)
         }
         return [...seen].sort((a, b) => a - b)
-      },
-      decorations() {
-        return { count: self.world.decorations.count, total: self.core.meta.decorations.length }
       },
       /**
        * T21.11's platforms: **drawn** against **declared**.
@@ -983,16 +986,6 @@ export class SandboxScene extends Phaser.Scene {
       showPads(on: boolean) {
         self.world.pads.setVisible(on)
         return { visible: self.world.pads.visible }
-      },
-      /**
-       * T21.15: the map's seed, and the seed the terrain tiles were built from.
-       *
-       * **Both ends.** Either alone passes against the other being wrong — and
-       * the failure mode here is precisely a dropped argument, which leaves the
-       * map seed correct and the tiles constant.
-       */
-      terrainSeeds() {
-        return { map: self.core.meta.seed, tiles: self.world.tileSeed }
       },
       platforms() {
         return {
@@ -1381,6 +1374,18 @@ export class SandboxScene extends Phaser.Scene {
         // in a single page without a reload.
         if (gravity !== undefined) self.gravity = gravity
         self.regenerate()
+        // T23.07: a new map's rock is Phaser's until the lit terrain's picture is whole (seconds on
+        // SwiftShader). Resolves once it will not change on its own again, so a check that awaits the
+        // regenerate photographs the settled world; one that reads state at once still can. Never hangs.
+        return new Promise<void>((resolve) => {
+          const t0 = performance.now()
+          const poll = (): void => {
+            const pending = !self.worldSettled || (self.worldRenderer?.terrainSwapPending() ?? false)
+            if (!pending || performance.now() - t0 > 30_000) resolve()
+            else setTimeout(poll, 50)
+          }
+          poll()
+        })
       },
       carve(x: number, y: number, r: number) {
         self.carveRadius = r
@@ -1489,7 +1494,6 @@ export class SandboxScene extends Phaser.Scene {
       this.world.ordnance.addImpact(e.x, e.y, e.r)
       this.terrainFields?.blast(e.x, e.y, e.r)
       this.cue('explode', e.x, e.y)
-            this.world.onCarve(e.x, e.y, e.r)
     this.minimap?.setTerrainDirty()
       // Trauma scaled by distance and blast size, from the layer that owns it
       // (§A24 — this file briefly had a second Trauma of its own).
@@ -1545,6 +1549,8 @@ export class SandboxScene extends Phaser.Scene {
       C().RADIATION_LOG_INTERVAL,
     )
     this.world.update(this.world.rig.center)
+    // T23.07: Phaser's rock only while the lit terrain does not draw it (never absent).
+    this.world.setRockVisible(!(this.worldRenderer?.terrainReady() ?? false))
     this.frameBakes = this.world.terrain.stats.bakesThisFrame
 
     // The readout used to refresh only on regenerate/carve, so it displayed

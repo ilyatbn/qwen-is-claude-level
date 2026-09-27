@@ -28,6 +28,22 @@
  * `LOW_MAX_P999`). Control: the low material must really have drawn (`litTerrain().material`), and the
  * low frame is also compared at Level A with the reference (reported, not gating: 640×360 CSS-scaled is
  * not the pictures' resolution — look-sky's reason).
+ *
+ * ## 3. Live, in the sandbox (low tier): Phaser's rock hidden only when ready; a crater lit at once
+ *
+ * **Never absent.** From the page load, every frame until the terrain is ready and a few after:
+ * `debug().rockVisible` (Phaser's flat rock) and `terrainReady` (the lit terrain draws the rock). No
+ * frame may have neither; the control is presence — frames before ready must exist and show Phaser's
+ * rock (Medium at the low tier takes seconds), and after ready Phaser's rock must be hidden.
+ *
+ * **A crater, lit in the frame it is carved.** The camera is pinned (`watch`) on a surface; the frame
+ * before, then `carve` between two frames, then the **next drawn frame** (`readNextFrame`, nothing
+ * forced) with Phaser's frame counter: it must be the very next frame (`CARVE_FRAMES`), the terrain
+ * must have repainted in it, and it must equal — `CRATER_MAX_DIFF` — a from-scratch repaint
+ * of every field, albedo tile and bake tile at the same view (`repaintAlbedo`) — i.e. the carve's
+ * incremental update is the whole lit, bevelled picture of the new mask, not a later frame's — over the
+ * whole frame, not only the crater's box (the shadow march reads 53 px away). Control
+ * (presence): the crater box differs from the frame before the carve.
  */
 import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -48,6 +64,14 @@ const TH = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts
  */
 const LOW_MAX_MEAN = 0.5
 const LOW_MAX_P999 = 12
+
+/** Phaser frames from the carve to the first world frame that shows it: the very next one. */
+const CARVE_FRAMES = 1
+/** Max channel difference, crater box, incremental vs a from-scratch repaint (the same shader on the same inputs). */
+const CRATER_MAX_DIFF = 2
+/** The crater's radius, world px, and how far under the surface its centre is. */
+const CRATER_R = 40
+const CRATER_DEPTH = 20
 
 const decode = (f) => ({ width: f.w, height: f.h, data: Uint8Array.from(Buffer.from(f.rgba, 'base64')), view: f.view })
 
@@ -153,6 +177,137 @@ export default async function ({ page, shot, log }) {
   const lm = compare(scaled, reference, { regions })
   log(`reported, not gating: the low tier (640x360, doubled) vs the reference — deltaE_terrain ${lm.deltaE_terrain.toFixed(3)}, dssim ${lm.dssim.toFixed(4)}, fails ${failures(lm, TH).length}`)
   sideBySide(scaled, reference, 'look-terrain-F1-low-vs-reference.png')
+
+  // ---------------------------------------------------------------- 3. live
+  const base = new URL(page.url())
+  base.search = '?sandbox=1&seed=4242'
+  await page.goto(base.href, { waitUntil: 'load' })
+  await page.waitForFunction(() => !!window.__game && !!window.__world, null, { timeout: 60_000 })
+  // Every frame from here until ready + 10: (ready, rock visible).
+  const swap = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const s = []
+        let after = 0
+        const t0 = performance.now()
+        const tick = () => {
+          const d = window.__game.debug()
+          s.push([d.terrainReady ? 1 : 0, d.rockVisible ? 1 : 0])
+          if (d.terrainReady) after++
+          if (after > 10 || performance.now() - t0 > 90_000) resolve(s)
+          else requestAnimationFrame(tick)
+        }
+        tick()
+      }),
+  )
+  const absent = swap.filter(([r, v]) => !r && !v).length
+  const before = swap.filter(([r]) => !r).length
+  const beforeShown = swap.filter(([r, v]) => !r && v).length
+  const lastHidden = swap.slice(-5).every(([r, v]) => r && !v)
+  log(`swap: ${swap.length} frames sampled, ${before} before ready (Phaser's rock shown on ${beforeShown}), frames with no rock drawn ${absent}; hidden after ready ${lastHidden}`)
+  if (absent) problems.push(`${absent} frame(s) had neither Phaser's rock nor the lit terrain`)
+  if (!(before > 0 && beforeShown === before)) problems.push(`control: want frames before ready, each showing Phaser's rock (${beforeShown}/${before})`)
+  if (!lastHidden) problems.push(`Phaser's rock is not hidden once the lit terrain is ready: ${JSON.stringify(swap.slice(-5))}`)
+  const lit = await page.evaluate(() => window.__world.litTerrain())
+  if (!lit?.drawn) problems.push(`the lit terrain is not drawn once ready: ${JSON.stringify(lit)}`)
+  await shot('look-terrain-sandbox')
+
+  // A surface near the map's middle, the camera pinned on it.
+  const site = await page.evaluate(([depth]) => {
+    const g = window.__game
+    const d = g.debug()
+    for (let k = 0; k < 40; k++) {
+      const x = Math.round(d.mapW / 2 + (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 97)
+      for (let y = 40; y < d.mapH - 80; y++) {
+        if (g.core.solidAt(x, y)) {
+          let deep = true
+          for (let yy = y; yy < y + 3 * depth; yy++) if (!g.core.solidAt(x, yy)) deep = false
+          if (deep) return { x, y }
+          break
+        }
+      }
+    }
+    return null
+  }, [CRATER_DEPTH])
+  if (!site) throw new Error('no surface with solid rock under it found to carve')
+  const cx = site.x
+  const cy = site.y + CRATER_DEPTH
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [cx, cy - 60])
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r)))))
+  const pre = decode(await page.evaluate(() => window.__world.readFrame()))
+  const t0 = await page.evaluate(() => window.__world.terrain())
+  const carved = await page.evaluate(
+    ([x, y, r]) => {
+      const next = window.__world.readNextFrame()
+      const at = window.__world.loopFrame()
+      window.__game.carve(x, y, r)
+      // A frame that never draws (the carve did not mark the picture changed) is the failure, not a hang.
+      const timeout = new Promise((r) => setTimeout(() => r(null), 5000))
+      return Promise.race([next, timeout]).then((f) => ({ f, at }))
+    },
+    [cx, cy, CRATER_R],
+  )
+  const t1 = await page.evaluate(() => window.__world.terrain())
+  if (!carved.f) throw new Error(`look-terrain:\n  - ${[...problems, 'the world canvas drew no frame within 5 s of the carve (the carve did not reach the picture)'].join('\n  - ')}`)
+  const inc = decode(carved.f)
+  await page.evaluate(() => window.__world.repaintAlbedo())
+  const scratch = decode(await page.evaluate(() => window.__world.readFrame()))
+  const views = [pre.view, inc.view, scratch.view].map((v) => JSON.stringify(v))
+  if (new Set(views).size !== 1) problems.push(`the camera moved between the crater's frames: ${views.join(' ')}`)
+  // The crater's box in buffer px (grown by the bevel), from the view it was drawn with.
+  const k = inc.width / inc.view.w
+  const box = {
+    x0: Math.max(0, Math.floor((cx - CRATER_R - 16 - inc.view.x) * k)),
+    y0: Math.max(0, Math.floor((cy - CRATER_R - 16 - inc.view.y) * k)),
+    x1: Math.min(inc.width, Math.ceil((cx + CRATER_R + 16 - inc.view.x) * k)),
+    y1: Math.min(inc.height, Math.ceil((cy + CRATER_R + 16 - inc.view.y) * k)),
+  }
+  // The incremental picture against the from-scratch one over the **whole** frame: a carve changes the
+  // fields `render_fields.rs`'s margin away, and the shading reads them `BAKE_REACH` further (the
+  // shadow march) — a rect that stopped short would leave stale texels outside the crater's own box.
+  let worst = 0
+  let stale = 0
+  for (let o = 0; o < inc.data.length; o += 4) {
+    let d = 0
+    for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs(inc.data[o + c] - scratch.data[o + c]))
+    worst = Math.max(worst, d)
+    if (d > CRATER_MAX_DIFF) stale++
+  }
+  let moved = 0
+  let n = 0
+  for (let y = box.y0; y < box.y1; y++) {
+    for (let x = box.x0; x < box.x1; x++) {
+      const o = (y * inc.width + x) * 4
+      n++
+      let dp = 0
+      for (let c = 0; c < 3; c++) dp = Math.max(dp, Math.abs(inc.data[o + c] - pre.data[o + c]))
+      if (dp > 8) moved++
+    }
+  }
+  // Phaser's TimeStep counts a frame **after** its step (update, render, postrender): read in the step
+  // that drew it, the counter still says the frame before — so the step the crater first shows in is
+  // `readback − carve + 1`, and 1 is the very next step after the carve.
+  const framesToShow = carved.f.loopFrame - (carved.at ?? NaN) + 1
+  log(`crater r ${CRATER_R} at (${cx}, ${cy}): shown ${framesToShow} Phaser frame(s) after the carve (want ${CARVE_FRAMES}); terrain repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes}; crater box ${box.x1 - box.x0}x${box.y1 - box.y0} buffer px: the whole frame vs a from-scratch repaint max |Δ| ${worst} (max ${CRATER_MAX_DIFF}), ${stale} px over; the box vs the frame before ${moved}/${n} px moved`)
+  if (framesToShow !== CARVE_FRAMES) problems.push(`the crater was first drawn ${framesToShow} frames after the carve, want ${CARVE_FRAMES}`)
+  if (!(t1.dirtyPaints > t0.dirtyPaints) || !(t1.bakes > t0.bakes)) problems.push(`the carve's frame repainted nothing (repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes})`)
+  if (worst > CRATER_MAX_DIFF) problems.push(`the crater's first frame differs from a from-scratch repaint by ${worst} on ${stale} px`)
+  if (moved < n * 0.2) problems.push(`control: the crater moved only ${moved}/${n} px of its box against the frame before`)
+  const png = new PNG({ width: (box.x1 - box.x0) * 3 + 16, height: box.y1 - box.y0 })
+  png.data.fill(255)
+  for (let y = box.y0; y < box.y1; y++) {
+    for (const [img, x0] of [[pre, 0], [inc, box.x1 - box.x0 + 8], [scratch, 2 * (box.x1 - box.x0) + 16]]) {
+      for (let x = box.x0; x < box.x1; x++) {
+        const o = (y * img.width + x) * 4
+        const q = ((y - box.y0) * png.width + x0 + x - box.x0) * 4
+        for (let c = 0; c < 3; c++) png.data[q + c] = img.data[o + c]
+        png.data[q + 3] = 255
+      }
+    }
+  }
+  writeFileSync(join(root, 'shots', 'look-terrain-crater.png'), PNG.sync.write(png))
+  log('crater (before | its first frame | from-scratch repaint): shots/look-terrain-crater.png')
+  await shot('look-terrain-sandbox-crater')
 
   if (problems.length) throw new Error(`look-terrain:\n  - ${problems.join('\n  - ')}`)
 }

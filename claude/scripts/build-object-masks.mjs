@@ -49,7 +49,6 @@ const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 
 export const PACK_ROOT = resolve(root, '../sprite_packs')
 const objectsDir = join(root, 'assets/objects')
-const atlasDir = join(root, 'assets/atlas')
 const PAD = 2 // transparent gutter, so filtering cannot bleed a neighbour in
 
 /**
@@ -321,7 +320,7 @@ export function build(packRoot = PACK_ROOT) {
 }
 
 /**
- * Add `objects` to the atlas list without dropping anyone else's.
+ * Take `objects` out of the atlas list without dropping anyone else's (T23.07: the art retired).
  *
  * `build-atlas.mjs` learned this the hard way (§A24): two writers to one file,
  * each assuming it owned all of it, and the audio list vanished on every atlas
@@ -329,7 +328,6 @@ export function build(packRoot = PACK_ROOT) {
  */
 function mergeManifest(existing) {
   const atlases = (existing.atlases ?? []).filter((a) => a.key !== 'objects')
-  atlases.push({ key: 'objects', png: 'atlas/objects.png', json: 'atlas/objects.json' })
   return { ...existing, atlases }
 }
 
@@ -377,12 +375,11 @@ if (isMain) {
   }
 
   const manifestJson = `${JSON.stringify(built.manifest, null, 2)}\n`
-  const atlasJson = `${JSON.stringify(built.atlas, null, 2)}\n`
   const targets = [
     [join(objectsDir, 'masks.bin'), built.masks],
     [join(objectsDir, 'manifest.json'), Buffer.from(manifestJson)],
-    [join(atlasDir, 'objects.png'), built.atlasPng],
-    [join(atlasDir, 'objects.json'), Buffer.from(atlasJson)],
+    // T23.07 (R5, R15): the objects' atlas art retired — stamped objects are drawn as the lit rock they
+    // are in the mask. The packer still runs (its layout is not an output); nothing writes its image.
   ]
 
   if (check) {
@@ -398,7 +395,6 @@ if (isMain) {
     console.log('\noutputs match the sources')
   } else {
     mkdirSync(objectsDir, { recursive: true })
-    mkdirSync(atlasDir, { recursive: true })
     for (const [path, bytes] of targets) writeFileSync(path, bytes)
     const manifestPath = join(root, 'assets/manifest.json')
     const existing = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : {}

@@ -20,7 +20,6 @@ import { BirdLayer } from '../render/birds'
 import { landingVolume } from '../render/feel-math'
 import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
-import { atlasArt } from '../render/objects'
 import type { MapObject } from '../net/codec'
 import { C, Core, MapGenerator, dequantizeAngle, strictConstants, type FlareQuery, type VentSpec } from '../core'
 import { asRecord, Connection, type Welcome } from '../net/connection'
@@ -1118,24 +1117,8 @@ export class GameScene extends Phaser.Scene {
         this.mirror.applyEvent(ev, p, performance.now())
         if (ev === 'carve' || ev === 'carve_capsule') {
           this.minimap?.setTerrainDirty()
-          // The terrain re-bake needs nothing here: `WorldView.update()` drains
-          // the core's dirty set every frame, so it does not matter who carved.
-          // Props do need the position, because "which decorations were standing
-          // on that" is not recoverable from a chunk id.
-          if (ev === 'carve') {
-            this.world?.onCarve(Number(p['x'] ?? 0), Number(p['y'] ?? 0), Number(p['r'] ?? 0))
-          } else {
-            const x0 = Number(p['x0'] ?? 0)
-            const y0 = Number(p['y0'] ?? 0)
-            const x1 = Number(p['x1'] ?? 0)
-            const y1 = Number(p['y1'] ?? 0)
-            const r = Number(p['r'] ?? 0)
-            this.world?.onCarve(
-              (x0 + x1) / 2,
-              (y0 + y1) / 2,
-              Math.hypot(x1 - x0, y1 - y0) / 2 + r,
-            )
-          }
+          // The terrain re-bake needs nothing here: `WorldView.update()` drains the core's dirty set
+          // every frame, so it does not matter who carved (the props this once removed retired, T23.07).
         }
         this.cueFor(ev, p)
       })
@@ -1620,18 +1603,15 @@ export class GameScene extends Phaser.Scene {
     const init = this.mirror.applyMapInitB64(b64)
 
     this.world?.destroy()
-    // **The seed and theme come off the wire** (2026-09-16). `core.meta` carries
-    // neither on a networked client — `loadMask` clones the startup map's meta —
-    // so `WorldView` was building every round's rock from seed 1 and theme 0.
-    // `this.mapSeed` is the same value the sky already uses, two lines below.
-    // **Space is read off this map, not off `this.gravity`** (T22.06B F7). A
+    // (The rock no longer takes the seed or theme — T23.07: the lit terrain's albedo is keyed by world
+    // position, the one palette R5's.) **Space is read off this map, not off `this.gravity`** (T22.06B F7). A
     // mid-match joiner is sent `map_init` *before* `lobby_state`, so at this line
     // `this.gravity` is whatever the previous match left it (the field outlives a
     // round) and the cave-backdrop lock was decided by the wrong match. The map's
     // own rocks are the same predicate the server gates on (`Map::space_geometry`,
     // R58: non-empty asteroids), and they arrive in this very message.
     const spaceMap = init.asteroids.length > 0
-    this.world = new WorldView(this, this.core, undefined, this.mapSeed, init.theme, spaceMap)
+    this.world = new WorldView(this, this.core, undefined, spaceMap)
     // T23.04: the sky is keyed on the generator that made the map (`MapGenerator::to_u8`, off the wire).
     this.onSpaceMap = init.generator === MapGenerator.Space
     this.worldRenderer?.mapChanged(this.gameMap())
@@ -1660,12 +1640,9 @@ export class GameScene extends Phaser.Scene {
     this.platformViews = init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.platforms.build(this.platformViews)
 
-    // §D6. From the wire for the same reason the pads are: a networked client
-    // never runs the generator. `atlasArt` returns null frames when the objects
-    // atlas did not load, and the bake then draws terrain with no scenery on it
-    // rather than failing — `docs/50` §8, the game starts with no art at all.
+    // §D6's objects are stamped into the mask (collision, R5) and drawn as rock since T23.07 — the atlas
+    // art retired (R15). Kept for the debug handle: what `map_init` carried.
     this.mapObjects = init.objects
-    this.world.terrain.setObjects(init.objects, atlasArt(this.textures, 'objects'))
     // The item layer lives in the shared stack (§C0), so its registry is set
     // here rather than in `create` — there is no layer before there is a world.
     this.world.items.setRegistry(this.core.itemRegistryJson())
@@ -2316,6 +2293,8 @@ export class GameScene extends Phaser.Scene {
         hasFlashlight: this.hasFlashlight,
         // (T21.26's ambient rain retired with the clouds it fell from — T23.04.)
       })
+      // T23.07: Phaser's rock only while the lit terrain does not draw it (never absent).
+      this.world.setRockVisible(!(this.worldRenderer?.terrainReady() ?? false))
     }
     // Mine visibility is distance to the *player*, not to the camera centre —
     // the camera leads the aim, so those are not the same point.
@@ -3489,13 +3468,9 @@ export class GameScene extends Phaser.Scene {
           // assuming it.
           padsVisible: self.world?.pads.visible ?? false,
           platformsDrawn: self.world?.platforms.count ?? 0,
-          // §D6, both ends again: what `map_init` carried, and what the index
-          // the bake reads actually holds. `objects` alone would pass for a
-          // scene that decoded them and never called `setObjects` — which is
-          // exactly the "renderer never told the map had changed" shape.
+          // §D6: what `map_init` carried. Drawn as rock since T23.07 (the mask stamps them), so there is
+          // no separate index to count at the other end any more.
           objects: self.mapObjects.length,
-          objectsIndexed: self.world?.terrain.objectIndex?.count ?? 0,
-          objectChunks: self.world?.terrain.stats.objectChunks ?? 0,
           objectPositions: self.mapObjects.map((o) => ({
             id: o.id,
             x: o.x,
@@ -3911,6 +3886,7 @@ export class GameScene extends Phaser.Scene {
           // and whether the new terrain's picture is whole (T23.07's switch from Phaser's rock).
           terrainWarning: self.terrainFields?.stats.warning ?? '',
           terrainReady: self.worldRenderer?.terrainReady() ?? false,
+          rockVisible: self.world?.rockVisible ?? false,
           sky: {
             space: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
             // T23.04: whether the world renderer draws the ground sky (not on a space map).

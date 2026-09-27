@@ -418,7 +418,11 @@ try {
       // because thirteen checks drive the sandbox — but the title screen has no
       // `__game` and never will, and hardcoding one scene's handle here made
       // the harness silently un-runnable for any other screen.
-      await page.waitForFunction(check.ready ?? (() => !!window.__game), null, {
+      // T23.07: a sandbox check starts once the rock has stopped changing on its own — Phaser's flat rock
+      // is swapped for the lit terrain when its picture is whole (seconds on SwiftShader), and a check
+      // photographing the world across the swap measures the swap.
+      const sandboxReady = () => !!window.__game && !window.__game.debug().terrainSwapPending
+      await page.waitForFunction(check.ready ?? (/sandbox=1/.test(check.url ?? '') ? sandboxReady : () => !!window.__game), null, {
         timeout: 60_000,
       })
 

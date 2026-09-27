@@ -7395,3 +7395,11 @@ Controls (lab knobs) fail: rim-off 5/12, bevel-off 6/12, no terrain 12/12. Mocku
 Plants in the shader (live site): rim term dropped → 5 red; interior darkening dropped → 7 red. Bake-order vitest plant (+1 dropped) → 4 red.
 Low tier: baked vs unbaked on one 640x360 buffer mean |Δ| 0.088, p99.9 1, max 2. occl and lava dropped (stated at the code).
 look-lab, look-sky, look-albedo, look-terrain 4/4; vitest 1174; check.sh --changed HEAD --fast EXIT 0. Game unchanged (litTerrain false) until part B.
+
+## T23.07 part B — the lit terrain in the game; the old terrain art retired (builder, 2026-09-27)
+Live (look-terrain, sandbox low): 320 frames before ready all show Phaser's rock, 0 frames with no rock; crater lit in the very next step, whole frame == from-scratch repaint (max Δ 0), 32 % of its box changed. Plants red: carve not marking dirty (no frame in 5 s), rock always hidden (325 absent), no rebake on carve (Δ 121 on 1978 px); bake rect not grown stays green (the fields rect's 64-px margin already covers the 53-px reach).
+masks.bin sha256 7a0c3d8c…8b3aa6 before = after; objects/manifest.json 06ecf75a…c555e unchanged; `build-object-masks --check` matches.
+Retired: procTextures, decorations(+math), objects.ts, edge band, decor/objects atlases; checks terrain-render (→ look-terrain live), terrain-seed, objects, decorations. Rewritten: m9-checkpoint (one world), animals (pixel fraction), two-clients layers. vitest 1174 → 1115 (tests of retired code removed).
+Suite (before the last fixes) 71/76: world-canvas (marker under terrain — fixed), fog-shader + weather-visible (measured across the swap after regenerate — regenerate now resolves once settled), animals (dark spider on night rock: rewritten), death (green on rerun). All 5 green after.
+fps (match, camera panning): SwiftShader low 60.2 (world off 60.2), terrain draw 8.1 ms low vs 14.3 ms full shader; Arc B390 full 60.0 (vsync), draw 4.8 ms. Swap frame warmed 58/65 → 20/30 ms (M/L).
+Done-when EXIT 0 (vitest 1115, assets ok, look-terrain + look-lab); check.sh --changed HEAD --fast EXIT 0 (first run: in_progress quick_match timed out waiting a welcome, green alone — reported). Full suite after commit: next entry.

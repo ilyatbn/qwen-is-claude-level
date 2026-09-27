@@ -17,8 +17,6 @@ import type { Core } from '../core'
 import { C } from '../core'
 import { BackdropMask, BakeScratch, bakeChunk, type BakeLayers } from './chunkBake'
 import { parseCoreDiscs, parseIronDiscs } from './chunkBake-math'
-import { ObjectIndex, type ObjectArt } from './objects'
-import type { MapObject } from '../net/codec'
 
 /** The slice of Phaser this needs, so tests can stub it without importing Phaser. */
 export interface TextureHost {
@@ -57,10 +55,6 @@ export interface TerrainStats {
   chunkBakeMs: number
   pending: number
   chunkCount: number
-  /** Scenery installed by `setObjects` (§D6). Zero until `map_init` arrives. */
-  objectCount: number
-  /** How many chunks hold at least one — the index's own reach. */
-  objectChunks: number
 }
 
 let generationCounter = 0
@@ -91,9 +85,9 @@ export class TerrainRenderer {
   private readonly textures: TextureHost
   private readonly images: ImageHost
   private readonly core: Core
-  private readonly fill: CanvasImageSource | null
-  private readonly edge: CanvasImageSource | null
-  private readonly back: CanvasImageSource | null
+  /** T23.07: the flat rock and cave-wall colours (`chunkBake.ts::BakeLayers`); `fill` null only in tests. */
+  private readonly fill: string | null
+  private readonly back: string | null
   private scratch: BakeScratch | undefined
   /** The dilated silhouette: where the cave backdrop shows. */
   private snapshot: BackdropMask | undefined
@@ -109,9 +103,6 @@ export class TerrainRenderer {
   /** T22.06: set for a space map — the backdrop stays off whatever a toggle asks. */
   private caveLocked = false
 
-  /** §D6's chunk → objects index. Null until `map_init` arrives. */
-  private objects: ObjectIndex | null = null
-  private objectArt: ObjectArt | null = null
 
   private readonly generation: number
   private readonly keys: string[] = []
@@ -129,8 +120,6 @@ export class TerrainRenderer {
     chunkBakeMs: 0,
     pending: 0,
     chunkCount: 0,
-    objectCount: 0,
-    objectChunks: 0,
   }
 
   private readonly deps: TerrainDeps
@@ -139,16 +128,14 @@ export class TerrainRenderer {
     textures: TextureHost,
     images: ImageHost,
     core: Core,
-    fill: CanvasImageSource | null,
-    edge: CanvasImageSource | null,
+    fill: string | null,
     deps?: Partial<TerrainDeps>,
-    back: CanvasImageSource | null = null,
+    back: string | null = null,
   ) {
     this.textures = textures
     this.images = images
     this.core = core
     this.fill = fill
-    this.edge = edge
     this.back = back
     this.caveBackdrop = caveBackdropDefault()
     this.generation = ++generationCounter
@@ -247,58 +234,15 @@ export class TerrainRenderer {
   bakeLayers(): BakeLayers {
     return {
       // `fill` is only null in tests, which supply their own `bake`.
-      fill: this.fill as CanvasImageSource,
-      edge: this.edge,
+      fill: this.fill as string,
       back: this.caveBackdrop ? this.back : null,
       backSource: this.caveBackdrop ? (this.snapshot ?? null) : null,
-      objects: this.objects,
-      objectArt: this.objectArt,
       // T22.16 (R102): the rocks' cores, read off the core at bake time — the list
       // `map_init` installed (or the sandbox generated), empty off a space map.
       cores: parseCoreDiscs(this.core.coreDiscs()),
       // T22.21 (R113): the iron rocks, the same way.
       irons: parseIronDiscs(this.core.ironDiscs()),
     }
-  }
-
-  /**
-   * Install the round's scenery and re-bake every chunk (§D6).
-   *
-   * **Built from the wire, not from `core.meta`**, for the reason §C5's pads
-   * already document: a networked client never runs the generator, so
-   * `core.meta.objects` is empty and a renderer reading it would draw nothing
-   * while looking perfectly correct.
-   *
-   * Marking every chunk dirty is the other half. A renderer handed an index and
-   * never told the map changed shows the scenery only where something else
-   * happens to carve — which is precisely the "terrain renderer never told the
-   * map had changed" bug this project already paid for once.
-   */
-  setObjects(objects: readonly MapObject[], art: ObjectArt | null): void {
-    this.objects = new ObjectIndex(objects, C().CHUNK_SIZE, this.chunksX, this.chunksY)
-    this.objectArt = art
-    // **Only the chunks that actually hold an object.**
-    //
-    // This queued every chunk on the map. The invariant it was defending is
-    // real — a renderer handed an index and never told the map changed shows
-    // scenery only where something else happens to carve — but that invariant
-    // needs the chunks the index *places something in*, which is 12 to 36 of
-    // them, not all 128 on a medium map. At `CHUNK_REBAKE_BUDGET` 4 a frame the
-    // difference is ~32 frames of backlog at the start of every round, during
-    // which a carve's own rebake queues behind scenery that has not changed.
-    for (const id of this.textureByChunk.keys()) {
-      const cx = id % this.chunksX
-      const cy = Math.floor(id / this.chunksX)
-      if (this.objects.at(cx, cy).length > 0) this.pending.add(id)
-    }
-    this.stats.pending = this.pending.size
-    this.stats.objectCount = this.objects.count
-    this.stats.objectChunks = this.objects.occupiedChunks
-  }
-
-  /** The index, for the debug HUD and for tests that assert it was installed. */
-  get objectIndex(): ObjectIndex | null {
-    return this.objects
   }
 
   /**

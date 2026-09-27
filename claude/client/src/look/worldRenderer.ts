@@ -300,6 +300,7 @@ export class WorldRenderer implements SceneRenderer {
     this.buf = { w: 0, h: 0 }
     this.syncBox()
     this.syncBake()
+    this.warmTerrain()
   }
 
   /** T23.07 (R14): the low tier keeps a lit bake for the scene's terrain look; the full tier none. */
@@ -389,6 +390,16 @@ export class WorldRenderer implements SceneRenderer {
     this.drawnTerrain = { drawn: true, material: low ? 'low' : 'full', lights: lights.length }
   }
 
+  /** T23.07: whether the scene asks for the lit terrain (it draws once its picture is whole). */
+  get litTerrainWanted(): boolean {
+    return !!this.desc?.litTerrain
+  }
+
+  /** T23.07: whether the lit terrain draws the rock now (the scene asks for it and its picture is whole). */
+  get drawsTerrain(): boolean {
+    return !!this.desc?.litTerrain && this.terrain.ready
+  }
+
   /** Dev (`look-terrain`): draw the terrain with this tier's material whatever the tier (`null`: the tier's own). */
   terrainForce: QualityTier | null = null
 
@@ -403,9 +414,55 @@ export class WorldRenderer implements SceneRenderer {
    * (F6: allocated, nothing uploaded); the same map's resync keeps it (F3) — `terrainLayer.ts`.
    */
   setTerrain(feed: TerrainFeed | null, units: number): void {
+    const before = this.terrain.gpu
     this.terrain.setFeed(feed, units)
     this.syncBake()
+    if (this.terrain.gpu && this.terrain.gpu !== before) this.warmTerrain()
     this.dirty = true
+  }
+
+  /**
+   * T23.07: draw the terrain's materials once, 1 px, into this tier's target, at the map change —
+   * T23.06B F6's warm for the draw. Measured (sandbox, SwiftShader, low tier): the first frame that drew
+   * the lit terrain cost 58 ms (Medium) / 65 ms (Large) against 16–22 ms either side — the pipeline
+   * built on first use. The px is overwritten by the next drawn frame (the render pass clears).
+   */
+  private warmTerrain(): void {
+    const g = this.terrain.gpu
+    if (!g || !this.desc) return
+    const u = this.terrainMats.uniforms
+    setTextures(u, g.field, g.albedo.texture, g.w, g.h, this.desc.world.h)
+    setLook(u, this.desc.look.terrain)
+    ;(u['ext']!.value as { set(x: number, y: number): void }).set(this.desc.world.w, this.desc.world.h)
+    u['baked']!.value = g.bake?.texture ?? null
+    const r = this.renderer
+    const rt = this.composer.readBuffer
+    const prev = r.getRenderTarget()
+    const autoClear = r.autoClear
+    const vis = this.terrainMesh.visible
+    const mat = this.terrainMesh.material
+    const cam = new OrthographicCamera(0, 1, this.desc.world.h, this.desc.world.h - 1, -2000, 2000)
+    cam.position.z = 1000
+    cam.updateProjectionMatrix()
+    r.autoClear = false
+    rt.viewport.set(0, 0, 1, 1)
+    rt.scissor.set(0, 0, 1, 1)
+    rt.scissorTest = true
+    r.setRenderTarget(rt)
+    this.terrainMesh.visible = true
+    this.terrainMesh.scale.set(this.desc.world.w, this.desc.world.h, 1)
+    this.terrainMesh.position.set(this.desc.world.w / 2, this.desc.world.h / 2, 0)
+    for (const m of g.bake ? [this.terrainMats.full, this.terrainMats.low] : [this.terrainMats.full]) {
+      this.terrainMesh.material = m
+      r.render(this.scene3, cam)
+    }
+    rt.viewport.set(0, 0, rt.width, rt.height)
+    rt.scissor.set(0, 0, rt.width, rt.height)
+    rt.scissorTest = false
+    this.terrainMesh.material = mat
+    this.terrainMesh.visible = vis
+    r.setRenderTarget(prev)
+    r.autoClear = autoClear
   }
 
   /** T23.06 dev/look-lab: draw the albedo flat (sRGB bytes straight to the canvas, air black) instead of the world. */
@@ -457,7 +514,10 @@ export class WorldRenderer implements SceneRenderer {
 
   /** Dev: a flat magenta quad anchored in the world at mask px `x, y` (top-left), `w × h`. */
   addMarker(x: number, y: number, w: number, h: number): void {
-    const m = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: new Color(1, 0, 1) }))
+    // Last, over the lit terrain (T23.07: an opaque marker at z 0 drew first and the terrain covered it) —
+    // transparent, so it sorts in the terrain's list, where `renderOrder` puts it after.
+    const m = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: new Color(1, 0, 1), depthTest: false, transparent: true }))
+    m.renderOrder = 1000
     const c = toWorld(x + w / 2, y + h / 2, this.desc?.world.h ?? 0)
     m.position.set(c.x, c.y, 0)
     this.markers.push(m)
@@ -597,9 +657,10 @@ export function gameDescription(map: GameMap): SceneDescription {
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },
     masks: null,
-    // T23.07: not yet in a match — Phaser's rock draws until the in-game swap. F1's lights are the
-    // mockup scene's, not this map's (the game's own are T23.09's): none.
-    litTerrain: false,
+    // T23.07: the lit terrain draws the rock — not on a space map, whose cores and iron are drawn into
+    // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
+    // this map's (the game's own are T23.09's): none.
+    litTerrain: !map.space,
     look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1), lights: [] },
     palette: F1.palette,
     actors: [],
@@ -622,12 +683,18 @@ export interface GameWorld {
    */
   setTerrain(feed: TerrainFeed | null): void
   /**
-   * **T23.06B (F3): whether the new terrain's picture is whole** (`TerrainLayer.ready`: every field
-   * strip up, every albedo tile painted, for this map). T23.07 keeps Phaser's rock until this is
-   * true, so the terrain is never absent; a same-map resync keeps it true. Always false where three
-   * did not start (the stub draws no terrain — Phaser's rock stays).
+   * **T23.06B (F3) / T23.07: whether the lit terrain draws the rock** — its picture is whole
+   * (`TerrainLayer.ready`: every field strip up, every albedo tile painted, for this map) and the map
+   * asks for it (`litTerrain`: not space). The scenes hide Phaser's rock exactly while this is true, so
+   * the terrain is never absent; a same-map resync keeps it true. Always false where three did not
+   * start (the stub draws no terrain — Phaser's rock stays).
    */
   terrainReady(): boolean
+  /**
+   * T23.07: the rock is still Phaser's but will become the lit terrain on its own (the map asks for it,
+   * its picture is not whole yet) — a check that photographs the world waits this out.
+   */
+  terrainSwapPending(): boolean
 }
 
 /**
@@ -657,7 +724,8 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
       if (renderer instanceof WorldRenderer) renderer.setTerrain(feed, GAME_ALBEDO_TILES[renderer.info().tier])
       else undrawn = feed
     },
-    terrainReady: () => renderer instanceof WorldRenderer && renderer.terrain.ready,
+    terrainReady: () => renderer instanceof WorldRenderer && renderer.drawsTerrain,
+    terrainSwapPending: () => renderer instanceof WorldRenderer && renderer.litTerrainWanted && !renderer.drawsTerrain,
     detectedTier: () => detectTier(renderer instanceof WorldRenderer ? renderer.gl : null),
   }
 }

@@ -48,7 +48,7 @@
  * correctly and never added to the display list.
  */
 import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, photo, comparePhotos } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('animals')
@@ -137,6 +137,12 @@ if (!d || (d.animals ?? 0) === 0) {
 // construction because the camera follows them, hide the actors and confirm the
 // patch moves. A dead instrument is reported as a dead instrument.
 const PAD = 8
+/**
+ * T23.07: an animal drawn in its patch changes at least this % of the patch's pixels when its layer is
+ * hidden (the patch is its sprite box plus `PAD` each side, so a drawn one covers far more; the control
+ * region reads 0 %).
+ */
+const MIN_CHANGED_PCT = 5
 let instrumentAlive = null
 {
   await freezeAndSettle()
@@ -244,34 +250,37 @@ if (!target) {
     )
   })
 
-  const withAnimal = await samplePatch(page, patch)
-  const controlBefore = await samplePatch(page, away)
+  // T23.07: **the fraction of the patch's pixels that changed**, not the distance between two patch
+  // means. The rock under the animal is F1's night rock now — dark — and a dark ink animal on it moves
+  // a patch's *mean* by 2.1 (measured) while it plainly covers dozens of pixels: `pixels.mjs` says as
+  // much about `colourDelta` of means ("two pictures ... average alike however differently they are
+  // drawn"). Same frozen frame, same two photographs, both regions.
+  const shotWith = await photo(page)
   // Hide the layer **inside the frozen frame**: same instant, one thing removed.
   await page.evaluate(() => window.__game.setAnimalsVisible(false))
   await settle()
-  const without = await samplePatch(page, patch)
-  const controlAfter = await samplePatch(page, away)
+  const shotWithout = await photo(page)
   await page.evaluate(() => window.__game.setAnimalsVisible(true))
   await page.evaluate(() => window.__game.freeze(false))
   await page.evaluate(() => window.__game.watch(null))
 
-  const moved = colourDelta(withAnimal, without)
-  const controlMoved = controlHasAnimal ? 0 : colourDelta(controlBefore, controlAfter)
+  const moved = 100 * (await comparePhotos(page, shotWith, shotWithout, { rect: patch })).fraction
+  const controlMoved = controlHasAnimal ? 0 : 100 * (await comparePhotos(page, shotWith, shotWithout, { rect: away })).fraction
   console.log(
     `  a ${target.kind === 1 ? 'beetle' : 'spider'} at ${patch.x},${patch.y}: hiding the layer ` +
-      `moved the patch ${moved.toFixed(1)}, control ${controlMoved.toFixed(1)}` +
+      `changed ${moved.toFixed(1)} % of the patch's pixels, control ${controlMoved.toFixed(1)} %` +
       (controlHasAnimal ? ' (control region held another animal; skipped)' : ''),
   )
-  if (moved < 3) {
+  if (moved < MIN_CHANGED_PCT) {
     // Which of the two it is, said out loud. The calibration above is the only
     // thing that separates "the animal is not drawn" from "this box is not
     // drawing"; without it the message below is a guess stated as a finding.
     fail(
       instrumentAlive
-        ? `hiding the animal layer changed its own patch by ${moved.toFixed(1)} pixels, while ` +
+        ? `hiding the animal layer changed ${moved.toFixed(1)} % of its own patch, while ` +
             'hiding the player moved its patch on the same box — the animal is announced, ' +
             'counted and not on the screen'
-        : `hiding the animal layer changed its own patch by ${moved.toFixed(1)} pixels, and so ` +
+        : `hiding the animal layer changed ${moved.toFixed(1)} % of its own patch, and so ` +
             'did hiding the player — the renderer stalled and this says nothing about animals',
     )
   } else if (controlMoved >= moved) {
@@ -280,7 +289,7 @@ if (!target) {
         `${moved.toFixed(1)} — the frame is changing everywhere`,
     )
   } else {
-    ok(`the animal is on the frame: its patch moved ${moved.toFixed(1)} when the layer went away`)
+    ok(`the animal is on the frame: ${moved.toFixed(1)} % of its patch changed when the layer went away`)
   }
 }
 

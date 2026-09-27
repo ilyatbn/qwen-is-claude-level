@@ -1,20 +1,21 @@
 /**
- * The M9 checkpoint: a round on each of the three themes, with sound, at night.
+ * The M9 checkpoint: a round with sound, at night.
+ *
+ * **T23.07: one world, not three themes (R5).** The client draws one palette whatever the map's
+ * theme, so the three-theme arm — and its "props are drawn" line, with the `decor` atlas — retired;
+ * one map (seed 1) is kept. The theme is still simulation (it picks the stamped objects), so it is
+ * not asserted here either way.
  *
  * This is the only check in the suite whose real acceptance criterion is a human
  * judgement, so it does two different jobs. The numbers below are things a test
- * can decide — every theme renders, props are drawn, night is darker than day,
+ * can decide — the world renders, night is darker than day,
  * the cues fire. Whether it is a game worth playing is decided by looking at the
  * screenshots it leaves behind, which is why it takes six of them.
  *
  * Themes are seeded from the map (`docs/12` §4), so seeds 1, 2 and 3 are
  * grassland, desert and frost.
  */
-const THEMES = [
-  { seed: '1', name: 'grassland' },
-  { seed: '2', name: 'desert' },
-  { seed: '3', name: 'frost' },
-]
+const THEMES = [{ seed: '1', name: 'standard' }]
 
 /**
  * Mean luminance of the lower half of the frame — terrain, not sky (§A15).
@@ -65,15 +66,8 @@ export default async function ({ page, shot, log }) {
       const d = g.debug()
       const sp = g.core.meta.spawn_points[0]
       if (sp) g.place(sp.x, sp.y - 40)
-      return {
-        theme: g.core.meta.theme,
-        decorations: g.decorations(),
-        traversable: d.traversable,
-      }
+      return { traversable: d.traversable }
     })
-    if (meta.theme !== THEMES.indexOf(t)) {
-      throw new Error(`seed ${t.seed} gave theme ${meta.theme}, expected ${THEMES.indexOf(t)}`)
-    }
     await page.waitForTimeout(500)
 
     // Day.
@@ -93,13 +87,11 @@ export default async function ({ page, shot, log }) {
     await shot(`m9-${t.name}-night`)
 
     log(
-      `${t.name}: ${meta.decorations.count}/${meta.decorations.total} props, ` +
-        `traversable ${meta.traversable.toFixed(3)}, ` +
+      `${t.name}: traversable ${meta.traversable.toFixed(3)}, ` +
         `terrain lum day ${day.toFixed(1)} night ${night.toFixed(1)}, ` +
         `cues [${cues.join(', ')}]`,
     )
 
-    if (meta.decorations.count === 0) throw new Error(`${t.name}: no decorations drawn`)
     // Night must actually cost you something — this is the pillar §A16 restored.
     if (!(night < day * 0.75)) {
       throw new Error(`${t.name}: night ${night.toFixed(1)} is not darker than day ${day.toFixed(1)}`)
@@ -107,5 +99,5 @@ export default async function ({ page, shot, log }) {
     if (cues.length === 0) throw new Error(`${t.name}: firing at night made no sound`)
   }
 
-  log('three themes, props, night that costs you something, and sound')
+  log('one world, night that costs you something, and sound')
 }

@@ -757,7 +757,8 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
   // and updated `terrain-render`'s copy of this assertion but not this one, so
   // the two scenes' parity check had already gone red. Both are updated now.
   const GAME_LAYERS = [
-    -30, -29, -28, -22, -21, -20, -19, 0, 9, 10, 11, 19, 20, 30, 39, 40, 45, 50,
+    // T23.07: 10 (decorations) retired with the `decor` atlas.
+    -30, -29, -28, -22, -21, -20, -19, 0, 9, 11, 19, 20, 30, 39, 40, 45, 50,
   ]
   const depths = await a.page.evaluate('window.__game.sceneDepths()')
   if (!Array.isArray(depths) || depths.length === 0) {

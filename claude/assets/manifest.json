@@ -6,11 +6,6 @@
       "json": "atlas/chars.json"
     },
     {
-      "key": "decor",
-      "png": "atlas/decor.png",
-      "json": "atlas/decor.json"
-    },
-    {
       "key": "items",
       "png": "atlas/items.png",
       "json": "atlas/items.json"
@@ -19,11 +14,6 @@
       "key": "fx",
       "png": "atlas/fx.png",
       "json": "atlas/fx.json"
-    },
-    {
-      "key": "objects",
-      "png": "atlas/objects.png",
-      "json": "atlas/objects.json"
     }
   ],
   "images": [

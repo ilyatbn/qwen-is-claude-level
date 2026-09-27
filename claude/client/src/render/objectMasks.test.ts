@@ -528,29 +528,19 @@ describe('the committed table', () => {
     expect(blank).toEqual([])
   })
 
-  it('is listed in the asset manifest, so something actually loads it', () => {
+  // T23.07 (R5, R15): the objects' **atlas art** retired with its last reader — stamped objects are rock
+  // in the mask and drawn as the lit rock. The table above (masks.bin + manifest.json, collision) stays;
+  // the art must not come back unread: nothing in the client resolves an `obj_<id>` frame any more.
+  it('ships no objects atlas — the art retired, the collision table stays', () => {
     const assets = JSON.parse(readFileSync(join(root, 'assets/manifest.json'), 'utf8')) as {
       atlases: Array<{ key: string; png: string; json: string }>
     }
-    expect(assets.atlases.map((a) => a.key)).toContain('objects')
-    expect(existsSync(join(root, 'assets/atlas/objects.png'))).toBe(true)
-  })
-
-  it('has an atlas frame for every object', () => {
-    const atlas = JSON.parse(readFileSync(join(root, 'assets/atlas/objects.json'), 'utf8')) as {
-      frames: Record<string, { frame: { w: number; h: number } }>
-    }
-    // Named by id: `map_init` carries the id, so the renderer resolves the frame
-    // without fetching objects/manifest.json first.
-    const missing = manifest.objects.filter((o) => !atlas.frames[`obj_${o.id}`]).map((o) => o.key)
-    expect(missing).toEqual([])
-    const mismatched = manifest.objects
-      .filter((o) => {
-        const f = atlas.frames[`obj_${o.id}`]
-        return !f || f.frame.w !== o.w || f.frame.h !== o.h
-      })
-      .map((o) => o.key)
-    expect(mismatched).toEqual([])
+    expect(assets.atlases.map((a) => a.key)).not.toContain('objects')
+    expect(existsSync(join(root, 'assets/atlas/objects.png'))).toBe(false)
+    expect(existsSync(join(root, 'assets/atlas/objects.json'))).toBe(false)
+    // The control: the table itself is still committed and read.
+    expect(existsSync(join(root, 'assets/objects/masks.bin'))).toBe(true)
+    expect(manifest.objects.length).toBeGreaterThan(0)
   })
 })
 

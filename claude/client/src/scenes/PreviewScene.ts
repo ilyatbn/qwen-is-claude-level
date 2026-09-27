@@ -14,7 +14,7 @@ import { generateForScene, gravityFromUrl } from './sceneParams'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
 import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
-import { makeBackTexture, makeEdgeTexture, makeFillTexture } from '../render/procTextures'
+import { FLAT_BACK, FLAT_ROCK } from '../render/chunkBake'
 import { devSurface } from '../dev'
 
 export class PreviewScene extends Phaser.Scene {
@@ -61,10 +61,9 @@ export class PreviewScene extends Phaser.Scene {
         },
       },
       this.core,
-      makeFillTexture(),
-      makeEdgeTexture(),
+      FLAT_ROCK,
       undefined,
-      makeBackTexture(),
+      FLAT_BACK,
     )
 
     const t1 = performance.now()

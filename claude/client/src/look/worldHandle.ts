@@ -42,6 +42,14 @@ export interface WorldHandle {
    * frame was drawn from — RGBA rows top-down, base64. `null` without three.js.
    */
   readFrame(): Promise<{ w: number; h: number; view: ViewRect | null; rgba: string } | null>
+  /**
+   * T23.07: the **next** frame the world canvas draws on its own (nothing forced), read back in that
+   * frame, with Phaser's frame counter then — so a check can call something between frames and read
+   * the first frame drawn after it (`look-terrain`: a crater lit in the frame it is carved).
+   */
+  readNextFrame(): Promise<{ w: number; h: number; view: ViewRect | null; rgba: string; loopFrame: number } | null>
+  /** T23.07: Phaser's frame counter now (`game.loop.frame`). */
+  loopFrame(): number
   /** T23.04: the sky as last drawn — layers' parallax factors, periods and the offsets used. */
   sky(): ReturnType<WorldRenderer['skyInfo']> | null
   /** T23.04: draw only the sky layers not listed (`look-sky` isolates one band). */
@@ -195,9 +203,14 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     readFrame() {
       if (!three) return Promise.resolve(null)
+      three.invalidate()
+      return handle.readNextFrame()
+    },
+    loopFrame: () => scene.game.loop.frame,
+    readNextFrame() {
+      if (!three) return Promise.resolve(null)
       const game = scene.game
       const before = stats?.frames ?? 0
-      three.invalidate()
       return new Promise((resolve) => {
         const onPost = (): void => {
           if ((stats?.frames ?? 0) === before) return
@@ -216,7 +229,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
           let bin = ''
           for (let i = 0; i < out.length; i += 0x8000) bin += String.fromCharCode(...out.subarray(i, i + 0x8000))
           const v = stats?.view ?? null
-          resolve({ w, h, view: v ? { ...v } : null, rgba: btoa(bin) })
+          resolve({ w, h, view: v ? { ...v } : null, rgba: btoa(bin), loopFrame: game.loop.frame })
         }
         game.events.on('postrender', onPost)
       })
