@@ -155,6 +155,15 @@ const selected = filters.length
     // the evidence for each is tasks/flaky-test.md. Disabled ones check a feature
     // that is switched off (T21.39); the value names the task that turns it on.
     CHECKS.filter((c) => !c.optIn && !c.flaky && !c.disabled)
+// `--only` names are exact, so every one must be a registered check (T23.08C
+// F4): a typo or a retired name used to be skipped silently, and a Done-when
+// naming a check that did not exist yet exited 0 — green before the work.
+const unknown = filters.filter((f) => f.startsWith('=') && !CHECKS.some((c) => matches(c, f)))
+if (unknown.length) {
+  console.error(`--only names no registered check: ${unknown.map((f) => f.slice(1) || '(empty)').join(', ')}`)
+  console.error(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
+  process.exit(2)
+}
 if (!selected.length) {
   console.error(`no checks match ${filters.join(', ')}`)
   console.error(`available: ${CHECKS.map((c) => c.name).join(', ')}`)
