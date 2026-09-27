@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * T22.04B F2/F3 — the thruster plume in a **real** match, and never outside space.
+ * T22.04B F2/F3 — the thruster flame in a **real** match. **T23.14B:** the burst is the stick figure's own jet flame
+ * (`debug().flames`, off `PlayerView.flameState`; T22.04's Phaser plume retired), and it burns under standard gravity
+ * too — arm 4 is reversed.
  *
  *   node scripts/checks/thrusters-match.mjs
  *
@@ -15,28 +17,29 @@
  *    literal `true`, and the mirror stops stepping a dead body, so without the
  *    `&& meAlive` a player killed mid-burn goes on firing until the respawn.
  *
- * Read through `debug().plumes`, which is read off the views themselves.
+ * Read through `debug().flames`, which is read off the views themselves.
  *
  * ## The arms, and the control for each
  *
  * 1. **Space, a remote** (stack A, room 1): bo holds DOWN; **ana's** scene draws
- *    bo's plume, pointing up. bo's own view draws his, the same way. The control
+ *    bo's flame, pointing up. bo's own view draws his, the same way. The control
  *    is the frame before, with nothing held: the entry exists and is not drawn.
  * 2. **Letting go** stops it on both clients. Arm 1 is its presence control.
- *    **2b. Braking, the local plume** (T22.04C): bo drifts one way and thrusts the
- *    other; while he is still moving the first way, **his own** view draws the plume
+ *    **2b. Braking, the local flame** (T22.04C): bo drifts one way and thrusts the
+ *    other; while he is still moving the first way, **his own** view draws the flame
  *    on the velocity side — `GameScene`'s `thrust: core.thrustAt(me)` wiring, which
- *    the sandbox's pixel arm (`thrusters.mjs`) cannot reach. Read off `debug().plumes`,
+ *    the sandbox's pixel arm (`thrusters.mjs`) cannot reach. Read off `debug().flames`,
  *    the view's own report; the pixels are the sandbox's. Arm 1's DOWN is the control
  *    (thrust and velocity agree there, and it stays pointing up).
  * 3. **The round-over bell** (F3): bo burns across it. The last frame before the
- *    bell draws his plume; the frames after it do not, with DOWN still held and
+ *    bell draws his flame; the frames after it do not, with DOWN still held and
  *    fuel still in the tank — so it is the bell and not an empty tank.
- * 4. **Standard gravity** (stack A, room 2): dee holds the jetpack; neither
- *    client draws a plume. Arm 1 is its presence control — the same scene code,
- *    one lobby setting apart.
+ * 4. **Standard gravity** (stack A, room 2): dee holds the jetpack; his own client
+ *    draws his flame below him in every burning sample, cal's in most (a snapshot
+ *    behind). T23.14B reversed this arm: T22.04B asserted no plume here, when the
+ *    plume was aimed off velocity; the pack's flame points down the body.
  * 5. **Death mid-burn** (stack B, `DEV_POISONED`): fay burns away from her rock
- *    until the poison kills her; the last live frame draws her plume, the dead
+ *    until the poison kills her; the last live frame draws her flame, the dead
  *    ones do not.
  *    Poison because it kills wherever you are — a space map has a closed rim, so
  *    there is no void, and a self-rocket needs ground under the feet.
@@ -119,7 +122,7 @@ const watchBell = (c, afterS, limitS) =>
           if (d && v) {
             // **Before the bell is before its seq** (T22.14C MED-2): the prediction
             // steps the server's `Ended` from the bell's input seq on — no buttons,
-            // so the plume goes out — while `ended` is heard a trip later. A frame
+            // so the flame goes out — while `ended` is heard a trip later. A frame
             // whose newest seq is at or past the bell's is the bell's, not before it.
             const bs = d.blackHole?.bellSeq
             const predictedBefore = typeof bs !== 'number' || (d.blackHole?.inputSeq ?? 0) < bs
@@ -131,7 +134,7 @@ const watchBell = (c, afterS, limitS) =>
                 grounded: d.player?.grounded,
                 vx: d.player?.vx,
                 vy: d.player?.vy,
-                drawn: !!d.plumes?.[d.me]?.drawn,
+                drawn: !!d.flames?.[d.me]?.drawn,
               }
             } else if (d.phase === 'ended') {
               rang ??= t
@@ -174,16 +177,16 @@ const waitOn = (c, fn, arg, seconds, why) =>
  */
 async function inAMatch(stack, [hostName, guestName], gravity) {
   const [host, guest] = await privateMatch(stack, [hostName, guestName], gravity)
-  // Each sees the other drawn, so `plumes[other]` below is a view, not a gap.
+  // Each sees the other drawn, so `flames[other]` below is a view, not a gap.
   for (const [a, b] of [[host, guest], [guest, host]]) {
-    const saw = await waitOn(a, (id) => (window.__game.debug().plumes ?? {})[id] !== undefined, b.id, 30, 'remote view')
-    if (!saw) throw new Error(`${a.name} never drew ${b.name}: plumes ${JSON.stringify((await dbg(a))?.plumes)}`)
+    const saw = await waitOn(a, (id) => (window.__game.debug().flames ?? {})[id] !== undefined, b.id, 30, 'remote view')
+    if (!saw) throw new Error(`${a.name} never drew ${b.name}: flames ${JSON.stringify((await dbg(a))?.flames)}`)
   }
   ok(`${hostName} and ${guestName} are in a ${gravity} match (seats ${host.id}, ${guest.id})`)
   return [host, guest]
 }
 
-const plumeOf = async (viewer, subject) => (await dbg(viewer))?.plumes?.[subject.id]
+const flameOf = async (viewer, subject) => (await dbg(viewer))?.flames?.[subject.id]
 const brief = (d, c) => ({
   phase: d?.phase,
   moveState: d?.player?.moveState,
@@ -195,7 +198,7 @@ const brief = (d, c) => ({
   fuel: d?.player?.fuel?.toFixed(2),
   meAlive: d?.death?.meAlive,
   health: d?.health,
-  mine: d?.plumes?.[c.id],
+  mine: d?.flames?.[c.id],
 })
 
 // ============================================================================
@@ -216,44 +219,44 @@ const stackA = await startStack({
 try {
   const [ana, bo] = await inAMatch(stackA, ['ana', 'bo'], 'Space')
 
-  // --- arm 1: a remote's plume, pointing up, on the other client ----------
-  const idle = await plumeOf(ana, bo)
+  // --- arm 1: a remote's flame, pointing up, on the other client ----------
+  const idle = await flameOf(ana, bo)
   if (!idle || idle.drawn !== false) fail(`control: before anything is held, ana's view of bo reads ${JSON.stringify(idle)}`)
-  else ok('control: nothing held, and ana draws no plume on bo')
+  else ok('control: nothing held, and ana draws no flame on bo')
 
   // Both ends waited on at once, each on its own page, so a plant that breaks
   // one of them cannot make the other read late and fail with it.
   const upOn = (id) => {
-    const p = window.__game.debug().plumes?.[id]
+    const p = window.__game.debug().flames?.[id]
     return !!p && p.drawn && p.dir.y < -0.5
   }
   await bo.page.keyboard.down('s')
   const [sawRemote, sawLocal] = await Promise.all([
-    waitOn(ana, upOn, bo.id, 15, 'remote plume'),
-    waitOn(bo, upOn, bo.id, 15, 'local plume'),
+    waitOn(ana, upOn, bo.id, 15, 'remote flame'),
+    waitOn(bo, upOn, bo.id, 15, 'local flame'),
   ])
   const boNow = await dbg(bo)
-  const anaView = await plumeOf(ana, bo)
+  const anaView = await flameOf(ana, bo)
   await ana.page.screenshot({ path: join(shotsDir, 'thrusters-match-remote.png') })
   await bo.page.keyboard.up('s')
   if (!sawRemote) {
-    fail(`bo held DOWN in space and ana's scene never drew his plume pointing up: ana sees ${JSON.stringify(anaView)}, bo ${JSON.stringify(brief(boNow, bo))}`)
-  } else ok(`bo holds DOWN: ana's scene drew bo's plume pointing up`)
-  if (!sawLocal) fail(`bo held DOWN in space and his own view never drew his plume pointing up: ${JSON.stringify(brief(boNow, bo))}`)
+    fail(`bo held DOWN in space and ana's scene never drew his flame pointing up: ana sees ${JSON.stringify(anaView)}, bo ${JSON.stringify(brief(boNow, bo))}`)
+  } else ok(`bo holds DOWN: ana's scene drew bo's flame pointing up`)
+  if (!sawLocal) fail(`bo held DOWN in space and his own view never drew his flame pointing up: ${JSON.stringify(brief(boNow, bo))}`)
   else ok(`bo's own view drew it too, pointing up`)
 
   // --- arm 2: letting go ---------------------------------------------------
-  const boOff = await waitOn(bo, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'local off')
-  const anaOff = await waitOn(ana, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'remote off')
+  const boOff = await waitOn(bo, (id) => window.__game.debug().flames?.[id]?.drawn === false, bo.id, 5, 'local off')
+  const anaOff = await waitOn(ana, (id) => window.__game.debug().flames?.[id]?.drawn === false, bo.id, 5, 'remote off')
   if (!boOff || !anaOff) {
-    fail(`bo let go and a plume stayed: bo ${JSON.stringify(brief(await dbg(bo), bo))}, ana sees ${JSON.stringify(await plumeOf(ana, bo))}`)
-  } else ok('bo lets go: neither client draws his plume')
+    fail(`bo let go and a flame stayed: bo ${JSON.stringify(brief(await dbg(bo), bo))}, ana sees ${JSON.stringify(await flameOf(ana, bo))}`)
+  } else ok('bo lets go: neither client draws his flame')
 
-  // --- arm 2b: braking, bo's own plume (T22.04C) --------------------------
+  // --- arm 2b: braking, bo's own flame (T22.04C) --------------------------
   // Drift one way, then push the other: the exhaust is on the side he is still
   // travelling toward. **Off the rock first** — grounded, a sideways key walks and
   // only UP engages the pack (R42; traced: bo walked right at 80 px/s, and LEFT then
-  // walked him back with no plume at all). Right first; a rock in the way tries left.
+  // walked him back with no flame at all). Right first; a rock in the way tries left.
   {
     let braked = null
     await bo.page.keyboard.down('w')
@@ -275,22 +278,22 @@ try {
         bo,
         ([id, s]) => {
           const d = window.__game.debug()
-          const p = d.plumes?.[id]
+          const p = d.flames?.[id]
           return d.player.moveState === 2 && d.player.vx * s > 20 && !!p && p.drawn && p.dir.x * s > 0.5
         },
         [bo.id, sign],
         3,
-        'braking plume',
+        'braking flame',
       )
       const at = await dbg(bo)
       await bo.page.keyboard.up(brake)
-      braked = { saw, sign, at: { vx: at?.player?.vx, plume: at?.plumes?.[bo.id] } }
+      braked = { saw, sign, at: { vx: at?.player?.vx, flame: at?.flames?.[bo.id] } }
       break
     }
     if (!braked) fail('control: bo never drifted 150 px/s either way, so braking was never tried')
-    else if (!braked.saw) fail(`bo braked (drifting ${braked.sign > 0 ? 'right' : 'left'}) and his own plume never pointed the way he was still going: ${JSON.stringify(braked.at)}`)
-    else ok(`bo brakes (drifting ${braked.sign > 0 ? 'right' : 'left'}, pushing back): his own plume is on the side he is still travelling toward`)
-    await waitOn(bo, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'local off')
+    else if (!braked.saw) fail(`bo braked (drifting ${braked.sign > 0 ? 'right' : 'left'}) and his own flame never pointed the way he was still going: ${JSON.stringify(braked.at)}`)
+    else ok(`bo brakes (drifting ${braked.sign > 0 ? 'right' : 'left'}, pushing back): his own flame is on the side he is still travelling toward`)
+    await waitOn(bo, (id) => window.__game.debug().flames?.[id]?.drawn === false, bo.id, 5, 'local off')
   }
 
   // --- arm 3: the round-over bell (F3) -------------------------------------
@@ -309,7 +312,7 @@ try {
     fail(`the bell arm could not start before the bell: ${JSON.stringify({ phase: pre?.phase, left: pre?.results?.secondsLeft })}`)
   } else if (!((pre.player?.fuel ?? 0) >= BELL_LEAD_S * K.get('JETPACK_DRAIN') + K.get('JETPACK_MIN_FUEL_TO_ENGAGE'))) {
     // Read before the burn: a tank that cannot outlast the lead could go out on
-    // its own, and an unlit plume after the bell would then be the tank, not the bell.
+    // its own, and an unlit flame after the bell would then be the tank, not the bell.
     fail(`control: bo starts the bell burn with ${pre.player?.fuel} fuel, which cannot last ${BELL_LEAD_S} s at ${K.get('JETPACK_DRAIN')}/s`)
   } else {
     ok(`control: bo starts the bell burn with ${pre.player.fuel.toFixed(2)} fuel, enough for ${BELL_LEAD_S} s and the engage floor`)
@@ -324,7 +327,7 @@ try {
     // grounded player's thrusters engage only for a net *upward* push (`space.rs::
     // engaging`, `M22-RULINGS` R42), so DOWN never lit and the "last burning frame
     // before the bell" control went red. UP engages from the ground and in the air
-    // alike, and the claim — the bell puts out a plume whose thrust is still held —
+    // alike, and the claim — the bell puts out a flame whose thrust is still held —
     // does not depend on the direction. The precondition is asserted, not assumed:
     // the last frame before the bell must show bo airborne and burning.
     let side = pre.player.x < pre.mapW / 2 ? 'd' : 'a'
@@ -336,17 +339,17 @@ try {
         bo,
         (id) => {
           const d = window.__game.debug()
-          return d.phase === 'ended' || !!d.plumes?.[id]?.drawn
+          return d.phase === 'ended' || !!d.flames?.[id]?.drawn
         },
         bo.id,
         BELL_LEAD_S + 10,
         'pre-bell burn',
       )
       const before = await dbg(bo)
-      if (!burning || before.phase !== 'playing' || !before.plumes?.[bo.id]?.drawn) {
+      if (!burning || before.phase !== 'playing' || !before.flames?.[bo.id]?.drawn) {
         fail(`control: no burning frame before the bell, so "none after" proves nothing: ${JSON.stringify(brief(before, bo))}`)
       } else {
-        ok(`control: bo's plume is lit before the bell (${before.results.secondsLeft.toFixed(2)} s left)`)
+        ok(`control: bo's flame is lit before the bell (${before.results.secondsLeft.toFixed(2)} s left)`)
         // **Pinned? Burn the other way** (T22.10F). Under the ten-check load the
         // chosen thrust still parked bo against rock in 3 runs of 3 (`v 0.0, 0.0`
         // at the bell) while it never did alone. Every tenth of a second until the
@@ -374,10 +377,10 @@ try {
         // **Waited on, on ana's own page, not read once.** A remote is drawn off
         // the interpolation buffer, which renders a moment behind the newest
         // snapshot — so a single read taken off *bo's* frame count raced it:
-        // measured, one run green and the next red with the plume still lit.
+        // measured, one run green and the next red with the flame still lit.
         // Arm 2's release is waited on the same way and for the same reason.
-        const anaOut = await waitOn(ana, (id) => window.__game.debug().plumes?.[id]?.drawn === false, bo.id, 5, 'remote off after bell')
-        const anaAfter = await plumeOf(ana, bo)
+        const anaOut = await waitOn(ana, (id) => window.__game.debug().flames?.[id]?.drawn === false, bo.id, 5, 'remote off after bell')
+        const anaAfter = await flameOf(ana, bo)
         await bo.page.screenshot({ path: join(shotsDir, 'thrusters-match-bell.png') })
         const seen = await watch
         const last = seen?.pre
@@ -391,7 +394,7 @@ try {
           !(Math.hypot(last.vx, last.vy) >= minSpeed)
         ) {
           // F-5: the frame the bell interrupted must be a burn in the air, or the
-          // plume going out after it is the landing, not the bell. And **moving**
+          // flame going out after it is the landing, not the bell. And **moving**
           // (T22.10E review (b)): a body pinned against rock drifts nowhere after
           // the bell, so a stale prediction there reads right — at least the speed
           // that carries it past the reconcile epsilon within one snapshot.
@@ -405,10 +408,10 @@ try {
               `${last.vy.toFixed(1)}; floor ${minSpeed} px/s)` +
               ` — ${seen.pastBellPlaying ?? 0} frame(s) predicted past the bell's seq before \`ended\` was heard`,
           )
-          if (after.plumes?.[bo.id]?.drawn !== false) {
-            fail(`the round is over and bo's plume still fires, thrust held: ${JSON.stringify(brief(after, bo))}`)
-          } else ok(`the bell rang with thrust held: bo's own plume is out`)
-          if (!anaOut) fail(`the round is over and ana still draws bo's plume: ${JSON.stringify(anaAfter)}`)
+          if (after.flames?.[bo.id]?.drawn !== false) {
+            fail(`the round is over and bo's flame still fires, thrust held: ${JSON.stringify(brief(after, bo))}`)
+          } else ok(`the bell rang with thrust held: bo's own flame is out`)
+          if (!anaOut) fail(`the round is over and ana still draws bo's flame: ${JSON.stringify(anaAfter)}`)
           else ok("and ana's view of it is out too")
           // **F-3: after the bell the prediction must stop rubber-banding.** The
           // server stops taking input in `Ended` and steps every body a neutral
@@ -455,7 +458,7 @@ try {
     }
   }
 
-  // --- arm 4: standard gravity, no plume anywhere ---------------------------
+  // --- arm 4: standard gravity, the flame below the body on both clients (T23.14B; T22.04B asserted none) ---
   const [cal, dee] = await inAMatch(stackA, ['cal', 'dee'], 'Standard')
   // Space, not S: under gravity the pack is the jump key held (`hud-bars`).
   await dee.page.keyboard.down('Space')
@@ -463,20 +466,24 @@ try {
     const firing = await waitOn(dee, () => window.__game.debug().player?.moveState === 2, null, 15, 'jetpack')
     if (!firing) fail(`control: dee held the jetpack and it never fired: ${JSON.stringify(brief(await dbg(dee), dee))}`)
     else {
-      // Sampled across frames of burning rather than once: a plume is a
-      // per-frame toggle, and one sample could land between two draws.
+      // Sampled across frames of burning rather than once; each sample is judged only where dee's own client says the
+      // pack fired, and cal's view (a snapshot behind) where a majority agrees — a remote's flame follows the flag.
+      const down = (f) => !!f?.drawn && f.dir.y > 0.5
       const seen = { local: [], remote: [], burning: 0 }
       for (let i = 0; i < 10; i++) {
         await frames(dee, 2)
         const d = await dbg(dee)
-        if (d.player?.moveState === 2) seen.burning++
-        seen.local.push(d.plumes?.[dee.id]?.drawn)
-        seen.remote.push((await plumeOf(cal, dee))?.drawn)
+        if (d.player?.moveState !== 2) continue
+        seen.burning++
+        seen.local.push(down(d.flames?.[dee.id]))
+        seen.remote.push(down(await flameOf(cal, dee)))
       }
+      const localOk = seen.local.every(Boolean)
+      const remoteOk = seen.remote.filter(Boolean).length * 2 > seen.remote.length
       if (seen.burning === 0) fail('control: the jetpack stopped before any sample')
-      else if (seen.local.some((v) => v !== false) || seen.remote.some((v) => v !== false)) {
-        fail(`standard gravity, jetpack firing, and a plume is drawn: dee ${JSON.stringify(seen.local)}, cal sees ${JSON.stringify(seen.remote)}`)
-      } else ok(`standard gravity: dee burns (${seen.burning}/10 samples) and neither client draws a plume`)
+      else if (!localOk || !remoteOk) {
+        fail(`standard gravity, jetpack firing, and the flame is not drawn below the body: dee ${JSON.stringify(seen.local)}, cal sees ${JSON.stringify(seen.remote)}`)
+      } else ok(`standard gravity: dee burns (${seen.burning}/10 samples); his own client draws the flame below him every time, cal ${seen.remote.filter(Boolean).length}/${seen.remote.length}`)
     }
   } finally {
     await dee.page.keyboard.up('Space')
@@ -577,31 +584,31 @@ try {
         fay,
         (id) => {
           const d = window.__game.debug()
-          return !d.death.meAlive || !!d.plumes?.[id]?.drawn
+          return !d.death.meAlive || !!d.flames?.[id]?.drawn
         },
         fay.id,
         10,
         'burn before death',
       )
       const before = await dbg(fay)
-      if (!lit || !before.death.meAlive || !before.plumes?.[fay.id]?.drawn) {
+      if (!lit || !before.death.meAlive || !before.flames?.[fay.id]?.drawn) {
         fail(`control: no live burning frame before fay died: ${JSON.stringify(brief(before, fay))}`)
       } else {
-        ok(`control: fay burns alive at ${before.health.toFixed(1)} health, plume drawn`)
+        ok(`control: fay burns alive at ${before.health.toFixed(1)} health, flame drawn`)
         // **Eve's view lit, the control for eve's view out** (T22.09A review, F5):
-        // without it "eve draws no plume after the death" holds for an eve who never
-        // drew one. Only a live burn draws a remote plume, so a true here was taken
+        // without it "eve draws no flame after the death" holds for an eve who never
+        // drew one. Only a live burn draws a remote flame, so a true here was taken
         // before the death whenever the wait happens to return.
-        const eveLit = await waitOn(eve, (id) => !!window.__game.debug().plumes?.[id]?.drawn, fay.id, 5, 'eve sees the burn')
-        if (!eveLit) fail(`control: eve never drew fay's burning plume: ${JSON.stringify(await plumeOf(eve, fay))}`)
-        else ok("control: eve draws fay's plume while she burns")
+        const eveLit = await waitOn(eve, (id) => !!window.__game.debug().flames?.[id]?.drawn, fay.id, 5, 'eve sees the burn')
+        if (!eveLit) fail(`control: eve never drew fay's burning flame: ${JSON.stringify(await flameOf(eve, fay))}`)
+        else ok("control: eve draws fay's flame while she burns")
         const died = await waitOn(fay, () => !window.__game.debug().death.meAlive, null, burnable + 5, 'death')
         await frames(fay, SETTLE_FRAMES)
         const after = await dbg(fay)
         // **Waited on, on eve's own page, not read once** — the remote is drawn off
         // the interpolation buffer, and the bell arm measured a single read racing it.
-        const eveOut = await waitOn(eve, (id) => window.__game.debug().plumes?.[id]?.drawn === false, fay.id, 5, 'remote off after death')
-        const eveSees = await plumeOf(eve, fay)
+        const eveOut = await waitOn(eve, (id) => window.__game.debug().flames?.[id]?.drawn === false, fay.id, 5, 'remote off after death')
+        const eveSees = await flameOf(eve, fay)
         await fay.page.screenshot({ path: join(shotsDir, 'thrusters-match-dead.png') })
         if (!died) fail(`the poison never killed fay: ${JSON.stringify(brief(after, fay))}`)
         else if (after.player?.moveState !== 2) {
@@ -610,10 +617,10 @@ try {
           // the absence below would then say nothing about that guard.
           fail(`control: fay died with moveState ${after.player?.moveState}, not 2, so the \`&& meAlive\` guard is untested: ${JSON.stringify(brief(after, fay))}`)
         } else if (after.death.meAlive) fail(`fay respawned before the dead frames were read: ${JSON.stringify(brief(after, fay))}`)
-        else if (after.plumes?.[fay.id]?.drawn !== false) {
-          fail(`fay is dead with thrust held and her own view still fires her plume: ${JSON.stringify(brief(after, fay))}`)
-        } else ok(`fay died mid-burn, thrust held: her plume is out (moveState ${after.player?.moveState})`)
-        if (died && (!eveOut || eveSees?.drawn !== false)) fail(`eve still draws dead fay's plume: ${JSON.stringify(eveSees)}`)
+        else if (after.flames?.[fay.id]?.drawn !== false) {
+          fail(`fay is dead with thrust held and her own view still fires her flame: ${JSON.stringify(brief(after, fay))}`)
+        } else ok(`fay died mid-burn, thrust held: her flame is out (moveState ${after.player?.moveState})`)
+        if (died && (!eveOut || eveSees?.drawn !== false)) fail(`eve still draws dead fay's flame: ${JSON.stringify(eveSees)}`)
         else if (died) ok("and eve's view of her is out too")
       }
     } finally {

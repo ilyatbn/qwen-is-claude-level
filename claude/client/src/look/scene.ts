@@ -285,6 +285,20 @@ export interface Actor {
    * screen. The look-compare `actors` region is the union of these.
    */
   box: Box | null
+  /**
+   * T23.14B: additive soft glows the actor carries (its jet flame's), drawn over the actors into the HDR scene
+   * (`actors/glow.ts`) — the mockup's `sprite(softTex(), …, true)`. Not part of the atlas cell.
+   */
+  glows?: ActorGlow[]
+}
+
+/** One `kit.js::sprite(softTex(), x, y, z, size, color, opacity, true)`: mask px, `color` linear (may exceed 1). */
+export interface ActorGlow {
+  x: number
+  y: number
+  size: number
+  color: Rgb
+  alpha: number
 }
 
 export type Fx =

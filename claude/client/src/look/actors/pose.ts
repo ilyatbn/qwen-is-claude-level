@@ -36,6 +36,25 @@ export const HIT_S = 0.25
 /** The aim a cell is drawn at is rounded to this (rad, ½°): finer than any aim a player can tell apart, coarse
  * enough that a still mouse is a still picture (a redraw per quantum, not per frame). */
 export const AIM_QUANTUM = Math.PI / 360
+/**
+ * T23.14B, the jet flame: its flicker — the flame's length varies by up to this fraction, from two incommensurate
+ * waves at `FLICKER_HZ` — and the step its length is rounded to (a redraw per step, not per frame).
+ */
+export const FLICKER = 0.12
+export const FLICKER_HZ: [number, number] = [7.3, 11.9]
+export const JET_QUANTUM = 0.05
+/** F7's flame length (`J.jet`) under the pack in standard gravity (`jet`) and in space (`space`) at full push. */
+export const JET_LEN = 1.2
+export const SPACE_JET_LEN = 1.6
+/** The weakest push's flame, as a fraction of a full one (`thrustMax`). */
+export const JET_MIN_FRACTION = 0.6
+/**
+ * Space: the time constant the body turns to put its pack behind the push with, s. Quick, because braking is quick:
+ * the `thrusters` braking arm measured a drift of 138–147 px/s down to 46–75 px/s 83–252 ms (wall clock, page round
+ * trips included) after LEFT went down, and at 0.08 s the flame was still swinging round for all of it — that arm
+ * never once saw it turned (20 s, both renderers).
+ */
+export const SPACE_TURN_S = 0.035
 /** The walker's step: how far ahead of the hip a foot lands (figure units), the stride being twice it. */
 export const STEP_REACH = 5.5
 /** A step's lift at full speed, figure units. */
@@ -66,6 +85,8 @@ export interface FigureInputs {
   weapon: string | null
   boots: boolean
   wings: boolean
+  /** The push that burns a full flame (px/s²; the sim's strongest thrust); a weaker `thrust` burns a shorter one. */
+  thrustMax?: number
   /** Walk speed (the sim's `WALK_SPEED`): what "full stride" and the scarf's full trail are measured against. */
   walkSpeed: number
   /** The ground at world dx px from the feet (+ right), px relative to the feet line (+ down), or null (none near). */
@@ -82,11 +103,14 @@ export interface FigureState {
   landT: number
   action: { kind: Action; t: number } | null
   flapT: number
+  /** Space: the turn the body is easing towards the push with, radians; and the flame's clock, s. */
+  rot: number
+  jetT: number
   /** The walker's feet (world px), null until it first walks on a ground. */
   feet: Foot[] | null
 }
 
-export const newFigureState = (): FigureState => ({ phase: 0, scarf: [0.35, 0.05], wasGrounded: true, landT: Infinity, action: null, flapT: 0, feet: null })
+export const newFigureState = (): FigureState => ({ phase: 0, scarf: [0.35, 0.05], wasGrounded: true, landT: Infinity, action: null, flapT: 0, rot: 0, jetT: 0, feet: null })
 
 export interface Drawn {
   J: Pose
@@ -147,6 +171,11 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
     if (st.action.t >= len) st.action = null
   }
   st.flapT += inp.dt
+  st.jetT += inp.dt
+  // The flame's length at full push, flickering (T23.14B): `jet(len)` for a pose that burns.
+  const wob = 0.5 * (Math.sin(st.jetT * 2 * Math.PI * FLICKER_HZ[0]) + Math.sin(st.jetT * 2 * Math.PI * FLICKER_HZ[1] + 1.3))
+  const strength = inp.thrust && inp.thrustMax ? clamp(Math.hypot(inp.thrust.x, inp.thrust.y) / inp.thrustMax, JET_MIN_FRACTION, 1) : 1
+  const jet = (len: number): number => q(len * strength * (1 + FLICKER * wob), JET_QUANTUM)
   // The scarf follows the motion with a lag.
   const k = clamp(Math.abs(inp.vx) / inp.walkSpeed, 0, 1)
   // F7: idle [0.35, 0.05], run [1.3, 0.15], jump/jet y −1.1, fall 1.3.
@@ -160,6 +189,7 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
   let J: Pose
   let rot = 0
   let helmet = inp.space
+  if (!inp.space || !inp.alive) st.rot = 0
   let shadow = inp.grounded
   if (!inp.alive) {
     J = { legs: [[0.25, -0.35], [0.6, 0.65]], arms: [[1.9, 0.7], [0.35, -0.5]], scarf: [0, -0.6], wave: 0.3, toe: [0.6, 1.4], boots: inp.boots, wings: false, weapon: null }
@@ -169,14 +199,22 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
     // F7 `space`: the body leans along the push (its feet away from it); a coasting body floats upright.
     const push = inp.thrust ?? (inp.jetpack ? { x: inp.vx, y: inp.vy } : null)
     const on = inp.jetpack && !!push && Math.hypot(push.x, push.y) > 1e-3
-    J = { ...base, legs: [[0.06, 0.12], [-0.06, 0.05]], jet: on ? 1.6 : 0, scarf: on ? [0.7, 0.8] : scarf, wave: 2.8 }
+    J = { ...base, legs: [[0.06, 0.12], [-0.06, 0.05]], jet: on ? jet(SPACE_JET_LEN) : 0, scarf: on ? [0.7, 0.8] : scarf, wave: 2.8 }
     // The turn is applied in screen space before the facing flip (`figure`): the head leans into the push on screen
-    // whichever way the figure faces (a figure aiming left while pushing right leans right).
-    rot = on && push ? q(clamp(Math.atan2(push.x, -push.y), -1.3, 1.3), 0.02) : 0
+    // whichever way the figure faces (a figure aiming left while pushing right leans right). T23.14B: a whole turn —
+    // the pack's flame is the thruster's exhaust and must point against the push whichever way it is (DOWN held puts
+    // the flame above the body; T23.14 clamped the lean to ±1.3 rad, which left a DOWN burn's flame beside it). The
+    // body eases round (`SPACE_TURN_S`) the short way; coasting, it floats back upright.
+    const want = on && push ? Math.atan2(push.x, -push.y) : 0
+    let d = want - st.rot
+    d = Math.atan2(Math.sin(d), Math.cos(d))
+    st.rot += d * (1 - Math.exp(-inp.dt / SPACE_TURN_S))
+    st.rot = Math.atan2(Math.sin(st.rot), Math.cos(st.rot))
+    rot = q(st.rot, 0.02)
     helmet = true
     shadow = false
   } else if (inp.jetpack) {
-    J = { ...base, legs: [[0.28, 0.5], [-0.12, 0.35]], jet: 1.2, wave: 2 }
+    J = { ...base, legs: [[0.28, 0.5], [-0.12, 0.35]], jet: jet(JET_LEN), wave: 2 }
     shadow = false
   } else if (!inp.grounded) {
     J = inp.vy < 0 ? { ...base, legs: [[1.25, 1.9], [0.55, 1.5]], lean: -0.05 } : { ...base, legs: [[0.7, -0.25], [-0.75, 0.45]], lean: -0.1, arms: W ? [] : [[2.7, 0.5]] }

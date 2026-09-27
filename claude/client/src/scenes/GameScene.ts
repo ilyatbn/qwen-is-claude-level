@@ -69,7 +69,7 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
-import { EffectLights, gateLights, jetFeet, viewRect, type EffectSources } from '../look/effectLights'
+import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
@@ -378,8 +378,8 @@ export class GameScene extends Phaser.Scene {
   private frameDt = 0
   /**
    * T22.04: the match's gravity spelling, off `lobby_state` — the same value the
-   * mirror is handed there. Drawn with, and nothing else: the plume shows only in
-   * space (`thrusterPlume-math.ts::plumeOn`).
+   * mirror is handed there. Drawn with, and nothing else: the helmet, the space pose and its
+   * turned flame (`look/actors/pose.ts`).
    */
   private gravity = DEFAULT_GRAVITY
   private jetReadout: HTMLDivElement | null = null
@@ -2212,7 +2212,7 @@ export class GameScene extends Phaser.Scene {
         grounded: body.grounded,
         // `&& meAlive` for T22.04: `alive` above is a literal, and the mirror
         // stops stepping a dead player, so without it a body killed mid-burn
-        // would go on drawing its thruster plume until the respawn.
+        // would go on drawing its jet flame until the respawn.
         jetpack: body.moveState === 2 && this.meAlive,
         // **`false` was hardcoded here** (T20.08), so the bubble has never
         // appeared on your own body — the same wired-to-nothing shape T20.07
@@ -2460,7 +2460,7 @@ export class GameScene extends Phaser.Scene {
       projectiles: o?.projectiles.values() ?? [],
       tracers: o?.tracers ?? [],
       impacts: o?.impacts ?? [],
-      jets: views.flatMap((v) => jetFeet(v, C().PLAYER_H / 2)),
+      jets: views.flatMap((v) => jetFlames(v)),
       vents: this.vents,
     }
   }
@@ -2669,7 +2669,7 @@ export class GameScene extends Phaser.Scene {
         boots: flag(p.moveMods, MOVE_MOD.boots),
         wings: flag(p.moveMods, MOVE_MOD.wings),
         space: this.gravity === SPACE_GRAVITY,
-        // T22.04C: a remote's input is not on the wire, so its plume stays on velocity.
+        // T22.04C: a remote's input is not on the wire, so its flame stays on velocity.
         thrust: null,
       })
     }
@@ -3446,15 +3446,15 @@ export class GameScene extends Phaser.Scene {
           /** T23.09A: whether the lit terrain draws its cave wall (`?cavewall=`, default off); null before the renderer loads. */
           caveWall: self.worldRenderer?.caveWall() ?? null,
           /**
-           * T22.04B: what each body's thruster plume drew last frame, keyed by
-           * seat — read off the **views**, as `drawnSkins` is, so there is no
-           * second copy to disagree with the picture. It is the only window onto
+           * T22.04B: what each body's jet flame drew last frame (T23.14B: the figure's
+           * flame, was the plume), keyed by seat — read off the **views**, as `drawnSkins` is,
+           * so there is no second copy to disagree with the picture. It is the only window onto
            * this scene's space wiring (`gravity` off `lobby_state`, `space:` and
            * `jetpack:` at both `setState` calls); `thrusters-match` reads it.
            */
-          plumes: Object.fromEntries([
-            ...(self.localView ? [[self.me, self.localView.plumeState] as const] : []),
-            ...[...self.remotes].map(([id, r]) => [id, r.view.plumeState] as const),
+          flames: Object.fromEntries([
+            ...(self.localView ? [[self.me, self.localView.flameState] as const] : []),
+            ...[...self.remotes].map(([id, r]) => [id, r.view.flameState] as const),
           ]),
           // Items the server says exist, and items actually on screen. Two
           // numbers rather than one, because they were silently different for

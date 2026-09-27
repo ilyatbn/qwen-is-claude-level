@@ -102,8 +102,8 @@ export function figure(g: G, x: number, y: number, J: Pose, o: FigureOpts = {}):
   g.roundRect(-4.6, neck[1], 3.6, 8.5, 1.2)
   g.fill()
   if (J.jet && !rim) {
-    const L = J.jet * 12
-    const fy = neck[1] + 8.5
+    const L = J.jet * FLAME_PER_JET
+    const fy = hy - NOZZLE_UP
     const fl = g.createLinearGradient(0, fy, 0, fy + L)
     fl.addColorStop(0, 'rgba(255,245,200,1)')
     fl.addColorStop(0.35, 'rgba(255,160,40,0.95)')
@@ -152,6 +152,31 @@ export function figure(g: G, x: number, y: number, J: Pose, o: FigureOpts = {}):
   }
   g.restore()
   g.restore()
+}
+
+/** `figure`'s jet flame: its length per unit of `J.jet`, and where it leaves the pack (x; y is `hipY − 2`). */
+export const FLAME_PER_JET = 12
+const NOZZLE_X = -2.8
+const NOZZLE_UP = 2
+
+/**
+ * T23.14B: the jet flame's axis as `figure` draws it — nozzle and tip, px from the feet, after the pose's lean (about
+ * the hip), the scale, the facing flip and the turn — or null without a flame. Where the flame's glow and light go.
+ */
+export function flameAxis(J: Pose, o: { s: number; face: number; rot: number }): { base: P; tip: P } | null {
+  if (!J.jet) return null
+  const hy = J.hipY ?? -13
+  const lean = J.lean ?? 0
+  const at = (u: number): P => {
+    // Figure units, then the lean about the hip, then scale/flip, then the turn (`figure`'s transform order, inverted).
+    const p: P = [NOZZLE_X, hy - NOZZLE_UP + u * FLAME_PER_JET * (J.jet ?? 0)]
+    const dx = p[0]
+    const dy = p[1] - hy
+    const l: P = [dx * Math.cos(lean) - dy * Math.sin(lean), hy + dx * Math.sin(lean) + dy * Math.cos(lean)]
+    const q: P = [l[0] * o.s * o.face, l[1] * o.s]
+    return [q[0] * Math.cos(o.rot) - q[1] * Math.sin(o.rot), q[0] * Math.sin(o.rot) + q[1] * Math.cos(o.rot)]
+  }
+  return { base: at(0), tip: at(1) }
 }
 
 /** T23.14: the ironman boot, figure units — heel to toe along the foot, 2.6 tall, a cuff line above. */

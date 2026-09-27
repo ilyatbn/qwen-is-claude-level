@@ -101,6 +101,7 @@ export class LookScene extends Phaser.Scene {
     const knobs = q.get('knob')
     const terrainLook = { ...full.look.terrain }
     let actorRim = true
+    let jetOff = false
     let look: SceneDescription['look'] = { ...full.look, terrain: terrainLook }
     const P = full.look
     // T23.13: knobs combine, comma-separated (`actor-rim-off,exposure-up`: a control of T23.12's picture).
@@ -119,6 +120,8 @@ export class LookScene extends Phaser.Scene {
       else if (knob === 'grade-off') look.grade = null
       // T23.13: the actors without lit()'s two rim passes (castonly.js 'rim-off') — rim-light's must-fail control.
       else if (knob === 'actor-rim-off') actorRim = false
+      // T23.14B: every jet flame out (a figure's `J.jet`, a stick's `jet`) — `jet-flame`'s must-fail control.
+      else if (knob === 'actor-jet-off') jetOff = true
       else handle.error = `unknown knob "${knob}"`
     }
     // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
@@ -133,6 +136,11 @@ export class LookScene extends Phaser.Scene {
             ? { ...full, look, ...cast }
             : { ...full, look }
     desc.actorRim = actorRim
+    if (jetOff) {
+      desc.actors = desc.actors.map((a) =>
+        a.kind === 'figure' && a.opts.J ? { ...a, opts: { ...a.opts, J: { ...a.opts.J, jet: 0 } } } : a.kind === 'stick' ? { ...a, opts: { ...a.opts, jet: false } } : a,
+      )
+    }
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)

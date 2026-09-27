@@ -155,8 +155,11 @@ export function estimateBox(a: Actor): Box {
     // figure filled the atlas in a 6-player match (resets every few frames, measured).
     const W = a.opts.J?.weapon ? WEAPONS[a.opts.J.weapon] : undefined
     const R = (Math.max(22, W ? Math.hypot(W.muzzle[0], W.muzzle[1]) + 10 : 0) + 2) * s + 2 * 1.15 * size + 2
-    const cy = a.y - 13 * s
-    b = [a.x - R, cy - R, a.x + R, cy + R]
+    // T23.14B: the middle turned with the figure (it turns about its feet; space turns it a whole way round).
+    const rot = a.opts.rot ?? 0
+    const cx = a.x + 13 * s * Math.sin(rot)
+    const cy = a.y - 13 * s * Math.cos(rot)
+    b = [cx - R, cy - R, cx + R, cy + R]
   }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size

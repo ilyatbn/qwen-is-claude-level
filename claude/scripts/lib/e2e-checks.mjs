@@ -147,6 +147,9 @@ export const CHECKS = [
   { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242' },
   // T23.14: the stick figure — Level A on F7's pose boxes; running redraws and moves the legs, standing does not.
   { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn
+  // lighting the rock near the flame against the flame planted off (the light at the flame, both ends).
+  { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242' },
   // T22.11C / R63: an asteroid's gravity well on **rendered pixels**, with the
   // patch the body moves away from as its control region and the same map with
   // `setAsteroids([])` as its control frame. `?gravity=space` is R22's parameter
@@ -186,10 +189,10 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
     serial: true,
   },
-  // T22.04B F1: the same file under normal gravity — a firing jetpack draws **no**
-  // plume, on `debug()` and on the pixels against the hidden-plume frame. The two
-  // entries above are its presence control. `plumeOn(…, true)` planted at the live
-  // call left the whole suite green before this existed.
+  // T22.04B F1, **reversed by T23.14B**: the same file under normal gravity — a firing
+  // jetpack draws the figure's flame **below** the body (F1's jet sticks, F7's `jet`),
+  // against the flame-hidden frame; T22.04B asserted no plume here, when the plume was
+  // aimed off velocity. The two entries above are the space arms.
   { name: 'thrusters-standard', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
   // T22.09B: space's radiation on the rendered frame — the edge glow and the HUD line
   // against a **sealed** control frame, a centre control region, and `Core.irradiated`

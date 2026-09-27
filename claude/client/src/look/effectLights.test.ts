@@ -23,7 +23,7 @@ import {
   StaticLights,
   explosionLight,
   gateLights,
-  jetFeet,
+  jetFlames,
   type EffectSources,
   type LightSpec,
 } from './effectLights'
@@ -142,15 +142,15 @@ describe('beams, muzzles, rockets, fire, jets, vents, gates', () => {
     expect(fx.lastKinds).toEqual(['flame', 'flame'])
   })
 
-  it('a drawn jetting body lights its feet; a hidden or grounded one does not', () => {
-    const at = { x: 1300, y: 700 }
-    expect(jetFeet({ container: { visible: true }, state: 'jetpack', drawnAt: at }, 14)).toEqual([{ x: 1300, y: 714 }])
-    expect(jetFeet({ container: { visible: false }, state: 'jetpack', drawnAt: at }, 14)).toEqual([])
-    expect(jetFeet({ container: { visible: true }, state: 'idle', drawnAt: at }, 14)).toEqual([])
-    expect(jetFeet(null, 14)).toEqual([])
+  it('a drawn burning body lights its flame; a hidden one, or one with no flame, does not', () => {
+    const flame = { x: 1296, y: 706 }
+    expect(jetFlames({ container: { visible: true }, flame })).toEqual([{ x: 1296, y: 706 }])
+    expect(jetFlames({ container: { visible: false }, flame })).toEqual([])
+    expect(jetFlames({ container: { visible: true }, flame: null })).toEqual([])
+    expect(jetFlames(null)).toEqual([])
     const fx = new EffectLights()
-    const l = fx.frame(sources(new OrdnanceState(LIFE, TRAIL), { jets: [{ x: 1300, y: 714 }] }), view)
-    expect(l).toEqual([{ x: 1300, y: 710, ...JET_PLUME_LIGHT }])
+    const l = fx.frame(sources(new OrdnanceState(LIFE, TRAIL), { jets: [flame] }), view)
+    expect(l).toEqual([{ x: 1296, y: 706, ...JET_PLUME_LIGHT }])
   })
 
   it('a jetting vent lights its column, a burning one its mouth, a quiet one nothing', () => {

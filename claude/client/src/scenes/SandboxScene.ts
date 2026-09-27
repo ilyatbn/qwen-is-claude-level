@@ -33,7 +33,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
-import { EffectLights, gateLights, jetFeet, viewRect } from '../look/effectLights'
+import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLights'
 import { caveWallFromUrl } from '../look/worldRenderer-math'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
@@ -832,8 +832,8 @@ export class SandboxScene extends Phaser.Scene {
           aim: self.localInput?.aimAngle ?? 0,
           animState: self.player?.state ?? 'idle',
           // T22.04, both ends (§A39): `player.moveState` is the pack the core
-          // says is firing; this is the plume the view says it drew.
-          plume: self.player?.plumeState ?? null,
+          // says is firing; this is the flame the view says it drew (T23.14B: the figure's own, was the plume).
+          flame: self.player?.flameState ?? null,
           // T22.09B, both ends (§A39): the Rust answer beside what was mounted.
           irradiated: self.core.irradiated(0, self.simTime),
           radiation: self.radiation?.stats() ?? null,
@@ -1276,12 +1276,12 @@ export class SandboxScene extends Phaser.Scene {
        * wherever the seed put it, usually well above the player's view.
        */
       /**
-       * T22.04, e2e only (§C2): hide the local player's thruster plume for a
-       * same-instant control frame. Freeze first. Returns what the view now reports.
+       * T22.04, e2e only (§C2): hide the local player's jet flame (T23.14B: the figure's flame, its glow and its
+       * light; was the plume) for a same-instant control frame. Freeze first. Returns what the view now reports.
        */
       showThrusters(on: boolean) {
-        self.player.setPlumeHidden(!on)
-        return self.player.plumeState
+        self.player.setFlameHidden(!on)
+        return self.player.flameState
       },
       /** T21.31: pause the scene's update so a frame can be photographed twice. Rendering goes on. */
       freeze(on: boolean) {
@@ -1691,7 +1691,7 @@ export class SandboxScene extends Phaser.Scene {
           projectiles: o.projectiles.values(),
           tracers: o.tracers,
           impacts: o.impacts,
-          jets: jetFeet(this.player, C().PLAYER_H / 2),
+          jets: jetFlames(this.player),
           vents: weather.vents,
         },
         viewRect(this.cameras.main.worldView),

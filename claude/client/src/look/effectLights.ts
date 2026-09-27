@@ -65,8 +65,6 @@ export const MUZZLE_FRAMES = 2
 export const ROCKET_MOTOR_BACK = 8
 /** `gyy - 24`: the gate light's height above the pad's feet line, world px. */
 export const GATE_LIGHT_RISE = 24
-/** `ey - 4`: the jet plume light's height above the feet, world px. */
-export const JET_PLUME_RISE = 4
 /** A lava vent's jet is lit this far above the mouth — the column, not the hole (`weather-math.ts`'s old `JET_LIGHT_RISE`). */
 export const VENT_JET_RISE = 60
 /** Flames closer than this share one flamethrower light (its radius): a molotov's 24 flames are one fire, not 24 lamps. */
@@ -140,16 +138,14 @@ export function viewRect(r: { x: number; y: number; width: number; height: numbe
 }
 
 /**
- * A player view's jet source — its feet (`drawnAt` is the body centre; `halfH` is `PLAYER_H / 2`) — or
- * none: not drawn (dead, or culled by the dark), not in its `jetpack` state, or never placed.
+ * A player view's jet light source — **its flame** as drawn (`PlayerView.flame`: the flame's glow, F1's `ex − 3,
+ * ey − 6`, beside the mockup's light at `ex − 4, ey − 4`), T23.14B; it was the feet, which a body turned in space
+ * leaves behind — or none: not drawn (culled by the dark), or no flame (not burning, dead, hidden).
  */
-export function jetFeet(
-  v: { container: { visible: boolean }; state: string; drawnAt: { x: number; y: number } | null } | null,
-  halfH: number,
-): { x: number; y: number }[] {
-  const at = v?.drawnAt
-  if (!v || !at || !v.container.visible || v.state !== 'jetpack') return []
-  return [{ x: at.x, y: at.y + halfH }]
+export function jetFlames(v: { container: { visible: boolean }; flame: { x: number; y: number } | null } | null): { x: number; y: number }[] {
+  const f = v?.flame
+  if (!v || !f || !v.container.visible) return []
+  return [{ x: f.x, y: f.y }]
 }
 
 /** What a frame's effect lights are built from — records the scenes already keep and draw. */
@@ -158,7 +154,7 @@ export interface EffectSources {
   projectiles: Iterable<TrackedProjectile>
   tracers: readonly Tracer[]
   impacts: readonly Impact[]
-  /** Feet of every **drawn** body whose jetpack/thruster is firing (a hidden remote casts no light). */
+  /** The flame of every **drawn** body whose jetpack/thruster is firing (a hidden remote casts no light). */
   jets: readonly { x: number; y: number }[]
   /** The lava vents drawn this frame. */
   vents: readonly { x: number; y: number; jetting: boolean; burning: boolean }[]
@@ -218,7 +214,7 @@ export class EffectLights {
       }
     }
     for (const c of flames.values()) push(place(FLAMETHROWER_LIGHT, c.x / c.n, c.y / c.n), 'flame')
-    for (const j of src.jets) push(place(JET_PLUME_LIGHT, j.x, j.y - JET_PLUME_RISE), 'jet')
+    for (const j of src.jets) push(place(JET_PLUME_LIGHT, j.x, j.y), 'jet')
     for (const v of src.vents) {
       if (v.jetting) push(place(FLAMETHROWER_LIGHT, v.x, v.y - VENT_JET_RISE), 'vent')
       else if (v.burning) push(place(LAVA_GLOW_LIGHT, v.x, v.y), 'vent')

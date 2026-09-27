@@ -263,7 +263,8 @@ export default async function ({ page, shot, log }) {
   // ------------------------------------------------------------ 3. a jetpack burn over rock
   // Low over flat-ish rock: placed a little above the ground under it and jetting at once (airborne, so
   // no jump first) — the plume's light is 100 px, and a burn begun from a standing jump is ~60 px up.
-  // T23.14: the jet light sits at the pack's feet (F's `L(ex − 4, ey − 4 …)`), in the sandbox too now that it draws the
+  // T23.14: the jet light sat at the pack's feet (F's `L(ex − 4, ey − 4 …)`) — T23.14B moved it to the flame's glow, a
+  // few px from there on an upright burn — in the sandbox too now that it draws the
   // body at the body (it hung it half a body up), so the burn is taken where rock lies within the light's near radius
   // of the height the burn reaches (JET_RISE) — not under the player's spawn, where an overhang above had supplied it.
   const me3 = await page.evaluate(() => window.__game.debug().player)
@@ -290,7 +291,13 @@ export default async function ({ page, shot, log }) {
   if (!jet) problems.push('jet plume: no jet light reached the list while jetting')
   else {
     log(`jet light ${JSON.stringify(jet.light)}; terrain drew ${jet.lit.lights}; list ${JSON.stringify((await page.evaluate(() => window.__game.effectLights())).map((l) => l.kind))}`)
+    // T23.14B: the flame's additive glow (and its bloom) sits on the rock right under the burn in both reads, and was
+    // measured to take the light's near gain from 7.29 to 2.60 there. Hidden for both reads (the frozen scene keeps
+    // the light in the renderer's list), so this leg measures the light alone, as its doc says; `jet-flame` measures
+    // the flame whole — flame, glow and light against none.
+    await page.evaluate(() => window.__game.showThrusters(false))
     judge('jet plume', measure(await bothWays(page, jet.light), jet.light), problems, log)
+    await page.evaluate(() => window.__game.showThrusters(true))
     await shot('effect-lights-jet')
   }
   await page.evaluate(() => window.__game.freeze(false))

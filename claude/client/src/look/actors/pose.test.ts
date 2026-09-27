@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SH, TH, leg } from './figure'
-import { AIM_QUANTUM, FIGURE_SCALE, STRIDE_UNITS, newFigureState, reach, stepFigure, trigger, type FigureInputs } from './pose'
+import { SH, TH, flameAxis, leg } from './figure'
+import { AIM_QUANTUM, FIGURE_SCALE, FLICKER, JET_LEN, JET_MIN_FRACTION, JET_QUANTUM, SPACE_JET_LEN, STRIDE_UNITS, newFigureState, reach, stepFigure, trigger, type FigureInputs } from './pose'
 import { cellKey } from './cell'
 import type { Actor } from '../scene'
 
@@ -98,10 +98,13 @@ describe('the stick figure animation (T23.14)', () => {
   })
 
   it('poses follow the flags; the scarf lags the motion; actions play and end', () => {
-    expect(stepFigure(newFigureState(), inp({ jetpack: true, grounded: false })).J.jet).toBe(1.2)
-    const sp = stepFigure(newFigureState(), inp({ space: true, jetpack: true, grounded: false, thrust: { x: 100, y: 0 } }))
+    const jf = stepFigure(newFigureState(), inp({ jetpack: true, grounded: false })).J.jet!
+    expect(Math.abs(jf - JET_LEN)).toBeLessThanOrEqual(JET_LEN * FLICKER + JET_QUANTUM)
+    const spSt = newFigureState()
+    let sp = stepFigure(spSt, inp({ space: true, jetpack: true, grounded: false, thrust: { x: 100, y: 0 } }))
+    for (let i = 0; i < 30; i++) sp = stepFigure(spSt, inp({ space: true, jetpack: true, grounded: false, thrust: { x: 100, y: 0 } }))
     expect(sp.helmet).toBe(true)
-    expect(sp.rot).toBeGreaterThan(1)
+    expect(sp.rot).toBeCloseTo(Math.PI / 2, 1)
     expect(stepFigure(newFigureState(), inp({ alive: false })).rot).toBe(-1.5)
     // Lag: one frame into a run the scarf has moved only part of the way to its run trail.
     const st = newFigureState()
@@ -124,5 +127,64 @@ describe('the stick figure animation (T23.14)', () => {
     expect(a1).toBeLessThan(a0)
     for (let i = 0; i < 30; i++) stepFigure(m, inp({ weapon: 'bat' }))
     expect(m.action).toBeNull()
+  })
+
+  describe('T23.14B: the jet flame', () => {
+    /** The flame's direction on screen (nozzle → tip), unit, after `n` frames of pushing `thrust` in space. */
+    const flameDir = (thrust: { x: number; y: number }, face = 1, n = 40): [number, number] => {
+      const st = newFigureState()
+      let d = stepFigure(st, inp({ space: true, jetpack: true, grounded: false, thrust }))
+      for (let i = 0; i < n; i++) d = stepFigure(st, inp({ space: true, jetpack: true, grounded: false, thrust, aim: face > 0 ? 0 : Math.PI }))
+      const ax = flameAxis(d.J, { s: FIGURE_SCALE, face: d.face, rot: d.rot })!
+      const v: [number, number] = [ax.tip[0] - ax.base[0], ax.tip[1] - ax.base[1]]
+      const l = Math.hypot(...v)
+      return [v[0] / l, v[1] / l]
+    }
+    it('points against the push, every way round and facing either way (DOWN held: the flame is above)', () => {
+      for (const face of [1, -1]) {
+        for (let k = 0; k < 8; k++) {
+          const a = (k * Math.PI) / 4
+          const push = { x: Math.cos(a) * 1000, y: Math.sin(a) * 1000 }
+          const [dx, dy] = flameDir(push, face)
+          // Against the push to within the turn's rounding and the nozzle's few-degree offset.
+          expect(dx * Math.cos(a) + dy * Math.sin(a)).toBeLessThan(-0.97)
+        }
+      }
+      // DOWN by name (the owner's words: "if i move down … a burst … from above"); T23.14's ±1.3 rad clamp fails it.
+      const down = flameDir({ x: 0, y: 1000 })
+      expect(down[1]).toBeLessThan(-0.97)
+    })
+    it('eases round, and floats upright again when the push stops', () => {
+      const st = newFigureState()
+      const push = { space: true, jetpack: true, grounded: false, thrust: { x: 0, y: 1000 } }
+      const first = stepFigure(st, inp(push)).rot
+      expect(Math.abs(first)).toBeGreaterThan(0)
+      expect(Math.abs(first)).toBeLessThan(Math.PI / 2)
+      for (let i = 0; i < 60; i++) stepFigure(st, inp(push))
+      let d = stepFigure(st, inp(push))
+      expect(Math.abs(d.rot)).toBeCloseTo(Math.PI, 1)
+      for (let i = 0; i < 60; i++) d = stepFigure(st, inp({ space: true, grounded: false }))
+      expect(d.rot).toBeCloseTo(0, 1)
+      expect(d.J.jet).toBe(0)
+    })
+    it('flickers within its band, in steps, and a weaker push burns a shorter flame', () => {
+      const st = newFigureState()
+      const lens = new Set<number>()
+      for (let i = 0; i < 120; i++) {
+        const j = stepFigure(st, inp({ jetpack: true, grounded: false })).J.jet!
+        expect(Math.abs(j - JET_LEN)).toBeLessThanOrEqual(JET_LEN * FLICKER + JET_QUANTUM)
+        expect(Math.abs(j / JET_QUANTUM - Math.round(j / JET_QUANTUM))).toBeLessThan(1e-9)
+        lens.add(j)
+      }
+      expect(lens.size).toBeGreaterThanOrEqual(4)
+      const mean = (thrust: { x: number; y: number }): number => {
+        const s2 = newFigureState()
+        let sum = 0
+        for (let i = 0; i < 120; i++) sum += stepFigure(s2, inp({ space: true, jetpack: true, grounded: false, thrust, thrustMax: 1000 })).J.jet!
+        return sum / 120
+      }
+      expect(Math.abs(mean({ x: 0, y: -1000 }) - SPACE_JET_LEN)).toBeLessThan(SPACE_JET_LEN * FLICKER * 0.5)
+      expect(Math.abs(mean({ x: 0, y: -450 }) - SPACE_JET_LEN * JET_MIN_FRACTION)).toBeLessThan(SPACE_JET_LEN * FLICKER * 0.5)
+    })
   })
 })

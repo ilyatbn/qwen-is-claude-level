@@ -5,25 +5,30 @@
  * The sprite body, its skins, hats and glasses are gone (R8: wearables are ignored client-side; R15: their art
  * retires with this, its last reader). Boots and wings are items and are drawn on the figure.
  *
- * What stays in Phaser, in the container: the shield bubble, the name tag and the thruster plume (T23.14B).
+ * What stays in Phaser, in the container: the shield bubble and the name tag.
  * The figure turns with the scene's tilt about its feet like the old body did (T22.19, R107).
+ *
+ * **The jetpack's look is the figure's own flame** (T23.14B): F7's flame under the pack (`figure.ts`, drawn into the
+ * figure's atlas cell), flickering and as long as the push is strong (`pose.ts`), with F1's additive glow on it
+ * (`Actor.glows`, `look/actors/glow.ts`) and the jet light where the flame is (`flame`, `effectLights.ts::jetFlames`).
+ * In space the body turns to put its pack behind the push — about its middle, not its feet — so the flame points
+ * against the push whatever the travel (braking included). That retires T22.04's Phaser plume (`thrusterPlume*.ts`,
+ * `shaders.ts::THRUST_FRAGMENT`), its last reader being this view.
  */
 
 import type Phaser from 'phaser'
 import { C } from '../core'
 import { deriveAnimState, facingLeft, type AnimInputs, type AnimState } from './playerView-math'
 import type { Appearance } from '../ui/skins'
-import { hasWebGL } from './shaders'
-import { ThrusterPlume } from './thrusterPlume'
-import { plumeOn } from './thrusterPlume-math'
 import { feetOffset, toLocal, uprightLocal } from './standTilt-math'
 import type { Actor } from '../look/scene'
 import { joinCast, groundDyAt } from '../look/actors/cast'
-import { FIGURE_SCALE, newFigureState, stepFigure, trigger, type Action } from '../look/actors/pose'
+import { FIGURE_SCALE, JET_LEN, newFigureState, stepFigure, trigger, type Action } from '../look/actors/pose'
 import { WEAPONS } from '../look/actors/weapons'
 import { actorRect, cellKey, drawBaked, type Lighting } from '../look/actors/cell'
 import { passes } from '../look/actors/lit'
 import { Flat } from '../look/actors/flat'
+import { flameAxis } from '../look/actors/figure'
 
 export type { AnimState, AnimInputs }
 export { deriveAnimState, facingLeft }
@@ -68,10 +73,30 @@ const SPACE_CANVAS = 192
 const SPACE_FEET: [number, number] = [96, 132]
 let spaceTextures = 0
 
+/**
+ * F1's jet glow (`f_scene.js::combatF`: `sprite(softTex(), ex - 3, wy(ey - 6), 43, 16, Color(2.2, 1.0, 0.3), 0.7,
+ * true)`): its colour (linear, over 1 so it blooms), opacity and size at F7's standard flame (`pose.ts::JET_LEN`) —
+ * a longer flame's glow grows with it — and where on the flame it sits (F1's is 0.8 of the way to the stick's flame
+ * tip: `ey − 6` on a flame from `ey − 17` to `ey − 3.5`).
+ */
+export const JET_GLOW = { color: [2.2, 1.0, 0.3] as [number, number, number], alpha: 0.7, size: 16, along: 0.8 }
+/**
+ * Space (Phaser, no HDR): the glow's colour — `JET_GLOW.color` over its largest channel, baked into the texture (the
+ * Canvas renderer ignores a tint: seen white in `thrusters-canvas-braking.png`) — and its texture's px.
+ */
+const SPACE_GLOW_RGB = '255,116,35'
+const SPACE_GLOW_TEX = '__jet_glow_soft'
+const SPACE_GLOW_PX = 64
+
 export class PlayerView {
   readonly container: Phaser.GameObjects.Container
   private readonly shieldBubble: Phaser.GameObjects.Arc
-  private readonly plume: ThrusterPlume
+  /** T23.14B: the flame as last drawn — world px (glow centre, nozzle → tip direction) — or null; and the e2e switch. */
+  private flameNow: { x: number; y: number; dir: { x: number; y: number }; jet: number } | null = null
+  private flameHidden = false
+  /** The strongest push this view has seen (px/s²): the full flame's push — the sim's thrust table is not on `C()`. */
+  private thrustPeak = 0
+  private spaceGlow: Phaser.GameObjects.Image | null = null
   private readonly nameLabel: Phaser.GameObjects.Text
   /** The figure's animation state (`pose.ts`) and what it was last posed as. */
   private readonly fig = newFigureState()
@@ -103,7 +128,6 @@ export class PlayerView {
     this.shieldBubble = scene.add.circle(0, -c.PLAYER_H * 0.4, c.PLAYER_H * 0.75, 0x54b6ff, 0.18).setVisible(false)
     this.nameLabel = scene.add.text(0, -c.PLAYER_H - 6, '', { fontSize: '9px', color: '#dfe6ee' }).setOrigin(0.5, 1)
     this.container = scene.add.container(0, 0, [this.shieldBubble, this.nameLabel])
-    this.plume = new ThrusterPlume(scene, this.container, hasWebGL(scene))
     this.leave = joinCast(scene, { actor: () => (this.container.visible ? this.drawn : null) })
   }
 
@@ -147,6 +171,8 @@ export class PlayerView {
     const localAim = aim - tilt
     const vel = toLocal(tilt, vx, vy)
     const upright = Math.abs(tilt) < 1e-3
+    const thrustLocal = flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null
+    if (thrustLocal) this.thrustPeak = Math.max(this.thrustPeak, Math.hypot(thrustLocal.x, thrustLocal.y))
     const d = stepFigure(this.fig, {
       dt,
       vx: vel.x,
@@ -156,7 +182,8 @@ export class PlayerView {
       grounded: flags.grounded,
       jetpack: flags.jetpack,
       space: flags.space,
-      thrust: flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null,
+      thrust: thrustLocal,
+      thrustMax: this.thrustPeak,
       weapon: this.weaponKey || null,
       boots: flags.boots,
       wings: flags.wings,
@@ -165,20 +192,70 @@ export class PlayerView {
       ...(upright ? { x: fx, groundDy: (dx: number) => groundDyAt(this.scene, fx + dx, fy) } : {}),
     })
     const accent = SCARF_COLOURS[this.seat]!
+    const J = this.flameHidden ? { ...d.J, jet: 0 } : d.J
+    // T23.14B: a pose turn (space) is about the body's middle, not its feet — the feet move so the hip stays put, or a
+    // body turned head-down would be drawn a body below where it is. No turn, no move.
+    const hipAt = (r: number): { x: number; y: number } => ({ x: -(d.J.hipY ?? -13) * FIGURE_SCALE * Math.sin(r), y: (d.J.hipY ?? -13) * FIGURE_SCALE * Math.cos(r) })
+    const h0 = hipAt(0)
+    const hr = hipAt(d.rot)
+    const pivot = { x: h0.x - hr.x, y: h0.y - hr.y }
+    const pw = { x: pivot.x * Math.cos(tilt) - pivot.y * Math.sin(tilt), y: pivot.x * Math.sin(tilt) + pivot.y * Math.cos(tilt) }
     const fig: Actor = {
       kind: 'figure',
-      x: fx,
-      y: fy,
-      opts: { J: d.J, s: FIGURE_SCALE, face: d.face, rot: tilt + d.rot, accent, visor: accent },
+      x: fx + pw.x,
+      y: fy + pw.y,
+      opts: { J, s: FIGURE_SCALE, face: d.face, rot: tilt + d.rot, accent, visor: accent },
       lit: { size: 1, halo: null, shadow: d.shadow && upright, darkHalo: DARK_HALO },
       box: null,
     }
+    // The flame's glow (F1's sprite), at `JET_GLOW.along` of the flame, sized with it; and where the jet light goes.
+    const ax = flameAxis(J, { s: FIGURE_SCALE, face: d.face, rot: tilt + d.rot })
+    this.flameNow = null
+    if (ax && flags.alive) {
+      const gx = fig.x + ax.base[0] + (ax.tip[0] - ax.base[0]) * JET_GLOW.along
+      const gy = fig.y + ax.base[1] + (ax.tip[1] - ax.base[1]) * JET_GLOW.along
+      const L = Math.hypot(ax.tip[0] - ax.base[0], ax.tip[1] - ax.base[1]) || 1
+      this.flameNow = { x: gx, y: gy, dir: { x: (ax.tip[0] - ax.base[0]) / L, y: (ax.tip[1] - ax.base[1]) / L }, jet: J.jet ?? 0 }
+      fig.glows = [{ x: gx, y: gy, size: (JET_GLOW.size * (J.jet ?? 0)) / JET_LEN, color: JET_GLOW.color, alpha: JET_GLOW.alpha }]
+    }
     this.drawn = flags.space ? null : fig
-    this.drawSpace(flags.space ? { ...fig, x: SPACE_FEET[0], y: SPACE_FEET[1], opts: { ...fig.opts, rot: d.rot } } : null)
+    // Space: the canvas holds the figure turned by its pose only (the container carries the tilt), feet at SPACE_FEET.
+    this.drawSpace(flags.space ? { kind: fig.kind, lit: fig.lit, box: fig.box, x: SPACE_FEET[0] + pivot.x, y: SPACE_FEET[1] + pivot.y, opts: { ...fig.opts, rot: d.rot } } : null)
+    this.drawSpaceGlow(flags.space && this.flameNow ? { x: this.flameNow.x - fx, y: this.flameNow.y - fy, size: fig.glows?.[0]?.size ?? 0 } : null)
+  }
 
-    // T22.04 plume, T22.19 turned into the figure's frame (T23.14B moves it into the world renderer).
-    const thrust = flags.thrust ? toLocal(tilt, flags.thrust.x, flags.thrust.y) : null
-    this.plume.update(plumeOn(flags.alive, flags.jetpack, flags.space), thrust, vel.x, vel.y, 0, -c.PLAYER_H / 2, c.PLAYER_W / 2, c.PLAYER_H / 2)
+  /**
+   * Space: F1's glow as a Phaser ADD image in the container (no HDR there: `JET_GLOW`'s colour over its largest
+   * channel, its alpha), at the flame's point relative to the feet — un-turned by the container's tilt.
+   */
+  private drawSpaceGlow(at: { x: number; y: number; size: number } | null): void {
+    if (!at) {
+      this.spaceGlow?.setVisible(false)
+      return
+    }
+    if (!this.spaceGlow) {
+      if (!this.scene.textures.exists(SPACE_GLOW_TEX)) {
+        const t = this.scene.textures.createCanvas(SPACE_GLOW_TEX, SPACE_GLOW_PX, SPACE_GLOW_PX)
+        if (!t) return
+        const g = t.getContext()
+        const h = SPACE_GLOW_PX / 2
+        const gr = g.createRadialGradient(h, h, 0, h, h, h)
+        // `kit.js::softTex`.
+        gr.addColorStop(0, `rgba(${SPACE_GLOW_RGB},1)`)
+        gr.addColorStop(0.35, `rgba(${SPACE_GLOW_RGB},0.45)`)
+        gr.addColorStop(1, `rgba(${SPACE_GLOW_RGB},0)`)
+        g.fillStyle = gr
+        g.fillRect(0, 0, SPACE_GLOW_PX, SPACE_GLOW_PX)
+        t.refresh()
+      }
+      this.spaceGlow = this.scene.add.image(0, 0, SPACE_GLOW_TEX).setBlendMode('ADD').setAlpha(JET_GLOW.alpha)
+      this.container.add(this.spaceGlow)
+    }
+    const t = -this.container.rotation
+    this.spaceGlow
+      .setVisible(true)
+      .setPosition(at.x * Math.cos(t) - at.y * Math.sin(t), at.x * Math.sin(t) + at.y * Math.cos(t))
+      .setScale(at.size / SPACE_GLOW_PX)
   }
 
   /** Space (above): draw `a` (feet at `SPACE_FEET`, turned only by its pose — the container carries the tilt) or hide it. */
@@ -256,12 +333,24 @@ export class PlayerView {
     return this.nameLabel.visible
   }
 
-  get plumeState(): { drawn: boolean; shader: boolean; dir: { x: number; y: number } } {
-    return this.plume.state
+  /**
+   * T23.14B: the jet flame as last drawn — its glow's centre (world px, where the jet light goes), the way it points
+   * (nozzle → tip, unit, screen) and its length (`J.jet`) — or null: not burning, dead, or hidden.
+   */
+  get flame(): { x: number; y: number; dir: { x: number; y: number }; jet: number } | null {
+    return this.flameNow
   }
 
-  setPlumeHidden(on: boolean): void {
-    this.plume.setHidden(on)
+  /** T23.14B, e2e: `flame` as the checks read it (`debug().flame` / `debug().flames`) — `drawn` false when there is none. */
+  get flameState(): { drawn: boolean; dir: { x: number; y: number } | null; jet: number; at: { x: number; y: number } | null } {
+    const f = this.flameNow
+    return { drawn: !!f && this.container.visible, dir: f?.dir ?? null, jet: f?.jet ?? 0, at: f ? { x: f.x, y: f.y } : null }
+  }
+
+  /** T23.14B, e2e: draw the figure without its flame, glow and light (a check's control frame); redraws at once. */
+  setFlameHidden(on: boolean): void {
+    this.flameHidden = on
+    if (this.last) this.setState(...this.last)
   }
 
   /** The name tag's text — called every frame by `GameScene` (T22.19B F6). */
