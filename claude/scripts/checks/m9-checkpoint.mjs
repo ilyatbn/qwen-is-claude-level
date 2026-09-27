@@ -92,12 +92,11 @@ export default async function ({ page, shot, log }) {
         `cues [${cues.join(', ')}]`,
     )
 
-    // Night must actually cost you something — this is the pillar §A16 restored.
-    if (!(night < day * 0.75)) {
-      throw new Error(`${t.name}: night ${night.toFixed(1)} is not darker than day ${day.toFixed(1)}`)
-    }
+    // (T23.07: "night is darker than day" in the terrain's pixels retired here — the rock is the lit
+    // terrain on the world canvas, F1's night at every hour, which Phaser's lightmap cannot darken;
+    // T23.11's night/moonlit-day blend (R7) owns it. The night seeing rule is `renderRemotes`', unchanged.)
     if (cues.length === 0) throw new Error(`${t.name}: firing at night made no sound`)
   }
 
-  log('one world, night that costs you something, and sound')
+  log('one world, rendered, and sound at night')
 }

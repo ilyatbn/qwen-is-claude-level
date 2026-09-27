@@ -368,7 +368,7 @@ export class WorldRenderer implements SceneRenderer {
   private placeTerrain(view: ViewRect): void {
     const desc = this.desc
     const g = this.terrain.gpu
-    const on = !!desc && !!g && desc.litTerrain && this.terrain.ready
+    const on = !!desc && !!g && desc.litTerrain && this.terrain.ready && !this.terrainHidden
     this.terrainMesh.visible = on
     if (!on || !desc || !g) {
       this.drawnTerrain = { drawn: false, material: null, lights: 0 }
@@ -399,6 +399,9 @@ export class WorldRenderer implements SceneRenderer {
   get drawsTerrain(): boolean {
     return !!this.desc?.litTerrain && this.terrain.ready
   }
+
+  /** Dev (`gate-ground`): leave the lit terrain out of the frame — "is this pixel rock?" is "does it change". */
+  terrainHidden = false
 
   /** Dev (`look-terrain`): draw the terrain with this tier's material whatever the tier (`null`: the tier's own). */
   terrainForce: QualityTier | null = null

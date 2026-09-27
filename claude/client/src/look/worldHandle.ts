@@ -74,6 +74,8 @@ export interface WorldHandle {
   litTerrain(): ReturnType<WorldRenderer['terrainDrawn']> | null
   /** T23.07: draw the terrain with one tier's material whatever the tier (`null`: the tier's own) — the bake's control. */
   forceTerrainMaterial(m: 'full' | 'low' | null): void
+  /** T23.07: leave the lit terrain out of the world canvas (`gate-ground`: rock is what changes). */
+  hideTerrain(hide: boolean): void
 }
 
 export interface ProbeSample {
@@ -256,6 +258,11 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     scorchOnly: (x, y, r) => (three ? scorchOnly(three.terrain, x, y, r) : null),
     litTerrain: () => three?.terrainDrawn() ?? null,
+    hideTerrain(hide) {
+      if (!three) return
+      three.terrainHidden = hide
+      three.invalidate()
+    },
     forceTerrainMaterial(m) {
       if (!three) return
       three.terrainForce = m

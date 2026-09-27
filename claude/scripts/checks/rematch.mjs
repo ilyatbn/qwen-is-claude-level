@@ -45,7 +45,7 @@
  *   the entire question. The roster is what separates them.
  */
 import { startStack, sleep, freePort } from './harness.mjs'
-import { samplePatch, colourDelta } from './pixels.mjs'
+import { samplePatch, colourDelta, toScreen } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
@@ -352,12 +352,23 @@ if (rosterAfter.includes('bo')) {
 // The subject is the leaver. The control is the player who never left, sampled
 // over the same window: if his frame is frozen too, the box stalled and the
 // measurement says nothing about the leaver.
+// T23.07: **around the body**, not the screen's middle. The middle only changes if the camera pans,
+// and a body walking at the map's edge does not pan it (the rig clamps): measured, bo at x 2032 of a
+// 2048 map walked 32 px and his middle patch read delta 0.0, digest equal — a "frozen" control from a
+// live client. It passed before only while something else in the middle happened to change (Phaser's
+// rock swapping for the lit terrain). A walking body always changes the pixels around where it stood.
+const patchRect = async (c) => {
+  const d = await c.dbg()
+  const p = await toScreen(c.page, d?.renderPos?.x ?? 0, d?.renderPos?.y ?? 0)
+  const b = p.bounds
+  const x = Math.min(Math.max(b.left, p.x - 160), b.left + b.width - 320)
+  const y = Math.min(Math.max(b.top, p.y - 120), b.top + b.height - 240)
+  return { x: Math.round(x), y: Math.round(y), w: 320, h: 240 }
+}
+const rects = {}
 const patch = async (c) => {
-  const rect = await c.page.evaluate(() => {
-    const b = document.querySelector('canvas').getBoundingClientRect()
-    return { x: b.left + b.width / 2 - 160, y: b.top + b.height / 2 - 120, w: 320, h: 240 }
-  })
-  return samplePatch(c.page, rect)
+  rects[c.name] ??= await patchRect(c)
+  return samplePatch(c.page, rects[c.name])
 }
 
 // Movement, so "the frame advanced" does not rest on whatever happens to be
@@ -419,6 +430,8 @@ await Promise.all(
   ),
 )
 const after = { a: await patch(a), b: await patch(b) }
+// T23.07: where each body got to — a control that did not move says so, not only its pixels.
+console.log(`  moved right: ana ${startX.a.toFixed(0)} → ${((await a.dbg())?.renderPos?.x ?? NaN).toFixed(0)}, bo ${startX.b.toFixed(0)} → ${((await b.dbg())?.renderPos?.x ?? NaN).toFixed(0)} (want +${MOVE_PX})`)
 for (const c of [a, b]) await c.page.keyboard.up('d')
 // The phase each page was in when the second frame was taken. A frozen frame in
 // `ended` is a round that finished — input is dropped there (T21.30) — not a stalled

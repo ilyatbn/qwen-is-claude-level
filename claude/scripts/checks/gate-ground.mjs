@@ -10,11 +10,11 @@
  * the overhang the report is about, outside the `PAD_W` pad strip — must look like
  * rock and not like open air.
  *
- * **The references come from the live mask, the verdict from the pixels.** The
- * frost theme's rock and sky are close in colour, so "rock" and "air" are not
- * fixed colours: for each pad the check finds a rect the mask says is solid (under
- * the pad) and one it says is open (above the arch), samples both, and requires
- * them to differ by `DISTINCT` before it trusts either.
+ * **The references come from the live mask, the verdict from the pixels.** Since T23.07 the rock
+ * is the lit terrain on the world canvas, dark at F1's night and textured (boulders, a lit rim), so
+ * "rock" is not a colour either: a patch is rock when its pixels **change with the terrain hidden**
+ * (`ROCK_FRACTION`) — the sky shows through air either way. The mask's rock strip (under the pad)
+ * and air strip (above the arch) are the instrument's controls: they must read rock and air.
  *
  * **Below the edge band.** The terrain bake paints a bright band on the top
  * `EDGE_BAND_PX` solid rows of every sky-facing surface — snow, on the frost theme
@@ -51,11 +51,16 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { toScreen, samplePatch, colourDelta, photo, PIXEL_MOVED } from './pixels.mjs'
+import { toScreen, photo, PIXEL_MOVED } from './pixels.mjs'
 import { constants as rustConstants } from '../lib/rust-constants.mjs'
 
-/** Colour distance at which the rock and air references count as distinguishable. */
-const DISTINCT = 20
+/**
+ * T23.07: a patch is rock when at least this fraction of its world-canvas pixels change with the lit
+ * terrain hidden (`__world.hideTerrain`) — the rock *is* what the terrain draws; air shows the sky
+ * either way. The references say where the instrument sits: the mask's rock strip must read ≥ this,
+ * its air strip ≤ `1 − ROCK_FRACTION`, or the pad is inconclusive.
+ */
+const ROCK_FRACTION = 0.9
 const MIN_CONCLUSIVE = 3
 const STRIP = 6
 const ROWS = 4
@@ -128,17 +133,28 @@ export default async function ({ page, shot, log }) {
       },
       [x, y, artW],
     )
-  /** A world rect → the mean colour of its rendered pixels, or null off screen. */
-  const patch = async (wx0, wy0, ww, wh) => {
-    const a = await toScreen(page, wx0, wy0)
-    const b = await toScreen(page, wx0 + ww, wy0 + wh)
-    if (!a.onScreen || !b.onScreen) return null
-    return samplePatch(page, {
-      x: Math.round(a.x),
-      y: Math.round(a.y),
-      w: Math.max(2, Math.round(b.x - a.x)),
-      h: Math.max(2, Math.round(b.y - a.y)),
-    })
+  /** The world canvas, read back in a drawn frame with its view (T23.07). */
+  const worldFrame = async () => {
+    const f = await page.evaluate(() => window.__world.readFrame())
+    return { ...f, data: Buffer.from(f.rgba, 'base64') }
+  }
+  /** A world rect → the fraction of its world-canvas px that differ between `on` and `off`; null off screen. */
+  const rockFraction = (on, off, wx0, wy0, ww, wh) => {
+    const k = on.w / on.view.w
+    const x0 = Math.floor((wx0 - on.view.x) * k)
+    const y0 = Math.floor((wy0 - on.view.y) * k)
+    const x1 = Math.max(x0 + 1, Math.ceil((wx0 + ww - on.view.x) * k))
+    const y1 = Math.max(y0 + 1, Math.ceil((wy0 + wh - on.view.y) * k))
+    if (x0 < 0 || y0 < 0 || x1 > on.w || y1 > on.h) return null
+    let n = 0
+    let changed = 0
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = (y * on.w + x) * 4
+        n++
+        if (Math.max(Math.abs(on.data[i] - off.data[i]), Math.abs(on.data[i + 1] - off.data[i + 1]), Math.abs(on.data[i + 2] - off.data[i + 2])) > PIXEL_MOVED) changed++
+      }
+    return changed / n
   }
 
   const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
@@ -263,45 +279,43 @@ export default async function ({ page, shot, log }) {
       log(`pad ${pad.id}: no clean rock or air reference in the mask — inconclusive`)
       continue
     }
-    // Four photographs of **one** frame: the scene is frozen across them, and the camera is
-    // read at both ends so a frame that moved anyway is reported rather than judged.
-    let rock, air, left, right, camA, camB
+    // Two world-canvas frames of **one** view, the lit terrain shown and hidden: the scene is frozen
+    // across them, and the camera is read at both ends so a frame that moved anyway is reported.
+    let on, off, camA, camB
     await page.evaluate(() => window.__game.freeze(true))
     try {
       await frames()
       camA = await page.evaluate(() => window.__game.debug().camera)
-      rock = await patch(x - STRIP / 2, rockY, STRIP, ROWS)
-      air = await patch(x - STRIP / 2, airY, STRIP, ROWS)
-      left = await patch(x - Math.floor(artW / 2) + 1, y + subjectTop, STRIP, ROWS)
-      right = await patch(x - Math.floor(artW / 2) + artW - 1 - STRIP, y + subjectTop, STRIP, ROWS)
+      on = await worldFrame()
+      await page.evaluate(() => window.__world.hideTerrain(true))
+      off = await worldFrame()
       camB = await page.evaluate(() => window.__game.debug().camera)
     } finally {
+      await page.evaluate(() => window.__world.hideTerrain(false))
       await page.evaluate(() => window.__game.freeze(false))
     }
     const camMoved = Math.hypot(camB.x - camA.x, camB.y - camA.y)
-    if (camMoved > 0) {
-      failures.push(`pad ${pad.id} at (${x}, ${y}): the camera moved ${camMoved.toFixed(1)} world px while its patches were photographed — they are not one frame`)
+    if (camMoved > 0 || JSON.stringify(on.view) !== JSON.stringify(off.view)) {
+      failures.push(`pad ${pad.id} at (${x}, ${y}): the camera moved ${camMoved.toFixed(1)} world px while its frames were read — they are not one view`)
       continue
     }
-    if (!left || !right || !rock || !air) {
+    const rock = rockFraction(on, off, x - STRIP / 2, rockY, STRIP, ROWS)
+    const air = rockFraction(on, off, x - STRIP / 2, airY, STRIP, ROWS)
+    const left = rockFraction(on, off, x - Math.floor(artW / 2) + 1, y + subjectTop, STRIP, ROWS)
+    const right = rockFraction(on, off, x - Math.floor(artW / 2) + artW - 1 - STRIP, y + subjectTop, STRIP, ROWS)
+    if (left === null || right === null || rock === null || air === null) {
       log(`pad ${pad.id} at (${x}, ${y}): a patch was off screen — inconclusive`)
       continue
     }
-    const separation = colourDelta(rock, air)
-    if (separation < DISTINCT) {
-      log(`pad ${pad.id}: rock and air differ by only ${separation.toFixed(1)} — inconclusive`)
+    if (!(rock >= ROCK_FRACTION && air <= 1 - ROCK_FRACTION)) {
+      log(`pad ${pad.id}: the references read rock ${rock.toFixed(2)}, air ${air.toFixed(2)} — the instrument cannot tell them apart here, inconclusive`)
       continue
     }
     asserted++
     for (const [side, p] of [['left', left], ['right', right]]) {
-      const toRock = colourDelta(p, rock)
-      const toAir = colourDelta(p, air)
-      log(`pad ${pad.id} ${side}: to rock ${toRock.toFixed(1)}, to air ${toAir.toFixed(1)} (refs ${separation.toFixed(1)} apart)`)
-      if (toRock >= toAir) {
-        failures.push(
-          `pad ${pad.id} at (${x}, ${y}): under the ${side} end of the drawn base looks like ` +
-            `air (to rock ${toRock.toFixed(1)}, to air ${toAir.toFixed(1)})`,
-        )
+      log(`pad ${pad.id} ${side}: ${(p * 100).toFixed(0)} % rock (references: rock ${(rock * 100).toFixed(0)} %, air ${(air * 100).toFixed(0)} %)`)
+      if (p < ROCK_FRACTION) {
+        failures.push(`pad ${pad.id} at (${x}, ${y}): under the ${side} end of the drawn base is only ${(p * 100).toFixed(0)} % rock`)
       }
     }
     await shot(`gate-ground-pad${pad.id}`)
