@@ -76,7 +76,7 @@ export class TerrainLayer {
     }
     this.gpu?.dispose()
     const t0 = performance.now()
-    this.gpu = feed ? new TerrainGpu(this.renderer, feed.w, feed.h) : null
+    this.gpu = feed ? new TerrainGpu(this.renderer, feed.w, feed.h, feed.albedoOffset) : null
     if (this.gpu && this.bakeLook) this.gpu.setBake(this.bakeLook)
     if (feed) this.stats.makeMs = performance.now() - t0
   }

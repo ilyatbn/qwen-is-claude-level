@@ -100,9 +100,10 @@ export const CHECKS = [
   { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7' },
   // T23.07 retired `terrain-render` (§C0: a crater changes the picture — photographed on Phaser's rock,
   // parked flaky; `look-terrain`'s live half now asserts the crater lit in the very frame it is carved,
-  // against a from-scratch repaint) and `terrain-seed` (two seeds wear different procTextures tiles —
-  // the lit terrain's albedo is keyed by world position, as the mockup's is, so the property retired
-  // with the tiles).
+  // against a from-scratch repaint). T23.07B (R24) restored `terrain-seed` on the lit terrain: the same
+  // deep-rock world rect on two seeds wears different rock (the albedo's per-map offset), and the same
+  // seed twice the same.
+  { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
   // clouds) and the ambient rain that fell from them.

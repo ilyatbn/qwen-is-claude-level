@@ -8,7 +8,8 @@
  * the deep face recede; the rim light on edges facing away from the sun; a specular glint on the
  * bevel; the glowing lip where the top edge catches the sky; grass tips; the cave wall set back
  * behind the face, shadowed by it and darkened toward the rock (`dOut`), lit by the point lights at
- * z −30; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
+ * z −30, and — R24, T23.07B — drawn with `back` as its coverage, so where it meets open sky it fades
+ * over `render_fields.rs::BACK_RAMP_PX` instead of ending on a hard line; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
  *
  * **Dropped, and why:** `occl` (the object contact shadow's 5×5 = 25 reads a pixel) is a blank 4×4
  * render target in every F scene (`f_kit.js::frame`'s `black`), so it multiplies by exactly 1 —
@@ -49,10 +50,13 @@ uniform vec2 RES;
 uniform float worldH;
 uniform vec3 sunDir, sunCol, sky, ground, rimCol, lipCol;
 uniform float bevel, interior, pixel, ambient, rimK, lipK;
+uniform float wallK; // dev (gate-ground): 0 draws no cave wall; 1 always in play
+uniform float wallFade; // R24: 1 = back is coverage (the game); 0 = any back is whole wall (the look-lab: the mockup's)
 uniform vec4 pl[${TERRAIN_LIGHTS}];
 uniform vec3 plc[${TERRAIN_LIGHTS}];
 uniform int nl;
 vec4 F(vec2 p) { return texture(field, p / RES); }          // p: mask px, y down (texture row 0 = mask row 0)
+float backOf(vec4 f) { return (wallFade > 0.5 ? f.b : (f.b > 0. ? 1. : 0.)) * wallK; }
 float sd(vec2 p) { vec4 f = F(p); return f.r * 64. - f.g * 64.; } // + inside
 float heightOf(vec4 f) { float d = clamp((f.r * 64. - f.g * 64.) / bevel, 0., 1.); return bevel * sqrt(1. - (1. - d) * (1. - d)) + f.a * 7. * d; }
 float height(vec2 p) { return heightOf(F(p)); }
@@ -91,7 +95,8 @@ out vec4 fragColor;
 void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
   float s = f.r * 64. - f.g * 64.;
   float cover = clamp(s + 0.5, 0., 1.);
-  bool isBack = f.b > 0.5;
+  float bk = backOf(f); // R24: the wall's coverage, ramping up from open sky
+  bool isBack = bk > 0.;
   vec3 wp = vec3(p.x, worldH - p.y, heightOf(f));
   vec3 col = vec3(0.);
   if (cover > 0.001) {
@@ -134,8 +139,10 @@ void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
       float att = pow(clamp(1. - d / pl[i].w, 0., 1.), 2.); pls += plc[i] * att * max(L.z / d, 0.) * 0.8;
     }
     vec3 bcol = a * ((sunCol * 0.55 * (1. - shB) + sky * 0.35) * (0.35 + 0.65 * ao) + pls);
-    if (cover <= 0.001) { fragColor = vec4(bcol, 1.); return; }
-    col = mix(bcol, col, cover); cover = 1.;
+    if (cover <= 0.001) { fragColor = vec4(bcol, bk); return; }
+    // The rock over the wall, both with coverage (straight alpha); a whole wall (bk = 1) is the mockup's line.
+    if (bk >= 1.) { col = mix(bcol, col, cover); cover = 1.; }
+    else { float ca = cover + bk * (1. - cover); col = (col * cover + bcol * bk * (1. - cover)) / ca; cover = ca; }
   }
   fragColor = vec4(col, cover);
 }
@@ -171,10 +178,10 @@ void main() {
   vec4 alb = A(p);
   float s = f.r * 64. - f.g * 64.;
   if (fringe(p, s, alb)) return;
-  if (clamp(s + 0.5, 0., 1.) <= 0.001 && !(f.b > 0.5)) discard;
+  if (clamp(s + 0.5, 0., 1.) <= 0.001 && !(backOf(f) > 0.)) discard;
   vec3 n = normalAt(p);
   float sh = s + 0.5 > 0.001 ? sunShadow(p, heightOf(f)) : 1.;
-  float shB = f.b > 0.5 ? backShadow(p) : 0.;
+  float shB = f.b > 0. ? backShadow(p) : 0.;
   shade(p, f, alb, n, sh, shB);
 }
 `
@@ -191,7 +198,7 @@ void main() {
   vec4 alb = A(p);
   float s = f.r * 64. - f.g * 64.;
   if (fringe(p, s, alb)) return;
-  if (clamp(s + 0.5, 0., 1.) <= 0.001 && !(f.b > 0.5)) discard;
+  if (clamp(s + 0.5, 0., 1.) <= 0.001 && !(backOf(f) > 0.)) discard;
   vec4 b = texelFetch(baked, clamp(ivec2(floor(p)), ivec2(0), ivec2(RES) - 1), 0);
   vec2 nxy = b.rg * 2. - 1.;
   vec3 n = vec3(nxy, sqrt(max(0., 1. - dot(nxy, nxy))));
@@ -214,7 +221,7 @@ void main() {
   vec3 n = normalAt(p);
   float s = f.r * 64. - f.g * 64.;
   float sh = s + 0.5 > 0.001 ? sunShadow(p, heightOf(f)) : 1.;
-  float shB = f.b > 0.5 ? backShadow(p) : 0.;
+  float shB = f.b > 0. ? backShadow(p) : 0.;
   bakeOut = vec4(n.xy * 0.5 + 0.5, sh, shB);
 }
 `
@@ -245,6 +252,8 @@ export function lookUniforms(): Uniforms {
     ambient: { value: 1 },
     rimK: { value: 0 },
     lipK: { value: 0 },
+    wallK: { value: 1 },
+    wallFade: { value: 1 },
     pl: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector4(0, 0, 0, 1)) },
     plc: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector3()) },
     nl: { value: 0 },

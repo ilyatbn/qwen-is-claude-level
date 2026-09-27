@@ -32,6 +32,23 @@ export const TERRAIN_PALETTE = {
   boulders: 0.8,
 } as const
 
+/**
+ * R24 (T23.07B F2): the albedo's per-map offset, world px, added to the position every noise reads
+ * (`ALBEDO_FS`'s `p` and the grass blades' column) — so strata, boulders and cracks sit differently on
+ * each map instead of identically at the same world px (the owner's T21.15 report). Hashed from the
+ * map seed's two words (`map_init`'s key, or the sandbox's own); `ALBEDO_OFFSET_RANGE` keeps `p` a few
+ * thousand px, far inside float32's exact integers, so the noise is the same function, only shifted.
+ * The look-lab passes none (0, 0): its scenes stay the mockup's, bit for bit at the hash.
+ */
+export const ALBEDO_OFFSET_RANGE = 4096
+/** Salts for the two axes' hashes (any fixed words; they only have to differ). */
+const OFFSET_SALT_X = 211
+const OFFSET_SALT_Y = 212
+
+export function albedoOffset(seedLo: number, seedHi: number): [number, number] {
+  return [hashU32(seedLo, seedHi, OFFSET_SALT_X) % ALBEDO_OFFSET_RANGE, hashU32(seedLo, seedHi, OFFSET_SALT_Y) % ALBEDO_OFFSET_RANGE]
+}
+
 /** `world.js::hash`'s 32-bit word before the `/ 2³²` — what WebGL2's `uint` computes. */
 export function hashU32(x: number, y: number, s: number): number {
   let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(s, 144665)) | 0
@@ -107,6 +124,7 @@ uniform sampler2D field;
 uniform highp usampler2D din2;
 uniform sampler2D scorch;
 uniform ivec2 size;
+uniform ivec2 offset; // R24: the map's albedo offset (albedoOffset), 0 in the look-lab
 out vec4 outColor;
 ${NOISE_GLSL}
 int W, H;
@@ -128,7 +146,7 @@ void main() {
   W = size.x; H = size.y;
   int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y), i = y * W + x;
   ivec4 f = fieldAt(x, y);
-  vec2 p = vec2(float(x), float(y));
+  vec2 p = vec2(float(x + offset.x), float(y + offset.y));
   float sc = scorchAt(x, y);
   if (f.r > 0) {
     float d = dInAt(x, y);
@@ -171,7 +189,7 @@ void main() {
     return;
   }
   vec4 o = vec4(0.0);
-  if (f.b > 127) {
+  if (f.b > 0) { // any wall px, R24's ramp included: its colour is the wall's, its coverage the shader's
     float g = fbm(p * 0.03, 4, 19);
     vec3 c = mix(${v3(P.back[0])}, ${v3(P.back[1])}, g);
     float cl = cell(p * 0.05, 20); if (cl < 0.2) c = mix(c, c * 1.3, 0.5);
@@ -187,7 +205,8 @@ void main() {
     if (ys >= H) break;
     if (!solidAt(x, ys)) continue;
     if (scorchAt(x, ys) > 0.0) break;
-    float r = hash(x, 7, 99), clump = fbm(vec2(float(x) * 0.08, float(ys) * 0.02), 2, 98);
+    int xo = x + offset.x;
+    float r = hash(xo, 7, 99), clump = fbm(vec2(float(xo) * 0.08, float(ys + offset.y) * 0.02), 2, 98);
     int hb = int(floor((2.0 + 11.0 * r * r * r) * (0.5 + clump)));
     if (k <= hb) {
       float t = float(k) / float(hb + 1);

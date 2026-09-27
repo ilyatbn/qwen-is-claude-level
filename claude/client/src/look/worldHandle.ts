@@ -76,6 +76,8 @@ export interface WorldHandle {
   forceTerrainMaterial(m: 'full' | 'low' | null): void
   /** T23.07: leave the lit terrain out of the world canvas (`gate-ground`: rock is what changes). */
   hideTerrain(hide: boolean): void
+  /** T23.07B (F4): draw the lit terrain without its cave wall (`gate-ground`: rock changes with the terrain, not with the wall). */
+  hideWall(hide: boolean): void
 }
 
 export interface ProbeSample {
@@ -261,6 +263,11 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     hideTerrain(hide) {
       if (!three) return
       three.terrainHidden = hide
+      three.invalidate()
+    },
+    hideWall(hide) {
+      if (!three) return
+      three.wallHidden = hide
       three.invalidate()
     },
     forceTerrainMaterial(m) {

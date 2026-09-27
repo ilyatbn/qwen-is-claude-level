@@ -170,6 +170,8 @@ export class TerrainGpu {
     private readonly renderer: WebGLRenderer,
     readonly w: number,
     readonly h: number,
+    /** R24 (T23.07B F2): the map's albedo offset (`albedo.ts::albedoOffset`); (0, 0) in the look-lab. */
+    readonly albedoOffset: readonly [number, number] = [0, 0],
   ) {
     // F6: storage only (`texStorage2D`, no data) — `uploadFields` writes it, strip by strip.
     this.field = new DataTexture(null, w, h, RGBAFormat, UnsignedByteType)
@@ -199,7 +201,7 @@ export class TerrainGpu {
       glslVersion: GLSL3,
       vertexShader: QUAD_VS,
       fragmentShader: ALBEDO_FS,
-      uniforms: { field: { value: this.field }, din2: { value: this.din2 }, scorch: { value: this.scorch.texture }, size: { value: new Vector2(w, h) } },
+      uniforms: { field: { value: this.field }, din2: { value: this.din2 }, scorch: { value: this.scorch.texture }, size: { value: new Vector2(w, h) }, offset: { value: new Vector2(...albedoOffset) } },
       depthTest: false,
       depthWrite: false,
     })

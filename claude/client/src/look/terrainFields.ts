@@ -23,6 +23,7 @@
 import { renderFieldsReadMargin, wasmModule } from '../core'
 import type { FieldsJob, FieldsResult, FieldsWarm } from './fieldsWorker'
 import type { Rect } from './terrainGpu'
+import { albedoOffset } from './albedo'
 
 /** What the world renderer reads (plain data, R11): the buffer and what changed in it. */
 export interface TerrainFeed {
@@ -30,6 +31,14 @@ export interface TerrainFeed {
   readonly h: number
   /** Names the map (`map_init`'s key and the size): a same-map resync keeps the GPU side (F3). */
   readonly mapKey: string
+  /** R24 (T23.07B F2): the albedo's per-map offset (`albedo.ts::albedoOffset` of the map seed); (0, 0) in the look-lab. */
+  readonly albedoOffset: readonly [number, number]
+  /**
+   * R24 (T23.07B F1): draw `back` as coverage — the wall fading into open sky over the fields' ramp. False
+   * in the look-lab: its scenes are the mockup's, whose wall is whole wherever it is (F1's tunnel mouths
+   * meet open sky, so the ramp would move Level A's `deltaE_cave` — measured, T23.07B's journal).
+   */
+  readonly wallFade: boolean
   readonly ready: boolean
   /** Dev: what the feed measured (the worker job, the install, carve updates). */
   readonly stats?: Readonly<Record<string, number | string>>
@@ -174,6 +183,8 @@ export class TerrainFields implements TerrainFeed {
   readonly w: number
   readonly h: number
   readonly mapKey: string
+  readonly albedoOffset: readonly [number, number]
+  readonly wallFade = true
   ready = false
   readonly stats = {
     jobMs: NaN,
@@ -214,6 +225,7 @@ export class TerrainFields implements TerrainFeed {
     this.w = core.width
     this.h = core.height
     this.mapKey = `${key.join(',')}@${this.w}x${this.h}`
+    this.albedoOffset = albedoOffset(key[0] ?? 0, key[1] ?? 0)
     // Boxes from before this map's fields exist (the map build, a previous map) are not carves on it.
     core.takeCarveBoxes()
     const job: FieldsJob = { id: nextJob++, w: this.w, h: this.h, rle: core.maskRle(), key }

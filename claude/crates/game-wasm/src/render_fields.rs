@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | R | `dIn`, distance from a solid px to the nearest air px | `min(255, f32(√d²)·4)`, truncated |
 //! | G | `dOut`, distance from an air px to the nearest solid px | same |
-//! | B | `back`, carved-out rock (cave wall) | 255 / 0 |
+//! | B | `back`, carved-out rock (cave wall): coverage, ramping up from open sky (R24) | `255·min(1, d/10)` / 0 |
 //! | A | `relief`, boulders and strata ledges (`world.js::derive`) | `f32(relief)·255`, truncated |
 //!
 //! ×4 in 8 bits saturates at 63.75 px; that saturation is what makes the dirty
@@ -19,7 +19,11 @@
 //!
 //! ## `back` — the cave wall (R17)
 //!
-//! `back = was rock ∧ air now`. The mockup's `back` is exactly the pixels its `buildMask`
+//! `back = was rock ∧ air now`, and since R24 (T23.07B) its byte is a **coverage ramp**: the wall
+//! px's distance to open sky (air that was never rock), saturating at [`BACK_RAMP_PX`], so a wall
+//! slab a cave shaft leaves in a V2 cliff fades into the sky instead of ending on a straight line.
+//! Walls enclosed by rock — the mockup's, every F scene's — are 255 as before.
+//! The mockup's `back` is exactly the pixels its `buildMask`
 //! spec carved out of a landform — generated tunnels and craters alike — and R17 rules
 //! the game does the same: "was rock" is the generator's landform **or** the mask at
 //! round start. It is an input ([`RenderFields::full_with_wall`]) so either source plugs
@@ -49,6 +53,14 @@ pub const READ_MARGIN: u32 = 128;
 /// grown by it, exactly (planted `- 1`, `an_incremental_update_equals_a_full_pass`
 /// goes red on 10 of 20 seeds). Relief was ~70 % of a crater update, hence the margin.
 pub const RELIEF_MARGIN: u32 = BOULDER_MIN_DEPTH as u32;
+/// R24 (T23.07B F1): the cave wall fades into open sky over this many px — `back` is a coverage ramp,
+/// the wall px's distance to the nearest air that is not wall (the complement of rock-now ∪ was-rock),
+/// saturating here. **Basis:** the hard wall/sky edges the review found step 28–59 in luminance at the
+/// median (max 85, `look-terrain` § 4 on seeds 4/6/9/11); spread over 10 px the step per px falls to
+/// ≈ 3–9, under the check's hard-edge step, so the straight line is gone while the fade stays narrower
+/// than the rock's own 14 px bevel (F1's `bevel`). R24 names ~8–12 px. It must stay ≤ [`WRITE_MARGIN`]
+/// for `dirty` to equal `full` (a carve moves the ramp at most this far); 10 ≪ 64.
+const BACK_RAMP_PX: f64 = 10.0;
 /// `world.js::THEMES.dusk.boulders` — F1/F5's theme (`variant_F1.js`, R5: one world).
 const BOULDER_MIN_ID: f64 = 0.8;
 /// `world.js::derive`: boulders only deeper than this into the rock.
@@ -487,16 +499,54 @@ impl RenderFields {
         distance_pass(mask, false, read, write, |x, y, d| {
             rgba[(y as usize * ww + x as usize) * 4 + 1] = encode_dist(d);
         });
-        // B: carved-out rock (module docs).
+        // B: carved-out rock (module docs), a coverage ramp against open sky (R24).
         if let Some(p) = &self.wall {
-            for y in write.y..write.y + write.h {
-                for x in write.x..write.x + write.w {
-                    let back = p.solid(x, y) && !mask.solid(x, y);
-                    rgba[(y as usize * ww + x as usize) * 4 + 2] = if back { 255 } else { 0 };
-                }
-            }
+            let closed = NotOpenAir { mask, wall: p };
+            // The ramp saturates at `BACK_RAMP_PX`, so a px written needs only the sky within that of it:
+            // read `write` grown by one more px, not `read` (a crater's update: 271² px read, not 377²).
+            let reach = BACK_RAMP_PX.ceil() as u32 + 1;
+            let near = Rect::grown(
+                write.x as i32,
+                write.y as i32,
+                write.w as i32,
+                write.h as i32,
+                reach,
+                self.w,
+                self.h,
+            )
+            .intersect(read);
+            distance_pass(&closed, true, near, write, |x, y, d| {
+                let back = p.solid(x, y) && !mask.solid(x, y);
+                rgba[(y as usize * ww + x as usize) * 4 + 2] =
+                    if back { back_coverage(d) } else { 0 };
+            });
         }
     }
+}
+
+/// Everything that is not open sky: solid now, or was rock (the wall). Its complement is the air
+/// the cave wall fades against (R24).
+struct NotOpenAir<'a, M: Solid> {
+    mask: &'a M,
+    wall: &'a BitGrid,
+}
+
+impl<M: Solid> Solid for NotOpenAir<'_, M> {
+    fn dims(&self) -> (u32, u32) {
+        self.mask.dims()
+    }
+    #[inline]
+    fn solid(&self, x: u32, y: u32) -> bool {
+        self.mask.solid(x, y) || self.wall.solid(x, y)
+    }
+}
+
+/// `back` for a wall px `d` px from the nearest open-sky px: `255·min(1, d / BACK_RAMP_PX)`, rounded.
+/// A wall px with sky beside it (d = 1) is 26, one ramp in (d ≥ 10) or enclosed (no sky within the
+/// EDT's 65 px cap) 255 — every wall px an F scene's `back` covers away from the sky is 255 as before.
+#[inline]
+fn back_coverage(d: f32) -> u8 {
+    (255.0 * (d as f64 / BACK_RAMP_PX).min(1.0)).round() as u8
 }
 
 /// `kit.js`: `Math.min(255, dIn[i] * 4)` stored to a `Uint8Array` (truncation).
@@ -977,6 +1027,66 @@ mod tests {
         );
     }
 
+    /// R24 (T23.07B F1): `back` is `back_coverage` of each wall px's exact distance to the nearest
+    /// open-sky px (neither solid nor wall), by exhaustive search, on random grids with random walls;
+    /// 0 off the wall. Controls: all three regimes occur — the ramp's first step beside the sky, the
+    /// ramp's middle, and 255 — and a wall enclosed by rock is 255 everywhere (it fades into sky, not rock).
+    #[test]
+    fn back_ramps_up_from_open_sky_by_the_exact_distance() {
+        let (mut first, mut mid, mut full) = (0usize, 0usize, 0usize);
+        for seed in 0..6u64 {
+            let g = random_grid(300 + seed, 160, 120);
+            let mut wall = random_grid(400 + seed, 160, 120);
+            wall.union_with(&g);
+            let mut f = RenderFields::default();
+            f.full_with_wall(&g, wall.clone()).unwrap();
+            let sky: Vec<(i64, i64)> = (0..120u32)
+                .flat_map(|y| (0..160u32).map(move |x| (x, y)))
+                .filter(|&(x, y)| !wall.solid(x, y))
+                .map(|(x, y)| (x as i64, y as i64))
+                .collect();
+            let b = channel(&f, 2);
+            for y in 0..120u32 {
+                for x in 0..160u32 {
+                    let want = if wall.solid(x, y) && !g.solid(x, y) {
+                        let best = sky
+                            .iter()
+                            .map(|&(sx, sy)| (sx - x as i64).pow(2) + (sy - y as i64).pow(2))
+                            .min();
+                        back_coverage(best.map_or(1e5, |d| (d as f64).sqrt() as f32))
+                    } else {
+                        0
+                    };
+                    let got = b[(y * 160 + x) as usize];
+                    assert_eq!(got, want, "seed {seed} px ({x}, {y})");
+                    match got {
+                        0 => {}
+                        255 => full += 1,
+                        v if v == back_coverage(1.0) => first += 1,
+                        _ => mid += 1,
+                    }
+                }
+            }
+        }
+        assert!(
+            first > 100 && mid > 100 && full > 100,
+            "first {first}, mid {mid}, full {full}"
+        );
+        // Enclosed: a cave carved in solid rock, no sky anywhere near it.
+        let mut rock = BitGrid::new(120, 120);
+        circle(&mut rock, 60, 60, 200, true);
+        let wall = rock.clone();
+        circle(&mut rock, 60, 60, 20, false);
+        let mut f = RenderFields::default();
+        f.full_with_wall(&rock, wall).unwrap();
+        let b = channel(&f, 2);
+        let cave = b.iter().filter(|&&v| v > 0).count();
+        assert!(
+            cave > 1000 && b.iter().all(|&v| v == 0 || v == 255),
+            "enclosed wall: {cave} px, all 255"
+        );
+    }
+
     /// Carve random circles into random terrain, update per dirty rect, compare with a
     /// from-scratch full pass. `read_margin` is the live parameter of `dirty`.
     fn incremental_mismatches(read_margin: u32) -> (usize, usize) {
@@ -1001,7 +1111,7 @@ mod tests {
                 ..Default::default()
             };
             fresh.full_against_snapshot(&g);
-            changed += channel(&fresh, 2).iter().filter(|&&b| b == 255).count();
+            changed += channel(&fresh, 2).iter().filter(|&&b| b > 0).count();
             if f.rgba() != fresh.rgba() || f.din2() != fresh.din2() {
                 bad_seeds += 1;
             }
@@ -1056,15 +1166,16 @@ mod tests {
             "no wall without the input"
         );
         core.render_fields_full_with_wall(&wall).unwrap();
+        // Each input px is a lone wall px in open air, so it sits on the ramp's first step (R24).
         assert!(
-            air.iter().all(|&i| b(&core, i) == 255),
+            air.iter().all(|&i| b(&core, i) == back_coverage(1.0)),
             "the input's px are wall"
         );
         let walled = core
             .render_fields
             .rgba()
             .chunks_exact(4)
-            .filter(|p| p[2] == 255)
+            .filter(|p| p[2] > 0)
             .count();
         assert_eq!(walled, air.len(), "and nothing else is");
     }
@@ -1082,7 +1193,7 @@ mod tests {
                 c.render_fields
                     .rgba()
                     .chunks_exact(4)
-                    .filter(|p| p[2] == 255)
+                    .filter(|p| p[2] > 0)
                     .count()
             };
             local.render_fields_full();
@@ -1498,6 +1609,13 @@ mod tests {
         round_start_only.full(&solid);
         assert!(channel(&round_start_only, 2).iter().all(|&b| b == 0));
         assert!(channel(&f, 2).iter().filter(|&&b| b == 255).count() > 1000);
+        // R24: the mockup's `back` is a set (255 / 0); ours ramps where the wall meets open sky. The set
+        // is compared — `back > 0` as 255 — and the ramp's px are counted (arena E's caves open to the sky).
+        let ramp = channel(&f, 2).iter().filter(|&&b| b > 0 && b < 255).count();
+        assert!(
+            ramp > 0,
+            "arena E has wall px beside open sky: the ramp is exercised"
+        );
 
         let mut relief = Vec::new();
         for y in 0..h {
@@ -1532,7 +1650,14 @@ mod tests {
         );
         assert_eq!(got(0), hashes["din"], "dIn channel");
         assert_eq!(got(1), hashes["dout"], "dOut channel");
-        assert_eq!(got(2), hashes["back"], "back channel");
+        let back_set = channel(&f, 2)
+            .into_iter()
+            .map(|b| if b > 0 { 255 } else { 0 });
+        assert_eq!(
+            fnv32(back_set) as u64,
+            hashes["back"],
+            "back channel, as a set"
+        );
         assert_eq!(got(3), hashes["relief_u8"], "relief channel");
         // Controls: the fixture is not degenerate, and a one-byte change is seen.
         let over_half = relief.iter().filter(|&&b| f32::from_bits(b) > 0.5).count() as u64;

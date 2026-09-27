@@ -16,6 +16,15 @@
  * (`ROCK_FRACTION`) — the sky shows through air either way. The mask's rock strip (under the pad)
  * and air strip (above the arch) are the instrument's controls: they must read rock and air.
  *
+ * **Rock, not cave wall (T23.07B F4).** The lit terrain also draws the cave wall — air that was rock —
+ * which changes with the terrain hidden exactly as rock does, so "changes when hidden" alone read a
+ * gate standing over a cave's back wall as standing on rock. A patch is now rock when its px change
+ * with the terrain hidden **but not with only the wall hidden** (`__world.hideWall`, which suppresses
+ * the shader's wall branch and nothing else). The control is **a pad-end patch over cave wall**: a
+ * `STRIP`×`ROWS` patch of full-coverage wall (fields B = 255, mask air) on this map, photographed the
+ * same way, must read not-rock by the rule — and rock by the old one, or it would not show the rule
+ * doing anything.
+ *
  * **Below the edge band.** The terrain bake paints a bright band on the top
  * `EDGE_BAND_PX` solid rows of every sky-facing surface — snow, on the frost theme
  * — and the first version of this check picked that snow as its "rock" reference,
@@ -62,6 +71,8 @@ import { constants as rustConstants } from '../lib/rust-constants.mjs'
  */
 const ROCK_FRACTION = 0.9
 const MIN_CONCLUSIVE = 3
+/** The wall control's patch is at least this far from rock, world px — past a grass blade's 19. */
+const WALL_CLEAR = 24
 const STRIP = 6
 const ROWS = 4
 /**
@@ -138,8 +149,12 @@ export default async function ({ page, shot, log }) {
     const f = await page.evaluate(() => window.__world.readFrame())
     return { ...f, data: Buffer.from(f.rgba, 'base64') }
   }
-  /** A world rect → the fraction of its world-canvas px that differ between `on` and `off`; null off screen. */
-  const rockFraction = (on, off, wx0, wy0, ww, wh) => {
+  /**
+   * A world rect → the fraction of its world-canvas px that are rock: differ between `on` and `off` (the
+   * terrain hidden) and — given `noWall` (only the wall hidden) — do not differ between `on` and `noWall`.
+   * `noWall` null: the pre-T23.07B rule (any change). Null off screen.
+   */
+  const rockFraction = (on, off, wx0, wy0, ww, wh, noWall = null) => {
     const k = on.w / on.view.w
     const x0 = Math.floor((wx0 - on.view.x) * k)
     const y0 = Math.floor((wy0 - on.view.y) * k)
@@ -152,9 +167,34 @@ export default async function ({ page, shot, log }) {
       for (let x = x0; x < x1; x++) {
         const i = (y * on.w + x) * 4
         n++
-        if (Math.max(Math.abs(on.data[i] - off.data[i]), Math.abs(on.data[i + 1] - off.data[i + 1]), Math.abs(on.data[i + 2] - off.data[i + 2])) > PIXEL_MOVED) changed++
+        const moved = (b) => Math.max(Math.abs(on.data[i] - b.data[i]), Math.abs(on.data[i + 1] - b.data[i + 1]), Math.abs(on.data[i + 2] - b.data[i + 2])) > PIXEL_MOVED
+        if (moved(off) && !(noWall && moved(noWall))) changed++
       }
     return changed / n
+  }
+
+  /** One view, frozen: the world canvas as drawn, with the terrain hidden, and with only its wall hidden. */
+  const threeFrames = async () => {
+    let on, off, noWall, camA, camB
+    await page.evaluate(() => window.__game.freeze(true))
+    try {
+      await frames()
+      camA = await page.evaluate(() => window.__game.debug().camera)
+      on = await worldFrame()
+      await page.evaluate(() => window.__world.hideTerrain(true))
+      off = await worldFrame()
+      await page.evaluate(() => window.__world.hideTerrain(false))
+      await page.evaluate(() => window.__world.hideWall(true))
+      noWall = await worldFrame()
+      camB = await page.evaluate(() => window.__game.debug().camera)
+    } finally {
+      await page.evaluate(() => window.__world.hideTerrain(false))
+      await page.evaluate(() => window.__world.hideWall(false))
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+    const moved = Math.hypot(camB.x - camA.x, camB.y - camA.y)
+    const sameView = moved === 0 && JSON.stringify(on.view) === JSON.stringify(off.view) && JSON.stringify(on.view) === JSON.stringify(noWall.view)
+    return { on, off, noWall, moved, sameView }
   }
 
   const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
@@ -279,30 +319,17 @@ export default async function ({ page, shot, log }) {
       log(`pad ${pad.id}: no clean rock or air reference in the mask — inconclusive`)
       continue
     }
-    // Two world-canvas frames of **one** view, the lit terrain shown and hidden: the scene is frozen
+    // Three world-canvas frames of **one** view (shown, terrain hidden, wall hidden): the scene is frozen
     // across them, and the camera is read at both ends so a frame that moved anyway is reported.
-    let on, off, camA, camB
-    await page.evaluate(() => window.__game.freeze(true))
-    try {
-      await frames()
-      camA = await page.evaluate(() => window.__game.debug().camera)
-      on = await worldFrame()
-      await page.evaluate(() => window.__world.hideTerrain(true))
-      off = await worldFrame()
-      camB = await page.evaluate(() => window.__game.debug().camera)
-    } finally {
-      await page.evaluate(() => window.__world.hideTerrain(false))
-      await page.evaluate(() => window.__game.freeze(false))
-    }
-    const camMoved = Math.hypot(camB.x - camA.x, camB.y - camA.y)
-    if (camMoved > 0 || JSON.stringify(on.view) !== JSON.stringify(off.view)) {
+    const { on, off, noWall, moved: camMoved, sameView } = await threeFrames()
+    if (!sameView) {
       failures.push(`pad ${pad.id} at (${x}, ${y}): the camera moved ${camMoved.toFixed(1)} world px while its frames were read — they are not one view`)
       continue
     }
-    const rock = rockFraction(on, off, x - STRIP / 2, rockY, STRIP, ROWS)
-    const air = rockFraction(on, off, x - STRIP / 2, airY, STRIP, ROWS)
-    const left = rockFraction(on, off, x - Math.floor(artW / 2) + 1, y + subjectTop, STRIP, ROWS)
-    const right = rockFraction(on, off, x - Math.floor(artW / 2) + artW - 1 - STRIP, y + subjectTop, STRIP, ROWS)
+    const rock = rockFraction(on, off, x - STRIP / 2, rockY, STRIP, ROWS, noWall)
+    const air = rockFraction(on, off, x - STRIP / 2, airY, STRIP, ROWS, noWall)
+    const left = rockFraction(on, off, x - Math.floor(artW / 2) + 1, y + subjectTop, STRIP, ROWS, noWall)
+    const right = rockFraction(on, off, x - Math.floor(artW / 2) + artW - 1 - STRIP, y + subjectTop, STRIP, ROWS, noWall)
     if (left === null || right === null || rock === null || air === null) {
       log(`pad ${pad.id} at (${x}, ${y}): a patch was off screen — inconclusive`)
       continue
@@ -319,6 +346,42 @@ export default async function ({ page, shot, log }) {
       }
     }
     await shot(`gate-ground-pad${pad.id}`)
+  }
+
+  // The control: a pad-end patch over cave wall — full coverage (B 255), and `WALL_CLEAR` px from any rock
+  // (G, dOut ×4) so no rock edge, grass blade or rounding of the buffer's half-res px reaches it — not rock
+  // by the rule, rock by the old one. Looked for on a grid over the whole map; the first one is photographed.
+  const wallPatch = await page.evaluate(
+    ([sw, sh, clear]) => {
+      const c = window.__game.core
+      const w = c.width
+      const f = c.renderFieldsView()
+      for (let y = 0; y + sh < c.height; y += sh)
+        for (let x = 0; x + sw < w; x += sw) {
+          let ok = true
+          for (let yy = y; yy < y + sh && ok; yy++) for (let xx = x; xx < x + sw && ok; xx++) ok = f[(yy * w + xx) * 4 + 2] === 255 && f[(yy * w + xx) * 4 + 1] >= 4 * clear
+          if (ok) return { x, y }
+        }
+      return null
+    },
+    [STRIP, ROWS, WALL_CLEAR],
+  )
+  if (!wallPatch) {
+    failures.push('control: no full-coverage cave wall patch on this map — the wall rule is not exercised')
+  } else {
+    await page.evaluate(([px, py]) => window.__game.watch(px, py), [wallPatch.x, wallPatch.y])
+    await frames()
+    await page.waitForFunction(() => window.__game.debug().pending === 0, null, { timeout: 10_000 })
+    const { on, off, noWall, sameView } = await threeFrames()
+    const byRule = rockFraction(on, off, wallPatch.x, wallPatch.y, STRIP, ROWS, noWall)
+    const byOld = rockFraction(on, off, wallPatch.x, wallPatch.y, STRIP, ROWS)
+    log(`control, a pad-end patch over cave wall at (${wallPatch.x}, ${wallPatch.y}): ${byRule === null ? 'off screen' : (byRule * 100).toFixed(0)} % rock by the rule, ${byOld === null ? '-' : (byOld * 100).toFixed(0)} % by "changes with the terrain hidden" alone`)
+    await shot('gate-ground-wall-control')
+    if (!sameView || byRule === null || byOld === null) failures.push('control: the wall patch could not be photographed in one view')
+    else {
+      if (byRule > 1 - ROCK_FRACTION) failures.push(`control: cave wall reads ${(byRule * 100).toFixed(0)} % rock — the rule counts the wall as ground`)
+      if (byOld < ROCK_FRACTION) failures.push(`control: cave wall reads only ${(byOld * 100).toFixed(0)} % changed with the terrain hidden — the patch is not drawn wall, so it tests nothing`)
+    }
   }
 
   await page.evaluate(() => {

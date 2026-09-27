@@ -377,6 +377,8 @@ export class WorldRenderer implements SceneRenderer {
     const u = this.terrainMats.uniforms
     setTextures(u, g.field, g.albedo.texture, g.w, g.h, desc.world.h)
     setLook(u, desc.look.terrain)
+    u['wallK']!.value = this.wallHidden ? 0 : 1
+    u['wallFade']!.value = this.terrain.feed?.wallFade === false ? 0 : 1
     const lights = pickLights(desc.look.lights, view)
     setLights(u, lights)
     ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)
@@ -402,6 +404,12 @@ export class WorldRenderer implements SceneRenderer {
 
   /** Dev (`gate-ground`): leave the lit terrain out of the frame — "is this pixel rock?" is "does it change". */
   terrainHidden = false
+
+  /**
+   * Dev (T23.07B F4, `gate-ground`): draw the lit terrain **without its cave wall** (`wallK` 0) — only the
+   * wall branch is suppressed, so a px that changes with the terrain hidden but not with this is rock.
+   */
+  wallHidden = false
 
   /** Dev (`look-terrain`): draw the terrain with this tier's material whatever the tier (`null`: the tier's own). */
   terrainForce: QualityTier | null = null

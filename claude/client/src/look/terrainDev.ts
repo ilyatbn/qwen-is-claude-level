@@ -69,6 +69,8 @@ export function terrainInfo(layer: TerrainLayer, albedoView: boolean): {
   w: number
   h: number
   lastScorch: [number, number, number] | null
+  /** R24 (T23.07B F2): this map's albedo offset, or null before the GPU side exists. */
+  albedoOffset: readonly [number, number] | null
   feed: Readonly<Record<string, number | string>> | null
 } & TerrainGpu['stats'] {
   const g = layer.gpu
@@ -80,6 +82,7 @@ export function terrainInfo(layer: TerrainLayer, albedoView: boolean): {
     ...layer.stats,
     bytes: g?.bytes ?? 0,
     lastScorch: g?.lastScorch ?? null,
+    albedoOffset: g?.albedoOffset ?? null,
     feed: layer.feed?.stats ?? null,
     albedoView,
     w: layer.feed?.w ?? 0,

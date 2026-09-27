@@ -35,15 +35,25 @@
  * `debug().rockVisible` (Phaser's flat rock) and `terrainReady` (the lit terrain draws the rock). No
  * frame may have neither; the control is presence — frames before ready must exist and show Phaser's
  * rock (Medium at the low tier takes seconds), and after ready Phaser's rock must be hidden.
+ * **And in pixels (T23.07B F5):** the camera is pinned on deep rock from the page's first moment, and
+ * the page (both canvases composited — what a player sees) is screenshotted there over and over across
+ * the swap; every screenshot must differ (`SWAP_ROCK` of its px by > `PIXEL_MOVED`) from the same patch
+ * with the lit terrain hidden after ready — the sky behind the rock, i.e. the absent picture. Control:
+ * screenshots on both sides of the swap.
  *
- * **A crater, lit in the frame it is carved.** The camera is pinned (`watch`) on a surface; the frame
- * before, then `carve` between two frames, then the **next drawn frame** (`readNextFrame`, nothing
- * forced) with Phaser's frame counter: it must be the very next frame (`CARVE_FRAMES`), the terrain
- * must have repainted in it, and it must equal — `CRATER_MAX_DIFF` — a from-scratch repaint
- * of every field, albedo tile and bake tile at the same view (`repaintAlbedo`) — i.e. the carve's
- * incremental update is the whole lit, bevelled picture of the new mask, not a later frame's — over the
- * whole frame, not only the crater's box (the shadow march reads 53 px away). Control
- * (presence): the crater box differs from the frame before the carve.
+ * **A crater, lit in the frame it is carved** — on `CRATER_SEEDS` (F6: ≥ 3 maps). The camera is pinned
+ * (`watch`) on a surface; the frame before, then `carve` between two frames, then the **next drawn
+ * frame** (`readNextFrame`, nothing forced) with Phaser's frame counter: it must be the very next frame
+ * (`CARVE_FRAMES`), the terrain must have repainted in it, and it must equal — `CRATER_MAX_DIFF` — the
+ * control repaint at the same view (`repaintAlbedo`: every field strip **re-uploaded from the Rust
+ * buffer as the carve left it**, then every albedo and bake tile repainted from it; T23.07B F5 — it is
+ * not a recomputation of the fields, whose incremental == full is `render_fields.rs`'s own test). So it
+ * proves the GPU side's incremental repaint (rects, `ALBEDO_REACH`, `BAKE_REACH`) is the whole lit,
+ * bevelled picture of the uploaded fields in the very next frame — over the whole frame, not only the
+ * crater's box (the shadow march reads 53 px away). Control (presence): the crater box differs from
+ * the frame before the carve.
+ *
+ * ## 4. The cave wall against open sky — see `wallEdges`.
  */
 import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -51,6 +61,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { actorBoxes, compare, failures, loadPng, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
+import { toScreen, PIXEL_MOVED } from './pixels.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
@@ -59,19 +70,54 @@ const TH = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts
 
 /**
  * The low material against the full one on the same buffer, per channel byte: the mean |Δ| over the
- * terrain's pixels and the 99.9th percentile. The bake stores the normal's x, y and both shadows in
- * 8 bits (steps of 1/127 in the normal); measured on first build: see T23.07's journal.
+ * frame and the 99.9th percentile. The bake stores the normal's x, y and both shadows in 8 bits (steps
+ * of 1/127 in the normal). **Measured (T23.07 and again T23.07B, F1 at 640×360, SwiftShader): mean
+ * 0.088, p99.9 1, max 2, 20 139 px differ.** T23.07B F6: the bounds were 0.5 and 12 — picked, 6× and
+ * 12× the measurement, loose enough to pass a bake that is wrong on a sizeable patch. Now ≈ 2× the mean
+ * and the measured max as the p99.9: the quantisation's own size, with room for a GPU's rounding.
  */
-const LOW_MAX_MEAN = 0.5
-const LOW_MAX_P999 = 12
+const LOW_MAX_MEAN = 0.2
+const LOW_MAX_P999 = 2
 
 /** Phaser frames from the carve to the first world frame that shows it: the very next one. */
 const CARVE_FRAMES = 1
-/** Max channel difference, crater box, incremental vs a from-scratch repaint (the same shader on the same inputs). */
+/** Max channel difference, whole frame, incremental vs the control repaint (`repaintAlbedo`: the same shader on the same uploaded fields). */
 const CRATER_MAX_DIFF = 2
 /** The crater's radius, world px, and how far under the surface its centre is. */
 const CRATER_R = 40
 const CRATER_DEPTH = 20
+/** F6 (T23.07B): the crater leg's seeds (V2 Medium) — the sandbox default and two of section 4's. */
+const CRATER_SEEDS = [4242, 7, 11]
+/** F5: the deep-rock patch photographed across the swap, CSS px, and the share of it that must differ from the sky behind it. */
+const SWAP_PATCH = 16
+const SWAP_ROCK = 0.9
+/** …centred on a point with solid rock this many world px around it (the patch is ≤ 16 world px at any zoom ≥ 0.4). */
+const SWAP_DEEP = 40
+
+/** Section 4: V2 Medium seeds — the review's four, where the slabs were found (4242's longest boundary is 21 px: nothing to see). */
+const WALL_EDGE_SEEDS = [4, 6, 9, 11]
+/** Boundary sites photographed per seed: the longest straight runs, at least this far apart (world px). */
+const WALL_EDGE_SITES = 3
+const WALL_EDGE_APART = 200
+/** How far either side of the boundary a hard step is looked for, world px (past the ramp's width). */
+const WALL_EDGE_WINDOW = 14
+/**
+ * A luminance step between adjacent non-solid px above this is a hard edge. Measured (T23.07B, both
+ * tiers): the bit `back`'s wall/sky edges step 28–59 at the median along each run and over 12 on every
+ * row of all four seeds' runs (drawn hard = the whole boundary); the ramp's steps have medians 6–12.
+ */
+const WALL_EDGE_STEP = 12
+/**
+ * A straight hard wall/sky edge must be shorter than this, world px. Measured (T23.07B): the bit `back`
+ * draws 58 / 89 / 40 / 96 on seeds 4 / 6 / 9 / 11 (= the fields' boundary, and the review's numbers); the
+ * ramp 4 / 4 / 8 / 12 (low tier), 9 / 9 / 8 / 7 (full) — texture and the rock's own anti-aliased corner
+ * at a run's end. 24 sits between: 2× the worst ramp, under the shortest slab.
+ */
+const WALL_EDGE_MAX_RUN = 24
+/** Control: a seed must have a straight wall/sky boundary at least this long to photograph. */
+const WALL_EDGE_MIN_GEOMETRIC = 24
+/** Seed whose worst site is cropped into `shots/` (the reviewer's L-shaped slab). */
+const WALL_EDGE_SHOT_SEED = 11
 
 const decode = (f) => ({ width: f.w, height: f.h, data: Uint8Array.from(Buffer.from(f.rgba, 'base64')), view: f.view })
 
@@ -183,8 +229,26 @@ export default async function ({ page, shot, log }) {
   base.search = '?sandbox=1&seed=4242'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world, null, { timeout: 60_000 })
-  // Every frame from here until ready + 10: (ready, rock visible).
-  const swap = await page.evaluate(
+  // F5: the camera pinned on deep rock from the first moment, so every screenshot below is the same place.
+  const deep = await page.evaluate((m) => {
+    const c = window.__game.core
+    for (let k = 0; k < 60; k++) {
+      const x = Math.round(c.width / 2 + (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 53)
+      for (let y = 40; y < c.height - 3 * m; y++) {
+        if (!c.solidAt(x, y)) continue
+        let ok = true
+        for (let yy = y + m; yy < y + 3 * m && ok; yy++) for (let xx = x - m; xx <= x + m && ok; xx++) ok = c.solidAt(xx, yy)
+        if (ok) return { x, y: y + 2 * m }
+        break
+      }
+    }
+    return null
+  }, SWAP_DEEP)
+  if (!deep) throw new Error('no deep rock found to watch across the swap')
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [deep.x, deep.y])
+  // Every frame from here until ready + 10: (ready, rock visible) — and, alongside, screenshots of the page
+  // (both canvases composited: what a player sees) of a patch of that rock, each tagged ready or not.
+  const flags = page.evaluate(
     () =>
       new Promise((resolve) => {
         const s = []
@@ -200,6 +264,27 @@ export default async function ({ page, shot, log }) {
         tick()
       }),
   )
+  let flagsDone = false
+  const settle = () => (flagsDone = true)
+  flags.then(settle, settle) // a rejection is rethrown by the `await flags` below, not left unhandled
+  const patches = []
+  let offScreen = 0
+  try {
+    while (!flagsDone) {
+      const pt = await toScreen(page, deep.x, deep.y)
+      if (!pt.onScreen) {
+        offScreen++
+        continue
+      }
+      const png = PNG.sync.read(await page.screenshot({ clip: { x: pt.x - SWAP_PATCH / 2, y: pt.y - SWAP_PATCH / 2, width: SWAP_PATCH, height: SWAP_PATCH } }))
+      const ready = await page.evaluate(() => window.__game.debug().terrainReady)
+      patches.push({ ready, data: png.data })
+    }
+  } finally {
+    await flags.catch(() => null) // never leave the page with the sampler pending
+  }
+  if (offScreen) log(`swap in pixels: the rock point was off screen for ${offScreen} sample(s) (the camera not yet on it)`)
+  const swap = await flags
   const absent = swap.filter(([r, v]) => !r && !v).length
   const before = swap.filter(([r]) => !r).length
   const beforeShown = swap.filter(([r, v]) => !r && v).length
@@ -210,9 +295,209 @@ export default async function ({ page, shot, log }) {
   if (!lastHidden) problems.push(`Phaser's rock is not hidden once the lit terrain is ready: ${JSON.stringify(swap.slice(-5))}`)
   const lit = await page.evaluate(() => window.__world.litTerrain())
   if (!lit?.drawn) problems.push(`the lit terrain is not drawn once ready: ${JSON.stringify(lit)}`)
+  // F5, in pixels: the same patch with the lit terrain hidden (Phaser's rock is hidden once ready) is the sky
+  // behind it — the "absent" picture. Every screenshot, before ready and after, must differ from it.
+  await page.evaluate(() => window.__world.hideTerrain(true))
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  const ptS = await toScreen(page, deep.x, deep.y)
+  const sky = PNG.sync.read(await page.screenshot({ clip: { x: ptS.x - SWAP_PATCH / 2, y: ptS.y - SWAP_PATCH / 2, width: SWAP_PATCH, height: SWAP_PATCH } })).data
+  await page.evaluate(() => window.__world.hideTerrain(false))
+  const rockShare = (d) => {
+    let n = 0
+    for (let o = 0; o < d.length; o += 4) if (Math.max(Math.abs(d[o] - sky[o]), Math.abs(d[o + 1] - sky[o + 1]), Math.abs(d[o + 2] - sky[o + 2])) > PIXEL_MOVED) n++
+    return n / (d.length / 4)
+  }
+  const shares = patches.map((p) => ({ ready: p.ready, share: rockShare(p.data) }))
+  const pre = shares.filter((p) => !p.ready)
+  const post = shares.filter((p) => p.ready)
+  const worstShare = Math.min(...shares.map((p) => p.share))
+  log(`swap in pixels: ${shares.length} screenshots of a ${SWAP_PATCH}px patch of deep rock (${pre.length} before ready, ${post.length} after); least rock share ${worstShare.toFixed(2)} (min ${SWAP_ROCK}) against the patch with the terrain hidden`)
+  if (!(pre.length > 0 && post.length > 0)) problems.push(`control: screenshots on both sides of the swap wanted (${pre.length} before, ${post.length} after)`)
+  if (shares.some((p) => p.share < SWAP_ROCK)) problems.push(`a screenshot across the swap shows the sky where the rock is (rock share ${worstShare.toFixed(2)})`)
+  await page.evaluate(() => window.__game.watch(null))
   await shot('look-terrain-sandbox')
 
-  // A surface near the map's middle, the camera pinned on it.
+  // F6: the crater on several seeds.
+  for (const seed of CRATER_SEEDS) {
+    await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
+    await crater(page, seed, log, problems)
+  }
+  await shot('look-terrain-sandbox-crater')
+
+  // ---------------------------------------------------------------- 4. cave wall against open sky
+  const edges = await wallEdges(page, WALL_EDGE_SEEDS, log)
+  for (const e of edges) {
+    if (!(e.geometric >= WALL_EDGE_MIN_GEOMETRIC)) problems.push(`seed ${e.seed}: control — the longest straight wall/sky boundary in the fields is ${e.geometric} px, want ≥ ${WALL_EDGE_MIN_GEOMETRIC} (nothing to photograph)`)
+    if (!(e.rendered < WALL_EDGE_MAX_RUN)) problems.push(`seed ${e.seed}: a straight hard wall-against-sky edge ${e.rendered.toFixed(0)} px long is drawn (max ${WALL_EDGE_MAX_RUN}) — R24: the wall fades into the sky`)
+  }
+
+  if (problems.length) throw new Error(`look-terrain:\n  - ${problems.join('\n  - ')}`)
+}
+
+/**
+ * ## 4. The cave wall fades where it meets open sky (T23.07B F1, R24)
+ *
+ * V2's pre-carve landform becomes wall wherever a cave shaft cuts through a cliff, and drawn as a hard
+ * on/off the wall ended on long straight lines against the sky (the reviewer's seeds 4/6/9/11: 58, 89,
+ * 40, 96 px). Per seed: **the fields say where** — every straight run of wall px with non-wall air on one
+ * side (`renderFieldsView`: B > 0 wall, R = 0 ∧ B = 0 sky), the longest `WALL_EDGE_SITES` far enough
+ * apart — and **the pixels say how it is drawn**: the camera on each run's middle, one world-canvas frame,
+ * and for each px along the run the largest luminance step between two horizontally (vertical run) or
+ * vertically (horizontal run) adjacent **non-solid** px within `WALL_EDGE_WINDOW` world px of the boundary
+ * — wherever the renderer puts its edge, and never the rock's own silhouette. A row is hard when that step
+ * is > `WALL_EDGE_STEP`; the rendered run is the longest stretch of consecutive hard rows, in world px.
+ * The geometric run is the control (≥ `WALL_EDGE_MIN_GEOMETRIC`: there is a straight boundary to draw).
+ */
+export async function wallEdges(page, seeds, log) {
+  const out = []
+  for (const seed of seeds) {
+    await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
+    const sites = await page.evaluate(
+      ([n, apart, minRun]) => {
+        const core = window.__game.core
+        const w = core.width
+        const h = core.height
+        const f = core.renderFieldsView()
+        const wall = (x, y) => f[(y * w + x) * 4 + 2] > 0
+        const sky = (x, y) => x >= 0 && y >= 0 && x < w && y < h && f[(y * w + x) * 4] === 0 && f[(y * w + x) * 4 + 2] === 0
+        const runs = []
+        // Vertical runs: wall at (x, y), sky at (x + s, y), for consecutive y.
+        for (const s of [-1, 1]) {
+          for (let x = 0; x < w; x++) {
+            let start = -1
+            for (let y = 0; y <= h; y++) {
+              const on = y < h && wall(x, y) && sky(x + s, y)
+              if (on && start < 0) start = y
+              if (!on && start >= 0) {
+                if (y - start >= minRun) runs.push({ dir: 'v', x, y0: start, y1: y, side: s, len: y - start })
+                start = -1
+              }
+            }
+          }
+          for (let y = 0; y < h; y++) {
+            let start = -1
+            for (let x = 0; x <= w; x++) {
+              const on = x < w && wall(x, y) && sky(x, y + s)
+              if (on && start < 0) start = x
+              if (!on && start >= 0) {
+                if (x - start >= minRun) runs.push({ dir: 'h', y, x0: start, x1: x, side: s, len: x - start })
+                start = -1
+              }
+            }
+          }
+        }
+        runs.sort((a, b) => b.len - a.len)
+        const mid = (r) => (r.dir === 'v' ? [r.x, (r.y0 + r.y1) / 2] : [(r.x0 + r.x1) / 2, r.y])
+        const picked = []
+        for (const r of runs) {
+          if (picked.length >= n) break
+          const [mx, my] = mid(r)
+          if (picked.every((p) => Math.hypot(mid(p)[0] - mx, mid(p)[1] - my) > apart)) picked.push(r)
+        }
+        return { w, h, sites: picked, longest: runs[0]?.len ?? 0 }
+      },
+      [WALL_EDGE_SITES, WALL_EDGE_APART, 8],
+    )
+    let rendered = 0
+    const per = []
+    for (const r of sites.sites) {
+      const [mx, my] = r.dir === 'v' ? [r.x, (r.y0 + r.y1) / 2] : [(r.x0 + r.x1) / 2, r.y]
+      await page.evaluate(([x, y]) => window.__game.watch(x, y), [mx, my])
+      await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(res)))))
+      const fr = decode(await page.evaluate(() => window.__world.readFrame()))
+      const solid = await page.evaluate(
+        ([x0, y0, x1, y1]) => {
+          const c = window.__game.core
+          const out = []
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) out.push(c.solidAt(x, y) ? 1 : 0)
+          return out
+        },
+        r.dir === 'v' ? [r.x - WALL_EDGE_WINDOW, r.y0, r.x + WALL_EDGE_WINDOW + 1, r.y1] : [r.x0, r.y - WALL_EDGE_WINDOW, r.x1, r.y + WALL_EDGE_WINDOW + 1],
+      )
+      const run = hardRun(fr, r, solid)
+      rendered = Math.max(rendered, run.len)
+      per.push(`${r.dir}${r.len}@(${Math.round(mx)},${Math.round(my)}) → ${run.len.toFixed(0)} (step min ${run.min.toFixed(0)}, p50 ${run.p50.toFixed(0)}, max ${run.max.toFixed(0)}${run.clipped ? ', clipped' : ''})`)
+      if (seed === WALL_EDGE_SHOT_SEED && r === sites.sites[0]) cropShot(fr, r, `look-terrain-wall-edge-s${seed}.png`)
+    }
+    log(`wall/sky seed ${seed}: longest straight boundary in the fields ${sites.longest} px; drawn hard ${rendered.toFixed(0)} px (max ${WALL_EDGE_MAX_RUN}) — ${per.join('; ') || 'no site'}`)
+    out.push({ seed, geometric: sites.longest, rendered })
+  }
+  await page.evaluate(() => window.__game.watch(null))
+  return out
+}
+
+/** Along one boundary run: the longest stretch of consecutive rows (world px) whose step between adjacent non-solid px near it exceeds `WALL_EDGE_STEP`. */
+function hardRun(fr, r, solid) {
+  const k = fr.width / fr.view.w
+  const L = (bx, by) => {
+    const o = (by * fr.width + bx) * 4
+    return 0.3 * fr.data[o] + 0.59 * fr.data[o + 1] + 0.11 * fr.data[o + 2]
+  }
+  const win = 2 * WALL_EDGE_WINDOW + 1
+  const isSolid = (along, across) => solid[r.dir === 'v' ? along * win + across : across * (r.x1 - r.x0) + along] === 1
+  const n = r.dir === 'v' ? r.y1 - r.y0 : r.x1 - r.x0
+  const steps = []
+  let clipped = false
+  for (let i = 0; i < n; i++) {
+    let best = 0
+    // Buffer px of this row, across the window: consecutive world px (j - 1, j) both non-solid.
+    for (let j = 1; j < win; j++) {
+      if (isSolid(i, j) || isSolid(i, j - 1)) continue
+      const wa = r.dir === 'v' ? [r.x - WALL_EDGE_WINDOW + j - 1, r.y0 + i] : [r.x0 + i, r.y - WALL_EDGE_WINDOW + j - 1]
+      const wb = r.dir === 'v' ? [wa[0] + 1, wa[1]] : [wa[0], wa[1] + 1]
+      const ba = [Math.floor((wa[0] + 0.5 - fr.view.x) * k), Math.floor((wa[1] + 0.5 - fr.view.y) * k)]
+      const bb = [Math.floor((wb[0] + 0.5 - fr.view.x) * k), Math.floor((wb[1] + 0.5 - fr.view.y) * k)]
+      if (ba[0] === bb[0] && ba[1] === bb[1]) continue
+      if ([ba, bb].some(([x, y]) => x < 0 || y < 0 || x >= fr.width || y >= fr.height)) {
+        clipped = true
+        continue
+      }
+      best = Math.max(best, Math.abs(L(...ba) - L(...bb)))
+    }
+    steps.push(best)
+  }
+  let len = 0
+  let cur = 0
+  for (const s of steps) {
+    cur = s > WALL_EDGE_STEP ? cur + 1 : 0
+    len = Math.max(len, cur)
+  }
+  const sorted = [...steps].sort((a, b) => a - b)
+  return { len, p50: sorted[Math.floor(sorted.length / 2)] ?? 0, min: sorted[0] ?? 0, max: sorted[sorted.length - 1] ?? 0, clipped }
+}
+
+/** A crop of the frame around a run, for a person to look at. */
+function cropShot(fr, r, name) {
+  const k = fr.width / fr.view.w
+  const [cx, cy] = r.dir === 'v' ? [r.x, (r.y0 + r.y1) / 2] : [(r.x0 + r.x1) / 2, r.y]
+  const half = Math.round(Math.max(r.len, 160) * k)
+  const x0 = Math.max(0, Math.round((cx - fr.view.x) * k) - half)
+  const y0 = Math.max(0, Math.round((cy - fr.view.y) * k) - half)
+  const x1 = Math.min(fr.width, x0 + 2 * half)
+  const y1 = Math.min(fr.height, y0 + 2 * half)
+  const png = new PNG({ width: x1 - x0, height: y1 - y0 })
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const o = (y * fr.width + x) * 4
+      const q = ((y - y0) * png.width + x - x0) * 4
+      for (let c = 0; c < 3; c++) png.data[q + c] = fr.data[o + c]
+      png.data[q + 3] = 255
+    }
+  }
+  writeFileSync(join(root, 'shots', name), PNG.sync.write(png))
+}
+
+
+/**
+ * A crater, lit in the frame it is carved (section 3): the camera pinned on a surface; the frame before;
+ * `carve` between two frames; the **next drawn frame** (`readNextFrame`, nothing forced) with Phaser's frame
+ * counter. It must be the very next frame (`CARVE_FRAMES`), the terrain must have repainted in it, and it
+ * must equal (`CRATER_MAX_DIFF`) the control repaint at the same view — `repaintAlbedo`: every field strip
+ * **re-uploaded from the Rust buffer as the carve left it** (that buffer's incremental == full is
+ * `render_fields.rs`'s test, not this one's) and every albedo and bake tile repainted from it — over the
+ * whole frame (the shadow march reads 53 px away). Presence: the crater box differs from the frame before.
+ */
+async function crater(page, seed, log, problems) {
   const site = await page.evaluate(([depth]) => {
     const g = window.__game
     const d = g.debug()
@@ -229,7 +514,10 @@ export default async function ({ page, shot, log }) {
     }
     return null
   }, [CRATER_DEPTH])
-  if (!site) throw new Error('no surface with solid rock under it found to carve')
+  if (!site) {
+    problems.push(`seed ${seed}: no surface with solid rock under it found to carve`)
+    return
+  }
   const cx = site.x
   const cy = site.y + CRATER_DEPTH
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [cx, cy - 60])
@@ -248,13 +536,16 @@ export default async function ({ page, shot, log }) {
     [cx, cy, CRATER_R],
   )
   const t1 = await page.evaluate(() => window.__world.terrain())
-  if (!carved.f) throw new Error(`look-terrain:\n  - ${[...problems, 'the world canvas drew no frame within 5 s of the carve (the carve did not reach the picture)'].join('\n  - ')}`)
+  if (!carved.f) {
+    problems.push(`seed ${seed}: the world canvas drew no frame within 5 s of the carve (the carve did not reach the picture)`)
+    return
+  }
   const inc = decode(carved.f)
   await page.evaluate(() => window.__world.repaintAlbedo())
   const scratch = decode(await page.evaluate(() => window.__world.readFrame()))
+  await page.evaluate(() => window.__game.watch(null))
   const views = [pre.view, inc.view, scratch.view].map((v) => JSON.stringify(v))
-  if (new Set(views).size !== 1) problems.push(`the camera moved between the crater's frames: ${views.join(' ')}`)
-  // The crater's box in buffer px (grown by the bevel), from the view it was drawn with.
+  if (new Set(views).size !== 1) problems.push(`seed ${seed}: the camera moved between the crater's frames: ${views.join(' ')}`)
   const k = inc.width / inc.view.w
   const box = {
     x0: Math.max(0, Math.floor((cx - CRATER_R - 16 - inc.view.x) * k)),
@@ -262,9 +553,6 @@ export default async function ({ page, shot, log }) {
     x1: Math.min(inc.width, Math.ceil((cx + CRATER_R + 16 - inc.view.x) * k)),
     y1: Math.min(inc.height, Math.ceil((cy + CRATER_R + 16 - inc.view.y) * k)),
   }
-  // The incremental picture against the from-scratch one over the **whole** frame: a carve changes the
-  // fields `render_fields.rs`'s margin away, and the shading reads them `BAKE_REACH` further (the
-  // shadow march) — a rect that stopped short would leave stale texels outside the crater's own box.
   let worst = 0
   let stale = 0
   for (let o = 0; o < inc.data.length; o += 4) {
@@ -288,11 +576,12 @@ export default async function ({ page, shot, log }) {
   // that drew it, the counter still says the frame before — so the step the crater first shows in is
   // `readback − carve + 1`, and 1 is the very next step after the carve.
   const framesToShow = carved.f.loopFrame - (carved.at ?? NaN) + 1
-  log(`crater r ${CRATER_R} at (${cx}, ${cy}): shown ${framesToShow} Phaser frame(s) after the carve (want ${CARVE_FRAMES}); terrain repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes}; crater box ${box.x1 - box.x0}x${box.y1 - box.y0} buffer px: the whole frame vs a from-scratch repaint max |Δ| ${worst} (max ${CRATER_MAX_DIFF}), ${stale} px over; the box vs the frame before ${moved}/${n} px moved`)
-  if (framesToShow !== CARVE_FRAMES) problems.push(`the crater was first drawn ${framesToShow} frames after the carve, want ${CARVE_FRAMES}`)
-  if (!(t1.dirtyPaints > t0.dirtyPaints) || !(t1.bakes > t0.bakes)) problems.push(`the carve's frame repainted nothing (repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes})`)
-  if (worst > CRATER_MAX_DIFF) problems.push(`the crater's first frame differs from a from-scratch repaint by ${worst} on ${stale} px`)
-  if (moved < n * 0.2) problems.push(`control: the crater moved only ${moved}/${n} px of its box against the frame before`)
+  log(`seed ${seed} crater r ${CRATER_R} at (${cx}, ${cy}): shown ${framesToShow} Phaser frame(s) after the carve (want ${CARVE_FRAMES}); terrain repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes}; crater box ${box.x1 - box.x0}x${box.y1 - box.y0} buffer px: the whole frame vs the control repaint max |Δ| ${worst} (max ${CRATER_MAX_DIFF}), ${stale} px over; the box vs the frame before ${moved}/${n} px moved`)
+  if (framesToShow !== CARVE_FRAMES) problems.push(`seed ${seed}: the crater was first drawn ${framesToShow} frames after the carve, want ${CARVE_FRAMES}`)
+  if (!(t1.dirtyPaints > t0.dirtyPaints) || !(t1.bakes > t0.bakes)) problems.push(`seed ${seed}: the carve's frame repainted nothing (repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes})`)
+  if (worst > CRATER_MAX_DIFF) problems.push(`seed ${seed}: the crater's first frame differs from the control repaint by ${worst} on ${stale} px`)
+  if (moved < n * 0.2) problems.push(`seed ${seed}: control: the crater moved only ${moved}/${n} px of its box against the frame before`)
+  if (seed !== CRATER_SEEDS[0]) return
   const png = new PNG({ width: (box.x1 - box.x0) * 3 + 16, height: box.y1 - box.y0 })
   png.data.fill(255)
   for (let y = box.y0; y < box.y1; y++) {
@@ -306,8 +595,5 @@ export default async function ({ page, shot, log }) {
     }
   }
   writeFileSync(join(root, 'shots', 'look-terrain-crater.png'), PNG.sync.write(png))
-  log('crater (before | its first frame | from-scratch repaint): shots/look-terrain-crater.png')
-  await shot('look-terrain-sandbox-crater')
-
-  if (problems.length) throw new Error(`look-terrain:\n  - ${problems.join('\n  - ')}`)
+  log('crater (before | its first frame | control repaint): shots/look-terrain-crater.png')
 }
