@@ -73,6 +73,14 @@ export const CHECKS = [
     url: '?look=F1&only=albedo',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.07: the lit terrain — the look-lab's F1 sky + terrain against the mockup's (Level A, full tier;
+  // rim off, bevel off and no terrain must fail), the low tier's bake against the full shader.
+  {
+    name: 'look-terrain',
+    file: 'scripts/checks/look-terrain.mjs',
+    url: '?look=F1&only=world',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.

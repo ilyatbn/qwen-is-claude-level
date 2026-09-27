@@ -41,6 +41,8 @@ import {
   type WebGLRenderer,
 } from 'three'
 import { ALBEDO_FS, HASH_PROBE_FS, HASH_PROBE_N, QUAD_VS, SCORCH_FS, SCORCH_VS } from './albedo'
+import type { TerrainLook } from './scene'
+import { BAKE_FS, BAKE_REACH, bakeKey, lookUniforms, setLook, setTextures } from './terrainMaterial'
 
 export interface Rect {
   x: number
@@ -77,15 +79,18 @@ export function grow(r: Rect, m: number): Rect {
   return { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m }
 }
 
-/** One unit of the queued full pass: a strip of field rows to upload, or an albedo tile to paint. */
-export type Work = { strip: { y: number; h: number } } | { tile: Rect }
+/**
+ * One unit of the queued full pass: a strip of field rows to upload, an albedo tile to paint, or
+ * (T23.07, the low tier) a tile of the lit bake to shade.
+ */
+export type Work = { strip: { y: number; h: number } } | { tile: Rect } | { bake: Rect }
 
 /**
  * The full pass as work units (T23.06B F6): albedo tiles row-major, each preceded by the field strips
  * it reads that are not up yet — its own rows, the row above, and `ALBEDO_REACH` below (the grass
  * fringe looks 19 px down for its rock).
  */
-export function fullPassWork(w: number, h: number): Work[] {
+export function fullPassWork(w: number, h: number, bake = false): Work[] {
   const out: Work[] = []
   let strips = 0
   const stripsTo = (row: number): void => {
@@ -95,11 +100,28 @@ export function fullPassWork(w: number, h: number): Work[] {
       strips++
     }
   }
-  for (const t of tilesOf(w, h)) {
+  const tiles = tilesOf(w, h)
+  // T23.07: a bake tile reads the albedo one px past it (the normal's luminance taps) and the fields
+  // `BAKE_REACH` px past it (the shadow marches) — so it follows the albedo row below it and those strips.
+  let albedoRows = 0
+  let bakeNext = 0
+  const flushBake = (): void => {
+    while (bake && bakeNext < tiles.length && albedoRows >= Math.min(h, tiles[bakeNext]!.y + tiles[bakeNext]!.h + 1)) {
+      const t = tiles[bakeNext++]!
+      stripsTo(Math.min(h - 1, t.y + t.h - 1 + BAKE_REACH))
+      out.push({ bake: t })
+    }
+  }
+  for (const t of tiles) {
     stripsTo(Math.min(h - 1, t.y + t.h - 1 + ALBEDO_REACH))
     out.push({ tile: t })
+    if (t.x + t.w === w) {
+      albedoRows = t.y + t.h
+      flushBake()
+    }
   }
   stripsTo(h - 1)
+  flushBake()
   return out
 }
 
@@ -118,7 +140,7 @@ export class TerrainGpu {
   readonly din2: DataTexture
   readonly albedo: WebGLRenderTarget
   readonly scorch: WebGLRenderTarget
-  readonly stats = { tiles: 0, dirtyPaints: 0, scorches: 0, uploads: 0, uploadedPx: 0 }
+  readonly stats = { tiles: 0, dirtyPaints: 0, scorches: 0, uploads: 0, uploadedPx: 0, bakes: 0 }
   /** Dev: every rect `paintNow` repainted since the last `takePaints` (a check's "texels changed only here"). */
   private paints: Rect[] = []
   /** Dev: the last blast scorched, `[x, y, r]`. */
@@ -128,6 +150,14 @@ export class TerrainGpu {
    * waits for before it hides Phaser's rock. Stays true while a same-map resync repaints it.
    */
   painted = false
+  /**
+   * T23.07 (R14's low tier): the lit bake — the normal and both shadows per world px (`terrainMaterial.ts`
+   * `BAKE_FS`), made only while the low tier draws; `null` at the full tier.
+   */
+  bake: WebGLRenderTarget | null = null
+  private bakeMat: RawShaderMaterial | null = null
+  /** The look the bake was shaded for (`bakeKey`); another look rebakes. */
+  private bakeFor: string | null = null
   private queue: Work[] = []
   private readonly quad = new PlaneGeometry(2, 2)
   private readonly albedoMat: RawShaderMaterial
@@ -207,9 +237,49 @@ export class TerrainGpu {
     this.pass(this.scorch, this.scorchMat, px)
   }
 
-  /** Dev (F5): the GPU bytes this side holds — fields RGBA8 + `dIn²` R16 + albedo RGBA8 + scorch R8. */
+  /** Dev (F5): the GPU bytes this side holds — fields RGBA8 + `dIn²` R16 + albedo RGBA8 + scorch R8 (+ the low tier's bake, RGBA8). */
   get bytes(): number {
-    return this.w * this.h * (4 + 2 + 4 + 1)
+    return this.w * this.h * (4 + 2 + 4 + 1 + (this.bake ? 4 : 0))
+  }
+
+  /**
+   * T23.07: bake for `look` (the low tier), or drop the bake (`null`, the full tier). A new bake — or a
+   * look whose `sunDir`/`bevel` differ — is shaded whole: queued behind a full pass if one is pending,
+   * else tile by tile from now. Made here with its pass warmed (a 1-px draw, as `warm` does — F6).
+   */
+  setBake(look: TerrainLook | null): void {
+    if (!look) {
+      this.bake?.dispose()
+      this.bakeMat?.dispose()
+      this.bake = null
+      this.bakeMat = null
+      this.bakeFor = null
+      this.queue = this.queue.filter((u) => !('bake' in u))
+      return
+    }
+    const key = bakeKey(look)
+    if (this.bake && this.bakeFor === key) return
+    if (!this.bake || !this.bakeMat) {
+      this.bake = new WebGLRenderTarget(this.w, this.h, { format: RGBAFormat, type: UnsignedByteType, depthBuffer: false, minFilter: NearestFilter, magFilter: NearestFilter, generateMipmaps: false })
+      this.renderer.initRenderTarget(this.bake)
+      const u = lookUniforms()
+      setTextures(u, this.field, this.albedo.texture, this.w, this.h, this.h)
+      this.bakeMat = new RawShaderMaterial({ glslVersion: GLSL3, vertexShader: QUAD_VS, fragmentShader: BAKE_FS, uniforms: u, depthTest: false, depthWrite: false })
+    }
+    setLook(this.bakeMat.uniforms, look)
+    this.bakeFor = key
+    this.pass(this.bake, this.bakeMat, { x: 0, y: 0, w: 1, h: 1 }) // warm; repainted by its tile
+    // A full pass pending: redo it with the bake interleaved. None yet (a new map's side, before its
+    // fields): the full pass to come bakes (`queueAll`) — queued now, the tiles would shade zero fields
+    // and an emptied queue would call the unpainted side `painted`. Painted: shade the whole bake now.
+    const pendingPass = this.queue.some((u) => 'tile' in u || 'strip' in u)
+    if (pendingPass) this.queue = fullPassWork(this.w, this.h, true)
+    else if (this.painted) this.queue = this.queue.filter((u) => !('bake' in u)).concat(tilesOf(this.w, this.h).map((t) => ({ bake: t })))
+  }
+
+  /** T23.07: the bake is whole for its look — the low tier's shader may read it. */
+  get baked(): boolean {
+    return !!this.bake && this.painted && this.queue.length === 0
   }
 
   /** The fields and `dIn²` from the wasm buffers (views made **now** — F9): `rect` only, or all of it. */
@@ -274,7 +344,7 @@ export class TerrainGpu {
 
   /** Queue the full pass — field strips and albedo tiles, interleaved (`fullPassWork`); `step` does them. */
   queueAll(): void {
-    this.queue = fullPassWork(this.w, this.h)
+    this.queue = fullPassWork(this.w, this.h, !!this.bake)
   }
 
   /** Repaint the albedo over `r` **now** (a carve's fields rect, grown by `ALBEDO_REACH`). */
@@ -284,6 +354,14 @@ export class TerrainGpu {
       this.pass(this.albedo, this.albedoMat, c)
       this.stats.dirtyPaints++
       this.paints.push(c)
+    }
+    // T23.07: the bake reads the fields `BAKE_REACH` away and the albedo 1 px away — reshade what they reach.
+    if (this.bake && this.bakeMat) {
+      const b = clipRect(grow(r, BAKE_REACH), this.w, this.h)
+      if (b.w > 0 && b.h > 0) {
+        this.pass(this.bake, this.bakeMat, b)
+        this.stats.bakes++
+      }
     }
     return c
   }
@@ -305,9 +383,12 @@ export class TerrainGpu {
       if ('strip' in u) {
         const f = fields()
         if (f) this.uploadFields(f.view, f.din2, { x: 0, y: u.strip.y, w: this.w, h: u.strip.h })
-      } else {
+      } else if ('tile' in u) {
         this.pass(this.albedo, this.albedoMat, u.tile)
         this.stats.tiles++
+      } else if (this.bake && this.bakeMat) {
+        this.pass(this.bake, this.bakeMat, u.bake)
+        this.stats.bakes++
       }
     }
     if (this.queue.length === 0) this.painted = true
@@ -358,6 +439,7 @@ export class TerrainGpu {
     this.scorch.dispose()
     this.albedoMat.dispose()
     this.scorchMat.dispose()
+    this.setBake(null)
     this.quad.dispose()
   }
 

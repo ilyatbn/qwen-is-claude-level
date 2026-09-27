@@ -84,7 +84,7 @@ export function terrainInfo(layer: TerrainLayer, albedoView: boolean): {
     albedoView,
     w: layer.feed?.w ?? 0,
     h: layer.feed?.h ?? 0,
-    ...(g?.stats ?? { tiles: 0, dirtyPaints: 0, scorches: 0, uploads: 0, uploadedPx: 0 }),
+    ...(g?.stats ?? { tiles: 0, dirtyPaints: 0, scorches: 0, uploads: 0, uploadedPx: 0, bakes: 0 }),
   }
 }
 

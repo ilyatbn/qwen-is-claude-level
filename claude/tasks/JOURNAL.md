@@ -7388,3 +7388,10 @@ Browser: look-lab, look-albedo, sandbox, objects, context-budget, no-webgl2 6/6;
 T23.06B gates: check.sh --changed HEAD~1 --fast EXIT 0 (Rust + vitest 1166; --fast runs no browser checks). Full browser suite 76/78:
 space-sky-match read `debug().sky.ground` before the lazily loaded world-renderer chunk arrived (null; measured arriving ~0.5 s after the match
 starts) — now waits for `__world` (Game, three); 2/2 green after. world-canvas: one frame's marker 534 px apart in the match vertical leg; green 3/3 alone. Reported, not parked.
+
+## T23.07 part A — the lit terrain material and look-terrain (builder, 2026-09-27)
+look-terrain Level A (full tier) lab F1 sky+terrain vs mockup `controls/F1-terrain.png` (terrainonly.js, floor 0): all 12 within; deltaE_terrain 0.0094/0.472, cave 0.0069/0.0125, dssim 0.0001.
+Controls (lab knobs) fail: rim-off 5/12, bevel-off 6/12, no terrain 12/12. Mockup knobs vs reference: rim-off 6, bevel-off 6, lights-off 10 fail.
+Plants in the shader (live site): rim term dropped → 5 red; interior darkening dropped → 7 red. Bake-order vitest plant (+1 dropped) → 4 red.
+Low tier: baked vs unbaked on one 640x360 buffer mean |Δ| 0.088, p99.9 1, max 2. occl and lava dropped (stated at the code).
+look-lab, look-sky, look-albedo, look-terrain 4/4; vitest 1174; check.sh --changed HEAD --fast EXIT 0. Game unchanged (litTerrain false) until part B.

@@ -48,6 +48,8 @@ import { exposeWorldHandle } from './worldHandle'
 import type { TerrainFeed } from './terrainFields'
 import { TerrainLayer } from './terrainLayer'
 import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
+import { makeTerrainMaterials, setLights, setLook, setTextures } from './terrainMaterial'
+import { pickLights } from './terrainLights'
 import { TIER_SAMPLES, bufferFor, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /**
@@ -150,6 +152,15 @@ export class WorldRenderer implements SceneRenderer {
   readonly terrain: TerrainLayer
   /** T23.06: draw the albedo flat instead of the world (the look-lab's `only=albedo`, a dev view — `terrainDev.ts`). */
   private albedoView: AlbedoView | null = null
+  /**
+   * T23.07: the lit terrain — one world-sized quad, the full tier's material or the low tier's
+   * (`terrainMaterial.ts`, R14), drawn once the fields are whole (`terrain.ready`) and the scene asks
+   * for it (`litTerrain`). Static: a light that moves (T23.09) marks the frame dirty itself.
+   */
+  private readonly terrainMats = makeTerrainMaterials()
+  private readonly terrainMesh = new Mesh(new PlaneGeometry(1, 1), this.terrainMats.full)
+  /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
+  private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number } = { drawn: false, material: null, lights: 0 }
 
   /**
    * @param phaserCanvas the canvas this one goes under — same parent, same box.
@@ -167,6 +178,9 @@ export class WorldRenderer implements SceneRenderer {
     // Static: `bgMaterial` has no clock (stars a hash grid, rays a function of angle), so an
     // unchanged view is an unchanged sky and the redraw skip stands (skyMaterial.ts).
     this.addLayer({ object: this.sky.mesh, animated: false })
+    this.terrainMesh.frustumCulled = false
+    this.terrainMesh.visible = false
+    this.addLayer({ object: this.terrainMesh, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
@@ -285,6 +299,12 @@ export class WorldRenderer implements SceneRenderer {
     this.composer = this.buildComposer()
     this.buf = { w: 0, h: 0 }
     this.syncBox()
+    this.syncBake()
+  }
+
+  /** T23.07 (R14): the low tier keeps a lit bake for the scene's terrain look; the full tier none. */
+  private syncBake(): void {
+    this.terrain.setBake(this.tier === 'low' && this.desc?.litTerrain ? this.desc.look.terrain : null)
   }
 
   setScene(desc: SceneDescription): void {
@@ -292,12 +312,14 @@ export class WorldRenderer implements SceneRenderer {
     this.dirty = true
     this.stats.scene = sceneCounts(desc)
     this.sky.setSky(desc.look.bg)
+    this.syncBake()
   }
 
   render(view: ViewRect): void {
     if (!this.desc || !this.owns) return
     this.syncBox()
-    if (this.terrain.pump() && this.albedoView) this.dirty = true
+    // A terrain update is a new picture once the terrain is drawn (T23.07) — the carve's frame, not the next.
+    if (this.terrain.pump() && (this.albedoView || this.terrain.ready)) this.dirty = true
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -324,6 +346,7 @@ export class WorldRenderer implements SceneRenderer {
       const offsets = skyOffsets(bg, view, this.desc.world, frame[0])
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
+    this.placeTerrain(view)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
       this.renderer.setRenderTarget(null)
@@ -336,12 +359,52 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /**
+   * T23.07: show the lit terrain if the scene asks for it and its fields are whole: this GPU side's
+   * textures, the scene's look, its lights culled to `view` (`pickLights`), and the tier's material —
+   * the low tier's only once its bake is whole (until then the full shader draws, at the low tier's
+   * resolution: the same picture, slower).
+   */
+  private placeTerrain(view: ViewRect): void {
+    const desc = this.desc
+    const g = this.terrain.gpu
+    const on = !!desc && !!g && desc.litTerrain && this.terrain.ready
+    this.terrainMesh.visible = on
+    if (!on || !desc || !g) {
+      this.drawnTerrain = { drawn: false, material: null, lights: 0 }
+      return
+    }
+    const u = this.terrainMats.uniforms
+    setTextures(u, g.field, g.albedo.texture, g.w, g.h, desc.world.h)
+    setLook(u, desc.look.terrain)
+    const lights = pickLights(desc.look.lights, view)
+    setLights(u, lights)
+    ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)
+    const low = (this.terrainForce ?? this.tier) === 'low' && this.terrain.baked && !!g.bake
+    u['baked']!.value = low ? g.bake?.texture ?? null : null
+    this.terrainMesh.material = low ? this.terrainMats.low : this.terrainMats.full
+    // The quad covers the mask, rows 0..h, in the y-up world (`toWorld`).
+    this.terrainMesh.scale.set(desc.world.w, desc.world.h, 1)
+    const c = toWorld(desc.world.w / 2, desc.world.h / 2, desc.world.h)
+    this.terrainMesh.position.set(c.x, c.y, 0)
+    this.drawnTerrain = { drawn: true, material: low ? 'low' : 'full', lights: lights.length }
+  }
+
+  /** Dev (`look-terrain`): draw the terrain with this tier's material whatever the tier (`null`: the tier's own). */
+  terrainForce: QualityTier | null = null
+
+  /** Dev: the lit terrain as last drawn — whether, which tier's material, how many lights. */
+  terrainDrawn(): { drawn: boolean; material: 'full' | 'low' | null; lights: number } {
+    return { ...this.drawnTerrain }
+  }
+
+  /**
    * T23.06: hand over the scene's terrain fields (`null`: none — the title). `units`: field strips and
    * albedo tiles done per drawn frame while a full pass is queued. A new map gets a new GPU side now
    * (F6: allocated, nothing uploaded); the same map's resync keeps it (F3) — `terrainLayer.ts`.
    */
   setTerrain(feed: TerrainFeed | null, units: number): void {
     this.terrain.setFeed(feed, units)
+    this.syncBake()
     this.dirty = true
   }
 
@@ -494,6 +557,9 @@ export class WorldRenderer implements SceneRenderer {
       ;(m.material as MeshBasicMaterial).dispose()
     }
     this.sky.dispose()
+    this.terrainMesh.geometry.dispose()
+    this.terrainMats.full.dispose()
+    this.terrainMats.low.dispose()
     this.showAlbedo(false)
     this.terrain.dispose()
     this.disposeComposer()
@@ -531,7 +597,10 @@ export function gameDescription(map: GameMap): SceneDescription {
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },
     masks: null,
-    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1) },
+    // T23.07: not yet in a match — Phaser's rock draws until the in-game swap. F1's lights are the
+    // mockup scene's, not this map's (the game's own are T23.09's): none.
+    litTerrain: false,
+    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1), lights: [] },
     palette: F1.palette,
     actors: [],
     fx: [],

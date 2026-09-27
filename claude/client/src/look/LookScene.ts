@@ -19,6 +19,13 @@
  * masks through the Rust fields (`labFields.ts`) and the GPU albedo pass, with the scene's scorch
  * list as blasts — for `look-albedo` to compare with the mockup's own albedo
  * (`reference/controls/F1-albedo.png`). `ready` waits for every albedo tile.
+ *
+ * T23.07: every scene whose mask the fields can take (`labFields.ts`: whole chunks wide, solid bottom
+ * row — F1, F2, F5) draws its **lit terrain** from those fields, with the scene's own lights; `ready`
+ * waits for the terrain (and the low tier's bake). `&only=world` describes the sky and terrain alone —
+ * actors, fx, labels and HUD out of the data — for `look-terrain` to compare with the mockup's sky and
+ * terrain alone (`reference/controls/F1-terrain.png`). `&knob=rim-off|bevel-off|lights-off` changes
+ * the terrain look in the data (the must-fail controls: `terrainonly.js`'s knobs).
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
@@ -48,6 +55,8 @@ export interface LookHandle {
   view: RenderStats['view']
   /** T23.06 (`only=albedo`): FNV-1a-32 of each field channel over the scene's rows — against T23.05's mockup dump. */
   fields: ReturnType<LabFields['channelFnv']> | null
+  /** T23.07: whether the lit terrain is drawn, or why not (a mask the fields cannot take). */
+  terrain: boolean | string
 }
 
 export class LookScene extends Phaser.Scene {
@@ -70,6 +79,7 @@ export class LookScene extends Phaser.Scene {
       actorBoxes: [],
       view: null,
       fields: null,
+      terrain: false,
     }
     if (devSurface()) (window as unknown as { __look: LookHandle }).__look = handle
 
@@ -80,8 +90,20 @@ export class LookScene extends Phaser.Scene {
       return
     }
     const full = describeScene(data)
-    const only = new URLSearchParams(location.search).get('only')
-    const desc = only === 'sky' ? { ...full, masks: null, actors: [], fx: [], labels: [], hud: null } : full
+    const q = new URLSearchParams(location.search)
+    const only = q.get('only')
+    const knob = q.get('knob')
+    const terrainLook = { ...full.look.terrain }
+    if (knob === 'rim-off') terrainLook.rimK = 0
+    else if (knob === 'bevel-off') terrainLook.bevel = 0.001
+    else if (knob !== null && knob !== 'lights-off') handle.error = `unknown knob "${knob}"`
+    const look = { ...full.look, terrain: terrainLook, lights: knob === 'lights-off' ? [] : full.look.lights }
+    const desc: SceneDescription =
+      only === 'sky'
+        ? { ...full, masks: null, litTerrain: false, actors: [], fx: [], labels: [], hud: null }
+        : only === 'world'
+          ? { ...full, look, actors: [], fx: [], labels: [], hud: null }
+          : { ...full, look }
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)
     handle.actorBoxes = actorBoxes(desc)
@@ -94,7 +116,7 @@ export class LookScene extends Phaser.Scene {
 
     // T23.03: the game's world renderer, through the same constructor the game scenes use —
     // loaded on demand like theirs (T23.03B, F10), so the lab measures the same path.
-    void Promise.all([loadWorldRenderer(this), only === 'albedo' ? Core.init() : null]).then(([m, core]) => {
+    void Promise.all([loadWorldRenderer(this), desc.masks ? Core.init() : null]).then(([m, core]) => {
       if (!m) return
       const renderer = m.createWorldRenderer(this, desc)
       const stats = (renderer as { stats?: RenderStats }).stats
@@ -102,15 +124,24 @@ export class LookScene extends Phaser.Scene {
       handle.rendered = stats?.scene ?? null
       let albedoDone = (): boolean => true
       if (core && desc.masks && renderer instanceof m.WorldRenderer) {
+        let lab: LabFields | null = null
         try {
-          const lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
+          lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
+        } catch (e) {
+          // F3 (space) and F4 (the cast sheet): no solid bottom row to pad — no lit terrain (only=albedo: an error).
+          if (only === 'albedo') {
+            handle.error = String(e)
+            return
+          }
+          handle.terrain = String(e)
+          renderer.setScene({ ...desc, litTerrain: false })
+        }
+        if (lab) {
           handle.fields = lab.channelFnv(desc.masks.h)
           renderer.setTerrain(lab, Infinity)
-          renderer.showAlbedo(true)
+          if (only === 'albedo') renderer.showAlbedo(true)
+          handle.terrain = only !== 'albedo'
           albedoDone = () => renderer.terrain.ready && renderer.terrain.pending === 0
-        } catch (e) {
-          handle.error = String(e)
-          return
         }
       }
       // After the renderer's own `render` listener (registered first, so it runs first).

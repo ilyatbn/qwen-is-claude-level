@@ -336,6 +336,11 @@ export interface SceneDescription {
   /** The mask's size in px — known even while `masks` is null; the renderer's y flip reads `h`. */
   world: { w: number; h: number }
   masks: Masks | null
+  /**
+   * T23.07: draw the lit terrain (`terrainMaterial.ts`) from the terrain fields the scene feeds
+   * (`WorldRenderer.setTerrain`), once they are whole. The fields — not `masks` — are what it reads.
+   */
+  litTerrain: boolean
   look: FrameLook
   palette: CombatPalette | null
   actors: Actor[]
@@ -351,6 +356,7 @@ export function describeScene(d: SceneData): SceneDescription {
     camera: { ...d.camera },
     world: { w: d.mask.w, h: d.mask.h },
     masks: decodeMask(d.mask),
+    litTerrain: true,
     look: d.look,
     palette: d.palette,
     actors: d.actors,

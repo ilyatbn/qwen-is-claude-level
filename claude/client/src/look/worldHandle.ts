@@ -62,6 +62,10 @@ export interface WorldHandle {
   repaintAlbedo(): void
   /** T23.06B (F8): scorch radius `r` at `(x, y)` with no carve — `TerrainGpu.addScorch`; the rect repainted. */
   scorchOnly(x: number, y: number, r: number): { x: number; y: number; w: number; h: number } | null
+  /** T23.07: the lit terrain as last drawn (whether, which material, lights uploaded); `null` without three.js. */
+  litTerrain(): ReturnType<WorldRenderer['terrainDrawn']> | null
+  /** T23.07: draw the terrain with one tier's material whatever the tier (`null`: the tier's own) — the bake's control. */
+  forceTerrainMaterial(m: 'full' | 'low' | null): void
 }
 
 export interface ProbeSample {
@@ -238,6 +242,12 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       if (three) repaintAlbedo(three.terrain)
     },
     scorchOnly: (x, y, r) => (three ? scorchOnly(three.terrain, x, y, r) : null),
+    litTerrain: () => three?.terrainDrawn() ?? null,
+    forceTerrainMaterial(m) {
+      if (!three) return
+      three.terrainForce = m
+      three.invalidate()
+    },
     albedoPaints(measure) {
       if (three && measure !== undefined) three.terrain.measure = measure
       return three ? takeAlbedoPaints(three.terrain) : []

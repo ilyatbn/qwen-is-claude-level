@@ -14,6 +14,7 @@
  * late joiner or a client on another map starts with none (it is not on the wire).
  */
 import type { WebGLRenderer } from 'three'
+import type { TerrainLook } from './scene'
 import type { TerrainFeed } from './terrainFields'
 import { TerrainGpu } from './terrainGpu'
 
@@ -35,6 +36,8 @@ export class TerrainLayer {
   }
   /** Dev: finish each dirty update on the GPU (a 1-px readback) so `lastUpdateMs` includes its work. */
   measure = false
+  /** T23.07: the look the low tier's bake is shaded for, or `null` (the full tier: no bake). */
+  private bakeLook: TerrainLook | null = null
 
   constructor(private readonly renderer: WebGLRenderer) {}
 
@@ -45,6 +48,20 @@ export class TerrainLayer {
 
   get pending(): number {
     return this.gpu?.pending ?? 0
+  }
+
+  /** T23.07: the low tier's bake is whole for the current look — its shader may draw. */
+  get baked(): boolean {
+    return !!this.gpu?.baked
+  }
+
+  /**
+   * T23.07 (R14): keep a lit bake for `look` (the low tier) or none (`null`). Applied to this GPU side
+   * now and to every one made for a later map before its full pass is queued.
+   */
+  setBake(look: TerrainLook | null): void {
+    this.bakeLook = look
+    this.gpu?.setBake(look)
   }
 
   /** Hand over the scene's fields (`null`: none). `units`: work per frame while a full pass is queued. */
@@ -60,6 +77,7 @@ export class TerrainLayer {
     this.gpu?.dispose()
     const t0 = performance.now()
     this.gpu = feed ? new TerrainGpu(this.renderer, feed.w, feed.h) : null
+    if (this.gpu && this.bakeLook) this.gpu.setBake(this.bakeLook)
     if (feed) this.stats.makeMs = performance.now() - t0
   }
 
