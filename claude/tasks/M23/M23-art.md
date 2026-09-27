@@ -180,6 +180,19 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   both keeps the T23.07B 10 px fade from its sky edge instead of vanishing. Any residual hard straight run over the
   bound inside the closing (seed 9 V2 Medium: 39 px) is a **named exception in the check**, with its site and
   measured length, and is shown to the owner — the bound is not raised.
+  **Fourth amendment (T23.08 review F6):** the enclosed-region term changed zero `back` bytes on six seeds — the
+  fade already draws a chamber whole — so it is **deleted** (derive, do not add). Hard wall = landform ∩
+  closing(round-start rock, 48); the rest fades.
+
+- **R25 — thresholds are keyed by back end; actor boxes get their own must-fail set** (coordinator, 2026-09-27,
+  answering the T23.08 review's F2/F3). A floor measured across two GPUs must not loosen checks that only run on one.
+  `look-thresholds.json` carries a `swiftshader` set (floor = same-back-end noise, i.e. two renders on SwiftShader)
+  and a `gpu` set (floor = the two-GPU spread); the compare picks by the renderer string, and an unknown renderer
+  fails loudly. R19's rule is unchanged within each set. **Actor boxes:** `deltaE_actors` comes back when the lab
+  draws the cast (T23.12): its floor is measured on frames *containing* the cast, and its must-fail set is R19's plus
+  rim-off. T23.12/T23.13's "Level A on actor boxes" means that threshold, which T23.12 creates. Bloom gets a halo
+  annulus box around the moon (a knob for bloom radius 0 must turn it red).
+  *Reverse it by:* one threshold set, max over back ends.
 
 ## Verification — what "exactly the same" means here
 
