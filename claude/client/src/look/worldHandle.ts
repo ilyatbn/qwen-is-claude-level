@@ -25,9 +25,10 @@ export interface WorldHandle {
   clearMarkers(): void
   /**
    * Record the next `n` drawn frames: the marker's centre in each canvas, read back in the same
-   * frame — x along CSS row `row`, y along CSS column `col`.
+   * frame — x along CSS row `row`, y along CSS column `col` — where the line crosses a bar `bar` CSS px
+   * thick (T23.09B: `crossing`; a run of any other length is not the marker).
    */
-  probe(n: number, row: number, col: number): Promise<ProbeSample[]>
+  probe(n: number, row: number, col: number, bar: number): Promise<ProbeSample[]>
   /** Phaser's canvas alpha at page CSS points (inside its box), read back after the next drawn frame; `null` on Canvas Phaser. */
   phaserAlpha(points: [number, number][]): Promise<number[] | null>
   /**
@@ -101,6 +102,10 @@ export interface ProbeSample {
   /** Whether the world renderer drew this frame (it skips unchanged ones). */
   drew: boolean
   /** Marker centre, CSS px from the canvas's left edge along the row; `null` if not on it. */
+  /** T23.09B: the first canvas and line (e.g. `three row`) with two bar-thick crossings so far, else `null`. */
+  ambiguous: string | null
+  /** T23.09B: every magenta run on the probe row (`x`) and column (`y`) in each canvas, CSS px `[first, last]`. */
+  runs: { phaser: { x: [number, number][]; y: [number, number][] }; three: { x: [number, number][]; y: [number, number][] } }
   phaserX: number | null
   threeX: number | null
   /** Marker centre, CSS px from the canvas's top edge along the column; `null` if not on it. */
@@ -120,19 +125,37 @@ export interface ProbeSample {
   same: boolean
 }
 
-/** Centre of the first magenta run in a strip of RGBA px, in px along it; `null` if none. */
-function magentaCentre(row: Uint8Array, w: number): number | null {
+/** Every magenta run in a strip of RGBA px, `[first, last]` px along it (T23.09B: the candidates). */
+function magentaRuns(row: Uint8Array, w: number): [number, number][] {
+  const out: [number, number][] = []
   let start = -1
   for (let x = 0; x < w; x++) {
-    const r = row[x * 4]!
-    const g = row[x * 4 + 1]!
-    const b = row[x * 4 + 2]!
-    const hit = r > 150 && b > 150 && g < 100
+    const hit = row[x * 4]! > 150 && row[x * 4 + 2]! > 150 && row[x * 4 + 1]! < 100
     if (hit && start < 0) start = x
-    if (!hit && start >= 0) return (start + x - 1) / 2
+    if (!hit && start >= 0) {
+      out.push([start, x - 1])
+      start = -1
+    }
   }
-  return start >= 0 ? (start + w - 1) / 2 : null
+  if (start >= 0) out.push([start, w - 1])
+  return out
 }
+
+/**
+ * T23.09B: where a probe line **crosses** a marker bar — the centre of the one magenta run whose length is
+ * the bar's thickness (`bar`, same px as the runs, ± `CROSSING_SLACK`). A run of any other length is not a
+ * crossing: the line lying *along* a bar (its length, clipped by the canvas and cut by whatever the sky draws
+ * over it — the moon's glow did, 313.5 px from Phaser's reading), or a map feature. Two crossings: ambiguous.
+ */
+export function crossing(runs: readonly [number, number][], bar: number): { at: number | null; ambiguous: boolean } {
+  const fits = runs.filter(([a, b]) => Math.abs(b - a + 1 - bar) <= Math.max(CROSSING_SLACK, bar * 0.25))
+  if (fits.length !== 1) return { at: null, ambiguous: fits.length > 1 }
+  const [a, b] = fits[0]!
+  return { at: (a + b) / 2, ambiguous: false }
+}
+
+/** px either side of the bar's thickness a crossing run may measure (edge blending, the tier's scaling). */
+const CROSSING_SLACK = 3
 
 /** Read buffer column `x` of a WebGL canvas, top-down, in the frame it was just drawn. */
 function readCol(gl: WebGLRenderingContext, x: number): { col: Uint8Array; h: number } {
@@ -326,7 +349,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
         })
       })
     },
-    probe(n, row, col) {
+    probe(n, row, col, bar) {
       const game = scene.game
       const pgl = (game.renderer as { gl?: WebGLRenderingContext }).gl ?? null
       const samples: ProbeSample[] = []
@@ -344,18 +367,30 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
         const sy = gl.drawingBufferHeight / ch
         const r = readRow(gl, Math.round(row * sy))
         const c = readCol(gl, Math.round(col * sx))
-        const x = magentaCentre(r.row, r.w)
-        const y = magentaCentre(c.col, c.h)
-        return [x === null ? null : x / sx, y === null ? null : y / sy]
+        lastRuns = {
+          x: magentaRuns(r.row, r.w).map(([a, b]) => [a / sx, b / sx]),
+          y: magentaRuns(c.col, c.h).map(([a, b]) => [a / sy, b / sy]),
+        }
+        const x = crossing(lastRuns.x, bar)
+        const y = crossing(lastRuns.y, bar)
+        if ((x.ambiguous || y.ambiguous) && !ambiguous) ambiguous = `${el === game.canvas ? 'phaser' : 'three'} ${x.ambiguous ? 'row' : 'column'}`
+        return [x.at, y.at]
       }
+      let ambiguous: string | null = null
+      let lastRuns: { x: [number, number][]; y: [number, number][] } = { x: [], y: [] }
+      let threeRuns: { x: [number, number][]; y: [number, number][] } = { x: [], y: [] }
       return new Promise((resolve) => {
         const onPost = (): void => {
           const [phaserX, phaserY] = pgl ? locate(pgl, game.canvas) : [null, null]
+          const phaserRuns = lastRuns
           // A frame the renderer skipped (nothing changed, `WorldRenderer.render`) still shows its
           // last drawn picture, but the undrawn buffer reads back blank: reuse that frame's reading.
           const drew = (stats?.frames ?? 0) !== lastFrames
           lastFrames = stats?.frames ?? 0
-          if (three && drew) lastThree = locate(three.gl, three.canvas)
+          if (three && drew) {
+            lastThree = locate(three.gl, three.canvas)
+            threeRuns = lastRuns
+          }
           const [threeX, threeY] = three ? lastThree : [null, null]
           const v = stats?.view ?? null
           const wv = scene.cameras.main.worldView
@@ -363,6 +398,8 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
           samples.push({
             frame: game.loop.frame,
             drew,
+            runs: { phaser: phaserRuns, three: threeRuns },
+            ambiguous,
             phaserX,
             threeX,
             phaserY,

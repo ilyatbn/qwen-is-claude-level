@@ -94,8 +94,9 @@ export const CHECKS = [
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
-  // Parked by T23.08C: its unpinned match map reads the pan markers 313.5 px apart on some maps (tasks/flaky-test.md).
-  { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true, flaky: true },
+  // T23.09B un-parked it: the 313.5 px was the probe column lying along the tall bar with the moon's glow cutting
+  // the bar in the three canvas; the search now reads only bar-thick crossings, and the match map is pinned.
+  { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
   { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
   // T23.09: the effects are the lights — a real bazooka blast, laser beam and jetpack burn each raise the
   // lit terrain's luminance near them (the frozen frame read with and without the terrain's point lights)

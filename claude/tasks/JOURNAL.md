@@ -7454,3 +7454,8 @@ Looked: shots/t2309-{gpu,swift}-{blast,laser,muzzle}.png — blast washes the ro
 gate-ground (`&cavewall=1`) and look-terrain's sandbox legs run with it on and assert it (plant: gate-ground without → red by name).
 vitest 1133/1133; gate-ground, look-terrain, look-lab, terrain-seed, effect-lights, sandbox, look-match 7/7.
 Looked (GPU full): off, every cave/crater opens onto the sky's purple bands and fog — reads as holes through the hill (seed 4's chamber shows a sky pyramid inside the rock); on, the same spaces are near-black voids. shots/t2309a-s{9,11,4,4242}-off-vs-on.png, t2309a-match-off.png.
+
+## T23.09B — world-canvas un-parked (builder, 2026-09-27)
+Cause (instrumented, gate-t2309b-inst1.txt): probe column along the tall bar; moon glow split it in three.js → first-run centres 359.5 vs 46 = 313.5. Unpinned map chose the pan direction.
+Fix: `crossing()` — only bar-thick runs, two = ambiguous (named fail); FIXED_SEED 4242 pinned (crosses on 2 frames/run). vitest 3 (the red run's runs as the fixture).
+Plants: old search on 4242 → red 2/2 (313.50); decoy bar → red by name every leg. 5/5 green alone after T23.09A → flaky flag removed.

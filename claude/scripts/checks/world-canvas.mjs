@@ -66,7 +66,9 @@ const LOW = [640, 360]
 const J = JSON.stringify
 
 const t = tally('world-canvas')
-const stack = await startStack({ port: await freePort(), label: 'world-canvas', env: { BOT_COUNT: '0' } })
+// T23.09B: the match's map pinned (it was re-rolled every run, and the side of the map the spawn is on
+// decides which way the watch pan goes — on 4242 it carries the tall bar across the probe column).
+const stack = await startStack({ port: await freePort(), label: 'world-canvas', env: { BOT_COUNT: '0', FIXED_SEED: '4242' } })
 
 /**
  * The canvas order and boxes, from the page. Paint order is read with `elementsFromPoint`
@@ -131,22 +133,30 @@ async function measurePan(page, where, startPan, frames = 40, { still = false, a
     window.__world.addMarker(cx - BAR / 2, cy - ARM, BAR, 2 * ARM)
     window.__world.addMarker(cx - ARM, cy - BAR / 2, 2 * ARM, BAR)
     const c = document.querySelector('#game canvas:not([data-world])')
-    return { v, cx, cy, cssW: c.clientWidth, cssH: c.clientHeight }
+    return { v, cx, cy, cssW: c.clientWidth, cssH: c.clientHeight, BAR }
   })
+  // T23.09B: the bar's thickness on screen — the only run length the probe accepts as a crossing.
+  const bar = (setup.BAR * setup.cssW) / setup.v.w
   await drawnFrames(page, 2)
   // Probe off the centre by a quarter view, so the row meets the tall bar and the column the wide one.
   const row = Math.round(((setup.cy + setup.v.h / 4 - setup.v.y) * setup.cssH) / setup.v.h)
   const col = Math.round(((setup.cx + setup.v.w / 4 - setup.v.x) * setup.cssW) / setup.v.w)
   const samples = await page.evaluate(
-    async ([n, r, c, pan]) => {
-      const p = window.__world.probe(n, r, c)
+    async ([n, r, c, pan, b]) => {
+      const p = window.__world.probe(n, r, c, b)
       // eslint-disable-next-line no-new-func
       new Function(pan)()
       return p
     },
-    [frames, row, col, startPan],
+    [frames, row, col, startPan, bar],
   )
-  const stats = { samples: samples.length, row, col }
+  // Readings where a canvas had magenta on the line but no bar-thick crossing (the line along a bar, a feature).
+  const rejected = samples.filter((x) => ['phaser', 'three'].some((k) => ['x', 'y'].some((a) => x.runs[k][a].length > 0 && x[`${k}${a.toUpperCase()}`] === null))).length
+  const stats = { samples: samples.length, row, col, bar: +bar.toFixed(2), rejected }
+  // T23.09B: a line crossing two bar-thick magenta runs cannot say which is the marker — fail by name
+  // rather than pick one (the old search took the first run and read a map feature as the marker).
+  const amb = samples.find((x) => x.ambiguous)
+  if (amb) return { ok: false, reason: `frame ${amb.frame}: two marker-thick crossings on the ${amb.ambiguous} line ${J(amb.runs)}`, stats, samples }
   if (samples.every((s) => s.phaserX === null && s.phaserY === null)) return { ok: false, reason: 'no marker in the Phaser canvas', stats, samples }
   if (samples.every((s) => s.threeX === null && s.threeY === null)) return { ok: false, reason: 'no marker in the three.js canvas', stats, samples }
   for (let i = 1; i < samples.length; i++) {
@@ -203,6 +213,9 @@ async function measurePan(page, where, startPan, frames = 40, { still = false, a
     }
   }
   if (worst > MAX_DX) {
+    // T23.09B: the candidates on that frame — every magenta run on the probe row/column in each canvas.
+    const at = samples.find((x) => x.frame === worstAt)
+    console.log(`  ${where}: frame ${worstAt} candidates ${J(at?.runs)} picked phaser (${at?.phaserX}, ${at?.phaserY}) three (${at?.threeX}, ${at?.threeY}) view ${J(at?.worldView)}`)
     return { ok: false, reason: `the canvases disagree by ${worst.toFixed(2)} px on frame ${worstAt} (max ${MAX_DX})`, stats, samples }
   }
   if (oneSided) return { ok: false, reason: oneSided, stats, samples }
@@ -456,6 +469,7 @@ try {
   await enterBattle(gp, { label: 'world-canvas', waitPlaying: true })
   await worldReady(gp, 30_000)
   await assertOrder(gp, 'match')
+  console.log(`  match map seed ${await gp.evaluate(() => String(window.__game.debug().seed))}`)
   // Pan through the match's own camera path: `__game.watch` points the rig (the §C2 e2e
   // affordance), stepped 6 world px a frame toward the map's middle for 45 frames. Walking and
   // flying were tried first and are coin flips here — a walled-in spawn moved 5 px in 1.5 s,
