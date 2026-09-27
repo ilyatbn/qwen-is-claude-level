@@ -160,6 +160,26 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   look-lab, so Level A stays exact), so strata, boulders and cracks sit differently on each map (owner's T21.15
   report). *Reverse it by:* the bit `back` again / offset 0; or, for the wall, counting generator wall only under
   a roof (rock above it in its column).
+  **Amended 2026-09-27 after T23.07B (bb4faf0):** the fade alone left seed 11's slab as a soft-edged black block
+  in the sky, and it had to be exempted in the look-lab because F1's tunnel mouths *do* meet sky — so the lab
+  stopped testing what the game draws. **Replaced by the roof rule:** a generator-landform wall pixel is wall only
+  if its column has round-start rock somewhere above it (round-start, so digging a roof away mid-round does not
+  make wall vanish). Tunnel mouths keep their mockup-exact hard edge; a free-standing slab left by a shaft
+  through a cliff is not wall. No fade, no lab exemption: lab and game draw the same rule. The per-map albedo
+  offset stands.
+  **Amended again (same day), after the roof rule measured worse** (T23.07C: floating islands roof a slab ~300 px
+  below; per-column rules cut vertical edges under ledges 3–4× longer than the ones removed). **Rule: wall =
+  landform ∩ closing(round-start rock, R)** — generator wall shows only where rock closes around it within R
+  (dilate round-start rock by R, erode by R; two passes of the EDT `render_fields.rs` already runs). Tunnel mouths
+  and other gaps narrower than 2R between rock lips stay wall with the mockup's edge; a slab with open sky on one
+  side is cut back along an arc, never a straight per-column line. R is the smallest value keeping look-terrain
+  Level A green unloosened with lab = game, stated with that basis. No fade.
+  **Final form (third amendment, after T23.07C measured the closing):** R = 48 (the smallest keeping F1 and the
+  arena-E fixture exact). Hard wall = landform ∩ (closing(round-start rock, 48) ∪ every landform air region that
+  does not touch open sky) — the second term stops enclosed chambers wider than 2R showing sky. Landform outside
+  both keeps the T23.07B 10 px fade from its sky edge instead of vanishing. Any residual hard straight run over the
+  bound inside the closing (seed 9 V2 Medium: 39 px) is a **named exception in the check**, with its site and
+  measured length, and is shown to the owner — the bound is not raised.
 
 ## Verification — what "exactly the same" means here
 

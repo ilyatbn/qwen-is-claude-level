@@ -142,7 +142,7 @@ class FakeHost implements FieldsHost {
   /** The worker's answer, computed from the mask as the job's copy saw it. */
   deliver(core: FakeCore, extra: Partial<{ strays: number }> = {}): void {
     const rgba = core.fieldsOf(core.snapshot!)
-    this.onResult!({ id: this.job!.id, ok: true, wall: new Uint32Array(Math.ceil((W * H) / 32)), rgba, din2: new Uint16Array(W * H), strays: extra.strays ?? 0, ms: 1 })
+    this.onResult!({ id: this.job!.id, ok: true, wall: new Uint32Array(2 * Math.ceil((W * H) / 32)), rgba, din2: new Uint16Array(W * H), strays: extra.strays ?? 0, ms: 1 })
   }
 }
 

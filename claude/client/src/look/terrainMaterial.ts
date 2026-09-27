@@ -8,8 +8,8 @@
  * the deep face recede; the rim light on edges facing away from the sun; a specular glint on the
  * bevel; the glowing lip where the top edge catches the sky; grass tips; the cave wall set back
  * behind the face, shadowed by it and darkened toward the rock (`dOut`), lit by the point lights at
- * z −30, and — R24, T23.07B — drawn with `back` as its coverage, so where it meets open sky it fades
- * over `render_fields.rs::BACK_RAMP_PX` instead of ending on a hard line; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
+ * z −30, and — R24 final form, T23.07C — drawn with `back` as its coverage: hard wall is 255, soft wall
+ * (landform outside the closing and not enclosed) fades from open sky over `render_fields.rs::BACK_RAMP_PX`; the grass fringe lit flat. Point lights: `terrainLights.ts` (culled, sorted, 16 slots).
  *
  * **Dropped, and why:** `occl` (the object contact shadow's 5×5 = 25 reads a pixel) is a blank 4×4
  * render target in every F scene (`f_kit.js::frame`'s `black`), so it multiplies by exactly 1 —
@@ -51,12 +51,11 @@ uniform float worldH;
 uniform vec3 sunDir, sunCol, sky, ground, rimCol, lipCol;
 uniform float bevel, interior, pixel, ambient, rimK, lipK;
 uniform float wallK; // dev (gate-ground): 0 draws no cave wall; 1 always in play
-uniform float wallFade; // R24: 1 = back is coverage (the game); 0 = any back is whole wall (the look-lab: the mockup's)
 uniform vec4 pl[${TERRAIN_LIGHTS}];
 uniform vec3 plc[${TERRAIN_LIGHTS}];
 uniform int nl;
 vec4 F(vec2 p) { return texture(field, p / RES); }          // p: mask px, y down (texture row 0 = mask row 0)
-float backOf(vec4 f) { return (wallFade > 0.5 ? f.b : (f.b > 0. ? 1. : 0.)) * wallK; }
+float backOf(vec4 f) { return f.b * wallK; }
 float sd(vec2 p) { vec4 f = F(p); return f.r * 64. - f.g * 64.; } // + inside
 float heightOf(vec4 f) { float d = clamp((f.r * 64. - f.g * 64.) / bevel, 0., 1.); return bevel * sqrt(1. - (1. - d) * (1. - d)) + f.a * 7. * d; }
 float height(vec2 p) { return heightOf(F(p)); }
@@ -253,7 +252,6 @@ export function lookUniforms(): Uniforms {
     rimK: { value: 0 },
     lipK: { value: 0 },
     wallK: { value: 1 },
-    wallFade: { value: 1 },
     pl: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector4(0, 0, 0, 1)) },
     plc: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector3()) },
     nl: { value: 0 },

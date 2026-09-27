@@ -189,7 +189,7 @@ void main() {
     return;
   }
   vec4 o = vec4(0.0);
-  if (f.b > 0) { // any wall px, R24's ramp included: its colour is the wall's, its coverage the shader's
+  if (f.b > 0) { // any wall px, soft wall's fade included (R24): its colour is the wall's, its coverage the shader's
     float g = fbm(p * 0.03, 4, 19);
     vec3 c = mix(${v3(P.back[0])}, ${v3(P.back[1])}, g);
     float cl = cell(p * 0.05, 20); if (cl < 0.2) c = mix(c, c * 1.3, 0.5);

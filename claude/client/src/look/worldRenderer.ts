@@ -378,7 +378,6 @@ export class WorldRenderer implements SceneRenderer {
     setTextures(u, g.field, g.albedo.texture, g.w, g.h, desc.world.h)
     setLook(u, desc.look.terrain)
     u['wallK']!.value = this.wallHidden ? 0 : 1
-    u['wallFade']!.value = this.terrain.feed?.wallFade === false ? 0 : 1
     const lights = pickLights(desc.look.lights, view)
     setLights(u, lights)
     ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)

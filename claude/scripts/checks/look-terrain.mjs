@@ -96,6 +96,42 @@ const SWAP_DEEP = 40
 
 /** Section 4: V2 Medium seeds — the review's four, where the slabs were found (4242's longest boundary is 21 px: nothing to see). */
 const WALL_EDGE_SEEDS = [4, 6, 9, 11]
+/**
+ * T23.07C: the slabs the review found — each seed's straight wall/sky boundaries as the fields drew them
+ * **before the roof rule** (found by this check's own scan with `render_fields.rs::roofed` turned off, and
+ * the review's 58 / 89 / 40 / 96). The rule makes them sky, so the fields' scan no longer finds them: they
+ * are photographed here by position. Control: every px of each run and of its sky side is still air in the
+ * mask — the geometry is there to be drawn; the rule is what does not draw it.
+ */
+/**
+ * T23.07C (R24 final form): the hard runs over the bound that the rule keeps, by name — the site (a vertical
+ * run at `x` overlapping rows `y0..y1`, or a horizontal one at `y` overlapping `x0..x1`) and the length measured there. Any run at that site may be at most
+ * `measured + 2`; anywhere else the bound is `WALL_EDGE_MAX_RUN`, so the run growing or moving fails.
+ * Seed 9's slab and the ledge above it lie inside the closing (their gaps to the rock are under 2R), so
+ * they are hard wall with straight edges — 39 and 28 px, measured T23.07C; shown to the owner
+ * (shots/t2307c-final-s9.png), not bounded away.
+ */
+const WALL_EDGE_EXCEPTIONS = [
+  { seed: 9, dir: 'v', x: 861, y0: 638, y1: 678, measured: 39 },
+  { seed: 9, dir: 'h', y: 336, x0: 695, x1: 723, measured: 28 },
+]
+/** R24 final form's closing radius, mirrored from `render_fields.rs::WALL_CLOSING_R` for the chamber guard. */
+const WALL_CLOSING_R = 48
+/**
+ * The chamber guard's sites: where the closing alone drew sky circles underground (T23.07C) — a patch in each
+ * of seeds 4 and 9, found as the first wall patch ≥ R + 4 px from rock under the final rule. Fixed, because
+ * under the rule it guards against the patch is not wall and a search for wall would not find it.
+ */
+const CHAMBER_SITES = { 4: [88, 1344], 9: [720, 656] }
+const CHAMBER_SEEDS = Object.keys(CHAMBER_SITES).map(Number)
+/** The chamber patch, world px. */
+const CHAMBER_PATCH = 8
+const WALL_EDGE_KNOWN = {
+  4: [{ dir: 'v', x: 2226, y0: 545, y1: 603, side: 1, len: 58 }],
+  6: [{ dir: 'v', x: 2477, y0: 582, y1: 671, side: 1, len: 89 }, { dir: 'h', y: 405, x0: 2206, x1: 2221, side: -1, len: 15 }],
+  9: [{ dir: 'v', x: 861, y0: 638, y1: 678, side: 1, len: 40 }, { dir: 'h', y: 336, x0: 695, x1: 723, side: -1, len: 28 }],
+  11: [{ dir: 'v', x: 1294, y0: 763, y1: 859, side: 1, len: 96 }],
+}
 /** Boundary sites photographed per seed: the longest straight runs, at least this far apart (world px). */
 const WALL_EDGE_SITES = 3
 const WALL_EDGE_APART = 200
@@ -110,8 +146,9 @@ const WALL_EDGE_STEP = 12
 /**
  * A straight hard wall/sky edge must be shorter than this, world px. Measured (T23.07B): the bit `back`
  * draws 58 / 89 / 40 / 96 on seeds 4 / 6 / 9 / 11 (= the fields' boundary, and the review's numbers); the
- * ramp 4 / 4 / 8 / 12 (low tier), 9 / 9 / 8 / 7 (full) — texture and the rock's own anti-aliased corner
- * at a run's end. 24 sits between: 2× the worst ramp, under the shortest slab.
+ * T23.07B ramp 4 / 4 / 8 / 12 (low tier), 9 / 9 / 8 / 7 (full) — texture and the rock's own anti-aliased
+ * corner at a run's end; R24's final form (T23.07C, low tier) 7 / 14 / 39·28 (named) / 12. 24 sits between:
+ * 2× the worst fade, under the shortest slab.
  */
 const WALL_EDGE_MAX_RUN = 24
 /** Control: a seed must have a straight wall/sky boundary at least this long to photograph. */
@@ -326,16 +363,21 @@ export default async function ({ page, shot, log }) {
 
   // ---------------------------------------------------------------- 4. cave wall against open sky
   const edges = await wallEdges(page, WALL_EDGE_SEEDS, log)
+  for (const e of edges) for (const x of e.over) problems.push(`seed ${e.seed}: ${x}`)
   for (const e of edges) {
-    if (!(e.geometric >= WALL_EDGE_MIN_GEOMETRIC)) problems.push(`seed ${e.seed}: control — the longest straight wall/sky boundary in the fields is ${e.geometric} px, want ≥ ${WALL_EDGE_MIN_GEOMETRIC} (nothing to photograph)`)
-    if (!(e.rendered < WALL_EDGE_MAX_RUN)) problems.push(`seed ${e.seed}: a straight hard wall-against-sky edge ${e.rendered.toFixed(0)} px long is drawn (max ${WALL_EDGE_MAX_RUN}) — R24: the wall fades into the sky`)
+    if (!(e.geometric >= WALL_EDGE_MIN_GEOMETRIC)) problems.push(`seed ${e.seed}: control — the review's slab boundary is ${e.geometric} px of air (0: moved or filled), want ≥ ${WALL_EDGE_MIN_GEOMETRIC} (nothing to photograph)`)
+  }
+  // The sky-circle guard (T23.07C): an underground chamber wider than 2R draws wall, not sky.
+  for (const c of await chambers(page, CHAMBER_SEEDS, log)) {
+    if (!c.found) problems.push(`seed ${c.seed}: control — the chamber patch at (${c.x}, ${c.y}) is not air ${WALL_CLOSING_R + 4} px from rock any more (the map moved: re-find it)`)
+    else if (!(c.wall >= SWAP_ROCK)) problems.push(`seed ${c.seed}: the chamber patch at (${c.x}, ${c.y}) shows sky — only ${(c.wall * 100).toFixed(0)} % of it is drawn wall`)
   }
 
   if (problems.length) throw new Error(`look-terrain:\n  - ${problems.join('\n  - ')}`)
 }
 
 /**
- * ## 4. The cave wall fades where it meets open sky (T23.07B F1, R24)
+ * ## 4. No long straight hard wall-against-sky edge (T23.07B F1, R24 final form — T23.07C)
  *
  * V2's pre-carve landform becomes wall wherever a cave shaft cuts through a cliff, and drawn as a hard
  * on/off the wall ended on long straight lines against the sky (the reviewer's seeds 4/6/9/11: 58, 89,
@@ -399,8 +441,25 @@ export async function wallEdges(page, seeds, log) {
       [WALL_EDGE_SITES, WALL_EDGE_APART, 8],
     )
     let rendered = 0
+    const over = []
     const per = []
-    for (const r of sites.sites) {
+    const known = WALL_EDGE_KNOWN[seed] ?? []
+    const knownAir = await page.evaluate(
+      (runs) =>
+        runs.every((r) => {
+          const c = window.__game.core
+          for (let i = 0; i < r.len; i++) {
+            const [x, y] = r.dir === 'v' ? [r.x, r.y0 + i] : [r.x0 + i, r.y]
+            const [sx, sy] = r.dir === 'v' ? [x + r.side, y] : [x, y + r.side]
+            if (c.solidAt(x, y) || c.solidAt(sx, sy)) return false
+          }
+          return true
+        }),
+      known,
+    )
+    const key = (r) => JSON.stringify([r.dir, r.x, r.y, r.x0, r.y0])
+    const knownKeys = new Set(known.map(key))
+    for (const r of [...known, ...sites.sites.filter((q) => !knownKeys.has(key(q)))]) {
       const [mx, my] = r.dir === 'v' ? [r.x, (r.y0 + r.y1) / 2] : [(r.x0 + r.x1) / 2, r.y]
       await page.evaluate(([x, y]) => window.__game.watch(x, y), [mx, my])
       await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(res)))))
@@ -415,12 +474,20 @@ export async function wallEdges(page, seeds, log) {
         r.dir === 'v' ? [r.x - WALL_EDGE_WINDOW, r.y0, r.x + WALL_EDGE_WINDOW + 1, r.y1] : [r.x0, r.y - WALL_EDGE_WINDOW, r.x1, r.y + WALL_EDGE_WINDOW + 1],
       )
       const run = hardRun(fr, r, solid)
-      rendered = Math.max(rendered, run.len)
+      const ex = WALL_EDGE_EXCEPTIONS.find(
+        (e) =>
+          e.seed === seed &&
+          e.dir === r.dir &&
+          (r.dir === 'v' ? Math.abs(e.x - r.x) <= 2 && r.y0 < e.y1 && e.y0 < r.y1 : Math.abs(e.y - r.y) <= 2 && r.x0 < e.x1 && e.x0 < r.x1),
+      )
+      const limit = ex ? ex.measured + 2 : WALL_EDGE_MAX_RUN
+      if (!(run.len < limit + (ex ? 1 : 0))) over.push(`a straight hard wall-against-sky edge ${run.len.toFixed(0)} px long at ${r.dir}${r.len}@(${r.x ?? r.x0}, ${r.y0 ?? r.y}) (max ${ex ? `${limit}, the named exception measured ${ex.measured}` : limit})`)
+      if (!ex) rendered = Math.max(rendered, run.len)
       per.push(`${r.dir}${r.len}@(${Math.round(mx)},${Math.round(my)}) → ${run.len.toFixed(0)} (step min ${run.min.toFixed(0)}, p50 ${run.p50.toFixed(0)}, max ${run.max.toFixed(0)}${run.clipped ? ', clipped' : ''})`)
-      if (seed === WALL_EDGE_SHOT_SEED && r === sites.sites[0]) cropShot(fr, r, `look-terrain-wall-edge-s${seed}.png`)
+      if (seed === WALL_EDGE_SHOT_SEED && r === known[0]) cropShot(fr, r, `look-terrain-wall-edge-s${seed}.png`)
     }
-    log(`wall/sky seed ${seed}: longest straight boundary in the fields ${sites.longest} px; drawn hard ${rendered.toFixed(0)} px (max ${WALL_EDGE_MAX_RUN}) — ${per.join('; ') || 'no site'}`)
-    out.push({ seed, geometric: sites.longest, rendered })
+    log(`wall/sky seed ${seed}: the review's slab runs ${known.map((r) => r.len).join('/')} px (air in the mask: ${knownAir}); longest straight boundary in the fields now ${sites.longest} px; drawn hard ${rendered.toFixed(0)} px (max ${WALL_EDGE_MAX_RUN}) — ${per.join('; ') || 'no site'}`)
+    out.push({ seed, geometric: knownAir ? Math.max(0, ...known.map((r) => r.len)) : 0, rendered, over, specs: sites.sites })
   }
   await page.evaluate(() => window.__game.watch(null))
   return out
@@ -596,4 +663,61 @@ async function crater(page, seed, log, problems) {
   }
   writeFileSync(join(root, 'shots', 'look-terrain-crater.png'), PNG.sync.write(png))
   log('crater (before | its first frame | control repaint): shots/look-terrain-crater.png')
+}
+
+
+/**
+ * The sky-circle guard (T23.07C). With the closing alone, cave chambers wider than 2R lost their wall and the
+ * sky showed through underground (seeds 4 and 9). Per seed: a `CHAMBER_PATCH`² patch at `CHAMBER_SITES`, air
+ * farther than R from any rock (G, dOut ×4, ≥ 4·(R + 4) — outside the closing, so only R24's other terms keep
+ * it), photographed with the wall shown and with only the wall hidden (`hideWall`): the share of its px that
+ * change is the share drawn as wall. Falsified with the closing-only rule (T23.07C's): red. With only the
+ * enclosed-region term off it stays green — the fade keeps a chamber's inside whole (≥ 10 px from sky);
+ * the enclosed term is pinned by `render_fields.rs`'s unit test instead.
+ */
+async function chambers(page, seeds, log) {
+  const out = []
+  for (const seed of seeds) {
+    await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
+    const [x, y] = CHAMBER_SITES[seed]
+    const at = { x, y }
+    // Control, from the fields' distances (not the wall): the patch is air, farther than R + 4 from rock.
+    const air = await page.evaluate(
+      ([x, y, n, g]) => {
+        const c = window.__game.core
+        const w = c.width
+        const f = c.renderFieldsView()
+        for (let yy = y; yy < y + n; yy++) for (let xx = x; xx < x + n; xx++) if (f[(yy * w + xx) * 4 + 1] < g) return false
+        return true
+      },
+      [x, y, CHAMBER_PATCH, 4 * (WALL_CLOSING_R + 4)],
+    )
+    if (!air) {
+      out.push({ seed, found: false, x, y })
+      continue
+    }
+    await page.evaluate(([x, y]) => window.__game.watch(x, y), [at.x, at.y])
+    await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(res)))))
+    const on = decode(await page.evaluate(() => window.__world.readFrame()))
+    await page.evaluate(() => window.__world.hideWall(true))
+    const off = decode(await page.evaluate(() => window.__world.readFrame()))
+    await page.evaluate(() => window.__world.hideWall(false))
+    const k = on.width / on.view.w
+    let n = 0
+    let moved = 0
+    for (let wy = at.y; wy < at.y + CHAMBER_PATCH; wy++)
+      for (let wx = at.x; wx < at.x + CHAMBER_PATCH; wx++) {
+        const bx = Math.floor((wx + 0.5 - on.view.x) * k)
+        const by = Math.floor((wy + 0.5 - on.view.y) * k)
+        if (bx < 0 || by < 0 || bx >= on.width || by >= on.height) continue
+        const o = (by * on.width + bx) * 4
+        n++
+        if (Math.max(Math.abs(on.data[o] - off.data[o]), Math.abs(on.data[o + 1] - off.data[o + 1]), Math.abs(on.data[o + 2] - off.data[o + 2])) > PIXEL_MOVED) moved++
+      }
+    const wall = n ? moved / n : 0
+    log(`chamber seed ${seed}: patch (${at.x}, ${at.y}) ≥ ${WALL_CLOSING_R + 4} px from rock: ${moved}/${n} px drawn wall (change with the wall hidden; min ${SWAP_ROCK})`)
+    out.push({ seed, found: true, x: at.x, y: at.y, wall })
+  }
+  await page.evaluate(() => window.__game.watch(null))
+  return out
 }

@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | R | `dIn`, distance from a solid px to the nearest air px | `min(255, f32(√d²)·4)`, truncated |
 //! | G | `dOut`, distance from an air px to the nearest solid px | same |
-//! | B | `back`, carved-out rock (cave wall): coverage, ramping up from open sky (R24) | `255·min(1, d/10)` / 0 |
+//! | B | `back`, carved-out rock (cave wall): 255 hard, soft wall fading from open sky (R24) | 0–255 |
 //! | A | `relief`, boulders and strata ledges (`world.js::derive`) | `f32(relief)·255`, truncated |
 //!
 //! ×4 in 8 bits saturates at 63.75 px; that saturation is what makes the dirty
@@ -19,10 +19,9 @@
 //!
 //! ## `back` — the cave wall (R17)
 //!
-//! `back = was rock ∧ air now`, and since R24 (T23.07B) its byte is a **coverage ramp**: the wall
-//! px's distance to open sky (air that was never rock), saturating at [`BACK_RAMP_PX`], so a wall
-//! slab a cave shaft leaves in a V2 cliff fades into the sky instead of ending on a straight line.
-//! Walls enclosed by rock — the mockup's, every F scene's — are 255 as before.
+//! `back = was rock ∧ air now`. R24's final form (T23.07C, [`classify`]): hard wall (255) is round-start
+//! rock ∪ landform in the closing of round-start rock by [`WALL_CLOSING_R`] or in a region that touches no
+//! open sky; the rest fades from its open-sky edge over [`BACK_RAMP_PX`].
 //! The mockup's `back` is exactly the pixels its `buildMask`
 //! spec carved out of a landform — generated tunnels and craters alike — and R17 rules
 //! the game does the same: "was rock" is the generator's landform **or** the mask at
@@ -53,13 +52,14 @@ pub const READ_MARGIN: u32 = 128;
 /// grown by it, exactly (planted `- 1`, `an_incremental_update_equals_a_full_pass`
 /// goes red on 10 of 20 seeds). Relief was ~70 % of a crater update, hence the margin.
 pub const RELIEF_MARGIN: u32 = BOULDER_MIN_DEPTH as u32;
-/// R24 (T23.07B F1): the cave wall fades into open sky over this many px — `back` is a coverage ramp,
-/// the wall px's distance to the nearest air that is not wall (the complement of rock-now ∪ was-rock),
-/// saturating here. **Basis:** the hard wall/sky edges the review found step 28–59 in luminance at the
-/// median (max 85, `look-terrain` § 4 on seeds 4/6/9/11); spread over 10 px the step per px falls to
-/// ≈ 3–9, under the check's hard-edge step, so the straight line is gone while the fade stays narrower
-/// than the rock's own 14 px bevel (F1's `bevel`). R24 names ~8–12 px. It must stay ≤ [`WRITE_MARGIN`]
-/// for `dirty` to equal `full` (a carve moves the ramp at most this far); 10 ≪ 64.
+/// R24 final form (T23.07C): the closing radius of [`closed`], px. **Basis: the smallest R keeping
+/// look-terrain Level A exact** — F1's tunnel mouths (look-lab = game): `deltaE_cave` 9.6–9.9 at R 24–44,
+/// 4.6 at 46–47, 0.00689 (unchanged) at 48; and the arena-E fixture loses 7164 wall px at 47, none at 48.
+pub const WALL_CLOSING_R: u32 = 48;
+/// R24 final form: soft wall (landform outside the hard set) fades into open sky over this many px — T23.07B's
+/// ramp. Basis: the review's hard edges stepped 28–59 in luminance at the median (max 85); over 10 px the step
+/// per px falls under look-terrain's 12, and 10 is narrower than the rock's 14 px bevel (F1's `bevel`). ≤
+/// [`WRITE_MARGIN`] so `dirty` still equals `full`.
 const BACK_RAMP_PX: f64 = 10.0;
 /// `world.js::THEMES.dusk.boulders` — F1/F5's theme (`variant_F1.js`, R5: one world).
 const BOULDER_MIN_ID: f64 = 0.8;
@@ -265,10 +265,14 @@ pub struct RenderFields {
     /// unquantised, as `world.js::derive` does (the RGBA's ×4-in-8-bits moved its soil and grass
     /// bands: 97.4 % of F1's albedo px exact with it, see `look-albedo`).
     din2: Vec<u16>,
+    /// "Was rock": round-start rock ∪ the generator's landform (R17).
     wall: Option<BitGrid>,
+    /// R24 final form: the part of `wall` drawn whole (`back` 255); the rest fades from open sky.
+    hard: Option<BitGrid>,
     /// T23.05B: the last generator landform derived, keyed by what derived it, so a
-    /// resync of the same map (a second `map_init`) costs no second generation.
-    landform: Option<(LandformKey, BitGrid)>,
+    /// resync of the same map (a second `map_init`) costs no second generation — and (T23.07C)
+    /// its hard/soft split, computed once per map, never per carve.
+    landform: Option<(LandformKey, WallClass)>,
 }
 
 /// What identifies a generated landform: `map_init`'s seed, scale, generator, theme.
@@ -287,7 +291,7 @@ impl RenderFields {
     /// **T23.06B (F4): it includes the map build's ground fill**, so a client that joined
     /// after a carve opened a filled column derives the same "was rock" as one that saw
     /// the round start.
-    pub fn landform(&mut self, key: LandformKey) -> &BitGrid {
+    pub fn landform(&mut self, key: LandformKey) -> &WallClass {
         if self.landform.as_ref().map(|(k, _)| *k) != Some(key) {
             let r = game_core::map::gen::rederive_landform(
                 key.seed,
@@ -295,7 +299,8 @@ impl RenderFields {
                 key.generator,
                 key.theme,
             );
-            self.landform = Some((key, BitGrid::from_solid(&r.landform)));
+            let class = classify(&BitGrid::from_solid(&r.landform), &r.mask, WALL_CLOSING_R);
+            self.landform = Some((key, class));
         }
         &self.landform.as_ref().expect("set above").1
     }
@@ -315,7 +320,8 @@ impl RenderFields {
         key: LandformKey,
     ) -> Result<(Rect, u64), FieldsError> {
         let (w, h) = mask.dims();
-        let land = self.landform(key);
+        let class = self.landform(key);
+        let land = &class.all;
         if land.dims() != (w, h) {
             let (lw, lh) = land.dims();
             return Err(FieldsError::WallSize(
@@ -332,8 +338,9 @@ impl RenderFields {
         if strays > 0 {
             return Ok((self.full(mask), strays));
         }
-        let wall = land.clone();
-        Ok((self.full_with_wall(mask, wall)?, 0))
+        // Already classified against the round-start mask (`landform`), which a late joiner's mask is not.
+        let (all, hard) = (class.all.clone(), class.hard.clone());
+        Ok((self.full_with_class(mask, all, hard)?, 0))
     }
 }
 
@@ -343,13 +350,15 @@ impl RenderFields {
     /// snapshots today. Craters carved later then show the wall.
     pub fn full(&mut self, mask: &impl Solid) -> Rect {
         self.wall = Some(BitGrid::from_solid(mask));
+        self.hard = Some(BitGrid::from_solid(mask));
         self.full_against_snapshot(mask)
     }
 
     /// The whole world against an explicit "was rock" mask (R17): the round-start mask
     /// OR'd with the generator's landform (T23.05B), or a scene's own `back` ∪ solid (the
-    /// look-lab). A `wall` of the wrong size is refused ([`FieldsError::WallSize`]) and
-    /// nothing is written.
+    /// look-lab). **R24 final form (T23.07C)**: [`classify`] splits it into hard and soft wall against
+    /// `mask` as the round start (call it then) — lab and game one rule. A `wall`
+    /// of the wrong size is refused ([`FieldsError::WallSize`]) and nothing is written.
     pub fn full_with_wall(
         &mut self,
         mask: &impl Solid,
@@ -359,9 +368,27 @@ impl RenderFields {
             let px = |(w, h): (u32, u32)| w as usize * h as usize;
             return Err(FieldsError::WallSize(px(wall.dims()), px(mask.dims())));
         }
-        let mut wall = wall;
-        wall.union_with(&BitGrid::from_solid(mask));
-        self.wall = Some(wall);
+        let class = classify(&wall, mask, WALL_CLOSING_R);
+        self.full_with_class(mask, class.all, class.hard)
+    }
+
+    /// The full pass against a wall already classified ([`classify`]); both OR'd with the mask now.
+    fn full_with_class(
+        &mut self,
+        mask: &impl Solid,
+        all: BitGrid,
+        hard: BitGrid,
+    ) -> Result<Rect, FieldsError> {
+        if all.dims() != mask.dims() || hard.dims() != mask.dims() {
+            let px = |(w, h): (u32, u32)| w as usize * h as usize;
+            return Err(FieldsError::WallSize(px(all.dims()), px(mask.dims())));
+        }
+        let now = BitGrid::from_solid(mask);
+        let (mut all, mut hard) = (all, hard);
+        all.union_with(&now);
+        hard.union_with(&now);
+        self.wall = Some(all);
+        self.hard = Some(hard);
         Ok(self.full_against_snapshot(mask))
     }
 
@@ -431,11 +458,17 @@ impl RenderFields {
     /// T23.06: the "was rock" mask the last full pass used — what a worker that ran the
     /// full pass hands back with [`rgba`](Self::rgba). T23.06B (F6): as bit words
     /// ([`BitGrid::to_u32_words`]), not a byte per px (8 MB on a Large map → 1 MB).
+    /// T23.07C: the hard set's words follow (`[wall.., hard..]`, two equal halves) — the worker hands
+    /// both back, so the main thread never re-derives the split.
     pub fn wall_words(&self) -> Vec<u32> {
-        self.wall
-            .as_ref()
-            .map(BitGrid::to_u32_words)
-            .unwrap_or_default()
+        match (&self.wall, &self.hard) {
+            (Some(a), Some(b)) => {
+                let mut v = a.to_u32_words();
+                v.extend(b.to_u32_words());
+                v
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// T23.06: take a full pass computed elsewhere (a worker's copy of this map, so the
@@ -452,12 +485,13 @@ impl RenderFields {
         &mut self,
         mask: &impl Solid,
         wall: BitGrid,
+        hard: BitGrid,
         rgba: Vec<u8>,
         din2: Vec<u16>,
     ) -> Result<Rect, FieldsError> {
         let (w, h) = mask.dims();
         let px = w as usize * h as usize;
-        if wall.dims() != (w, h) {
+        if wall.dims() != (w, h) || hard.dims() != (w, h) {
             let (ww, wh) = wall.dims();
             return Err(FieldsError::WallSize(ww as usize * wh as usize, px));
         }
@@ -472,6 +506,7 @@ impl RenderFields {
         self.rgba = rgba;
         self.din2 = din2;
         self.wall = Some(wall);
+        self.hard = Some(hard);
         Ok(Rect { x: 0, y: 0, w, h })
     }
 
@@ -499,11 +534,11 @@ impl RenderFields {
         distance_pass(mask, false, read, write, |x, y, d| {
             rgba[(y as usize * ww + x as usize) * 4 + 1] = encode_dist(d);
         });
-        // B: carved-out rock (module docs), a coverage ramp against open sky (R24).
-        if let Some(p) = &self.wall {
+        // B: carved-out rock (module docs) — 255 where hard, else the fade from open sky (R24 final form).
+        if let (Some(p), Some(hard)) = (&self.wall, &self.hard) {
             let closed = NotOpenAir { mask, wall: p };
             // The ramp saturates at `BACK_RAMP_PX`, so a px written needs only the sky within that of it:
-            // read `write` grown by one more px, not `read` (a crater's update: 271² px read, not 377²).
+            // read `write` grown by one more px, not `read`.
             let reach = BACK_RAMP_PX.ceil() as u32 + 1;
             let near = Rect::grown(
                 write.x as i32,
@@ -516,16 +551,125 @@ impl RenderFields {
             )
             .intersect(read);
             distance_pass(&closed, true, near, write, |x, y, d| {
-                let back = p.solid(x, y) && !mask.solid(x, y);
-                rgba[(y as usize * ww + x as usize) * 4 + 2] =
-                    if back { back_coverage(d) } else { 0 };
+                let b = if !p.solid(x, y) || mask.solid(x, y) {
+                    0
+                } else if hard.solid(x, y) {
+                    255
+                } else {
+                    back_coverage(d)
+                };
+                rgba[(y as usize * ww + x as usize) * 4 + 2] = b;
             });
         }
     }
 }
 
+/// **R24, second amendment (T23.07C): the closing rule.** The "was rock" px of `wall` that count:
+/// every round-start rock px, and a px that was only landform (a generated cave, a shaft) only where
+/// it lies in the **morphological closing** of round-start rock by a disk of radius [`WALL_CLOSING_R`]
+/// — round-start rock dilated by R, then eroded by R (two exact EDT passes, [`distance_pass`]). Gaps
+/// narrower than 2R between rock lips (tunnel mouths, as the mockup draws them) stay wall; a slab
+/// with open sky on one side is cut back along an arc, never along a column. Measured against the
+/// round-start mask, so digging rock away mid-round keeps the wall, and a late joiner (who
+/// re-derives that mask, `rederive_landform`) sees the same wall. Once per map, never per carve.
+pub fn closed(wall: &BitGrid, round_start: &impl Solid, r: u32) -> BitGrid {
+    let (w, h) = wall.dims();
+    let all = Rect { x: 0, y: 0, w, h };
+    let r = r as f32;
+    // Dilate: rock, or air within R of rock.
+    let mut dil = BitGrid::from_solid(round_start);
+    distance_pass(round_start, false, all, all, |x, y, d| {
+        if d <= r {
+            dil.put(x, y, true);
+        }
+    });
+    // Erode: dilated px farther than R from anything not dilated.
+    let mut out = BitGrid::new(w, h);
+    distance_pass(&dil, true, all, all, |x, y, d| {
+        if d > r && wall.solid(x, y) {
+            out.put(x, y, true);
+        }
+    });
+    out.union_with(&BitGrid::from_solid(round_start));
+    out
+}
+
+/// "Was rock", split: `all` = round-start rock ∪ landform (R17); `hard` = the part drawn whole.
+#[derive(Clone, Debug)]
+pub struct WallClass {
+    pub all: BitGrid,
+    pub hard: BitGrid,
+}
+
+/// **R24 final form (T23.07C).** Hard wall = round-start rock ∪ (landform ∩ (closing(round-start rock,
+/// R) ∪ every landform air region that does not touch open sky)). The first term keeps tunnel mouths and
+/// gaps under 2R with the mockup's edge; the second keeps enclosed chambers wider than 2R, which the
+/// closing alone showed as sky (T23.07C: pink circles underground on seeds 4 and 9). Landform outside both
+/// is soft: drawn with T23.07B's fade from its open-sky edge ([`back_coverage`]). Once per map.
+pub fn classify(landform: &BitGrid, round_start: &impl Solid, r: u32) -> WallClass {
+    let mut all = landform.clone();
+    all.union_with(&BitGrid::from_solid(round_start));
+    let mut hard = closed(landform, round_start, r);
+    hard.union_with(&enclosed_air(&all, round_start));
+    WallClass { all, hard }
+}
+
+/// The landform air (in `all`, not round-start rock) whose 4-connected region touches no open sky (a
+/// px outside `all`). The map's edge is not sky.
+pub fn enclosed_air(all: &BitGrid, round_start: &impl Solid) -> BitGrid {
+    let (w, h) = all.dims();
+    let n = w as usize * h as usize;
+    let cand = |i: usize| {
+        let (x, y) = ((i % w as usize) as u32, (i / w as usize) as u32);
+        all.solid(x, y) && !round_start.solid(x, y)
+    };
+    let mut seen = vec![false; n];
+    let mut out = BitGrid::new(w, h);
+    let mut stack = Vec::new();
+    let mut region = Vec::new();
+    for start in 0..n {
+        if seen[start] || !cand(start) {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        region.clear();
+        let mut open = false;
+        while let Some(i) = stack.pop() {
+            region.push(i);
+            let (x, y) = (i % w as usize, i / w as usize);
+            let mut nb = |j: usize| {
+                if !all.solid((j % w as usize) as u32, (j / w as usize) as u32) {
+                    open = true;
+                } else if !seen[j] && cand(j) {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                nb(i - 1);
+            }
+            if x + 1 < w as usize {
+                nb(i + 1);
+            }
+            if y > 0 {
+                nb(i - w as usize);
+            }
+            if y + 1 < h as usize {
+                nb(i + w as usize);
+            }
+        }
+        if !open {
+            for &i in &region {
+                out.put((i % w as usize) as u32, (i / w as usize) as u32, true);
+            }
+        }
+    }
+    out
+}
+
 /// Everything that is not open sky: solid now, or was rock (the wall). Its complement is the air
-/// the cave wall fades against (R24).
+/// soft wall fades against.
 struct NotOpenAir<'a, M: Solid> {
     mask: &'a M,
     wall: &'a BitGrid,
@@ -541,9 +685,7 @@ impl<M: Solid> Solid for NotOpenAir<'_, M> {
     }
 }
 
-/// `back` for a wall px `d` px from the nearest open-sky px: `255·min(1, d / BACK_RAMP_PX)`, rounded.
-/// A wall px with sky beside it (d = 1) is 26, one ramp in (d ≥ 10) or enclosed (no sky within the
-/// EDT's 65 px cap) 255 — every wall px an F scene's `back` covers away from the sky is 255 as before.
+/// Soft wall's `back`: `255·min(1, d / BACK_RAMP_PX)`, `d` its distance to open sky, rounded.
 #[inline]
 fn back_coverage(d: f32) -> u8 {
     (255.0 * (d as f64 / BACK_RAMP_PX).min(1.0)).round() as u8
@@ -858,10 +1000,14 @@ impl GameCore {
     ) -> Result<Vec<u32>, String> {
         let (w, h) = (self.map.mask.w, self.map.mask.h);
         let px = w as usize * h as usize;
-        let g = BitGrid::from_u32_words(w, h, &wall)
-            .ok_or_else(|| FieldsError::WallSize(wall.len() * 32, px).to_string())?;
+        // `[wall.., hard..]` (`render_fields_wall_words`): two equal halves.
+        let half = wall.len() / 2;
+        let (a, b) = wall.split_at(half);
+        let err = || FieldsError::WallSize(wall.len() * 16, px).to_string();
+        let g = BitGrid::from_u32_words(w, h, a).ok_or_else(err)?;
+        let hard = BitGrid::from_u32_words(w, h, b).ok_or_else(err)?;
         self.render_fields
-            .install(&self.map.mask, g, rgba, din2)
+            .install(&self.map.mask, g, hard, rgba, din2)
             .map(Rect::to_vec)
             .map_err(|e| e.to_string())
     }
@@ -1027,63 +1173,92 @@ mod tests {
         );
     }
 
-    /// R24 (T23.07B F1): `back` is `back_coverage` of each wall px's exact distance to the nearest
-    /// open-sky px (neither solid nor wall), by exhaustive search, on random grids with random walls;
-    /// 0 off the wall. Controls: all three regimes occur — the ramp's first step beside the sky, the
-    /// ramp's middle, and 255 — and a wall enclosed by rock is 255 everywhere (it fades into sky, not rock).
+    /// R24 final form (T23.07C). In units of R: a tunnel R tall through a hill is hard wall, mouth
+    /// included; a slab of landform standing in open sky is soft (it fades from its sky edge — kept, not
+    /// removed); an enclosed chamber 3R across (wider than 2R, so outside the closing) is hard; a
+    /// dug-away roof keeps the tunnel's wall (the split read the round start). Control: the slab's sky
+    /// edge px would be 255 were it hard.
     #[test]
-    fn back_ramps_up_from_open_sky_by_the_exact_distance() {
-        let (mut first, mut mid, mut full) = (0usize, 0usize, 0usize);
-        for seed in 0..6u64 {
-            let g = random_grid(300 + seed, 160, 120);
-            let mut wall = random_grid(400 + seed, 160, 120);
-            wall.union_with(&g);
-            let mut f = RenderFields::default();
-            f.full_with_wall(&g, wall.clone()).unwrap();
-            let sky: Vec<(i64, i64)> = (0..120u32)
-                .flat_map(|y| (0..160u32).map(move |x| (x, y)))
-                .filter(|&(x, y)| !wall.solid(x, y))
-                .map(|(x, y)| (x as i64, y as i64))
-                .collect();
-            let b = channel(&f, 2);
-            for y in 0..120u32 {
-                for x in 0..160u32 {
-                    let want = if wall.solid(x, y) && !g.solid(x, y) {
-                        let best = sky
-                            .iter()
-                            .map(|&(sx, sy)| (sx - x as i64).pow(2) + (sy - y as i64).pow(2))
-                            .min();
-                        back_coverage(best.map_or(1e5, |d| (d as f64).sqrt() as f32))
-                    } else {
-                        0
-                    };
-                    let got = b[(y * 160 + x) as usize];
-                    assert_eq!(got, want, "seed {seed} px ({x}, {y})");
-                    match got {
-                        0 => {}
-                        255 => full += 1,
-                        v if v == back_coverage(1.0) => first += 1,
-                        _ => mid += 1,
-                    }
-                }
+    fn hard_wall_is_the_closing_or_an_enclosed_region_the_rest_fades() {
+        let r = WALL_CLOSING_R;
+        let (w, h) = (16 * r, 16 * r);
+        let ground = 8 * r;
+        let mut rock = BitGrid::new(w, h);
+        for y in ground..h {
+            for x in 0..w {
+                rock.put(x, y, true);
             }
         }
-        assert!(
-            first > 100 && mid > 100 && full > 100,
-            "first {first}, mid {mid}, full {full}"
-        );
-        // Enclosed: a cave carved in solid rock, no sky anywhere near it.
-        let mut rock = BitGrid::new(120, 120);
-        circle(&mut rock, 60, 60, 200, true);
-        let wall = rock.clone();
-        circle(&mut rock, 60, 60, 20, false);
+        let tunnel = 5 * r..6 * r;
+        for y in 4 * r..ground {
+            for x in 8 * r..14 * r {
+                rock.put(x, y, !tunnel.contains(&y));
+            }
+        }
+        let mut land = rock.clone();
+        // The slab, columns R..3R, rows R..8R, open sky left, right and above.
+        for y in r..ground {
+            for x in r..3 * r {
+                land.put(x, y, true);
+            }
+        }
+        for y in tunnel.clone() {
+            for x in 8 * r..14 * r {
+                land.put(x, y, true);
+            }
+        }
+        // An enclosed chamber, 3R across, deep in the ground.
+        let (cx, cy) = (5 * r as i32, 12 * r as i32);
+        circle(&mut rock, cx, cy, (3 * r / 2) as i32, false);
         let mut f = RenderFields::default();
-        f.full_with_wall(&rock, wall).unwrap();
-        let b = channel(&f, 2);
-        let cave = b.iter().filter(|&&v| v > 0).count();
+        f.full_with_wall(&rock, land).unwrap();
+        let b = |f: &RenderFields, x: u32, y: u32| f.rgba()[((y * w + x) * 4 + 2) as usize];
+        let hard = |f: &RenderFields, x: u32, y: u32| f.hard.as_ref().unwrap().solid(x, y);
+        let (tx, ty) = (11 * r, 5 * r + r / 2);
         assert!(
-            cave > 1000 && b.iter().all(|&v| v == 0 || v == 255),
-            "enclosed wall: {cave} px, all 255"
+            hard(&f, tx, ty) && b(&f, tx, ty) == 255,
+            "the tunnel is hard wall"
+        );
+        // The closing's disk reaches 0.134 R into a mouth R tall (the lips' corners stop it): past that, hard.
+        assert!(
+            hard(&f, 8 * r + r / 4, ty) && b(&f, 8 * r + r / 4, ty) == 255,
+            "and its mouth, R/4 in"
+        );
+        assert!(!hard(&f, r, 3 * r), "the slab is not hard");
+        assert_eq!(b(&f, r, 3 * r), back_coverage(1.0), "its sky edge fades");
+        assert_eq!(
+            b(&f, 2 * r, 3 * r),
+            255,
+            "its inside, farther than the ramp from sky, is whole"
+        );
+        assert!(
+            !hard(&f, 2 * r, 3 * r) && b(&f, 2 * r, 3 * r) > 0,
+            "kept, not removed"
+        );
+        assert!(
+            hard(&f, cx as u32, cy as u32) && b(&f, cx as u32, cy as u32) == 255,
+            "the enclosed chamber is hard"
+        );
+        // Control: the chamber's centre is outside the closing — only the enclosed term keeps it hard.
+        let only_closing = closed(f.wall.as_ref().unwrap(), &rock, r);
+        assert!(
+            !only_closing.solid(cx as u32, cy as u32),
+            "control: the closing alone drops the chamber"
+        );
+        // Dig the hill's top away mid-round: the tunnel stays hard wall.
+        let mut dug = rock.clone();
+        for y in 4 * r..5 * r {
+            for x in 8 * r..14 * r {
+                dug.put(x, y, false);
+            }
+        }
+        f.dirty(&dug, 8 * r as i32, 4 * r as i32, 6 * r as i32, r as i32)
+            .unwrap();
+        assert_eq!(b(&f, tx, ty), 255, "a dug-away roof keeps the wall");
+        assert_eq!(
+            b(&f, tx, 4 * r + r / 2),
+            255,
+            "and the dug roof itself is crater wall"
         );
     }
 
@@ -1094,8 +1269,10 @@ mod tests {
         for seed in 0..20u64 {
             let mut g = random_grid(100 + seed, 384, 256);
             let mut f = RenderFields::default();
-            f.full(&g);
-            let wall = f.wall.clone();
+            // T23.07C: a random landform too, so hard wall, soft (faded) wall and sky all meet the carves.
+            f.full_with_wall(&g, random_grid(200 + seed, 384, 256))
+                .unwrap();
+            let (wall, hard) = (f.wall.clone(), f.hard.clone());
             let mut rng = substream(seed, "carves");
             for _ in 0..4 {
                 let cx = range_i32(&mut rng, -20, 404);
@@ -1108,10 +1285,11 @@ mod tests {
             }
             let mut fresh = RenderFields {
                 wall,
+                hard: hard.clone(),
                 ..Default::default()
             };
             fresh.full_against_snapshot(&g);
-            changed += channel(&fresh, 2).iter().filter(|&&b| b > 0).count();
+            changed += channel(&fresh, 2).iter().filter(|&&b| b == 255).count();
             if f.rgba() != fresh.rgba() || f.din2() != fresh.din2() {
                 bad_seeds += 1;
             }
@@ -1166,10 +1344,42 @@ mod tests {
             "no wall without the input"
         );
         core.render_fields_full_with_wall(&wall).unwrap();
-        // Each input px is a lone wall px in open air, so it sits on the ramp's first step (R24).
+        // R24 final form (T23.07C): an input px is hard wall iff it lies in the closing of the rock.
+        let mask = core.map.mask.clone();
+        let mut input = BitGrid::new(w, h);
+        for &i in &air {
+            input.put(i as u32 % w, i as u32 / w, true);
+        }
+        let kept = closed(&input, &mask, WALL_CLOSING_R);
+        let (under, open): (Vec<usize>, Vec<usize>) = air
+            .iter()
+            .partition(|&&i| kept.solid(i as u32 % w, i as u32 / w));
         assert!(
-            air.iter().all(|&i| b(&core, i) == back_coverage(1.0)),
-            "the input's px are wall"
+            under.len() > 20 && open.len() > 20,
+            "both kinds sampled: {} closed, {} open",
+            under.len(),
+            open.len()
+        );
+        // Independent of `closed`: a px in a closing by R has rock within R of it.
+        let rr = WALL_CLOSING_R as i32;
+        let near_rock = |i: usize| {
+            let (x, y) = (i as i32 % w as i32, i as i32 / w as i32);
+            (-rr..=rr).any(|dy| {
+                (-rr..=rr).any(|dx| dx * dx + dy * dy <= rr * rr && core.solid_at(x + dx, y + dy))
+            })
+        };
+        assert!(
+            under.iter().all(|&i| near_rock(i)),
+            "a closed px lies within R of rock"
+        );
+        assert!(
+            under.iter().all(|&i| b(&core, i) == 255),
+            "the closed input px are hard wall"
+        );
+        // Outside the closing a lone input px is soft wall beside open sky: the fade's first step.
+        assert!(
+            open.iter().all(|&i| b(&core, i) == back_coverage(1.0)),
+            "the open-sky input px are soft wall"
         );
         let walled = core
             .render_fields
@@ -1177,7 +1387,7 @@ mod tests {
             .chunks_exact(4)
             .filter(|p| p[2] > 0)
             .count();
-        assert_eq!(walled, air.len(), "and nothing else is");
+        assert_eq!(walled, air.len(), "and nothing else is wall");
     }
 
     /// T23.05B (R17): a **generated** cave shows as cave wall, through both production
@@ -1193,7 +1403,7 @@ mod tests {
                 c.render_fields
                     .rgba()
                     .chunks_exact(4)
-                    .filter(|p| p[2] > 0)
+                    .filter(|p| p[2] == 255)
                     .count()
             };
             local.render_fields_full();
@@ -1213,14 +1423,36 @@ mod tests {
             // Counted per px, not as a difference of totals: pass 8's ground fill puts
             // rock in the map that is not in the landform.
             let (w, h) = (m.mask.w as i32, m.mask.h as i32);
+            // R24 final form (T23.07C): every cave px is wall (back > 0); the hard ones are 255.
             let caves = (0..w * h)
                 .filter(|i| o.landform.get(i % w, i / w) && !m.mask.get(i % w, i / w))
                 .count() as u64;
             assert!(caves > 1000, "gen {generator}: only {caves} cave px");
-            assert_eq!(
-                backs(&local) as u64,
-                caves,
-                "gen {generator}: every cave px is wall"
+            let walled = local
+                .render_fields
+                .rgba()
+                .chunks_exact(4)
+                .filter(|p| p[2] > 0)
+                .count() as u64;
+            assert_eq!(walled, caves, "gen {generator}: every cave px is wall");
+            let hard_caves = {
+                let hd = local.render_fields.hard.as_ref().unwrap();
+                (0..w * h)
+                    .filter(|i| {
+                        hd.solid((i % w) as u32, (i / w) as u32) && !m.mask.get(i % w, i / w)
+                    })
+                    .count() as u64
+            };
+            let fading = local
+                .render_fields
+                .rgba()
+                .chunks_exact(4)
+                .filter(|p| p[2] > 0 && p[2] < 255)
+                .count();
+            eprintln!("gen {generator}: {caves} cave px, {hard_caves} hard, {fading} on a fade");
+            assert!(
+                hard_caves > 1000 && hard_caves <= caves,
+                "gen {generator}: hard {hard_caves}"
             );
             // Networked: `worldMirror.applyMapInit`'s calls, then the fields.
             let mut net = GameCore::new();
@@ -1324,8 +1556,16 @@ mod tests {
         let mut pre = GameCore::new();
         pre.generate_with(4242, 0, 0, 1);
         own_landform(&mut pre);
+        // `pre`'s wall is already classified against the round start; `truth`'s mask is carved.
+        let words = pre.render_fields_wall_words();
+        let (a, b) = words.split_at(words.len() / 2);
+        let (tw, th) = (truth.width(), truth.height());
+        let pre_all = BitGrid::from_u32_words(tw, th, a).unwrap();
+        let pre_hard = BitGrid::from_u32_words(tw, th, b).unwrap();
+        let truth_mask = truth.map.mask.clone();
         truth
-            .render_fields_full_with_wall(&wall_bytes(&pre))
+            .render_fields
+            .full_with_class(&truth_mask, pre_all, pre_hard)
             .unwrap();
         assert_eq!(main.render_fields.rgba().len(), n * 4);
         assert!(
@@ -1364,15 +1604,6 @@ mod tests {
     }
 
     /// The last full pass's "was rock" mask, a byte per px (for `render_fields_full_with_wall`).
-    fn wall_bytes(core: &GameCore) -> Vec<u8> {
-        let (w, h) = (core.width(), core.height());
-        let g = BitGrid::from_u32_words(w, h, &core.render_fields_wall_words()).unwrap();
-        (0..h)
-            .flat_map(|y| (0..w).map(move |x| (x, y)))
-            .map(|(x, y)| u8::from(g.solid(x, y)))
-            .collect()
-    }
-
     /// T23.06B (F6): the wall's bit words round-trip, and a wrong length is refused.
     #[test]
     fn wall_words_round_trip() {
@@ -1609,13 +1840,6 @@ mod tests {
         round_start_only.full(&solid);
         assert!(channel(&round_start_only, 2).iter().all(|&b| b == 0));
         assert!(channel(&f, 2).iter().filter(|&&b| b == 255).count() > 1000);
-        // R24: the mockup's `back` is a set (255 / 0); ours ramps where the wall meets open sky. The set
-        // is compared — `back > 0` as 255 — and the ramp's px are counted (arena E's caves open to the sky).
-        let ramp = channel(&f, 2).iter().filter(|&&b| b > 0 && b < 255).count();
-        assert!(
-            ramp > 0,
-            "arena E has wall px beside open sky: the ramp is exercised"
-        );
 
         let mut relief = Vec::new();
         for y in 0..h {
@@ -1650,14 +1874,7 @@ mod tests {
         );
         assert_eq!(got(0), hashes["din"], "dIn channel");
         assert_eq!(got(1), hashes["dout"], "dOut channel");
-        let back_set = channel(&f, 2)
-            .into_iter()
-            .map(|b| if b > 0 { 255 } else { 0 });
-        assert_eq!(
-            fnv32(back_set) as u64,
-            hashes["back"],
-            "back channel, as a set"
-        );
+        assert_eq!(got(2), hashes["back"], "back channel");
         assert_eq!(got(3), hashes["relief_u8"], "relief channel");
         // Controls: the fixture is not degenerate, and a one-byte change is seen.
         let over_half = relief.iter().filter(|&&b| f32::from_bits(b) > 0.5).count() as u64;
@@ -1701,7 +1918,7 @@ mod tests {
                 f.full(&map.mask);
                 fulls.push(t.elapsed().as_secs_f64() * 1e3);
             }
-            let wall = f.wall.clone();
+            let (wall, hard) = (f.wall.clone(), f.hard.clone());
             let p = map.meta.surface_points[map.meta.surface_points.len() / 2];
             let (cx, cy, r) = (p.x, p.y, 60);
             map.carve_circle(cx, cy, r);
@@ -1712,6 +1929,7 @@ mod tests {
             let crater = t.elapsed().as_secs_f64() * 1e3;
             let mut fresh = RenderFields {
                 wall,
+                hard,
                 ..Default::default()
             };
             fresh.full_against_snapshot(&map.mask);

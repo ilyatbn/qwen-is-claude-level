@@ -33,12 +33,6 @@ export interface TerrainFeed {
   readonly mapKey: string
   /** R24 (T23.07B F2): the albedo's per-map offset (`albedo.ts::albedoOffset` of the map seed); (0, 0) in the look-lab. */
   readonly albedoOffset: readonly [number, number]
-  /**
-   * R24 (T23.07B F1): draw `back` as coverage — the wall fading into open sky over the fields' ramp. False
-   * in the look-lab: its scenes are the mockup's, whose wall is whole wherever it is (F1's tunnel mouths
-   * meet open sky, so the ramp would move Level A's `deltaE_cave` — measured, T23.07B's journal).
-   */
-  readonly wallFade: boolean
   readonly ready: boolean
   /** Dev: what the feed measured (the worker job, the install, carve updates). */
   readonly stats?: Readonly<Record<string, number | string>>
@@ -184,7 +178,6 @@ export class TerrainFields implements TerrainFeed {
   readonly h: number
   readonly mapKey: string
   readonly albedoOffset: readonly [number, number]
-  readonly wallFade = true
   ready = false
   readonly stats = {
     jobMs: NaN,
@@ -360,7 +353,8 @@ export class TerrainFields implements TerrainFeed {
       this.fallBack(r.error)
       return
     }
-    if (r.wall.length !== Math.ceil((this.core.width * this.core.height) / 32)) {
+    // T23.07C: the wall words are two equal halves, all "was rock" then its hard part (`render_fields.rs::wall_words`).
+    if (r.wall.length !== 2 * Math.ceil((this.core.width * this.core.height) / 32)) {
       // The core's map changed size under the job (a scene that forgot to dispose us): never absent.
       this.fallBack('the map changed size under the job')
       return

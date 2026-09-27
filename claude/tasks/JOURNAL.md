@@ -7413,3 +7413,11 @@ F2: albedoOffset(seed) in [0,4096)², lab 0. terrain-seed restored: 3995/4096 px
 F4: `__world.hideWall`; gate-ground rock excludes wall; control patch over wall 0 % by the rule, 100 % by the old. F5: crater wording, swap leg in screenshots (78, least rock share 1.00). F6: LOW_MAX 0.5/12 → 0.2/2 (measured .088/1), crater on 4242/7/11.
 Cost (wasm32 release, node): full pass Medium 450→500 ms (worker), r=60 crater 2.9→3.5 ms (back pass reads write+11; plant reach 3 → incremental≠full red).
 Done-when EXIT 0 (vitest 1116, game-wasm 70, look-terrain/terrain-seed/gate-ground 3/3); look-albedo + look-lab ok; check.sh --changed HEAD --fast EXIT 0.
+
+## T23.07C — R24 final form: hard wall = closing(48) ∪ enclosed, the rest fades; no lab exemption (builder, 2026-09-27)
+Tried and measured first (uncommitted, ruled out): roof rule (seed 11 roofed by an island 300 px up; per-column cuts 195–229 px), closing alone (F1 needs R ≥ 48: deltaE_cave 9.6–9.9 at R 24–44, 4.6 at 46–47, 0.00689 at 48; chambers > 2R showed sky).
+Built: `render_fields.rs::classify` (closing via two EDT passes + enclosed-region flood fill, once per map; worker hands back `[wall.., hard..]`), soft wall = T23.07B's 10 px fade; lab = game. Level A exact (deltaE_cave 0.00689, rim-off 5/12, bevel-off 6/12); arena-E and look-albedo value-exact again.
+§4 drawn hard (low): seed 4 7, 6 14, 9 39 + 28 (named exceptions, ≤ measured+2), 11 12. Plants: rule off → 58/89/96 red; closing-only → chamber guard 0/64 px on seeds 4 and 9, red; enclosed term alone off → green (the fade keeps chamber insides; the unit test pins that term).
+Look: s11 slab back as a soft-edged dark block (T23.07B's picture); s4 chambers dark wall, no sky circles; s9 slab keeps a hard straight edge (the named 39). shots/t2307c-final-s{4,9,11}.png.
+Cost: Medium worker 1273 ms (1095 T23.07B, one draw each); release bench full pass Medium 508 ms, r=60 crater 3.5 ms.
+Done-when EXIT 0 (vitest 1116, game-wasm 70, look-terrain/terrain-seed/gate-ground + look-albedo/look-lab 5/5); check.sh --changed HEAD --fast EXIT 0.

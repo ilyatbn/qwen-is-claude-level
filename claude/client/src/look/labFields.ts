@@ -50,8 +50,6 @@ export class LabFields implements TerrainFeed {
   readonly mapKey = `lab:${++labMaps}`
   /** R24: none — the lab's scenes are the mockup's albedo, unshifted. */
   readonly albedoOffset = [0, 0] as const
-  /** R24: none either — the mockup's wall is whole to its edge (the fields still ramp; the lab draws `back > 0` whole). */
-  readonly wallFade = false
   private first = true
 
   constructor(
@@ -85,17 +83,12 @@ export class LabFields implements TerrainFeed {
   /**
    * FNV-1a-32 of each channel over the first `rows` rows — T23.05's fixture hashes
    * (`render_fields.fixture.json`: din, dout, back, relief_u8), for `look-albedo` to check the padding.
-   * `back` is hashed as a set (> 0 → 255): the mockup's is 255 / 0, ours a coverage ramp where the
-   * wall meets open sky (R24, `render_fields.rs::BACK_RAMP_PX`) — the same px, faded.
    */
   channelFnv(rows: number): { din: number; dout: number; back: number; relief_u8: number } {
     const v = this.view()
     const h = [0x811c9dc5, 0x811c9dc5, 0x811c9dc5, 0x811c9dc5]
     for (let i = 0; i < this.w * rows; i++) {
-      for (let c = 0; c < 4; c++) {
-        const b = c === 2 && v[i * 4 + c]! > 0 ? 255 : v[i * 4 + c]!
-        h[c] = Math.imul(h[c]! ^ b, 0x01000193) >>> 0
-      }
+      for (let c = 0; c < 4; c++) h[c] = Math.imul(h[c]! ^ v[i * 4 + c]!, 0x01000193) >>> 0
     }
     return { din: h[0]!, dout: h[1]!, back: h[2]!, relief_u8: h[3]! }
   }
