@@ -376,6 +376,8 @@ export class GameScene extends Phaser.Scene {
    */
   private localTrack: TiltTrack | null = null
   private readonly remoteTilts = new Map<number, TiltTrack>()
+  /** T23.09C F2: each live round's `projectile_spawn` point — where it left the gun — by id. */
+  private readonly roundOrigins = new Map<number, { x: number; y: number }>()
   /** T23.14D F4: each remote's jet push, estimated from its motion (its input is not on the wire). */
   private readonly remotePushes = new Map<number, PushEstimate>()
   private get localTilt(): number {
@@ -710,6 +712,7 @@ export class GameScene extends Phaser.Scene {
     this.localTrack = null
     this.remoteTilts.clear()
     this.remotePushes.clear()
+    this.roundOrigins.clear()
     this.frameDt = 0
     this.fuel = 0
     this.fuelShown = 0
@@ -1135,6 +1138,9 @@ export class GameScene extends Phaser.Scene {
         this.mirror.applyEvent(ev, p, performance.now())
         // T23.14D F8: a thrown weapon leaving a hand throws its figure — the server's word, anyone's.
         if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'])
+        // T23.09C F2: where each round left the gun, for its muzzle flash (`WorldView.syncProjectiles`'s `origin`).
+        if (ev === 'projectile_spawn') this.roundOrigins.set(Number(p['id'] ?? -1), { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) })
+        if (ev === 'projectile_despawn') this.roundOrigins.delete(Number(p['id'] ?? -1))
         if (ev === 'carve' || ev === 'carve_capsule') {
           this.minimap?.setTerrainDirty()
           // The terrain re-bake needs nothing here: `WorldView.update()` drains the core's dirty set
@@ -1893,6 +1899,11 @@ export class GameScene extends Phaser.Scene {
    * and `projectile_spawn`, which every client receives, so a remote's swing plays and your own plays only for a
    * swing the server accepted (it played on the click, refused or not). A gun changes nothing (`firedWith`).
    */
+  /** The mirror's live rounds, each with its `roundOrigins` entry — or `null`: this client never heard it spawn. */
+  private *withOrigins(): Iterable<{ id: number; x: number; y: number; weapon: number; origin: { x: number; y: number } | null }> {
+    for (const p of this.mirror.projectiles.values()) yield { id: p.id, x: p.x, y: p.y, weapon: p.weapon, origin: this.roundOrigins.get(p.id) ?? null }
+  }
+
   private swingOf(owner: unknown, weapon: unknown): void {
     if (typeof owner !== 'number' || typeof weapon !== 'number') return
     const key = WEAPON_KEYS[weapon]
@@ -2298,7 +2309,9 @@ export class GameScene extends Phaser.Scene {
     // (§A39). The server's live list is the authority, so this is a diff rather
     // than a stream of add/remove calls: a missed despawn self-corrects next
     // frame instead of leaving a rocket hanging in the air.
-    this.world?.syncProjectiles(this.mirror.projectiles.values())
+    // T23.09C F2: each round with where it left the gun — `null` for one whose spawn this client never heard (in flight
+    // before it joined, or across a resync), which then flashes no muzzle.
+    this.world?.syncProjectiles(this.withOrigins())
     // Toxic rain is on while any recorded effect is in its active phase. The
     // lifecycle is already tracked for the e2e; nothing consumed it visually,
     // which is §B21 exactly — the number was right and never reached the screen.
@@ -2472,7 +2485,10 @@ export class GameScene extends Phaser.Scene {
       fps: this.game.loop.actualFps,
     })
     this.lightmap.render(this.cameras.main, darkness, lights)
-    this.worldRenderer?.setLights(this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView)))
+    // T23.09C F7: built every frame whether or not the world renderer is up — its bookkeeping (which rounds have
+    // flashed) must not go stale while the renderer loads: a round first listed then would flash late, mid-air.
+    const effectLights = this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView))
+    this.worldRenderer?.setLights(effectLights)
     this.refreshHud()
   }
 
@@ -2490,6 +2506,7 @@ export class GameScene extends Phaser.Scene {
       impacts: o?.impacts ?? [],
       jets: views.flatMap((v) => jetFlames(v)),
       vents: this.vents,
+      ...(this.world ? { stale: this.world.staleRounds } : {}),
     }
   }
 
@@ -3497,8 +3514,9 @@ export class GameScene extends Phaser.Scene {
           ]),
           /** T23.09: the kinds of the last effect-light list handed to the world renderer, in order. */
           effectLights: [...self.effectLights.lastKinds],
-          /** T23.09A: whether the lit terrain draws its cave wall (`?cavewall=`, default off); null before the renderer loads. */
-          caveWall: self.worldRenderer?.caveWall() ?? null,
+          /** T23.09A/T23.09C F3: whether the lit terrain's last drawn frame had its cave wall; null before it drew. */
+          // T23.09C F3: the drawn frame's wall (`wallK`), not the switch.
+          caveWall: self.worldRenderer?.caveWallDrawn() ?? null,
           /**
            * T22.04B: what each body's jet flame drew last frame (T23.14B: the figure's
            * flame, was the plume), keyed by seat — read off the **views**, as `drawnSkins` is,
@@ -4044,6 +4062,10 @@ export class GameScene extends Phaser.Scene {
       },
       fire() {
         self.conn.sendFire()
+      },
+      /** T23.09C F6: the last effect-light list handed to the world renderer, each with its source's kind (as the sandbox's). */
+      effectLights() {
+        return self.effectLights.last.map((l, k) => ({ kind: self.effectLights.lastKinds[k], ...l }))
       },
       /**
        * Aim at your own feet and fire until you die.

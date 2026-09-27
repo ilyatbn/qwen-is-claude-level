@@ -185,7 +185,7 @@ export class WorldRenderer implements SceneRenderer {
   /** T23.14B: the actors' additive glows (a jet flame's). */
   private readonly glowLayer = new GlowLayer()
   /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
-  private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number } = { drawn: false, material: null, lights: 0 }
+  private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } = { drawn: false, material: null, lights: 0, wallK: null }
 
   /**
    * @param phaserCanvas the canvas this one goes under — same parent, same box.
@@ -409,7 +409,7 @@ export class WorldRenderer implements SceneRenderer {
     const on = !!desc && !!g && desc.litTerrain && this.terrain.ready && !this.terrainHidden
     this.terrainMesh.visible = on
     if (!on || !desc || !g) {
-      this.drawnTerrain = { drawn: false, material: null, lights: 0 }
+      this.drawnTerrain = { drawn: false, material: null, lights: 0, wallK: null }
       return
     }
     const u = this.terrainMats.uniforms
@@ -427,7 +427,7 @@ export class WorldRenderer implements SceneRenderer {
     this.terrainMesh.scale.set(desc.world.w, desc.world.h, 1)
     const c = toWorld(desc.world.w / 2, desc.world.h / 2, desc.world.h)
     this.terrainMesh.position.set(c.x, c.y, 0)
-    this.drawnTerrain = { drawn: true, material: low ? 'low' : 'full', lights: lights.length }
+    this.drawnTerrain = { drawn: true, material: low ? 'low' : 'full', lights: lights.length, wallK: u['wallK']!.value as number }
   }
 
   /**
@@ -448,6 +448,14 @@ export class WorldRenderer implements SceneRenderer {
     if (!this.desc || sameLights(this.desc.look.lights, lights)) return
     this.desc.look.lights = lights
     this.dirty = true
+  }
+
+  /**
+   * T23.09C F3: **the one cave-wall switch** — the description's `caveWall` (absent: drawn, as the look-lab's scenes).
+   * The game world re-describes a new map with it (`createGameWorld`), the sandbox's button and readout read it.
+   */
+  get caveWallOn(): boolean {
+    return this.desc?.caveWall !== false
   }
 
   /** T23.09A: draw the cave wall or not, on the description held now (no rebake; the next frame shows it). */
@@ -616,7 +624,7 @@ export class WorldRenderer implements SceneRenderer {
   terrainForce: QualityTier | null = null
 
   /** Dev: the lit terrain as last drawn — whether, which tier's material, how many lights. */
-  terrainDrawn(): { drawn: boolean; material: 'full' | 'low' | null; lights: number } {
+  terrainDrawn(): { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } {
     return { ...this.drawnTerrain }
   }
 
@@ -854,6 +862,9 @@ export class WorldRenderer implements SceneRenderer {
 
 /** Two light lists with the same lights in the same order (field by field; they are rebuilt every frame). */
 export function sameLights(a: readonly Light[], b: readonly Light[]): boolean {
+  // T23.09C F8: `EffectLights.frame` hands back the very list it returned last when nothing changed (and never
+  // changes a list it has returned), so a still frame is one comparison.
+  if (a === b) return true
   if (a.length !== b.length) return false
   return a.every((l, k) => {
     const m = b[k]!
@@ -928,9 +939,14 @@ export interface GameWorld {
    * its picture is not whole yet) — a check that photographs the world waits this out.
    */
   terrainSwapPending(): boolean
-  /** T23.09A: whether the lit terrain draws its cave wall (`?cavewall=`, default off), and the switch (kept across maps). */
-  caveWall(): boolean
+  /**
+   * T23.09A/T23.09C F3: the cave-wall switch — the renderer's description (`?cavewall=` at first, default off; kept across
+   * maps) — or null where three did not start; and the switch.
+   */
+  caveWall(): boolean | null
   setCaveWall(on: boolean): void
+  /** T23.09C F3: whether the lit terrain's last drawn frame had its wall (`wallK` 1) — null before it drew. The effect. */
+  caveWallDrawn(): boolean | null
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
   /** T23.13/T23.14: this frame's cast (`look/actors/`); dropped where three did not start. */
@@ -948,9 +964,10 @@ export const GAME_ALBEDO_TILES: Record<QualityTier, number> = { full: 4, low: 1 
  * module on demand (`loadWorldRenderer.ts`), so they cannot import `gameDescription` from it statically.
  */
 export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
-  // T23.09A: the cave wall's switch, from the URL at first, carried across map changes.
-  let caveWall = caveWallFromUrl(location.search)
-  const renderer = createWorldRenderer(scene, gameDescription(map, caveWall))
+  // T23.09A: the cave wall's switch, from the URL at first; after that the renderer's description holds it (T23.09C F3:
+  // one copy — it was here, in the description and in the sandbox, each set by hand).
+  const renderer = createWorldRenderer(scene, gameDescription(map, caveWallFromUrl(location.search)))
+  const wallNow = (): boolean => (renderer instanceof WorldRenderer ? renderer.caveWallOn : CAVE_WALL_DEFAULT)
   // T23.14: the scene's cast (its players' figures, `actors/cast.ts`), gathered before every render — not after
   // the update: a paused scene still renders, and a figure hidden or re-posed while it is paused (a check's control
   // frame, `stand-on-asteroid`'s actors-hidden instant) must reach the frame drawn next.
@@ -969,11 +986,14 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   }
   return {
     renderer,
-    mapChanged: (m) => renderer.setScene(gameDescription(m, caveWall)),
-    caveWall: () => caveWall,
+    mapChanged: (m) => renderer.setScene(gameDescription(m, wallNow())),
+    caveWall: () => (renderer instanceof WorldRenderer ? renderer.caveWallOn : null),
     setCaveWall: (on) => {
-      caveWall = on
       if (renderer instanceof WorldRenderer) renderer.setCaveWall(on)
+    },
+    caveWallDrawn: () => {
+      const k = renderer instanceof WorldRenderer ? renderer.terrainDrawn().wallK : null
+      return k === null ? null : k > 0
     },
     setTerrain: (feed) => {
       if (renderer instanceof WorldRenderer) renderer.setTerrain(feed, GAME_ALBEDO_TILES[renderer.info().tier])

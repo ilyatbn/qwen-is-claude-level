@@ -110,7 +110,9 @@ export default async function ({ page, shot, log }) {
   const reach = k.get('STANDING_GROUND_FILL_DEPTH')
   const playerH = k.get('PLAYER_H')
   const subjectTop = 2 * k.get('EDGE_BAND_PX')
-  // T23.09A: the wall control needs the cave wall drawn (`&cavewall=1` on this check's URL).
+  // T23.09A: the wall control needs the cave wall drawn (`&cavewall=1` on this check's URL). T23.09C F3:
+  // `debug().caveWall` is the drawn frame's wall (null until the lit terrain has drawn one).
+  await page.waitForFunction(() => window.__game.debug().caveWall !== null, null, { timeout: 60_000 }).catch(() => {})
   const wall = await page.evaluate(() => window.__game.debug().caveWall)
   if (wall !== true) throw new Error(`gate-ground needs the cave wall on (&cavewall=1): debug().caveWall is ${JSON.stringify(wall)}`)
   const pads = await page.evaluate(() => window.__game.core.meta.teleport_pads)
@@ -399,9 +401,38 @@ export default async function ({ page, shot, log }) {
   if (warning !== '') failures.push(`the terrain fields warn — got ${JSON.stringify(warning)}, want ""`)
   // Failures first: a pad skipped for a moving camera is not asserted, and the count
   // alone would name the symptom ("only 0 pads") instead of the cause.
+  // T23.09C F3: the sandbox's "Cave bg" button is the one switch — its label and the drawn wall follow it both ways.
+  // (Its label read "off" in both states: it was written from a sandbox copy of the switch.)
+  const cave = await caveButtonLeg(page, log)
+  if (cave) failures.push(cave)
   if (failures.length) throw new Error(failures.join('\n'))
   if (asserted < MIN_CONCLUSIVE) {
     throw new Error(`only ${asserted} pads were asserted (need ${MIN_CONCLUSIVE}) — nothing measured`)
   }
   log(`all ${asserted} asserted pads stand on rock under both ends of their drawn base`)
+}
+
+/** Click "Cave bg" twice: each click flips the label and the drawn wall (`debug().caveWall`) together. A problem, or null. */
+async function caveButtonLeg(page, log) {
+  const read = () =>
+    page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find((e) => e.textContent?.startsWith('Cave bg'))
+      return { label: b?.textContent ?? null, drawn: window.__game.debug().caveWall }
+    })
+  const click = async () => {
+    await page.evaluate(() => [...document.querySelectorAll('button')].find((e) => e.textContent?.startsWith('Cave bg'))?.click())
+    // Two drawn frames: the switch lands on the next render; the readout refreshes every 0.25 s.
+    await page.waitForTimeout(400)
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  }
+  const before = await read()
+  await click()
+  const once = await read()
+  await click()
+  const twice = await read()
+  log(`cave bg button: ${JSON.stringify(before)} → ${JSON.stringify(once)} → ${JSON.stringify(twice)}`)
+  if (before.label !== 'Cave bg: on' || before.drawn !== true) return `cave bg: before the clicks the label/drawn wall were ${JSON.stringify(before)}, want on/true (&cavewall=1)`
+  if (once.label !== 'Cave bg: off' || once.drawn !== false) return `cave bg: one click gave ${JSON.stringify(once)}, want off/false`
+  if (twice.label !== 'Cave bg: on' || twice.drawn !== true) return `cave bg: two clicks gave ${JSON.stringify(twice)}, want on/true`
+  return null
 }

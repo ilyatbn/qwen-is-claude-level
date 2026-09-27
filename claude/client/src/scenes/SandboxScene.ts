@@ -9,7 +9,7 @@
  */
 
 import Phaser from 'phaser'
-import { C, Core, MapScale, strictConstants, type EffectForce, type WeatherState } from '../core'
+import { C, Core, MapScale, strictConstants, type EffectForce, type FireEvent, type WeatherState } from '../core'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
@@ -34,7 +34,6 @@ import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLights'
-import { caveWallFromUrl } from '../look/worldRenderer-math'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -88,8 +87,10 @@ export class SandboxScene extends Phaser.Scene {
   private worldRenderer: GameWorld | null = null
   /** T23.09: the per-frame effect-light list (`effectLights.ts`), handed to the world renderer. */
   private readonly effectLights = new EffectLights()
-  /** T23.09A: the cave wall switch (`?cavewall=`, the "Cave bg" button); the world renderer may arrive after a click. */
-  private caveWallOn = caveWallFromUrl(location.search)
+  /** T23.09C F2: where each round this player fired left the gun (`Core.fire`'s spawn point), by id, while it lives. */
+  private readonly roundOrigins = new Map<number, { x: number; y: number }>()
+  /** T23.09C F3: the "Cave bg" button — its label is the renderer's switch, set in `refreshReadout`. */
+  private caveButton: HTMLButtonElement | null = null
   /** T23.07: the world renderer's chunk has loaded (or failed to) — until then a lit-terrain swap may be coming. */
   private worldSettled = false
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
@@ -226,7 +227,7 @@ export class SandboxScene extends Phaser.Scene {
       this.worldSettled = true
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
       this.worldRenderer?.setTerrain(this.terrainFields)
-      this.worldRenderer?.setCaveWall(this.caveWallOn)
+      this.refreshReadout()
     })
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
@@ -301,6 +302,7 @@ export class SandboxScene extends Phaser.Scene {
       const inv = this.core.inventory(0)
       if (inv) {
         const ev = this.core.fire(0, this.simTime)
+        this.noteOrigin(ev)
         const sel = inv.slots[inv.selected]
         // T23.14D F8: the figure swings or throws only for a use the sim accepted.
         if (!ev.rejected) this.player?.firedWith(sel?.key)
@@ -491,12 +493,18 @@ export class SandboxScene extends Phaser.Scene {
    * loses the choice at the next Regenerate, and setting only the default leaves
    * the map on screen unchanged and reads as a dead button.
    */
-  /** T23.09A: the lit terrain's cave wall on or off, now and for the next regenerate (the world renderer keeps it). */
-  private setCaveWall(on: boolean): boolean {
-    this.caveWallOn = on
+  /**
+   * T23.09A: the lit terrain's cave wall on or off, now and for the next regenerate — the world renderer holds it
+   * (T23.09C F3: the one copy). Before the renderer loads there is nothing to switch: the button says so.
+   */
+  private setCaveWall(on: boolean): void {
     this.worldRenderer?.setCaveWall(on)
     this.refreshReadout()
-    return on
+  }
+
+  /** T23.09C F2: remember where a fired round left the gun (`syncProjectiles`' `origin`). */
+  private noteOrigin(ev: FireEvent): void {
+    if (ev.projectile) this.roundOrigins.set(ev.projectile.id, { x: ev.projectile.x, y: ev.projectile.y })
   }
 
   private setCaveBackdrop(on: boolean): boolean {
@@ -613,9 +621,12 @@ export class SandboxScene extends Phaser.Scene {
     // default (`CAVE_WALL_DEFAULT`, `?cavewall=1`), flipped here on the live map and kept for the next
     // regenerate. It used to flip Phaser's old cave backdrop (`CAVE_BACKDROP`), which draws only before the
     // lit terrain is ready or on a space map; that stays reachable as `__game.caveBackdrop(on)`.
-    const caveBack = button(`Cave bg: ${this.caveWallOn ? 'on' : 'off'}`, () => {
-      caveBack.textContent = `Cave bg: ${this.setCaveWall(!this.caveWallOn) ? 'on' : 'off'}`
+    // T23.09C F3: the label is written by `refreshReadout` from the renderer's switch — it read "off" in both states.
+    const caveBack = button('Cave bg: …', () => {
+      const on = this.worldRenderer?.caveWall()
+      if (on !== null && on !== undefined) this.setCaveWall(!on)
     })
+    this.caveButton = caveBack
     r3.append(label('time'), time, timeOut, live, fog, overlays, caveBack)
 
     // The M5 checkpoint is "force each effect and watch it run start to finish",
@@ -780,6 +791,8 @@ export class SandboxScene extends Phaser.Scene {
 
   private refreshReadout(): void {
     const m = this.core.meta
+    const wall = this.worldRenderer?.caveWall() ?? null
+    if (this.caveButton) this.caveButton.textContent = `Cave bg: ${wall === null ? '…' : wall ? 'on' : 'off'}`
     const t = this.timings
     // `attempts` and `used_safe_preset` are the numbers that say whether the
     // generator is healthy, and they are invisible unless shown
@@ -793,7 +806,7 @@ export class SandboxScene extends Phaser.Scene {
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
       `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.world.terrain.stats.pending}  ` +
       `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}\n` +
-      `cave wall ${this.caveWallOn ? 'on' : 'off'}  old backdrop ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
+      `cave wall ${wall === null ? '…' : wall ? 'on' : 'off'}  old backdrop ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
       `backdrop ${this.world.terrain.stats.backdropMs.toFixed(0)} ms`
   }
 
@@ -807,7 +820,8 @@ export class SandboxScene extends Phaser.Scene {
           // T23.09: the kinds of the last effect-light list handed to the world renderer, in order.
           effectLights: [...self.effectLights.lastKinds],
           // T23.09A: whether the lit terrain draws its cave wall (the renderer's own state; null before it loads).
-          caveWall: self.worldRenderer?.caveWall() ?? null,
+          // T23.09C F3: the drawn frame's wall (`wallK`), not the switch — a `&cavewall=1` guard checks the effect.
+          caveWall: self.worldRenderer?.caveWallDrawn() ?? null,
           // T23.14: the player's stick figure as last handed to the world renderer (its pose, boots, wings, weapon).
           figure: self.player?.figure ?? null,
           seed: self.core.meta.seed,
@@ -1086,6 +1100,7 @@ export class SandboxScene extends Phaser.Scene {
         const inv = self.core.inventory(0)
         const sel = inv?.slots[inv.selected]
         const ev = self.core.fire(0, self.simTime)
+        self.noteOrigin(ev)
         if (!ev.rejected) self.player?.firedWith(sel?.key)
         if (ev.hitscan?.length) {
           for (const s of ev.hitscan) self.world.ordnance.addTracer(s.x0, s.y0, s.x1, s.y1)
@@ -1114,10 +1129,9 @@ export class SandboxScene extends Phaser.Scene {
         return self.invOpen
       },
       ordnance() {
-        // T23.09: `lights` counts the effect lights the ordnance records made last frame (explosions,
-        // laser impacts, muzzle flashes, rocket motors, fires) — what reaches the lit terrain.
-        const fromOrdnance: ReadonlySet<string> = new Set(['explosion', 'laser', 'muzzle', 'rocket', 'flame'])
-        return { ...self.world.ordnance.state.counts, lights: self.effectLights.lastKinds.filter((k) => fromOrdnance.has(k)).length }
+        // The ordnance layer's records, and only those. T23.09C F1: it also carried `lights` (T23.09: the effect lights
+        // the records made) — two things in one field; the lights are `effectLights()`, by kind.
+        return { ...self.world.ordnance.state.counts }
       },
       /** T23.09A: the cave wall on or off (the "Cave bg" button's switch); returns what the renderer now holds. */
       setCaveWall(on: boolean) {
@@ -1612,7 +1626,17 @@ export class SandboxScene extends Phaser.Scene {
     // removed anything, so a detonated rocket stayed drawn until the scene was
     // rebuilt. `syncProjectiles` is shared with the game so both scenes get the
     // same behaviour from one implementation.
-    this.world.syncProjectiles(this.core.liveProjectiles())
+    // T23.09C F2: each round from where `fire` put it — the combat step can carry a fast round on before this frame's
+    // sync, and its muzzle flash was drawn there, up to ~50 px out (measured in `night-combat`, 34–49 px run to run).
+    const live = this.core.liveProjectiles()
+    this.world.syncProjectiles(live.map((p) => {
+      const origin = this.roundOrigins.get(p.id)
+      return origin ? { ...p, origin } : p
+    }))
+    if (this.roundOrigins.size) {
+      const ids = new Set(live.map((p) => p.id))
+      for (const id of this.roundOrigins.keys()) if (!ids.has(id)) this.roundOrigins.delete(id)
+    }
     this.world.ordnance.update(dt)
 
     if (!this.timeScrub) this.roundTime += dt
@@ -1724,18 +1748,19 @@ export class SandboxScene extends Phaser.Scene {
     // the night view). Ordnance and lava light the lit terrain now, as F's point lights (`effectLights.ts`).
     this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
     const o = this.world.ordnance.state
-    this.worldRenderer?.setLights(
-      this.effectLights.frame(
-        {
-          projectiles: o.projectiles.values(),
-          tracers: o.tracers,
-          impacts: o.impacts,
-          jets: jetFlames(this.player),
-          vents: weather.vents,
-        },
-        viewRect(this.cameras.main.worldView),
-      ),
+    // T23.09C F7: built every frame, renderer or not (its muzzle bookkeeping must not go stale while it loads).
+    const effectLights = this.effectLights.frame(
+      {
+        projectiles: o.projectiles.values(),
+        tracers: o.tracers,
+        impacts: o.impacts,
+        jets: jetFlames(this.player),
+        vents: weather.vents,
+        stale: this.world.staleRounds,
+      },
+      viewRect(this.cameras.main.worldView),
     )
+    this.worldRenderer?.setLights(effectLights)
 
     this.overlay.update(
       this.cameras.main,

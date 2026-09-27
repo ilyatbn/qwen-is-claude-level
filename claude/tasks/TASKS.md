@@ -825,7 +825,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller
 - [x] [T23.09A](M23/T23.09-effects-are-the-lights.md) — The cave wall switchable, off by default in the game (owner request; ruling pending — the look-lab keeps F1's walls)
 - [x] [T23.09B](M23/T23.09-effects-are-the-lights.md) — `world-canvas` un-parked: the marker search takes only a bar-thick crossing (the 313.5 px was the probe line along the bar, cut by the moon's glow); match map pinned
-- [ ] [T23.09C](M23/T23.09C-what-the-lights-review-found.md) — What the lights review found — no false muzzle flashes on late join, night-combat rewritten, one cave-wall switch, lights checked in matches
+- [x] [T23.09C](M23/T23.09C-what-the-lights-review-found.md) — What the lights review found — no false muzzle flashes on late join, night-combat rewritten, one cave-wall switch, lights checked in matches
 - [ ] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
 - [ ] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
@@ -839,6 +839,7 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — **21 of 24 holdable weapons draw nothing in the hand today**; one design per weapon for hand, ground and inventory
 - [ ] [T23.17](M23/T23.17-melee-and-thrown-remodelled.md) — Melee and thrown weapons remodelled — all 23 holdables, silhouettes measured apart
 - [ ] [T23.18](M23/T23.18-effects-in-the-new-renderer.md) — Effects in the new renderer — HDR tracers, beams, blasts, fire, smoke, plumes; the simulation halves keep their coverage assertions
+  - [ ] Owed by T23.18 (T23.09C F4): `explosion-shader`'s lit ring — the blast with its own effect light on is reported, not gated ("KNOWN RED" in its log while under the floor); gate it when the blast is redrawn
 - [x] [T23.19A](M23/T23.19A-the-gunner-is-visible.md) — The gunner is visible — turrets, gates, pickups, tombstones drawn behind the figures in the new renderer (review F3, pulled forward)
 - [ ] [T23.19](M23/T23.19-the-world-furniture.md) — The world's furniture — gates, platforms, crystals, crates, animals, birds, hazards; every gameplay signal re-asserted on pixels
 - [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture

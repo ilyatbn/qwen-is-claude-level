@@ -108,15 +108,22 @@ export class StaticLights {
     }
   }
 
-  /** Every light whose cell lies within `view` grown by the largest radius (a superset; `pickLights` culls exactly). */
-  query(view: ViewRect): Light[] {
-    const out: Light[] = []
+  /**
+   * Every light whose cell lies within `view` grown by the largest radius (a superset; `pickLights` culls exactly),
+   * appended to `out` (T23.09C F8: the per-frame caller passes its own scratch list).
+   */
+  query(view: ViewRect, out: Light[] = []): Light[] {
     if (!this.cells.size) return out
     const x0 = Math.floor((view.x - this.maxR) / this.cell)
     const x1 = Math.floor((view.x + view.w + this.maxR) / this.cell)
     const y0 = Math.floor((view.y - this.maxR) / this.cell)
     const y1 = Math.floor((view.y + view.h + this.maxR) / this.cell)
-    for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) out.push(...(this.cells.get(`${cx},${cy}`) ?? []))
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const list = this.cells.get(`${cx},${cy}`)
+        if (list) for (const l of list) out.push(l)
+      }
+    }
     return out
   }
 
@@ -158,6 +165,11 @@ export interface EffectSources {
   jets: readonly { x: number; y: number }[]
   /** The lava vents drawn this frame. */
   vents: readonly { x: number; y: number; jetting: boolean; burning: boolean }[]
+  /**
+   * T23.09C F2: rounds that flash no muzzle — alive before this client first saw the list, or never seen leaving a
+   * gun (`WorldView.staleRounds`, marked in `syncProjectiles`). Absent: every round is fresh when first listed.
+   */
+  stale?: { has(round: object): boolean }
 }
 
 /** Which source each light in the last list came from — for the dev handle (count both ends). */
@@ -167,6 +179,11 @@ export type EffectKind = 'static' | 'explosion' | 'laser' | 'muzzle' | 'rocket' 
  * The per-frame builder. Stateful only for the muzzle flash, which is a light for the first
  * `MUZZLE_FRAMES` lists a new round or beam appears in; everything else is derived from the
  * sources' own remaining life each frame.
+ *
+ * T23.09C F8: built in scratch (the lights, their kinds, the fire cells and the statics query are reused), and **a list
+ * equal to the last one is the last one** — the same array back — so a still frame allocates nothing and the renderer
+ * (`WorldRenderer.setLights`) sees nothing new. A list that differs is a new array of new lights: what `frame` returned
+ * before is never changed under its holder.
  */
 export class EffectLights {
   readonly statics = new StaticLights()
@@ -175,36 +192,55 @@ export class EffectLights {
   /** The last list and its kinds, index for index (dev handle: count both ends). */
   lastKinds: EffectKind[] = []
   last: Light[] = []
+  private readonly scratch: Light[] = []
+  private readonly scratchKinds: EffectKind[] = []
+  private readonly statics_: Light[] = []
+  private readonly flames = new Map<number, { x: number; y: number; n: number }>()
+  private n = 0
 
   /** This frame's lights, in a stable order (statics, then dynamic) — `pickLights` keeps input order. */
   frame(src: EffectSources, view: ViewRect): Light[] {
-    const out: Light[] = []
-    const kinds: EffectKind[] = []
-    const push = (l: Light | null, kind: EffectKind): void => {
-      if (!l) return
-      out.push(l)
-      kinds.push(kind)
+    this.n = 0
+    // Into the scratch pool, in place: `place`'s rule (intensity × k, clamped; nothing once k is spent) without a new
+    // object per light per frame.
+    const put = (spec: LightSpec, x: number, y: number, k: number, kind: EffectKind): void => {
+      const f = Math.min(1, Math.max(0, k))
+      if (!(f > 0)) return
+      const l = this.scratch[this.n] ?? (this.scratch[this.n] = { x: 0, y: 0, z: 0, r: 0, rgb: spec.rgb, i: 0 })
+      l.x = x
+      l.y = y
+      l.z = spec.z
+      l.r = spec.r
+      l.rgb = spec.rgb
+      l.i = spec.i * f
+      this.scratchKinds[this.n] = kind
+      this.n++
     }
-    for (const l of this.statics.query(view)) push(l, 'static')
-    for (const im of src.impacts) push(explosionLight(im), 'explosion')
+    this.statics_.length = 0
+    for (const l of this.statics.query(view, this.statics_)) put(l, l.x, l.y, 1, 'static')
+    for (const im of src.impacts) put(EXPLOSION_LIGHT, im.x, im.y, im.ttl > 0 ? im.life / im.ttl : 0, 'explosion')
     for (const t of src.tracers) {
-      const k = t.ttl > 0 ? t.life / t.ttl : 0
-      push(place(LASER_IMPACT_LIGHT, t.x1, t.y1, k), 'laser')
-      push(this.muzzle(t, t.x0, t.y0, true), 'muzzle')
+      put(LASER_IMPACT_LIGHT, t.x1, t.y1, t.ttl > 0 ? t.life / t.ttl : 0, 'laser')
+      put(MUZZLE_LIGHT, t.x0, t.y0, this.muzzle(t, true), 'muzzle')
     }
-    const flames = new Map<string, { x: number; y: number; n: number }>()
+    const flames = this.flames
+    flames.clear()
     for (const p of src.projectiles) {
-      if (MUZZLE_KINDS.has(p.kind)) push(this.muzzle(p, p.trail[0]?.x ?? p.x, p.trail[0]?.y ?? p.y, p.trail.length <= 2), 'muzzle')
+      // T23.09C F2: freshness is the view's word (`stale`), not the trail's length — every round is first drawn with a
+      // trail of two, so a round already in flight at a late join, a resync or a round first seen far from its gun
+      // flashed in mid-air.
+      if (MUZZLE_KINDS.has(p.kind)) put(MUZZLE_LIGHT, p.trail[0]?.x ?? p.x, p.trail[0]?.y ?? p.y, this.muzzle(p, !src.stale?.has(p)), 'muzzle')
       if (MOTOR_KINDS.has(p.kind)) {
         const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2]! : null
         const dx = prev ? p.x - prev.x : 0
         const dy = prev ? p.y - prev.y : 0
         const len = Math.hypot(dx, dy)
         const back = len > 1e-6 ? ROCKET_MOTOR_BACK / len : 0
-        push(place(ROCKET_LIGHT, p.x - dx * back, p.y - dy * back), 'rocket')
+        put(ROCKET_LIGHT, p.x - dx * back, p.y - dy * back, 1, 'rocket')
       }
       if (p.kind === 'flame') {
-        const key = `${Math.floor(p.x / FLAME_CELL)},${Math.floor(p.y / FLAME_CELL)}`
+        // A cell key as one number: columns and rows of a map fit well inside 2^20.
+        const key = Math.floor(p.x / FLAME_CELL) * 1048576 + Math.floor(p.y / FLAME_CELL)
         const c = flames.get(key)
         if (c) {
           c.x += p.x
@@ -213,29 +249,41 @@ export class EffectLights {
         } else flames.set(key, { x: p.x, y: p.y, n: 1 })
       }
     }
-    for (const c of flames.values()) push(place(FLAMETHROWER_LIGHT, c.x / c.n, c.y / c.n), 'flame')
-    for (const j of src.jets) push(place(JET_PLUME_LIGHT, j.x, j.y), 'jet')
+    for (const c of flames.values()) put(FLAMETHROWER_LIGHT, c.x / c.n, c.y / c.n, 1, 'flame')
+    for (const j of src.jets) put(JET_PLUME_LIGHT, j.x, j.y, 1, 'jet')
     for (const v of src.vents) {
-      if (v.jetting) push(place(FLAMETHROWER_LIGHT, v.x, v.y - VENT_JET_RISE), 'vent')
-      else if (v.burning) push(place(LAVA_GLOW_LIGHT, v.x, v.y), 'vent')
+      if (v.jetting) put(FLAMETHROWER_LIGHT, v.x, v.y - VENT_JET_RISE, 1, 'vent')
+      else if (v.burning) put(LAVA_GLOW_LIGHT, v.x, v.y, 1, 'vent')
     }
-    this.lastKinds = kinds
-    this.last = out
-    return out
+    if (this.unchanged()) return this.last
+    this.last = this.scratch.slice(0, this.n).map((l) => ({ ...l }))
+    this.lastKinds = this.scratchKinds.slice(0, this.n)
+    return this.last
+  }
+
+  /** Is this frame's scratch list the last list, light for light and kind for kind? */
+  private unchanged(): boolean {
+    if (this.n !== this.last.length) return false
+    for (let k = 0; k < this.n; k++) {
+      const a = this.scratch[k]!
+      const b = this.last[k]!
+      if (this.scratchKinds[k] !== this.lastKinds[k] || a.x !== b.x || a.y !== b.y || a.z !== b.z || a.r !== b.r || a.i !== b.i || a.rgb !== b.rgb) return false
+    }
+    return true
   }
 
   /**
-   * A flash for `key`'s first `MUZZLE_FRAMES` lists: `i`, then `i / 2`. `fresh`: the source was new when
-   * first seen (a round with ≤ 2 trail points) — one already in flight when this client first saw it
-   * (a late join, a resync) was fired before, and does not flash.
+   * `key`'s flash this list, as a share of `MUZZLE_LIGHT` — 1, then 1/2, for its first `MUZZLE_FRAMES` lists; 0 after.
+   * `fresh`: the source may flash — a round the view marked stale (in flight before this client saw it, or never seen
+   * leaving a gun) does not.
    */
-  private muzzle(key: object, x: number, y: number, fresh: boolean): Light | null {
+  private muzzle(key: object, fresh: boolean): number {
     const n = this.flashed.get(key) ?? (fresh ? 0 : MUZZLE_FRAMES)
     if (n >= MUZZLE_FRAMES) {
       this.flashed.set(key, n)
-      return null
+      return 0
     }
     this.flashed.set(key, n + 1)
-    return place(MUZZLE_LIGHT, x, y, (MUZZLE_FRAMES - n) / MUZZLE_FRAMES)
+    return (MUZZLE_FRAMES - n) / MUZZLE_FRAMES
   }
 }

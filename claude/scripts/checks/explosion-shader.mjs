@@ -397,10 +397,16 @@ if (arrived) {
   await setHQ(false)
   await frame()
   const lit = await compare(litOn, litNone, ring, VISIBLE)
-  console.log(`  reported (T23.09): with the effect lights on (${heldLights.length} held), ${cover(lit)}/${ring.length} blast-radius points painted over the world canvas`)
+  // T23.09C F4: a known debt, printed every run where it can be seen — the lit ring is not gated until T23.18 redraws
+  // the blast in F's style (TASKS.md, under T23.18). Red or not, it says which.
+  const litPts = cover(lit)
+  console.log(
+    `  ${litPts < WORLD_FLOOR ? 'KNOWN RED (owed to T23.18, not gated)' : 'reported (owed to T23.18, not gated)'}: with the effect lights on ` +
+      `(${heldLights.length} held), ${litPts}/${ring.length} blast-radius points painted over the world canvas (the gated floor is ${WORLD_FLOOR})`,
+  )
   const onWorld = cover(qPainted.per[BACKDROPS.indexOf(null)])
-  if (onWorld < WORLD_FLOOR) fail(`only ${onWorld} of ${ring.length} blast-radius points are painted over the world canvas as drawn (floor ${WORLD_FLOOR}) — the blast does not read on the sky it is drawn over`)
-  else ok(`over the world canvas as drawn, ${onWorld}/${ring.length} blast-radius points are painted (floor ${WORLD_FLOOR})`)
+  if (onWorld < WORLD_FLOOR) fail(`only ${onWorld} of ${ring.length} blast-radius points are painted over the world canvas with the effect lights held off (floor ${WORLD_FLOOR}) — the blast drawing does not read on the sky it is drawn over`)
+  else ok(`over the world canvas, effect lights held off, ${onWorld}/${ring.length} blast-radius points are painted (floor ${WORLD_FLOOR})`)
   if (cover(qPainted) !== ring.length) fail(`${ring.length - cover(qPainted)} of ${ring.length} points just inside the blast radius are unpainted — the front never reaches the crater's edge`)
   else ok(`the painted front covers the blast radius (${ring.length}/${ring.length})`)
 

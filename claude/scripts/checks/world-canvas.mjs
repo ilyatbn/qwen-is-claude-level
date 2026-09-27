@@ -68,7 +68,13 @@ const J = JSON.stringify
 const t = tally('world-canvas')
 // T23.09B: the match's map pinned (it was re-rolled every run, and the side of the map the spawn is on
 // decides which way the watch pan goes — on 4242 it carries the tall bar across the probe column).
-const stack = await startStack({ port: await freePort(), label: 'world-canvas', env: { BOT_COUNT: '0', FIXED_SEED: '4242' } })
+/**
+ * The match's map, pinned (T23.09B: an unpinned map chose the pan direction). T23.09C F9 considered an unpinned second
+ * leg and declined it: the probe's verdict depends on what the map puts on the probe line (T23.09B's ambiguous
+ * crossings), so an unpinned leg is a coin flip by construction — a second pinned seed is the way to widen it.
+ */
+const MATCH_SEED = '4242'
+const stack = await startStack({ port: await freePort(), label: 'world-canvas', env: { BOT_COUNT: '0', FIXED_SEED: MATCH_SEED } })
 
 /**
  * The canvas order and boxes, from the page. Paint order is read with `elementsFromPoint`
@@ -230,6 +236,10 @@ async function measurePan(page, where, startPan, frames = 40, { still = false, a
     if (d('phaserX') >= 1 || d('phaserY') >= 1) moving++
   }
   Object.assign(stats, { paired, worst: +worst.toFixed(2), travel: +travel.toFixed(1), moving })
+  // T23.09C F9: a floor on what was compared at all — every frame read, and on average one axis a frame paired in both
+  // canvases (logged across this check's runs: 80 of 80 on a 40-frame pan most often, 40 the least; 16 of 16 still).
+  if (samples.length < frames) return { ok: false, reason: `only ${samples.length} of ${frames} frames were read`, stats, samples }
+  if (paired < frames) return { ok: false, reason: `only ${paired} axis readings paired in both canvases over ${frames} frames (min ${frames})`, stats, samples }
   // Every frame measured on at least one axis: a fast flight can carry one bar off the screen
   // (measured: 87/120 axis readings on a 366 px jetpack pan), never both while the pan stays
   // under the arm length.
@@ -469,7 +479,11 @@ try {
   await enterBattle(gp, { label: 'world-canvas', waitPlaying: true })
   await worldReady(gp, 30_000)
   await assertOrder(gp, 'match')
-  console.log(`  match map seed ${await gp.evaluate(() => String(window.__game.debug().seed))}`)
+  // T23.09C F9: the server's map seed (`welcome`'s, `debug().roundSeed`) — `debug().seed` is the mirror core's meta, which
+  // read 1 in every logged run. Pinned by this stack's FIXED_SEED, and checked so.
+  const seeds = await gp.evaluate(() => ({ round: String(window.__game.debug().roundSeed), core: String(window.__game.debug().seed) }))
+  console.log(`  match map seed ${seeds.round} (server's; the mirror core's meta says ${seeds.core})`)
+  if (seeds.round !== MATCH_SEED) t.fail(`the match's map seed is ${seeds.round}, not the pinned ${MATCH_SEED}`)
   // Pan through the match's own camera path: `__game.watch` points the rig (the §C2 e2e
   // affordance), stepped 6 world px a frame toward the map's middle for 45 frames. Walking and
   // flying were tried first and are coin flips here — a walled-in spawn moved 5 px in 1.5 s,

@@ -1,4 +1,24 @@
-/** §A3 at night: gunfire and a rocket lighting the map (§F1 — bullets, not tracers). */
+/**
+ * §A3 at night: gunfire and a rocket lighting the map (§F1 — bullets, not tracers).
+ *
+ * T23.09C F1 — rewritten on the effect lights (T23.09: the effects are the lights). It counted `ordnance().lights`
+ * against 3 during SMG fire, which the effect-light rule can never give (a round is a light only as its muzzle flash,
+ * `MUZZLE_FRAMES` lists); it was parked, so nobody saw. Now: the rocket carries its motor light **in the renderer's
+ * list** (`__world.lights()`, both ends) at the round; sustained SMG fire flashes muzzles **at the gun** frame after
+ * frame (control: none before the trigger); the rock lit by them is `effect-lights`' and `jet-flame`'s to measure.
+ */
+/** Frames the sustained-fire leg watches, and the least of them that must carry a muzzle light: the smg's cooldown
+ * lets ~10 rounds a second through, `MUZZLE_FRAMES` (2) lists each — 20 of 60 frames measured; half, for a slow box. */
+const FRAMES = 60
+const FLASH_MIN = 10
+/**
+ * A flash is at the gun within this many px of the body's centre. Measured (T23.09C): 18.0 in every run with the flash at
+ * the round's spawn point (`Core.fire`'s, the sandbox's `origin`); 34–49 run to run where it was first drawn (a combat
+ * step can carry the round on before the frame's sync — F2's defect, the sandbox's shape); 50 planted on the round's
+ * current place. The bound sits between the first two.
+ */
+const MUZZLE_REACH = 28
+
 export default async function ({ page, shot, log }) {
   // **Every wait here polls the thing it is waiting for** (T19.22). This file had
   // ten bare `waitForTimeout` against three condition polls — a wall-clock window
@@ -79,7 +99,16 @@ export default async function ({ page, shot, log }) {
   let o = await page.evaluate(() => window.__game.ordnance())
   log(`rocket in flight: ${JSON.stringify(o)}`)
   if (o.projectiles < 1) throw new Error('no projectile in flight')
-  if (o.lights < 1) throw new Error('a rocket in the dark emits no light')
+  // The motor's light, both ends: in the scene's list and in the list the renderer holds, a few px behind the round.
+  await settle(`window.__game.effectLights().some((l) => l.kind === 'rocket')`, 5000)
+  const motor = await page.evaluate(() => {
+    const l = window.__game.effectLights().find((e) => e.kind === 'rocket') ?? null
+    const held = l ? window.__world.lights().filter((h) => h.x === l.x && h.y === l.y && h.r === l.r).length : 0
+    return { l, held }
+  })
+  log(`rocket motor light ${JSON.stringify(motor)}`)
+  if (!motor.l) throw new Error('a rocket in the dark emits no light')
+  if (motor.held !== 1) throw new Error(`the rocket's light is in the scene's list but the renderer holds it ${motor.held} times`)
   await shot('night-rocket')
 
   // Then the smg. `fire_ready_at` is per PLAYER, so the bazooka's 0.9 s cooldown
@@ -126,33 +155,40 @@ export default async function ({ page, shot, log }) {
   log(`immediately after one shot: ${JSON.stringify(o)}`)
   if (o.projectiles < 1) throw new Error('no bullet in the air from an smg shot')
 
+  // Control first: nothing fired for a stretch of frames, no muzzle light (the sandbox's first rounds have landed).
+  const quiet = await page.evaluate(() => new Promise((res) => {
+    let n = 0
+    let seen = 0
+    const f = () => {
+      if (window.__game.effectLights().some((l) => l.kind === 'muzzle')) seen++
+      if (++n < 30) requestAnimationFrame(f)
+      else res(seen)
+    }
+    setTimeout(() => requestAnimationFrame(f), 600)
+  }))
   await page.evaluate(() => {
     window.__smg = setInterval(() => window.__game.fire(), 40)
   })
-  // **No sleep before the sample.** The 400 ms here was waiting for rounds to
-  // accumulate, which the two polls below already wait for — and they wait on the
-  // counts themselves rather than on a guess at how long 40 ms of fire takes.
-  // No freeze: a round crosses the map over most of a second, so it is on screen
-  // for the whole capture. The assertion is the same one the tracer half made —
-  // ordnance emits light — read off a body that is genuinely there.
-  await page.waitForFunction('window.__game.ordnance().projectiles > 0', null, { timeout: 10000 })
-  // **Polled, not slept for**, and the threshold is untouched (T19.22's shape,
-  // repaired here because it went red in three of this shift's gates and green
-  // 3/3 standalone). The smg is firing every 40 ms for this whole window, so
-  // how many rounds are alive *at one instant* is a lottery the sample used to
-  // enter after two bare `waitForTimeout`s: it reads 3 on an idle box and 2
-  // under gate load. Giving the condition a bounded window to be observed in
-  // does not lower the bar — a client that genuinely emits fewer than 3 never
-  // satisfies the poll, and fails below with the same message and the same
-  // number.
-  const NEEDED = 3
-  await page
-    .waitForFunction((n) => window.__game.ordnance().lights >= n, NEEDED, { timeout: 10_000 })
-    .catch(() => {})
-  const lit = await page.evaluate(() => window.__game.ordnance().lights)
-  if (lit < NEEDED) {
-    throw new Error(`gunfire emits only ${lit} lights — it will be lost in the dark`)
-  }
+  // Sustained fire (one round every 40 ms, `MUZZLE_FRAMES` lists of flash each): the frames that carry a muzzle light,
+  // and how far each flash is from the body — at the gun, not wherever a round was first drawn (T23.09C F2).
+  const flashes = await page.evaluate((N) => new Promise((res) => {
+    let n = 0
+    let seen = 0
+    let far = 0
+    const f = () => {
+      const me = window.__game.debug().player
+      const m = window.__game.effectLights().filter((l) => l.kind === 'muzzle')
+      if (m.length) seen++
+      for (const l of m) far = Math.max(far, Math.hypot(l.x - me.x, l.y - me.y))
+      if (++n < N) requestAnimationFrame(f)
+      else res({ frames: n, seen, far })
+    }
+    requestAnimationFrame(f)
+  }), FRAMES)
+  log(`muzzle flashes: control (no fire) ${quiet}/30 frames; firing ${flashes.seen}/${flashes.frames} frames, farthest ${flashes.far.toFixed(1)} px from the body (max ${MUZZLE_REACH})`)
+  if (quiet !== 0) throw new Error(`control: ${quiet} frames carried a muzzle light with nothing fired`)
+  if (flashes.seen < FLASH_MIN) throw new Error(`gunfire flashed in only ${flashes.seen} of ${flashes.frames} frames (min ${FLASH_MIN}) — it will be lost in the dark`)
+  if (flashes.far > MUZZLE_REACH) throw new Error(`a muzzle flash ${flashes.far.toFixed(1)} px from the shooter — flashed mid-air, not at the gun`)
   await shot('night-tracers')
   const during = await page.evaluate(() => window.__game.ordnance())
   await page.evaluate(() => clearInterval(window.__smg))
@@ -264,6 +300,10 @@ export default async function ({ page, shot, log }) {
     if (dayDark > 0.001) {
       throw new Error(`setTime(30) is not daylight (darkness ${dayDark}) — the control is void`)
     }
+    // T23.09C: `debug().darkness` is computed at the call and `debug().fov` is the radius the last *drawn* frame used,
+    // so the read straight after the clock moved got the night's (165 at noon — seen once this leg ran again). Waited
+    // for by the value the assertion reads; a torch that widens the day still fails below with its number.
+    await settle(`Math.abs(window.__game.debug().fov - ${k.FOV_DAY}) <= ${EPS_PX}`, 3000)
     const dayOn = await fovNow()
     if (Math.abs(dayOn - k.FOV_DAY) > EPS_PX) {
       throw new Error(

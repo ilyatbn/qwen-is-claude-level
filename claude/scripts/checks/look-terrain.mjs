@@ -274,9 +274,6 @@ export default async function ({ page, shot, log }) {
   base.search = '?sandbox=1&seed=4242&cavewall=1'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world, null, { timeout: 60_000 })
-  await page.waitForFunction(() => window.__game.debug().caveWall !== null, null, { timeout: 60_000 })
-  const wallOn = await page.evaluate(() => window.__game.debug().caveWall)
-  if (wallOn !== true) problems.push(`T23.09A: the sandbox legs photograph the cave wall, but debug().caveWall is ${JSON.stringify(wallOn)}`)
   // F5: the camera pinned on deep rock from the first moment, so every screenshot below is the same place.
   const deep = await page.evaluate((m) => {
     const c = window.__game.core
@@ -343,6 +340,10 @@ export default async function ({ page, shot, log }) {
   if (!lastHidden) problems.push(`Phaser's rock is not hidden once the lit terrain is ready: ${JSON.stringify(swap.slice(-5))}`)
   const lit = await page.evaluate(() => window.__world.litTerrain())
   if (!lit?.drawn) problems.push(`the lit terrain is not drawn once ready: ${JSON.stringify(lit)}`)
+  // T23.09A: the legs below photograph the cave wall. T23.09C F3: `debug().caveWall` is the drawn frame's wall — so it
+  // is read here, once the lit terrain draws (waiting for it before the swap waited the swap's control frames away).
+  const wallOn = await page.evaluate(() => window.__game.debug().caveWall)
+  if (wallOn !== true) problems.push(`T23.09A: the sandbox legs photograph the cave wall, but the drawn frame's wall (debug().caveWall) is ${JSON.stringify(wallOn)}`)
   // T23.08C F8: ready from the worker, not from a main-thread fallback (which is ready too, without the
   // generator's cave wall that §4 photographs).
   const warning = await page.evaluate(() => window.__game.debug().terrainWarning)

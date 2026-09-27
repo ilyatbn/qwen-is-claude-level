@@ -78,6 +78,13 @@ export class WorldView {
   private readonly core: Core
   private readonly tracked = new Map<number, ProjectileKind>()
   /**
+   * T23.09C F2: the ordnance records that flash no muzzle (`effectLights.ts::EffectSources.stale`) — marked by
+   * `syncProjectiles`. Weak: a finished record drops out on its own.
+   */
+  readonly staleRounds = new WeakSet<object>()
+  /** Whether `syncProjectiles` has run: rounds in its first list were in flight before this view looked. */
+  private synced = false
+  /**
    * T21.43: how many projectiles of each kind the layer has **started** drawing,
    * ever. Only goes up, so a check polling a fast stream cannot miss a round
    * that lived and died between two polls.
@@ -215,7 +222,7 @@ export class WorldView {
    * were silently different numbers for four milestones.
    */
   syncProjectiles(
-    live: Iterable<{ id: number; x: number; y: number; weapon?: number; key?: string }>,
+    live: Iterable<{ id: number; x: number; y: number; weapon?: number; key?: string; origin?: { x: number; y: number } | null }>,
   ): void {
     const seen = new Set<number>()
     for (const p of live) {
@@ -226,11 +233,20 @@ export class WorldView {
         p.key !== undefined ? (KIND_BY_WEAPON_KEY[p.key] ?? 'fragment') : this.kindOf(p.weapon ?? -1)
       if (!this.tracked.has(p.id)) {
         this.tracked.set(p.id, kind)
-        this.ordnance.addProjectile(p.id, kind, p.x, p.y)
+        // T23.09C F2: a round is first drawn where it left the gun when that is known (`origin`: the game's
+        // `projectile_spawn` point — the round may have moved on before this frame's sync), and it may flash a
+        // muzzle only if it was seen leaving one: not on this view's first sync (in flight before this client
+        // looked: a late join, a new scene), and not with `origin: null` (the game never heard its spawn: a
+        // resync, a missed event). The sandbox passes no origin: its rounds are listed the frame they are fired.
+        const from = p.origin ?? p
+        this.ordnance.addProjectile(p.id, kind, from.x, from.y)
+        const rec = this.ordnance.state.projectiles.get(p.id)
+        if (rec && (!this.synced || p.origin === null)) this.staleRounds.add(rec)
         this.projectilesAddedByKind[kind] = (this.projectilesAddedByKind[kind] ?? 0) + 1
       }
       this.ordnance.moveProjectile(p.id, p.x, p.y)
     }
+    this.synced = true
     for (const id of [...this.tracked.keys()]) {
       if (seen.has(id)) continue
       this.tracked.delete(id)

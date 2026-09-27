@@ -103,19 +103,46 @@ describe('beams, muzzles, rockets, fire, jets, vents, gates', () => {
     expect(fx.frame(sources(o), view)).toEqual([])
   })
 
-  it('a round flashes where it was fired; one first seen mid-flight (a late join) does not', () => {
+  it('a round flashes where it was fired; one the view marked stale does not (T23.09C F2: the view says, not the trail)', () => {
     const o = new OrdnanceState(LIFE, TRAIL)
     const fx = new EffectLights()
     o.addProjectile(1, 'bullet', 1200, 600)
+    o.moveProjectile(1, 1200, 600)
     o.addProjectile(2, 'bullet', 1300, 600)
-    for (let k = 1; k <= 3; k++) o.moveProjectile(2, 1300 + k * 20, 600)
-    const l = fx.frame(sources(o), view)
+    o.moveProjectile(2, 1300, 600)
+    // Both records look alike — the trail of two every new record has, the case T23.09 read as "fresh".
+    const stale = new WeakSet<object>([o.projectiles.get(2)!])
+    const l = fx.frame(sources(o, { stale }), view)
     expect(fx.lastKinds).toEqual(['muzzle'])
     expect(l[0]).toMatchObject({ x: 1200, y: 600 })
     o.moveProjectile(1, 1220, 600)
-    fx.frame(sources(o), view)
+    fx.frame(sources(o, { stale }), view)
     o.moveProjectile(1, 1240, 600)
-    expect(fx.frame(sources(o), view)).toEqual([])
+    expect(fx.frame(sources(o, { stale }), view)).toEqual([])
+    // Control: with nothing marked, the second flashes too.
+    const o2 = new OrdnanceState(LIFE, TRAIL)
+    o2.addProjectile(2, 'bullet', 1300, 600)
+    const fx2 = new EffectLights()
+    fx2.frame(sources(o2), view)
+    expect(fx2.lastKinds).toEqual(['muzzle'])
+  })
+
+  it('T23.09C F8: an unchanged list is the same array back; a changed one is new and leaves the old one alone', () => {
+    const fx = new EffectLights()
+    fx.statics.set(gateLights([{ x: 1300, y: 800 }]))
+    const o = new OrdnanceState(LIFE, TRAIL)
+    const a = fx.frame(sources(o), view)
+    const snapshot = JSON.stringify(a)
+    expect(fx.frame(sources(o), view)).toBe(a)
+    o.addImpact(1500, 800, 40, 'blast', TTL)
+    const b = fx.frame(sources(o), view)
+    expect(b).not.toBe(a)
+    expect(JSON.stringify(a)).toBe(snapshot)
+    expect(b.length).toBe(2)
+    o.update(TTL / 2)
+    const c = fx.frame(sources(o), view)
+    expect(c).not.toBe(b)
+    expect(b[1]!.i).toBe(EXPLOSION_LIGHT.i)
   })
 
   it('a rocket carries its motor light behind it; a grenade carries none', () => {

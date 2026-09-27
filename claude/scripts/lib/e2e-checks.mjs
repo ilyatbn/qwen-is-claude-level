@@ -116,6 +116,8 @@ export const CHECKS = [
   // T23.09: the effects are the lights — a real bazooka blast, laser beam and jetpack burn each raise the
   // lit terrain's luminance near them (the frozen frame read with and without the terrain's point lights)
   // and leave rock beyond the light's radius unchanged (control region); the blast's light decays.
+  // T23.09C F6: and §4 through GameScene — a remote's jet lit at its flame, networked rounds flashing at the gun (its
+  // own two-client stack).
   { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
@@ -267,7 +269,8 @@ export const CHECKS = [
     disabled: 'T23.11',
   },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
-  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345', flaky: true },
+  // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
+  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345' },
   // `serial` (measured): red in 3 of 4 `--jobs 4` runs — a landing played at
