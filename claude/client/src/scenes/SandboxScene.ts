@@ -42,7 +42,7 @@ import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { loadIdentity } from '../ui/skins'
-import { LANDING_VOLUME_FLOOR, landingVolume } from '../render/feel-math'
+import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
 import { overlapsAny, overlapsBoxes, turretGeometry } from '../look/actors/props'
 import type { WorldItemView } from '../render/itemSprites-math'
 
@@ -138,7 +138,10 @@ export class SandboxScene extends Phaser.Scene {
   private audio = new Mixer()
   private audioSink: { unlock(): void; sampleCount: number; liveVoices: number; isUnlocked: boolean } | null = null
   private stepAcc = 0
-  private wasGrounded = true
+  /** T23.09D, e2e (`stepsPerFrame`): the fewest sim steps a frame runs. */
+  private minSteps = 1
+  /** T23.09D: the frame's landing, observed after every sim step (`LandingLatch`). */
+  private readonly landing = new LandingLatch()
   private wasJetting = false
   /**
    * Every cue that actually started a voice, **with the gain it started at**.
@@ -374,16 +377,17 @@ export class SandboxScene extends Phaser.Scene {
       if (jetting) this.cueLog.push({ name: 'jetpack', gain: 1 })
       this.wasJetting = jetting
     }
-    if (body.grounded && !this.wasGrounded) {
+    const landed = this.landing.take()
+    if (landed !== null) {
       // **`landingImpact`, not `vy`** (T20.11). `move_y` zeroes the velocity
       // *before* it marks the body grounded, so on this exact frame `vy` is 0 —
       // this expression has evaluated to the constant 0.25 floor since M6, and
       // the comment above it described something that could not happen. The
       // impact speed is measured inside `integrate`, where it still exists.
-      this.cue('land', undefined, undefined, landingVolume(body.landingImpact, C().MAX_FALL_SPEED))
+      // T23.09D: the impact of the step that landed, not the frame's last step's (0 after a multi-step frame).
+      this.cue('land', undefined, undefined, landingVolume(landed, C().MAX_FALL_SPEED))
       this.stepAcc = 0
     }
-    this.wasGrounded = body.grounded
 
     const speed = Math.abs(body.vx)
     if (body.grounded && speed > 10) {
@@ -502,9 +506,28 @@ export class SandboxScene extends Phaser.Scene {
     this.refreshReadout()
   }
 
-  /** T23.09C F2: remember where a fired round left the gun (`syncProjectiles`' `origin`). */
+  /**
+   * T23.09C F2: remember where a fired round left the gun (`syncProjectiles`' `origin`). T23.09D: and put it in the
+   * ordnance layer now — the next frame's combat step can fly and end a short round before that frame's sync, and a
+   * round the layer never held cannot be drawn on its one frame (`OrdnanceState.removeProjectile`).
+   */
   private noteOrigin(ev: FireEvent): void {
-    if (ev.projectile) this.roundOrigins.set(ev.projectile.id, { x: ev.projectile.x, y: ev.projectile.y })
+    if (!ev.projectile) return
+    this.roundOrigins.set(ev.projectile.id, { x: ev.projectile.x, y: ev.projectile.y })
+    this.syncRounds()
+  }
+
+  /** The ordnance layer against the core's live rounds, each from where it left the gun (T23.09C F2). */
+  private syncRounds(): void {
+    const live = this.core.liveProjectiles()
+    this.world.syncProjectiles(live.map((p) => {
+      const origin = this.roundOrigins.get(p.id)
+      return origin ? { ...p, origin } : p
+    }))
+    if (this.roundOrigins.size) {
+      const ids = new Set(live.map((p) => p.id))
+      for (const id of this.roundOrigins.keys()) if (!ids.has(id)) this.roundOrigins.delete(id)
+    }
   }
 
   private setCaveBackdrop(on: boolean): boolean {
@@ -1131,7 +1154,8 @@ export class SandboxScene extends Phaser.Scene {
       ordnance() {
         // The ordnance layer's records, and only those. T23.09C F1: it also carried `lights` (T23.09: the effect lights
         // the records made) — two things in one field; the lights are `effectLights()`, by kind.
-        return { ...self.world.ordnance.state.counts }
+        // T23.09D: and how many rounds the layer's last draw painted (the effect, beside the record count).
+        return { ...self.world.ordnance.state.counts, drawn: self.world.ordnance.drawnProjectilesLastFrame }
       },
       /** T23.09A: the cave wall on or off (the "Cave bg" button's switch); returns what the renderer now holds. */
       setCaveWall(on: boolean) {
@@ -1325,6 +1349,14 @@ export class SandboxScene extends Phaser.Scene {
         self.player.setFlameHidden(!on)
         return self.player.flameState
       },
+      /**
+       * T23.09D, e2e: every frame lasts at least `n` sim steps (1: as the clock says) — a slow frame on demand, as a loaded
+       * box makes them: the fixed steps, the combat step and the clocks all see the long frame. The sim still steps at
+       * `SIM_DT`. The case that lost a landing's impact between steps (`LandingLatch`) and a short round's only frame.
+       */
+      stepsPerFrame(n: number) {
+        self.minSteps = Math.max(1, Math.floor(n))
+      },
       /** T21.31: pause the scene's update so a frame can be photographed twice. Rendering goes on. */
       freeze(on: boolean) {
         if (on) self.scene.pause()
@@ -1498,7 +1530,8 @@ export class SandboxScene extends Phaser.Scene {
 
   override update(_time: number, delta: number): void {
     if (!this.ready) return
-    const dt = delta / 1000
+    // T23.09D, e2e (`stepsPerFrame`): a slow frame on demand — the frame's time is at least that many sim steps.
+    const dt = this.minSteps > 1 ? Math.max(delta / 1000, this.minSteps * C().SIM_DT) : delta / 1000
     const k = this.input.keyboard
     if (k) {
       const c = k.createCursorKeys()
@@ -1527,6 +1560,7 @@ export class SandboxScene extends Phaser.Scene {
       this.core.applyInput(0, inp.seq, inp.buttons, inp.aim, step)
       this.acc -= step
       body = this.core.playerState(0)
+      if (body) this.landing.observe(body.grounded, body.landingImpact)
     }
 
     if (body) {
@@ -1628,15 +1662,7 @@ export class SandboxScene extends Phaser.Scene {
     // same behaviour from one implementation.
     // T23.09C F2: each round from where `fire` put it — the combat step can carry a fast round on before this frame's
     // sync, and its muzzle flash was drawn there, up to ~50 px out (measured in `night-combat`, 34–49 px run to run).
-    const live = this.core.liveProjectiles()
-    this.world.syncProjectiles(live.map((p) => {
-      const origin = this.roundOrigins.get(p.id)
-      return origin ? { ...p, origin } : p
-    }))
-    if (this.roundOrigins.size) {
-      const ids = new Set(live.map((p) => p.id))
-      for (const id of this.roundOrigins.keys()) if (!ids.has(id)) this.roundOrigins.delete(id)
-    }
+    this.syncRounds()
     this.world.ordnance.update(dt)
 
     if (!this.timeScrub) this.roundTime += dt

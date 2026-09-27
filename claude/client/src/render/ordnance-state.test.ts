@@ -337,3 +337,22 @@ describe('a flame on screen (§F10.3)', () => {
     expect(flameAtRest(trail([[5, 5], [5.2, 5]]))).toBe(true)
   })
 })
+
+describe('T23.09D: a round is drawn on at least one frame', () => {
+  it('one removed before any update stays through the next update, and goes at the one after', () => {
+    const s = new OrdnanceState(0.35, 12)
+    s.addProjectile(1, 'bullet', 10, 10)
+    s.moveProjectile(1, 30, 10)
+    s.removeProjectile(1)
+    expect(s.projectiles.get(1)).toMatchObject({ x: 30 }) // still there for the frame that draws it
+    s.update(1 / 60)
+    expect(s.projectiles.has(1)).toBe(true) // the draw
+    s.update(1 / 60)
+    expect(s.projectiles.has(1)).toBe(false)
+    // Control: one that has been drawn goes at once.
+    s.addProjectile(2, 'bullet', 0, 0)
+    s.update(1 / 60)
+    s.removeProjectile(2)
+    expect(s.projectiles.has(2)).toBe(false)
+  })
+})

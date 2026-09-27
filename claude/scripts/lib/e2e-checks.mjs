@@ -151,6 +151,9 @@ export const CHECKS = [
   // T23.14D F12: and §3, identity — two seats side by side wear their own scarf colours on screen (control: two of
   // seat 0 read as seat 0). This is the scarf check `skins-ingame`'s retirement note points at.
   { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.09D: your own swing is predicted on the frame of the use (no round trip), a use inside the cooldown or with a
+  // gun swings nothing, and the server's echo does not restart it.
+  { name: 'melee-swing', file: 'scripts/checks/melee-swing.mjs', standalone: true },
   // T23.19A: the figure on a turret, in a gate and over a pickup, photographed on the page (both canvases).
   { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337' },
   // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn

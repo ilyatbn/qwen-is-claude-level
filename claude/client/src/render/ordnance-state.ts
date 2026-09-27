@@ -279,7 +279,12 @@ export class OrdnanceState {
 
   addProjectile(id: number, kind: ProjectileKind, x: number, y: number): void {
     this.projectiles.set(id, { id, kind, x, y, trail: [{ x, y }] })
+    this.unshown.add(id)
   }
+
+  /** T23.09D: rounds added since the last `update` (the layer's draw), and rounds removed before one was drawn. */
+  private readonly unshown = new Set<number>()
+  private readonly leaving = new Set<number>()
 
   moveProjectile(id: number, x: number, y: number): void {
     const p = this.projectiles.get(id)
@@ -291,7 +296,17 @@ export class OrdnanceState {
     if (p.trail.length > this.trailLen) p.trail.splice(0, p.trail.length - this.trailLen)
   }
 
+  /**
+   * Take a round off. T23.09D: **a round is drawn on at least one frame** — one added since the last `update` stays,
+   * where it was last moved to, until the `update` after next, so it is drawn once. A round shorter than a frame (an smg
+   * round striking rock ~25 px out lives ~3 sim ticks; a loaded box's frame holds them all) was spawned, flown and
+   * removed between two draws and never seen (`m4-checkpoint`, red in the batch gate).
+   */
   removeProjectile(id: number): void {
+    if (this.unshown.has(id) && this.projectiles.has(id)) {
+      this.leaving.add(id)
+      return
+    }
     this.projectiles.delete(id)
   }
 
@@ -301,6 +316,13 @@ export class OrdnanceState {
   }
 
   update(dt: number): void {
+    // T23.09D: a round removed before it was drawn goes once it has been (this update's draw is its one frame).
+    for (const id of this.leaving) {
+      if (this.unshown.has(id)) continue
+      this.projectiles.delete(id)
+      this.leaving.delete(id)
+    }
+    this.unshown.clear()
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       if (this.holdTracers) break
       const t = this.tracers[i]!

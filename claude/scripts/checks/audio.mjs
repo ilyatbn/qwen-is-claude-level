@@ -16,6 +16,9 @@
  * build that plays sounds unconditionally, including ones that should have been
  * silent (§A26 — a test asserting a presence needs its opposite).
  */
+/** T23.09D: sim steps per frame in the slow-frame landing leg. */
+const SLOW_STEPS = 4
+
 export default async function ({ page, shot, log }) {
   const audio = () => page.evaluate(() => window.__game.audio())
   const clear = () => page.evaluate(() => window.__game.clearCues())
@@ -225,6 +228,24 @@ export default async function ({ page, shot, log }) {
       `a ${hop.toFixed(0)} px hop and a ${drop} px fall both played at ` +
         `${softGain.toFixed(3)} — the landing volume is a constant`,
     )
+  }
+
+  // --- T23.09D: the same fall on slow frames ---------------------------------
+  // A frame runs as many fixed sim steps as its time holds; `landingImpact` lives one tick, so a frame of several steps
+  // read it back as 0 and played the floor (0.250 for this fall — red in the batch gate, and at 544d27f, before T23.14D).
+  // `stepsPerFrame` makes every frame several steps, so the landing tick is almost never the frame's last: the case
+  // forced, not waited for (a slowed CPU was tried first and did nothing: Phaser's delta is clamped, one step a frame).
+  await page.evaluate((n) => window.__game.stepsPerFrame(n), SLOW_STEPS)
+  let slowGain = null
+  try {
+    slowGain = await landGain(drop)
+  } finally {
+    await page.evaluate(() => window.__game.stepsPerFrame(1))
+  }
+  log(`slow frames (${SLOW_STEPS} sim steps each): ${drop} px -> ${slowGain === null ? 'none' : slowGain.toFixed(3)} (predicted ${predicted(drop).toFixed(3)})`)
+  if (slowGain === null) throw new Error('on slow frames the fall produced no `land` cue')
+  if (Math.abs(slowGain - predicted(drop)) > 0.06) {
+    throw new Error(`on slow frames the fall from ${drop} px played at ${slowGain.toFixed(3)} against a predicted ${predicted(drop).toFixed(3)} — the landing tick's impact was lost between sim steps`)
   }
 
   // --- the control: silence must actually be silent --------------------------

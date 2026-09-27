@@ -154,6 +154,11 @@ export class PlayerView {
     trigger(this.fig, kind)
   }
 
+  /** T23.09D, e2e: the action playing over the pose (`melee` / `throw` / `hit`, and how far into it, s), or null. */
+  get action(): { kind: Action; t: number } | null {
+    return this.fig.action ? { ...this.fig.action } : null
+  }
+
   /** T23.14: this player used item `key` — a melee weapon swings, a thrown one is thrown; a gun changes nothing. */
   firedWith(key: string | null | undefined): void {
     const W = key ? WEAPONS[key] : undefined

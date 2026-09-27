@@ -13,6 +13,9 @@
 import { samplePatch, colourDelta } from './pixels.mjs'
 import { simClock } from './sim-clock.mjs'
 
+/** T23.09D: sim steps per frame in the slow-frame smg leg (a round here lives ~3). */
+const SLOW_STEPS = 4
+
 export default async function ({ page, shot, log }) {
   const inv = () => page.evaluate(() => window.__game.inventory())
   const solid = () =>
@@ -230,6 +233,32 @@ export default async function ({ page, shot, log }) {
   if (peak < 1) throw new Error('the smg put no round in the air — every shot must be visible')
   log(`smg: dug ${beforeSmg - afterSmg} px after flight`)
   if (beforeSmg - afterSmg <= 0) throw new Error('the smg round left no mark')
+
+  // T23.09D: **the same shot on slow frames.** This round lives ~3 sim ticks here (it strikes rock ~25 px out), so a
+  // frame long enough to hold all of them — a loaded box; the batch gate — spawned, flew and removed it before any
+  // frame drew it (traced: peak 0, the core listing it on no frame). `stepsPerFrame` makes every frame that long on
+  // demand. The round must still be drawn on at least one frame.
+  await page.evaluate((n) => window.__game.stepsPerFrame(n), SLOW_STEPS)
+  try {
+    const slowPeak = await page.evaluate(async () => {
+      const w = window
+      const raf = () => new Promise((r) => requestAnimationFrame(r))
+      for (let i = 0; i < 30; i++) await raf() // the smg's cooldown, in (long) frames
+      let peak = 0
+      const shot = w.__game.fire()
+      if (!shot.projectile) return { error: JSON.stringify(shot) }
+      for (let i = 0; i < 20; i++) {
+        await raf()
+        peak = Math.max(peak, w.__game.ordnance().drawn)
+      }
+      return { peak }
+    })
+    log(`slow frames (${SLOW_STEPS} sim steps each): ${JSON.stringify(slowPeak)} round(s) painted by the layer's draw at peak`)
+    if (slowPeak.error) throw new Error(`the smg did not fire on slow frames: ${slowPeak.error}`)
+    if (!(slowPeak.peak >= 1)) throw new Error('on slow frames the smg round was never drawn — a round shorter than a frame is invisible')
+  } finally {
+    await page.evaluate(() => window.__game.stepsPerFrame(1))
+  }
 
   await shieldBubble({ page, shot, log, screenPos })
 }

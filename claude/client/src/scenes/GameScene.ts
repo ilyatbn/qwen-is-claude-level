@@ -17,7 +17,7 @@ import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
-import { landingVolume } from '../render/feel-math'
+import { LandingLatch, landingVolume } from '../render/feel-math'
 import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import type { MapObject } from '../net/codec'
@@ -78,6 +78,8 @@ import { setGroundProbe } from '../look/actors/cast'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
+import { LocalSwing } from '../input/localSwing'
+import { WEAPONS } from '../look/actors/weapons'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SpaceSky } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -422,7 +424,8 @@ export class GameScene extends Phaser.Scene {
   private unlockAudio: () => void = () => {}
   /** Footstep pacing and edge detection for land/jetpack cues. */
   private stepAcc = 0
-  private wasGrounded = true
+  /** T23.09D: the frame's landing, observed after every predicted step (`LandingLatch`). */
+  private readonly landing = new LandingLatch()
   private wasJetting = false
   private serverPos: { x: number; y: number } | null = null
   private lastRtt = 0
@@ -435,6 +438,8 @@ export class GameScene extends Phaser.Scene {
    * lost.
    */
   private readonly repeatFire = new RepeatFire()
+  /** T23.09D: the local figure's swing, predicted on the frame the use is sent (`input/localSwing.ts`). */
+  private readonly localSwing = new LocalSwing()
   /**
    * The whole inventory, quick bar then backpack (§C10).
    *
@@ -699,6 +704,7 @@ export class GameScene extends Phaser.Scene {
     // than a literal 100 — the field's own initializer is 0 for this reason.
     this.health = C().BASE_HEALTH
     this.meAlive = true
+    this.localSwing.reset()
     this.battery = 0
     this.heals = 0
     this.batteries = 0
@@ -731,7 +737,7 @@ export class GameScene extends Phaser.Scene {
     this.lastRtt = 0
     this.rttSamples = 0
     this.rttAcc = 0
-    this.wasGrounded = true
+    this.landing.reset()
     this.wasJetting = false
 
     // UI that `create()` rebuilds and `SHUTDOWN` destroys. Nulled here too so the
@@ -1408,10 +1414,10 @@ export class GameScene extends Phaser.Scene {
         this.toggleBackpack()
         return
       }
-      this.conn.sendFire()
+      this.fireNow()
     })
     this.input.keyboard?.on('keydown-F', () => {
-      this.conn.sendFire()
+      this.fireNow()
     })
 
     // Slot selection and item use. `Connection` has had `sendSelectSlot` and
@@ -1906,9 +1912,32 @@ export class GameScene extends Phaser.Scene {
 
   private swingOf(owner: unknown, weapon: unknown): void {
     if (typeof owner !== 'number' || typeof weapon !== 'number') return
-    const key = WEAPON_KEYS[weapon]
-    const view = owner === this.me ? this.localView : this.remotes.get(owner)?.view
-    view?.firedWith(key)
+    // T23.09D: your own swing was predicted when you fired (`fireNow`); the echo would restart it a round trip late.
+    if (owner === this.me) return
+    this.remotes.get(owner)?.view.firedWith(WEAPON_KEYS[weapon])
+  }
+
+  /**
+   * Send one fire request — the click, `F`, a held weapon's repeat, the e2e hook — and, T23.09D, swing the local figure
+   * on this frame if the use is one the server will take (`LocalSwing`: alive, not riding, a melee/thrown weapon in
+   * stock, off cooldown). Not on the server's echo: that is a round trip late.
+   */
+  private fireNow(): void {
+    this.conn.sendFire()
+    const sel = this.slots[this.selectedSlot] ?? null
+    const key = sel?.key ?? null
+    const mine = this.mirror.players.get(this.me)
+    const W = key ? WEAPONS[key] : undefined
+    const swung = this.localSwing.use({
+      now: performance.now() / 1000,
+      alive: this.meAlive,
+      mounted: mine ? flag(mine.moveMods, MOVE_MOD.mounted) : false,
+      key,
+      count: sel?.count ?? 0,
+      swings: !!(W?.melee || W?.thrown),
+      cooldown: this.world?.items.fireProfileForKey(key)?.cooldown ?? null,
+    })
+    if (swung) this.localView?.firedWith(key)
   }
 
   private dropRemote(id: number): void {
@@ -1941,7 +1970,8 @@ export class GameScene extends Phaser.Scene {
       this.wasJetting = jetting
     }
 
-    if (body.grounded && !this.wasGrounded) {
+    const landed = this.landing.take()
+    if (landed !== null) {
       // Land, scaled by how hard: a step off a ledge and a fall from a jetpack
       // burn should not sound the same.
       // **`landingImpact`, not `vy`** (T20.11). `move_y` zeroes the velocity
@@ -1949,11 +1979,11 @@ export class GameScene extends Phaser.Scene {
       // this expression has evaluated to the constant 0.25 floor since M6, and
       // the comment above it described something that could not happen. The
       // impact speed is measured inside `integrate`, where it still exists.
-      const force = landingVolume(body.landingImpact, C().MAX_FALL_SPEED)
+      // T23.09D: the impact of the step that landed (`LandingLatch`), not the frame's last step's.
+      const force = landingVolume(landed, C().MAX_FALL_SPEED)
       this.audio.play('land', { volume: force })
       this.stepAcc = 0
     }
-    this.wasGrounded = body.grounded
 
     const speed = Math.abs(body.vx)
     if (body.grounded && speed > 10) {
@@ -2118,7 +2148,7 @@ export class GameScene extends Phaser.Scene {
       C().GUN_PLATFORM_FIRE_INTERVAL,
     )
     const shots = this.repeatFire.update({ dt, held, ...source })
-    for (let i = 0; i < shots; i++) this.conn.sendFire()
+    for (let i = 0; i < shots; i++) this.fireNow()
   }
 
   override update(_time: number, delta: number): void {
@@ -2186,6 +2216,8 @@ export class GameScene extends Phaser.Scene {
       const centre = body ? { x: body.x, y: body.y } : this.world.rig.center
       const input = this.localInput.sample(++this.seq, centre, this.cameras.main)
       this.predictor.pushInput(input, step)
+      const after = this.core.playerState(this.me)
+      if (after) this.landing.observe(after.grounded, after.landingImpact)
       batch.push(input)
       this.acc -= step
     }
@@ -3514,6 +3546,8 @@ export class GameScene extends Phaser.Scene {
           ]),
           /** T23.09: the kinds of the last effect-light list handed to the world renderer, in order. */
           effectLights: [...self.effectLights.lastKinds],
+          /** T23.09D: the local figure's action (a predicted swing), and the server's melee events heard so far. */
+          localAction: self.localView?.action ?? null,
           /** T23.09A/T23.09C F3: whether the lit terrain's last drawn frame had its cave wall; null before it drew. */
           // T23.09C F3: the drawn frame's wall (`wallK`), not the switch.
           caveWall: self.worldRenderer?.caveWallDrawn() ?? null,
@@ -4061,7 +4095,7 @@ export class GameScene extends Phaser.Scene {
         }
       },
       fire() {
-        self.conn.sendFire()
+        self.fireNow()
       },
       /** T23.09C F6: the last effect-light list handed to the world renderer, each with its source's kind (as the sandbox's). */
       effectLights() {

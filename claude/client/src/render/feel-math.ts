@@ -180,3 +180,34 @@ export function landingVolume(impact: number, maxFall: number): number {
   const hard = Math.max(0, impact) / maxFall
   return Math.min(1, hard + LANDING_VOLUME_FLOOR)
 }
+
+/**
+ * T23.09D: the landing a frame's sim steps made, kept for the frame's cues. `landingImpact` is set on the tick a body
+ * lands and cleared on the next, and a frame runs as many fixed steps as its time holds — so a frame of two or more
+ * steps (any slow frame; a loaded box) read the body after the landing tick, heard `landingImpact` 0 and played the
+ * floor's 0.25 for a 120 px fall (`audio`, red in the batch gate, and at the commit before T23.14D too). Observed after
+ * every step; taken once per frame.
+ */
+export class LandingLatch {
+  private grounded = true
+  private impact: number | null = null
+
+  /** After one sim step: the body's grounded flag and `landingImpact`. */
+  observe(grounded: boolean, landingImpact: number): void {
+    if (grounded && !this.grounded) this.impact = Math.max(this.impact ?? 0, landingImpact)
+    this.grounded = grounded
+  }
+
+  /** The impact of a landing since the last take (the hardest, if several), or null: none. */
+  take(): number | null {
+    const i = this.impact
+    this.impact = null
+    return i
+  }
+
+  /** A new body (a spawn, a respawn, a new round): standing, nothing pending. */
+  reset(): void {
+    this.grounded = true
+    this.impact = null
+  }
+}

@@ -125,3 +125,25 @@ describe('landingVolume (T20.11)', () => {
     expect(landingVolume(100, 0)).toBe(LANDING_VOLUME_FLOOR)
   })
 })
+
+describe('T23.09D: LandingLatch — the landing a frame\'s steps made', () => {
+  it('keeps the landing tick\'s impact when later steps in the frame clear it', async () => {
+    const { LandingLatch } = await import('./feel-math')
+    const l = new LandingLatch()
+    // A frame of three steps: airborne, the landing tick (impact 580), then grounded with the impact cleared.
+    l.observe(false, 0)
+    l.observe(true, 580)
+    l.observe(true, 0)
+    expect(l.take()).toBe(580)
+    // Taken once: the next frame, standing, hears nothing.
+    l.observe(true, 0)
+    expect(l.take()).toBeNull()
+    // Control: the frame's last step alone (what the scenes read before) says 0.
+    const last = { grounded: true, landingImpact: 0 }
+    expect(last.landingImpact).toBe(0)
+    // No landing from standing, and none at a reset body that stands.
+    l.reset()
+    l.observe(true, 0)
+    expect(l.take()).toBeNull()
+  })
+})
