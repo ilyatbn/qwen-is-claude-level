@@ -3413,6 +3413,8 @@ export class GameScene extends Phaser.Scene {
           ]),
           /** T23.09: the kinds of the last effect-light list handed to the world renderer, in order. */
           effectLights: [...self.effectLights.lastKinds],
+          /** T23.09A: whether the lit terrain draws its cave wall (`?cavewall=`, default off); null before the renderer loads. */
+          caveWall: self.worldRenderer?.caveWall() ?? null,
           /**
            * T22.04B: what each body's thruster plume drew last frame, keyed by
            * seat — read off the **views**, as `drawnSkins` is, so there is no

@@ -62,3 +62,13 @@ describe('the redraw skip (T23.03B F1, F3)', () => {
     expect(mustDraw({ dirty: false, animated: true, last: v, view: { ...v } })).toBe(true)
   })
 })
+
+describe('caveWallFromUrl (T23.09A)', () => {
+  it('is off by default in the game, on with ?cavewall=1, off with ?cavewall=0', async () => {
+    const { caveWallFromUrl, CAVE_WALL_DEFAULT } = await import('./worldRenderer-math')
+    expect(CAVE_WALL_DEFAULT).toBe(false)
+    expect(caveWallFromUrl('?sandbox=1&seed=4')).toBe(false)
+    expect(caveWallFromUrl('?sandbox=1&cavewall=1')).toBe(true)
+    expect(caveWallFromUrl('?cavewall=0')).toBe(false)
+  })
+})

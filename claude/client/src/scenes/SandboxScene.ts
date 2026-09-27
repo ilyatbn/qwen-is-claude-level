@@ -16,7 +16,7 @@ import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
 import { MOVE_MOD } from '../net/codec'
 import { WorldView } from '../render/worldView'
-import { caveBackdropDefault, setCaveBackdropDefault } from '../render/terrain'
+import { setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
 import { standTarget, stepTilt } from '../render/standTilt-math'
 import { loadAssetManifest, runLoader } from '../render/assets'
@@ -33,6 +33,7 @@ import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { EffectLights, gateLights, jetFeet, viewRect } from '../look/effectLights'
+import { caveWallFromUrl } from '../look/worldRenderer-math'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
@@ -84,6 +85,8 @@ export class SandboxScene extends Phaser.Scene {
   private worldRenderer: GameWorld | null = null
   /** T23.09: the per-frame effect-light list (`effectLights.ts`), handed to the world renderer. */
   private readonly effectLights = new EffectLights()
+  /** T23.09A: the cave wall switch (`?cavewall=`, the "Cave bg" button); the world renderer may arrive after a click. */
+  private caveWallOn = caveWallFromUrl(location.search)
   /** T23.07: the world renderer's chunk has loaded (or failed to) — until then a lit-terrain swap may be coming. */
   private worldSettled = false
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
@@ -216,6 +219,7 @@ export class SandboxScene extends Phaser.Scene {
       this.worldSettled = true
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
       this.worldRenderer?.setTerrain(this.terrainFields)
+      this.worldRenderer?.setCaveWall(this.caveWallOn)
     })
     this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
@@ -475,6 +479,14 @@ export class SandboxScene extends Phaser.Scene {
    * loses the choice at the next Regenerate, and setting only the default leaves
    * the map on screen unchanged and reads as a dead button.
    */
+  /** T23.09A: the lit terrain's cave wall on or off, now and for the next regenerate (the world renderer keeps it). */
+  private setCaveWall(on: boolean): boolean {
+    this.caveWallOn = on
+    this.worldRenderer?.setCaveWall(on)
+    this.refreshReadout()
+    return on
+  }
+
   private setCaveBackdrop(on: boolean): boolean {
     this.world.terrain.setCaveBackdrop(on)
     // What the renderer did, not what was asked: a space map refuses (T22.06), and a
@@ -585,13 +597,12 @@ export class SandboxScene extends Phaser.Scene {
       fog.textContent = `Fog: ${this.fogActive ? 'on' : 'off'}`
     })
     const overlays = button('F4 overlays', () => this.overlay.toggle())
-    // `CAVE_BACKDROP` without a wasm rebuild, so the two can be looked at one
-    // after the other on the same map. Flipped before you dig — see
-    // `TerrainRenderer.setCaveBackdrop`.
-    // `caveBackdropDefault()`, not `this.world` — `buildUi` runs before the world
-    // exists, and reading it here threw on boot.
-    const caveBack = button(`Cave bg: ${caveBackdropDefault() ? 'on' : 'off'}`, () => {
-      caveBack.textContent = `Cave bg: ${this.setCaveBackdrop(!caveBackdropDefault()) ? 'on' : 'off'}`
+    // T23.09A (owner): the lit terrain's **cave wall** — what "cave background" is on screen now — off by
+    // default (`CAVE_WALL_DEFAULT`, `?cavewall=1`), flipped here on the live map and kept for the next
+    // regenerate. It used to flip Phaser's old cave backdrop (`CAVE_BACKDROP`), which draws only before the
+    // lit terrain is ready or on a space map; that stays reachable as `__game.caveBackdrop(on)`.
+    const caveBack = button(`Cave bg: ${this.caveWallOn ? 'on' : 'off'}`, () => {
+      caveBack.textContent = `Cave bg: ${this.setCaveWall(!this.caveWallOn) ? 'on' : 'off'}`
     })
     r3.append(label('time'), time, timeOut, live, fog, overlays, caveBack)
 
@@ -770,7 +781,7 @@ export class SandboxScene extends Phaser.Scene {
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
       `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.world.terrain.stats.pending}  ` +
       `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}\n` +
-      `cave bg ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
+      `cave wall ${this.caveWallOn ? 'on' : 'off'}  old backdrop ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
       `backdrop ${this.world.terrain.stats.backdropMs.toFixed(0)} ms`
   }
 
@@ -783,6 +794,8 @@ export class SandboxScene extends Phaser.Scene {
           ...self.timings,
           // T23.09: the kinds of the last effect-light list handed to the world renderer, in order.
           effectLights: [...self.effectLights.lastKinds],
+          // T23.09A: whether the lit terrain draws its cave wall (the renderer's own state; null before it loads).
+          caveWall: self.worldRenderer?.caveWall() ?? null,
           seed: self.core.meta.seed,
           scale: self.core.meta.scale,
           attempts: self.core.meta.attempts,
@@ -1071,6 +1084,11 @@ export class SandboxScene extends Phaser.Scene {
         // laser impacts, muzzle flashes, rocket motors, fires) — what reaches the lit terrain.
         const fromOrdnance: ReadonlySet<string> = new Set(['explosion', 'laser', 'muzzle', 'rocket', 'flame'])
         return { ...self.world.ordnance.state.counts, lights: self.effectLights.lastKinds.filter((k) => fromOrdnance.has(k)).length }
+      },
+      /** T23.09A: the cave wall on or off (the "Cave bg" button's switch); returns what the renderer now holds. */
+      setCaveWall(on: boolean) {
+        self.setCaveWall(on)
+        return self.worldRenderer?.caveWall() ?? null
       },
       /** T23.09: the last effect-light list handed to the world renderer, each with its source's kind. */
       effectLights() {

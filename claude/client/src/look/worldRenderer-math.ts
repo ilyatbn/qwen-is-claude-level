@@ -68,3 +68,18 @@ export function mustDraw(s: { dirty: boolean; animated: boolean; last: ViewRect 
 export function hexLinear(h: number): [number, number, number] {
   return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255]
 }
+
+/**
+ * T23.09A (owner, 2026-09-27, ruling pending): whether the game draws the lit terrain's **cave wall** (the
+ * `back` branch: generator landform + R24's fade). Off by default in matches and the sandbox — carved and
+ * cave air shows what is behind the rock, like open air — so the owner can judge the look without it;
+ * `?cavewall=1` (or the sandbox's "Cave bg" button) turns it back on. The look-lab always draws F1's walls
+ * (Level A): a known lab/game difference until the owner rules.
+ */
+export const CAVE_WALL_DEFAULT = false
+
+/** `?cavewall=1|0` on the page's URL, else `CAVE_WALL_DEFAULT`. */
+export function caveWallFromUrl(search: string): boolean {
+  const v = new URLSearchParams(search).get('cavewall')
+  return v === null ? CAVE_WALL_DEFAULT : v === '1' || v === 'true' || v === 'on'
+}

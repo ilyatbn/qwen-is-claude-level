@@ -7448,3 +7448,9 @@ Done-when EXIT 0: vitest 1132/1132; effect-lights ok — blast near gain 16.1 (m
 check.sh --changed HEAD~1 --fast EXIT 0 (skips e2e); affected browser checks 75/77: `death` red once in suite (no death event, 118 s), green alone (23 s) — noted in flaky-test.md; `explosion-shader` red 5/12 < 6: the blast's own light costs ~2 ring points (9,9 unlit vs 7,7 lit) → ring leg holds lights off (10, 11), lit count reported (4, 5). Finding → T23.18.
 fps busy match: D3D12 full 59.9 (vsync); SwiftShader low 56.0. Per lights drawn: Swift 0/4/8/16 → 13.1/14.3/15.6/17.6 ms (~0.28 ms each); D3D12 ~5.0 flat.
 Looked: shots/t2309-{gpu,swift}-{blast,laser,muzzle}.png — blast washes the rock warm to ~300 px, laser teal on the slope, muzzle a faint warm patch; low tier the same picture.
+
+## T23.09A — cave wall off by default, switchable (owner request, 2026-09-27; ruling pending)
+`CAVE_WALL_DEFAULT` false; `SceneDescription.caveWall` → `wallK`; `?cavewall=`, sandbox "Cave bg" button (re-pointed from Phaser's old backdrop), `__game.setCaveWall`, `debug().caveWall`. Lab keeps F1's walls (known lab/game difference).
+gate-ground (`&cavewall=1`) and look-terrain's sandbox legs run with it on and assert it (plant: gate-ground without → red by name).
+vitest 1133/1133; gate-ground, look-terrain, look-lab, terrain-seed, effect-lights, sandbox, look-match 7/7.
+Looked (GPU full): off, every cave/crater opens onto the sky's purple bands and fog — reads as holes through the hill (seed 4's chamber shows a sky pyramid inside the rock); on, the same spaces are near-black voids. shots/t2309a-s{9,11,4,4242}-off-vs-on.png, t2309a-match-off.png.

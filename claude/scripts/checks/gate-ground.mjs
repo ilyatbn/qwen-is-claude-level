@@ -110,6 +110,9 @@ export default async function ({ page, shot, log }) {
   const reach = k.get('STANDING_GROUND_FILL_DEPTH')
   const playerH = k.get('PLAYER_H')
   const subjectTop = 2 * k.get('EDGE_BAND_PX')
+  // T23.09A: the wall control needs the cave wall drawn (`&cavewall=1` on this check's URL).
+  const wall = await page.evaluate(() => window.__game.debug().caveWall)
+  if (wall !== true) throw new Error(`gate-ground needs the cave wall on (&cavewall=1): debug().caveWall is ${JSON.stringify(wall)}`)
   const pads = await page.evaluate(() => window.__game.core.meta.teleport_pads)
   const padsMin = k.get('TELEPORT_PADS_MIN')
   if (!pads || (pads.length > 0 && pads.length < padsMin) || pads.length > k.get('TELEPORT_PADS')) {

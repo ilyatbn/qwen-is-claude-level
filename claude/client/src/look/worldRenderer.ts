@@ -53,7 +53,7 @@ import { TerrainLayer } from './terrainLayer'
 import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
 import { makeTerrainMaterials, setLights, setLook, setTextures } from './terrainMaterial'
 import { pickLights } from './terrainLights'
-import { TIER_SAMPLES, bufferFor, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
+import { CAVE_WALL_DEFAULT, TIER_SAMPLES, bufferFor, caveWallFromUrl, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /**
  * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
@@ -398,7 +398,8 @@ export class WorldRenderer implements SceneRenderer {
     const u = this.terrainMats.uniforms
     setTextures(u, g.field, g.albedo.texture, g.w, g.h, desc.world.h)
     setLook(u, desc.look.terrain)
-    u['wallK']!.value = this.wallHidden ? 0 : 1
+    // T23.09A: the description's switch (the game's default is off) or the dev knob (`hideWall`).
+    u['wallK']!.value = this.wallHidden || desc.caveWall === false ? 0 : 1
     const lights = pickLights(desc.look.lights, view)
     setLights(u, lights)
     ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)
@@ -429,6 +430,13 @@ export class WorldRenderer implements SceneRenderer {
   setLights(lights: Light[]): void {
     if (!this.desc || sameLights(this.desc.look.lights, lights)) return
     this.desc.look.lights = lights
+    this.dirty = true
+  }
+
+  /** T23.09A: draw the cave wall or not, on the description held now (no rebake; the next frame shows it). */
+  setCaveWall(on: boolean): void {
+    if (!this.desc || (this.desc.caveWall !== false) === on) return
+    this.desc.caveWall = on
     this.dirty = true
   }
 
@@ -795,7 +803,7 @@ export interface GameMap {
  * (`skyLayout.ts::gameSky`), none on a space map; the map's size for the y flip; no mask yet
  * (T23.07), no actors (T23.12+). Rebuild it when the map changes.
  */
-export function gameDescription(map: GameMap): SceneDescription {
+export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): SceneDescription {
   const f1 = F1.look.bg as Background
   return {
     id: 'game',
@@ -806,6 +814,8 @@ export function gameDescription(map: GameMap): SceneDescription {
     // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
     // this map's: none here — the scenes hand over their effect lights each frame (T23.09, `setLights`).
     litTerrain: !map.space,
+    // T23.09A: off by default pending the owner's verdict (`CAVE_WALL_DEFAULT`); the lab's scenes keep F1's walls.
+    caveWall,
     // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
     // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
@@ -844,6 +854,9 @@ export interface GameWorld {
    * its picture is not whole yet) — a check that photographs the world waits this out.
    */
   terrainSwapPending(): boolean
+  /** T23.09A: whether the lit terrain draws its cave wall (`?cavewall=`, default off), and the switch (kept across maps). */
+  caveWall(): boolean
+  setCaveWall(on: boolean): void
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
 }
@@ -859,7 +872,9 @@ export const GAME_ALBEDO_TILES: Record<QualityTier, number> = { full: 4, low: 1 
  * module on demand (`loadWorldRenderer.ts`), so they cannot import `gameDescription` from it statically.
  */
 export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
-  const renderer = createWorldRenderer(scene, gameDescription(map))
+  // T23.09A: the cave wall's switch, from the URL at first, carried across map changes.
+  let caveWall = caveWallFromUrl(location.search)
+  const renderer = createWorldRenderer(scene, gameDescription(map, caveWall))
   // T23.06B F11: where three did not start, nothing takes the feed's rects and blasts — drain them
   // per frame so they do not pile up for a whole match.
   let undrawn: TerrainFeed | null = null
@@ -870,7 +885,12 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   }
   return {
     renderer,
-    mapChanged: (m) => renderer.setScene(gameDescription(m)),
+    mapChanged: (m) => renderer.setScene(gameDescription(m, caveWall)),
+    caveWall: () => caveWall,
+    setCaveWall: (on) => {
+      caveWall = on
+      if (renderer instanceof WorldRenderer) renderer.setCaveWall(on)
+    },
     setTerrain: (feed) => {
       if (renderer instanceof WorldRenderer) renderer.setTerrain(feed, GAME_ALBEDO_TILES[renderer.info().tier])
       else undrawn = feed

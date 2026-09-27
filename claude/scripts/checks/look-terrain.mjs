@@ -269,9 +269,14 @@ export default async function ({ page, shot, log }) {
 
   // ---------------------------------------------------------------- 3. live
   const base = new URL(page.url())
-  base.search = '?sandbox=1&seed=4242'
+  // T23.09A: the game draws no cave wall by default now (owner, ruling pending); §4's straight-edge
+  // bound, its named exceptions and the chamber guard photograph the wall, so this page turns it on.
+  base.search = '?sandbox=1&seed=4242&cavewall=1'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world, null, { timeout: 60_000 })
+  await page.waitForFunction(() => window.__game.debug().caveWall !== null, null, { timeout: 60_000 })
+  const wallOn = await page.evaluate(() => window.__game.debug().caveWall)
+  if (wallOn !== true) problems.push(`T23.09A: the sandbox legs photograph the cave wall, but debug().caveWall is ${JSON.stringify(wallOn)}`)
   // F5: the camera pinned on deep rock from the first moment, so every screenshot below is the same place.
   const deep = await page.evaluate((m) => {
     const c = window.__game.core

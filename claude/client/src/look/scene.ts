@@ -332,6 +332,11 @@ export interface ViewRect {
  * the terrain layer reads one (T23.07); a renderer must draw its sky without one.
  */
 export interface SceneDescription {
+  /**
+   * T23.09A: `false` draws no cave wall (the terrain shader's `back` branch) — carved air shows what is
+   * behind the rock. Absent: drawn, as in every mockup scene (the look-lab).
+   */
+  caveWall?: boolean
   id: string
   camera: ViewRect
   /** The mask's size in px — known even while `masks` is null; the renderer's y flip reads `h`. */

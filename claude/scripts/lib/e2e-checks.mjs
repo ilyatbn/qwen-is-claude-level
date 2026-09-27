@@ -112,7 +112,8 @@ export const CHECKS = [
   // no asserted pad has an end the fill changes at the sampled rows, so the check
   // could not tell the fill from its absence (measured). Seed 7 is grassland with
   // all six pads on ground and four such ends.
-  { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7' },
+  // T23.09A: `&cavewall=1` — its wall control photographs the cave wall, which the game now leaves off by default.
+  { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7&cavewall=1' },
   // T23.07 retired `terrain-render` (§C0: a crater changes the picture — photographed on Phaser's rock,
   // parked flaky; `look-terrain`'s live half now asserts the crater lit in the very frame it is carved,
   // against a from-scratch repaint). T23.07B (R24) restored `terrain-seed` on the lit terrain: the same
