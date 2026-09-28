@@ -39,6 +39,14 @@ export const FG_OCCLUDERS = 8
 export const FG_ALPHA_OVER_PLAYER = 0.2
 /** Mask px outside a player box over which the leaves ease back to their own alpha. */
 export const FG_FADE_PX = 24
+/** `f_kit.js::fog`'s noise octaves (5), and the low tier's. */
+export const FOG_OCTAVES = 5
+/**
+ * T23.18B, R14: the low tier's fog noise drops its two finest octaves (periods of 16 and 8 world px at the mockup's
+ * `scale` 0.004 — under the fog's own soft ramp). Measured on the checks' SwiftShader (frozen sandbox, `drawCost`):
+ * the fog layers 1.0 → 0.7 ms a frame. The full tier (and every Level A gate) keeps the mockup's 5.
+ */
+export const FOG_OCTAVES_LOW = 3
 /** The height of the pictures' frame, px: the fog's `y0`/`y1` are in it. */
 export const PICTURE_H = 720
 
@@ -65,7 +73,7 @@ const FOG_FS =
   uniform vec3 c; uniform float y0, y1, k, scale, scaleY, seed;
   void main(){ vec2 p = worldP(); float sy = screenY();
     float ramp = smoothstep(y0, y1, sy);
-    float n = fbm(vec2(p.x*scale + seed, p.y*scaleY), 5);
+    float n = fbm(vec2(p.x*scale + seed, p.y*scaleY), FOG_OCTAVES);
     float a = k * ramp * smoothstep(0.3, 0.75, n);
     gl_FragColor = vec4(c, a); }`
 
@@ -151,6 +159,7 @@ export class Atmosphere {
       uniforms: { ...common(), c: { value: new Vector3() }, y0: { value: 0 }, y1: { value: 1 }, k: { value: 0 }, scale: { value: 0.004 }, scaleY: { value: 0.014 }, seed: { value: 0 } },
       vertexShader: FOG_VS,
       fragmentShader: FOG_FS,
+      defines: { FOG_OCTAVES },
       transparent: true,
       depthWrite: false,
       depthTest: false,
@@ -159,6 +168,17 @@ export class Atmosphere {
 
   get meshes(): Mesh[] {
     return [this.fogBack, this.fogFront, this.fg]
+  }
+
+  /** T23.18B: the tier's fog noise (`FOG_OCTAVES_LOW` on the low tier); a change recompiles the two fog programs. */
+  setTier(low: boolean): void {
+    const n = low ? FOG_OCTAVES_LOW : FOG_OCTAVES
+    for (const m of [this.fogBack, this.fogFront]) {
+      const mat = m.material as ShaderMaterial
+      if (mat.defines['FOG_OCTAVES'] === n) continue
+      mat.defines['FOG_OCTAVES'] = n
+      mat.needsUpdate = true
+    }
   }
 
   /**

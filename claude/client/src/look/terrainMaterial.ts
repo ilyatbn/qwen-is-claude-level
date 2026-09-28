@@ -25,13 +25,13 @@
  * the terrain — the normal (4 height + 4 luminance taps), the sun's shadow march (≈ 20 field reads)
  * and the cave wall's shadow (6) — into a world-sized RGBA8 target per dirty rect (`BAKE_FS`,
  * `terrainGpu.ts`), and per frame reads it back (`LOW_FS`): 4 texture reads a pixel instead of ≈ 40.
- * Both draw through **one** shading function (`SHADE`), so the tiers cannot drift apart in anything
+ * Both draw through **one** shading function (`shade`), so the tiers cannot drift apart in anything
  * but the bake's 8-bit quantisation. The bake depends on `sunDir`, `bevel` and `pixel`: a look that
  * changes them rebakes (`bakeKey`).
  */
 import { GLSL3, ShaderMaterial, Vector2, Vector3, Vector4, type Texture } from 'three'
 import type { Light, TerrainLook } from './scene'
-import { TERRAIN_LIGHTS, toLin } from './terrainLights'
+import { TERRAIN_LIGHTS, TERRAIN_LIGHTS_LOW, toLin } from './terrainLights'
 
 /**
  * How far a baked texel reads the fields, px: the sun march's 10 × 5 px (plus the bilinear tap), the
@@ -87,9 +87,10 @@ float backShadow(vec2 p) {
 
 /**
  * The shading, shared by both tiers: `n`, `sh` (front) and `shB` (cave wall) are computed (full) or
- * read from the bake (low). Writes `fragColor` or discards.
+ * read from the bake (low). Writes `fragColor` or discards. `slots`: the light loops' bound — the tier's
+ * (`TERRAIN_LIGHTS` full, `TERRAIN_LIGHTS_LOW` low): SwiftShader runs a loop to its bound whatever `nl` is.
  */
-const SHADE = /* glsl */ `
+const shade = (slots: number): string => /* glsl */ `
 out vec4 fragColor;
 void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
   float s = f.r * 64. - f.g * 64.;
@@ -110,11 +111,14 @@ void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
     // rim light on edges facing away from the sun
     float rim = pow(1. - n.z, 1.5) * max(dot(normalize(n.xy + 1e-4), -normalize(sunDir.xy)), 0.);
     vec3 pls = vec3(0.);
-    for (int i = 0; i < ${TERRAIN_LIGHTS}; i++) {
+    for (int i = 0; i < ${slots}; i++) {
       if (i >= nl) break;
-      vec3 lp = vec3(pl[i].x, worldH - pl[i].y, pl[i].z);
-      vec3 L = lp - wp; float d = length(L); L /= d;
-      float att = pow(clamp(1. - d / pl[i].w, 0., 1.), 2.);
+      // T23.18B: a light whose radius does not reach this px adds exactly 0 (att = 0²) — skipped before the
+      // sqrt and the normalise; the square is a product, not a pow (exp/log on SwiftShader). Measured: the journal.
+      vec3 L = vec3(pl[i].x, worldH - pl[i].y, pl[i].z) - wp; float d2 = dot(L, L); float r = pl[i].w;
+      if (d2 >= r * r) continue;
+      float inv = inversesqrt(d2); float d = d2 * inv; L *= inv;
+      float a = 1. - d / r; float att = a * a;
       pls += plc[i] * att * (max(dot(n, L), 0.) * 0.85 + 0.15);
     }
     // wet/specular glint on the bevel
@@ -132,10 +136,11 @@ void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
     vec3 a = alb.rgb;
     float ao = smoothstep(0., 26., f.g * 64.);
     vec3 pls = vec3(0.);
-    for (int i = 0; i < ${TERRAIN_LIGHTS}; i++) {
+    for (int i = 0; i < ${slots}; i++) {
       if (i >= nl) break;
-      vec3 lp = vec3(pl[i].x, worldH - pl[i].y, pl[i].z); vec3 L = lp - vec3(wp.xy, -30.); float d = length(L);
-      float att = pow(clamp(1. - d / pl[i].w, 0., 1.), 2.); pls += plc[i] * att * max(L.z / d, 0.) * 0.8;
+      vec3 L = vec3(pl[i].x, worldH - pl[i].y, pl[i].z) - vec3(wp.xy, -30.); float d2 = dot(L, L); float r = pl[i].w;
+      if (d2 >= r * r) continue;
+      float d = sqrt(d2); float a = 1. - d / r; pls += plc[i] * (a * a) * max(L.z / d, 0.) * 0.8;
     }
     vec3 bcol = a * ((sunCol * 0.55 * (1. - shB) + sky * 0.35) * (0.35 + 0.65 * ao) + pls);
     if (cover <= 0.001) { fragColor = vec4(bcol, bk); return; }
@@ -150,10 +155,11 @@ bool fringe(vec2 p, float s, vec4 alb) {
   if (!(alb.a > 0.62 && alb.a < 0.95 && s < 0.5)) return false;
   vec3 nf = normalize(vec3(-0.2, 0.6, 0.75));
   vec3 c = alb.rgb * (sunCol * max(dot(nf, sunDir), 0.) * 1.1 + sky * 0.7);
-  for (int i = 0; i < ${TERRAIN_LIGHTS}; i++) {
+  for (int i = 0; i < ${slots}; i++) {
     if (i >= nl) break;
-    vec3 lp = vec3(pl[i].x, worldH - pl[i].y, pl[i].z); float d = length(lp - vec3(p.x, worldH - p.y, 8.));
-    c += alb.rgb * plc[i] * pow(clamp(1. - d / pl[i].w, 0., 1.), 2.);
+    vec3 L = vec3(pl[i].x, worldH - pl[i].y, pl[i].z) - vec3(p.x, worldH - p.y, 8.); float d2 = dot(L, L); float r = pl[i].w;
+    if (d2 >= r * r) continue;
+    float a = 1. - sqrt(d2) / r; c += alb.rgb * plc[i] * (a * a);
   }
   fragColor = vec4(c, 1.);
   return true;
@@ -169,7 +175,7 @@ void main() { vP = vec2(uv.x, 1.0 - uv.y) * ext; gl_Position = projectionMatrix 
 /** The full tier: `kit.js::terrainMaterial`'s fragment shader. */
 const FULL_FS = /* glsl */ `
 ${COMMON}
-${SHADE}
+${shade(TERRAIN_LIGHTS)}
 in vec2 vP;
 void main() {
   vec2 p = (floor(vP / pixel) + 0.5) * pixel;
@@ -188,7 +194,7 @@ void main() {
 /** The low tier, per frame: the normal and both shadows read from the bake. */
 const LOW_FS = /* glsl */ `
 ${COMMON}
-${SHADE}
+${shade(TERRAIN_LIGHTS_LOW)}
 uniform sampler2D baked;
 in vec2 vP;
 void main() {

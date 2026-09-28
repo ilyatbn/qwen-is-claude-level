@@ -199,7 +199,8 @@ describe('beams, muzzles, rockets, fire, jets, vents, gates', () => {
     fx.statics.set(gateLights([{ x: 1300, y: 800 }, { x: 9000, y: 800 }]))
     expect(fx.statics.size).toBe(2)
     const l = fx.frame(sources(new OrdnanceState(LIFE, TRAIL)), view)
-    expect(l).toEqual([{ x: 1300, y: 800 - GATE_LIGHT_RISE, ...GATE_LIGHT }])
+    // T23.18B: marked standing (`fixed`), so combat lights rank before it in `pickLights`.
+    expect(l).toEqual([{ x: 1300, y: 800 - GATE_LIGHT_RISE, ...GATE_LIGHT, fixed: true }])
   })
 })
 

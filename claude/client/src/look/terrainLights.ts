@@ -15,6 +15,13 @@ import type { Light, ViewRect } from './scene'
 
 /** Uniform slots in the terrain shader (research § 1: 16–24; the mockup's 10 plus headroom). */
 export const TERRAIN_LIGHTS = 16
+/**
+ * T23.18B: the low tier's slots — the mockup's own `MAX_PL` (10), so every F scene still gets all its lights there.
+ * SwiftShader runs the light loops to their bound whatever the count, so the bound is the cost: measured (frozen
+ * sandbox, 16 lights in view, `drawCost`) 12.6–13.5 ms a frame at 16, 11.6 at 8. Past 10 in view the low tier keeps
+ * the strongest 10 (combat lights first — `pickLights`).
+ */
+export const TERRAIN_LIGHTS_LOW = 10
 
 /** `f_kit.js::toLin`. */
 export function toLin(rgb: string): [number, number, number] {
@@ -33,13 +40,18 @@ export function coverage(l: Light, view: ViewRect): number {
   return Math.max(0, w) * Math.max(0, h)
 }
 
-/** The lights to upload: culled to `view`, the `max` strongest by intensity × coverage, in input order. */
+/**
+ * The lights to upload: culled to `view`, the `max` strongest by intensity × coverage, in input order. T23.18B: when
+ * they do not all fit, **combat lights rank before the map's standing ones** (`Light.fixed`: gates, crystals) — a
+ * blast, rocket or muzzle only partly in view scored below a whole gate's circle and lost its slot to it, so the
+ * fight went dark while the furniture stayed lit.
+ */
 export function pickLights(lights: readonly Light[], view: ViewRect, max = TERRAIN_LIGHTS): Light[] {
   const scored = lights
     .map((l, k) => ({ l, k, s: l.i * coverage(l, view) }))
     .filter((e) => e.s > 0)
   if (scored.length > max) {
-    scored.sort((a, b) => b.s - a.s || a.k - b.k)
+    scored.sort((a, b) => Number(!!a.l.fixed) - Number(!!b.l.fixed) || b.s - a.s || a.k - b.k)
     scored.length = max
   }
   return scored.sort((a, b) => a.k - b.k).map((e) => e.l)

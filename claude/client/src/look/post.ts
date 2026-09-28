@@ -12,12 +12,13 @@
  * ten blur draws), and `look.grade === null` the grade: the look-lab's `only=sky` / `only=terrain`
  * draw the T23.04–T23.07 chain their references were rendered with.
  */
-import { HalfFloatType, type Scene, type Camera, Vector2, Vector3, type WebGLRenderer, WebGLRenderTarget } from 'three'
+import { HalfFloatType, RGBFormat, type Scene, type Camera, Vector2, Vector3, type WebGLRenderer, WebGLRenderTarget } from 'three'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import type { FrameLook } from './scene'
+import { TIER_SAMPLES, type QualityTier } from './worldRenderer-math'
 import { NOISE_GLSL } from './skyMaterial'
 
 /**
@@ -31,6 +32,16 @@ const GRADE_PARS =
   NOISE_GLSL +
   /* glsl */ `
   uniform float vig, sat, gradeOn; uniform vec3 warm, cool;
+  uniform sampler2D tBloom; uniform float bloomOn;
+`
+/**
+ * T23.18B: the bloom's additive blend, folded into the output pass — `UnrealBloomPass` drew its composite over the
+ * whole scene target in a pass of its own (three's `AdditiveBlending`: src · src alpha + dst, the composite's alpha
+ * being strength × the mip weights); here the output pass reads the composite and adds `rgb · a` before tone mapping,
+ * the same sum (bilinear read of the same texture at the same uv), in float instead of half float. Measured on the checks' SwiftShader (low tier, frozen sandbox): see `FoldedBloom`.
+ */
+const BLOOM_ADD = /* glsl */ `
+  if (bloomOn > 0.5) { vec4 b = texture2D(tBloom, vUv); gl_FragColor.rgb += b.rgb * b.a; }
 `
 const GRADE_TAIL = /* glsl */ `
   if (gradeOn > 0.5) { vec3 c = gl_FragColor.rgb;
@@ -49,15 +60,101 @@ function gradedOutput(): OutputPass {
   const main = fs.indexOf('varying vec2 vUv;')
   const end = fs.lastIndexOf('}')
   if (main < 0 || end < 0) throw new Error('OutputShader changed shape: the grade has nowhere to go')
-  m.fragmentShader = fs.slice(0, main) + GRADE_PARS + fs.slice(main, end) + GRADE_TAIL + fs.slice(end)
+  const read = fs.indexOf('gl_FragColor = texture2D( tDiffuse, vUv );')
+  if (read < 0) throw new Error('OutputShader changed shape: the bloom has nowhere to go')
+  const afterRead = read + 'gl_FragColor = texture2D( tDiffuse, vUv );'.length
+  m.fragmentShader = fs.slice(0, main) + GRADE_PARS + fs.slice(main, afterRead) + BLOOM_ADD + fs.slice(afterRead, end) + GRADE_TAIL + fs.slice(end)
   Object.assign(pass.uniforms, {
     vig: { value: 0.35 },
     sat: { value: 1.08 },
     gradeOn: { value: 0 },
+    tBloom: { value: null },
+    bloomOn: { value: 0 },
     warm: { value: new Vector3(1.03, 1, 0.95) },
     cool: { value: new Vector3(0.94, 0.98, 1.06) },
   })
   return pass
+}
+
+/** three's `UnrealBloomPass.BlurDirectionX/Y` (its static fields are not in the type declarations). */
+const BLUR_X = new Vector2(1, 0)
+const BLUR_Y = new Vector2(0, 1)
+
+/**
+ * T23.18B, the low tier: the bright pass reads the whole 4 × 4 block of scene px under each of its texels (four
+ * bilinear taps at ± one scene px), each through three's `LuminosityHighPassShader` threshold, averaged. With one tap
+ * (three's shader) a bright point a few px across lit its texel only when the tap landed on it — so a muzzle flash
+ * bloomed or did not by where it fell, and bloomed as the mips' square block (the task's "square halos").
+ */
+const BRIGHT4_FS = /* glsl */ `
+uniform sampler2D tDiffuse; uniform vec2 srcTexel; uniform vec3 defaultColor; uniform float defaultOpacity;
+uniform float luminosityThreshold; uniform float smoothWidth;
+varying vec2 vUv;
+vec4 bright(vec2 uv) {
+  vec4 texel = texture2D(tDiffuse, uv);
+  float v = dot(texel.xyz, vec3(0.2126, 0.7152, 0.0722));
+  return mix(vec4(defaultColor, defaultOpacity), texel, smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v));
+}
+void main() {
+  gl_FragColor = 0.25 * (bright(vUv + srcTexel * vec2(-1., -1.)) + bright(vUv + srcTexel * vec2(1., -1.)) + bright(vUv + srcTexel * vec2(-1., 1.)) + bright(vUv + srcTexel * vec2(1., 1.)));
+}`
+
+/**
+ * T23.18B: `UnrealBloomPass` as three draws it (its `render`, in its order), less three things SwiftShader pays for per
+ * pass. Measured on the checks' SwiftShader, low tier, a frozen sandbox frame (`drawCost`, 5 × 20 draws each):
+ * - **the final blend** — the composite drawn additively over the whole scene target in a pass of its own — is folded
+ *   into the output pass (`BLOOM_ADD`: the same texture, the same uv, the same sum, in float instead of half float);
+ * - **the clears** before each of its 12 full-target quads — the quads are opaque and cover every texel, so a clear
+ *   changes nothing but costs a pass: 3.0 → 2.2 ms for the bloom;
+ * - on the low tier, the one-tap bright pass (`BRIGHT4_FS`, above).
+ * The render-to-screen branch is not kept: this chain never takes it.
+ */
+class FoldedBloom extends UnrealBloomPass {
+  constructor(resolution: Vector2, strength: number, radius: number, threshold: number, low: boolean) {
+    super(resolution, strength, radius, threshold)
+    if (!low) return
+    const m = this.materialHighPassFilter
+    m.fragmentShader = BRIGHT4_FS
+    m.uniforms['srcTexel'] = { value: new Vector2(1, 1) }
+    m.needsUpdate = true
+  }
+
+  override render(renderer: WebGLRenderer, _write: WebGLRenderTarget, read: WebGLRenderTarget): void {
+    const autoClear = renderer.autoClear
+    renderer.autoClear = false
+    const quad = this.fsQuad
+    // 1. Extract bright areas.
+    const hp = this.highPassUniforms as Record<string, { value: unknown }>
+    hp['tDiffuse']!.value = read.texture
+    hp['luminosityThreshold']!.value = this.threshold
+    ;(this.materialHighPassFilter.uniforms['srcTexel']?.value as Vector2 | undefined)?.set(1 / read.width, 1 / read.height)
+    quad.material = this.materialHighPassFilter
+    renderer.setRenderTarget(this.renderTargetBright)
+    quad.render(renderer)
+    // 2. Blur the mips progressively.
+    let input = this.renderTargetBright
+    for (let i = 0; i < this.nMips; i++) {
+      const blur = this.separableBlurMaterials[i]!
+      quad.material = blur
+      blur.uniforms['colorTexture']!.value = input.texture
+      blur.uniforms['direction']!.value = BLUR_X
+      renderer.setRenderTarget(this.renderTargetsHorizontal[i]!)
+      quad.render(renderer)
+      blur.uniforms['colorTexture']!.value = this.renderTargetsHorizontal[i]!.texture
+      blur.uniforms['direction']!.value = BLUR_Y
+      renderer.setRenderTarget(this.renderTargetsVertical[i]!)
+      quad.render(renderer)
+      input = this.renderTargetsVertical[i]!
+    }
+    // 3. Composite the mips; the output pass adds it (no blend pass).
+    quad.material = this.compositeMaterial
+    this.compositeMaterial.uniforms['bloomStrength']!.value = this.strength
+    this.compositeMaterial.uniforms['bloomRadius']!.value = this.radius
+    this.compositeMaterial.uniforms['bloomTintColors']!.value = this.bloomTintColors
+    renderer.setRenderTarget(this.renderTargetsHorizontal[0]!)
+    quad.render(renderer)
+    renderer.autoClear = autoClear
+  }
 }
 
 /** The passes a scene's look switches, and the dev switches `timePasses` flips. */
@@ -70,12 +167,27 @@ export interface Post {
   readonly output: OutputPass
 }
 
-export function buildPost(renderer: WebGLRenderer, scene: Scene, camera: Camera, samples: number): Post {
-  const rt = new WebGLRenderTarget(1, 1, { type: HalfFloatType, samples })
+/**
+ * The chain for one tier (`TIER_SAMPLES` MSAA). On the low tier the scene target is R11F_G11F_B10F where the renderer
+ * can draw into float targets (`EXT_color_buffer_float`) — the full tier (and a machine without it) keeps half float —
+ * and the bright pass takes four taps (`BRIGHT4_FS`).
+ * T23.18B, measured on the checks' SwiftShader (low tier, frozen sandbox, `drawCost`): every layer blends into this
+ * target, and a half-float one cost 2.3 ms a frame more than an 8-bit one (13.5 → 11.2 ms) — 8 bits cannot hold the
+ * HDR the bloom and tone map read (fire at 2–4); the packed float can (unsigned, 6/6/5-bit mantissas: steps of 1.6 % /
+ * 3 % in linear light, under half an 8-bit level after the tone map at the night's levels), 13.5 → 11.9 ms.
+ */
+export function buildPost(renderer: WebGLRenderer, scene: Scene, camera: Camera, tier: QualityTier): Post {
+  const samples = TIER_SAMPLES[tier]
+  const low = tier === 'low'
+  const rt = low && renderer.extensions.has('EXT_color_buffer_float')
+    ? new WebGLRenderTarget(1, 1, { type: HalfFloatType, format: RGBFormat, internalFormat: 'R11F_G11F_B10F', samples, depthBuffer: false })
+    : new WebGLRenderTarget(1, 1, { type: HalfFloatType, samples, depthBuffer: false })
   const composer = new EffectComposer(renderer, rt)
   composer.addPass(new RenderPass(scene, camera))
   // The size is the composer's (`setSize` resizes every pass); the numbers are the look's (`applyPost`).
-  const bloom = new UnrealBloomPass(new Vector2(1, 1), 0, 0, 1)
+  const bloom = new FoldedBloom(new Vector2(1, 1), 0, 0, 1, low)
+  // It writes no scene target: its result reaches the frame through the output pass.
+  bloom.needsSwap = false
   composer.addPass(bloom)
   const output = gradedOutput()
   composer.addPass(output)
@@ -95,6 +207,9 @@ export function applyPost(p: Post, look: Pick<FrameLook, 'bloom' | 'grade'>, off
   p.bloom.enabled = strength > 0 && !off.has('bloom')
   const g = look.grade
   const u = p.output.uniforms as Record<string, { value: unknown }>
+  // The composite this frame's bloom renders (the texture is the pass's own, fixed): added only while it is on.
+  u['tBloom']!.value = p.bloom.renderTargetsHorizontal[0]!.texture
+  u['bloomOn']!.value = p.bloom.enabled ? 1 : 0
   u['gradeOn']!.value = g && !off.has('grade') ? 1 : 0
   if (!g) return
   u['vig']!.value = g.vignette ?? 0.35

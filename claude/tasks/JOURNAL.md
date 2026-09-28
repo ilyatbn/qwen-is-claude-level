@@ -7595,3 +7595,11 @@ Repro = owner PNG (1-px shift). Sky → magenta/black: 0 deep-rock px move (page
 Only sky term in rock = bloom (0 px bloom off). Real sky vs black, bloom on: mockup F1 max 1, lab F1 full/low 1/0; game = moon disc beside rock (31337 p95 13–26 full, 15–32 low). No renderer fix; moon-over-terrain bloom put to coordinator.
 New `rock-opaque` + `rock-opaque-full` (4 seeds × 3 views, night, bloom off, air control 98–100 %; noon leg dropped: frames identical, day look is T23.10) + dev `__world.skyFlat`. Plant coverage × 0.97 → red (100 % of rock, every view). Not "red before": no defect.
 Done-when EXIT 0 (rock-opaque, rock-opaque-full, look-terrain, look-lab, look-gate-f1, furniture 6/6); check.sh --changed HEAD --fast EXIT 0.
+
+## T23.18B — the low tier holds its frame rate (builder, 2026-09-28)
+Busy fight (T23.18's script: 5 bots, seed 320, bazooka every 250 ms, 8 s), SwiftShader low: HEAD 39.0/41.0/41.8 → **50.1/51.8/50.8** fx drawn (hidden 54.6/54.0/54.4); D3D12 full 59.6/60.0 (was 59.5/60.0).
+Profiled first: main thread 78 % in WaitForGetOffset (GPU process 75 % busy) — JS/GC < 1 %, so the cost is GPU passes. Frozen-sandbox drawCost 13.5 ms: scene target half float 2.3, terrain 3.6 (+2.8 at 16 lights), bloom 3.0 (13 passes, per-pass overhead), fog 0.9, rest ~3.
+Fixes (13.5 → 10.6 ms): low tier scene target R11F_G11F_B10F; bloom's blend folded into the output pass + its 12 needless clears dropped (both tiers); terrain light loop skips out-of-radius lights, inversesqrt, bound 10 on low (mockup's MAX_PL); no depth buffers; low fog 3 octaves, low fire 4/3.
+Square halos: low bright pass takes 4 taps (shots/t2318b-rocket-halo-{before,after}-low.png: square → round). Reviewer items: fx layer no per-frame filter/closure/set([..]), partial uploads, Batch.grow disposes (GPU leak); pickLights ranks combat before `fixed` gates/crystals (vitest, plant red).
+Declined, measured: game.ts pooling (GC 0.3 % of main thread); lightmap update/draw (A/B Δ 0); 2-D small-mip blur (bloom 2.2 → 2.5 ms, reverted); atlas upload (0.3 ms). Level A unchanged (F1 dssim .00005, bloomBox .009); the missing composite alpha turned 6 Level A checks red before the fix.
+Done-when + 17 more: 22/23 — night-combat red once in the batch (no rocket light in 5 s), green 2/2 alone (reported). Low-tier look-gate-f1 report 7/11 → 8/11 fails (reported, not gating).

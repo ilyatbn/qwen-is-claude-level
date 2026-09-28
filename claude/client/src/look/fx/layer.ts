@@ -88,13 +88,22 @@ void main(){
   float edge = 1.;
   if (vKind > 0.5) { float dy = p.y + 0.35; q = vec2(p.x, dy * (dy > 0. ? 0.62 : 1.3)); rr = length(q); edge = smoothstep(1., 0.8, max(abs(p.x), abs(p.y))); }
   vec2 drift = vec2(vP.x, -vP.y * time + vP.x * 0.7);
-  float n = fbm(p*3.2 + vec2(0.,-0.4) + drift, 6); float n2 = fbm(p*7. + n*2. + drift, 4);
+  float n = fbm(p*3.2 + vec2(0.,-0.4) + drift, FIRE_OCT_A); float n2 = fbm(p*7. + n*2. + drift, FIRE_OCT_B);
   float shape = smoothstep(0.78, 0.2, rr + (n-0.5)*0.75 + (n2-0.5)*0.25);
   float temp = shape * (1.25 - rr*0.9) * (0.7 + n2*0.6) * vP.z;
   vec3 c = vec3(0.9,0.16,0.02)*smoothstep(0.,0.3,temp) + vec3(1.0,0.45,0.06)*smoothstep(0.25,0.6,temp) + vec3(1.2,0.9,0.4)*smoothstep(0.6,0.95,temp) + vec3(2.,1.8,1.4)*smoothstep(0.95,1.15,temp);
   float soot = smoothstep(0.45, 0.7, n2) * (1. - smoothstep(0.5, 0.9, temp));
   gl_FragColor = vec4(c*1.1*shape*(1. - 0.6*soot) * vP.w * edge, 1.);
 }`
+
+/** `kit.js::explosion`'s two noise octave counts (6, 4), and the low tier's. */
+export const FIRE_OCTAVES: readonly [number, number] = [6, 4]
+/**
+ * T23.18B, R14: the low tier's fire drops the two finest octaves of each noise — detail finer than its half-resolution
+ * buffer shows once the bloom has spread it. The fireball's outline is the first octaves' (`shape`'s smoothstep of
+ * r + noise), so the drawn reach is kept; `blast-fx`/`fire-fx` measure it on the low tier.
+ */
+export const FIRE_OCTAVES_LOW: readonly [number, number] = [4, 3]
 
 type Floats = Record<string, number>
 
@@ -117,10 +126,15 @@ class Batch {
     this.grow(64, 96)
   }
 
-  /** Every frame rewrites what it draws, so a grown buffer starts empty. */
+  /**
+   * Every frame rewrites what it draws, so a grown buffer starts empty. T23.18B: the old attributes' GL buffers go
+   * first — replacing an attribute leaves three holding the old buffer until the geometry is disposed (a leak per
+   * growth); `dispose` releases them and the next draw uploads the new ones.
+   */
   private grow(verts: number, indices: number): void {
     this.verts = verts
     this.indices = indices
+    this.geometry.dispose()
     for (const [k, size] of Object.entries(this.attrs)) this.geometry.setAttribute(k, new BufferAttribute(new Float32Array(verts * size), size))
     this.geometry.setIndex(new BufferAttribute(new Uint32Array(indices), 1))
   }
@@ -138,9 +152,21 @@ class Batch {
     return this.geometry.getIndex()!.array as Uint32Array
   }
 
-  commit(indices: number): void {
-    for (const k of Object.keys(this.attrs)) (this.geometry.getAttribute(k) as BufferAttribute).needsUpdate = true
-    this.geometry.getIndex()!.needsUpdate = true
+  /**
+   * `verts` vertices and `indices` indices were written this frame. T23.18B: only those are uploaded (`addUpdateRange`)
+   * — the whole grown arrays went up every frame before.
+   */
+  commit(verts: number, indices: number): void {
+    for (const [k, size] of Object.entries(this.attrs)) {
+      const a = this.geometry.getAttribute(k) as BufferAttribute
+      a.clearUpdateRanges()
+      if (verts > 0) a.addUpdateRange(0, verts * size)
+      a.needsUpdate = verts > 0
+    }
+    const ix = this.geometry.getIndex()!
+    ix.clearUpdateRanges()
+    if (indices > 0) ix.addUpdateRange(0, indices)
+    ix.needsUpdate = indices > 0
     this.geometry.setDrawRange(0, indices)
     this.mesh.visible = indices > 0
   }
@@ -156,8 +182,23 @@ const summed = { ...additive, blendSrc: OneFactor }
 
 /** Quads `[i*4, …]` as two triangles each; mask-px corners are flipped by the camera's y, so both faces are drawn. */
 function quadIndices(idx: Uint32Array, n: number): void {
-  for (let i = 0; i < n; i++) idx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6)
+  for (let i = 0; i < n; i++) {
+    const v = i * 4
+    const o = i * 6
+    idx[o] = v
+    idx[o + 1] = v + 1
+    idx[o + 2] = v + 2
+    idx[o + 3] = v
+    idx[o + 4] = v + 2
+    idx[o + 5] = v + 3
+  }
 }
+
+/** Which soft sprites each glow batch draws (`place`): under the smoke, over it, or blended by the brightest. */
+const softUnder = (s: FxSprite): boolean => !!s.under
+const softOver = (s: FxSprite): boolean => !s.under && !s.max
+const softMax = (s: FxSprite): boolean => !!s.max
+const every = (): boolean => true
 
 export class FxLayer {
   private readonly soft: Texture = softTex()
@@ -195,7 +236,7 @@ export class FxLayer {
     this.glow = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_ORDER + 0.1)
     this.ribbons = new Batch(ribbonMat(), ribbonAttrs, FX_ORDER + 0.2)
     const discMat = (blend: object): ShaderMaterial =>
-      new ShaderMaterial({ name: 'fx-disc', vertexShader: DISC_VS, fragmentShader: DISC_FS, uniforms: { time: this.time }, side: DoubleSide, ...blend })
+      new ShaderMaterial({ name: 'fx-disc', vertexShader: DISC_VS, fragmentShader: DISC_FS, defines: { FIRE_OCT_A: FIRE_OCTAVES[0], FIRE_OCT_B: FIRE_OCTAVES[1] }, uniforms: { time: this.time }, side: DoubleSide, ...blend })
     const discAttrs = { position: 3, aUv: 2, aKind: 1, aP: 4, aColor: 3 }
     this.discs = new Batch(discMat(summed), discAttrs, FX_ORDER + 0.3)
     // Fire on the ground (a molotov's crowd, a flamethrower's stream): the brightest of the overlapping flames, not
@@ -213,6 +254,18 @@ export class FxLayer {
     return this.batches.map((b) => b.mesh)
   }
 
+  /** T23.18B: the tier's fire noise (`FIRE_OCTAVES_LOW` on the low tier); a change recompiles the two disc programs. */
+  setTier(low: boolean): void {
+    const [a, b] = low ? FIRE_OCTAVES_LOW : FIRE_OCTAVES
+    for (const batch of [this.discs, this.discsMax]) {
+      const d = batch.material.defines
+      if (d['FIRE_OCT_A'] === a && d['FIRE_OCT_B'] === b) continue
+      d['FIRE_OCT_A'] = a
+      d['FIRE_OCT_B'] = b
+      batch.material.needsUpdate = true
+    }
+  }
+
   /** Is anything drawn? (An empty layer lets the renderer skip an unchanged frame.) */
   get busy(): boolean {
     return this.drawn.smoke + this.drawn.ink + this.drawn.soft + this.drawn.ribbons + this.drawn.discs > 0
@@ -221,27 +274,37 @@ export class FxLayer {
   /** Lay out one frame's effects (mask px) in the y-up world of height `maskH`; `seconds` drives the flames' flow. */
   place(f: FxFrame, maskH: number, seconds: number): void {
     this.time.value = seconds % 1000
-    this.sprites(this.glowUnder, f.soft.filter((s) => s.under), maskH)
-    this.ribbonStrips(this.ribbonsUnder, f.ribbons.filter((r) => r.under), maskH)
-    this.sprites(this.smoke, f.smoke, maskH)
-    this.sprites(this.ink, f.ink, maskH)
-    this.sprites(this.glow, f.soft.filter((s) => !s.under && !s.max), maskH)
-    this.ribbonStrips(this.ribbons, f.ribbons.filter((r) => !r.under), maskH)
-    this.discQuads(this.discs, f.discs.filter((d) => !d.max), maskH)
-    this.sprites(this.glowMax, f.soft.filter((s) => s.max), maskH)
-    this.discQuads(this.discsMax, f.discs.filter((d) => d.max), maskH)
-    this.drawn = { smoke: f.smoke.length, ink: f.ink.length, soft: f.soft.length, ribbons: f.ribbons.length, discs: f.discs.length, flames: f.discs.filter((d) => d.max).length }
+    // T23.18B: each batch takes the whole list and its own predicate — no filtered copy per batch per frame.
+    this.sprites(this.glowUnder, f.soft, maskH, softUnder)
+    this.ribbonStrips(this.ribbonsUnder, f.ribbons, maskH, true)
+    this.sprites(this.smoke, f.smoke, maskH, every)
+    this.sprites(this.ink, f.ink, maskH, every)
+    this.sprites(this.glow, f.soft, maskH, softOver)
+    this.ribbonStrips(this.ribbons, f.ribbons, maskH, false)
+    this.discQuads(this.discs, f.discs, maskH, false)
+    this.sprites(this.glowMax, f.soft, maskH, softMax)
+    const flames = this.discQuads(this.discsMax, f.discs, maskH, true)
+    const d = this.drawn
+    d.smoke = f.smoke.length
+    d.ink = f.ink.length
+    d.soft = f.soft.length
+    d.ribbons = f.ribbons.length
+    d.discs = f.discs.length
+    d.flames = flames
   }
 
-  private sprites(b: Batch, list: readonly FxSprite[], H: number): void {
-    const n = list.length
+  private sprites(b: Batch, all: readonly FxSprite[], H: number, keep: (s: FxSprite) => boolean): void {
+    let n = 0
+    for (const s of all) if (keep(s)) n++
     b.reserve(n * 4, n * 6)
     const pos = b.arr('position')
     const uv = b.arr('aUv')
     const col = b.arr('aColor')
     const tex = b.arr('aTex')
-    for (let i = 0; i < n; i++) {
-      const s = list[i]!
+    let i = -1
+    for (const s of all) {
+      if (!keep(s)) continue
+      i++
       const h = s.size / 2
       const c = Math.cos(s.rot)
       const sn = Math.sin(s.rot)
@@ -267,14 +330,16 @@ export class FxLayer {
       }
     }
     quadIndices(b.idx(), n)
-    b.commit(n * 6)
+    b.commit(n * 4, n * 6)
   }
 
   /** `kit.js::ribbon`'s strip per ribbon: two vertices a point, offset ± width/2 across the local direction. */
-  private ribbonStrips(b: Batch, list: readonly FxRibbon[], H: number): void {
+  /** The ribbons drawn `under` the smoke (`under` true) or over it. */
+  private ribbonStrips(b: Batch, all: readonly FxRibbon[], H: number, under: boolean): void {
     let v = 0
     let ix = 0
-    for (const r of list) {
+    for (const r of all) {
+      if (!r.under !== !under) continue
       v += r.pts.length * 2
       ix += Math.max(0, r.pts.length - 1) * 6
     }
@@ -287,7 +352,8 @@ export class FxLayer {
     const idx = b.idx()
     let vi = 0
     let ii = 0
-    for (const r of list) {
+    for (const r of all) {
+      if (!r.under !== !under) continue
       const pts = r.pts
       const last = pts.length - 1
       for (let i = 0; i <= last; i++) {
@@ -303,40 +369,53 @@ export class FxLayer {
         const w = r.width * (pts[i]![2] ?? 1)
         const x = pts[i]![0]
         const y = H - pts[i]![1]
-        const put = (px: number, py: number, vy: number): void => {
-          pos[vi * 3] = px
-          pos[vi * 3 + 1] = py
+        // The two vertices across the point (T23.18B: written in place — no closure per point).
+        for (let side = 0; side < 2; side++) {
+          const sgn = side === 0 ? -1 : 1
+          pos[vi * 3] = x + (sgn * dy * w) / 2
+          pos[vi * 3 + 1] = y - (sgn * dx * w) / 2
           pos[vi * 3 + 2] = 0
           uv[vi * 2] = t
-          uv[vi * 2 + 1] = vy
-          core.set(r.core, vi * 3)
-          glow.set(r.glow, vi * 3)
+          uv[vi * 2 + 1] = side
+          core[vi * 3] = r.core[0]
+          core[vi * 3 + 1] = r.core[1]
+          core[vi * 3 + 2] = r.core[2]
+          glow[vi * 3] = r.glow[0]
+          glow[vi * 3 + 1] = r.glow[1]
+          glow[vi * 3 + 2] = r.glow[2]
           fade[vi * 2] = r.fadePow
           fade[vi * 2 + 1] = r.headBoost
           vi++
         }
-        put(x - (dy * w) / 2, y + (dx * w) / 2, 0)
-        put(x + (dy * w) / 2, y - (dx * w) / 2, 1)
         if (i) {
           const k = vi - 2
-          idx.set([k - 2, k - 1, k, k - 1, k + 1, k], ii)
+          idx[ii] = k - 2
+          idx[ii + 1] = k - 1
+          idx[ii + 2] = k
+          idx[ii + 3] = k - 1
+          idx[ii + 4] = k + 1
+          idx[ii + 5] = k
           ii += 6
         }
       }
     }
-    b.commit(ii)
+    b.commit(vi, ii)
   }
 
-  private discQuads(b: Batch, list: readonly FxDisc[], H: number): void {
-    const n = list.length
+  /** The discs blended by the brightest (`max` true) or summed; returns how many were laid out. */
+  private discQuads(b: Batch, all: readonly FxDisc[], H: number, max: boolean): number {
+    let n = 0
+    for (const d of all) if (!d.max === !max) n++
     b.reserve(n * 4, n * 6)
     const pos = b.arr('position')
     const uv = b.arr('aUv')
     const kind = b.arr('aKind')
     const p = b.arr('aP')
     const col = b.arr('aColor')
-    for (let i = 0; i < n; i++) {
-      const d = list[i]!
+    let i = -1
+    for (const d of all) {
+      if (!d.max !== !max) continue
+      i++
       const h = d.size / 2
       for (let k = 0; k < 4; k++) {
         const u = k === 1 || k === 2 ? 1 : -1
@@ -348,12 +427,18 @@ export class FxLayer {
         uv[j * 2] = u
         uv[j * 2 + 1] = v
         kind[j] = d.kind
-        p.set([d.a, d.b, d.heat, d.alpha], j * 4)
-        col.set(d.color, j * 3)
+        p[j * 4] = d.a
+        p[j * 4 + 1] = d.b
+        p[j * 4 + 2] = d.heat
+        p[j * 4 + 3] = d.alpha
+        col[j * 3] = d.color[0]
+        col[j * 3 + 1] = d.color[1]
+        col[j * 3 + 2] = d.color[2]
       }
     }
     quadIndices(b.idx(), n)
-    b.commit(n * 6)
+    b.commit(n * 4, n * 6)
+    return n
   }
 
   /**

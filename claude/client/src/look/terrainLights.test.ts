@@ -37,6 +37,19 @@ describe('pickLights (T23.07)', () => {
     expect(pickLights([edge, whole], view, 1)).toEqual([whole])
   })
 
+  it('T23.18B: over the slot count, combat lights keep their slots before the map’s standing lights', () => {
+    const gates = Array.from({ length: TERRAIN_LIGHTS }, (_, k): Light => ({ ...L(80 + k * 70, 360, 150, 1.6), fixed: true }))
+    // A blast only partly in view: a smaller coverage × intensity than any whole gate's circle.
+    const blast = L(1280 + 40, 360, 60, 1)
+    expect(blast.i * coverage(blast, view)).toBeLessThan(gates[0]!.i * coverage(gates[0]!, view))
+    const got = pickLights([...gates, blast], view)
+    expect(got.length).toBe(TERRAIN_LIGHTS)
+    expect(got).toContain(blast)
+    // Control: the same blast among lights that are not standing ones is ranked by score, and loses.
+    const plain = gates.map((g) => L(g.x, g.y, g.r, g.i))
+    expect(pickLights([...plain, blast], view)).not.toContain(blast)
+  })
+
   it("colour is f_kit.js::toLin (a 2.2 power, not the sRGB curve)", () => {
     const [r, g, b] = toLin('255,140,50')
     expect(r).toBe(1)

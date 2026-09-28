@@ -61,6 +61,11 @@ export interface Light {
    * is, as strong: one bookkeeping of which rounds flash, not two. Absent on every other light (and in the look-lab).
    */
   muzzle?: true
+  /**
+   * T23.18B: a map's standing light (a gate, a crystal — `effectLights.ts`'s statics). When the view holds more lights
+   * than the terrain has slots, `pickLights` keeps every combat light before any of these. Absent in the look-lab.
+   */
+  fixed?: true
 }
 
 /** The key light `lit()` falls back to, and the cool fill from the sky. */

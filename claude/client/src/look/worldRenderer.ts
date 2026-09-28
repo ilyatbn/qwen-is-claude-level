@@ -58,8 +58,8 @@ import type { TerrainFeed } from './terrainFields'
 import { TerrainLayer } from './terrainLayer'
 import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
 import { makeTerrainMaterials, setLights, setLook, setTextures } from './terrainMaterial'
-import { pickLights } from './terrainLights'
-import { CAVE_WALL_DEFAULT, TIER_SAMPLES, bufferFor, caveWallFromUrl, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
+import { TERRAIN_LIGHTS, TERRAIN_LIGHTS_LOW, pickLights } from './terrainLights'
+import { CAVE_WALL_DEFAULT, bufferFor, caveWallFromUrl, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
 
 /**
  * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
@@ -104,7 +104,7 @@ function thePageRenderer(): PageRenderer {
   canvas.dataset['world'] = 'three'
   const gl = canvas.getContext('webgl2', {
     alpha: false,
-    depth: true,
+    depth: false,
     stencil: false,
     antialias: false,
     premultipliedAlpha: true,
@@ -324,7 +324,10 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   private buildComposer(): EffectComposer {
-    this.post = buildPost(this.renderer, this.scene3, this.camera, TIER_SAMPLES[this.tier])
+    this.post = buildPost(this.renderer, this.scene3, this.camera, this.tier)
+    // T23.18B: the fog's and the fire's noise follow the tier (R14: the low tier's cheaper octaves).
+    this.atmos.setTier(this.tier === 'low')
+    this.fxLayer.setTier(this.tier === 'low')
     return this.post.composer
   }
 
@@ -439,7 +442,8 @@ export class WorldRenderer implements SceneRenderer {
     setLook(u, desc.look.terrain)
     // T23.09A: the description's switch (the game's default is off) or the dev knob (`hideWall`).
     u['wallK']!.value = this.wallHidden || desc.caveWall === false ? 0 : 1
-    const lights = pickLights(desc.look.lights, view)
+    // T23.18B: the tier's slot count (not the forced material's: both materials at a tier get the same list).
+    const lights = pickLights(desc.look.lights, view, this.tier === 'low' ? TERRAIN_LIGHTS_LOW : TERRAIN_LIGHTS)
     setLights(u, lights)
     ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)
     const low = (this.terrainForce ?? this.tier) === 'low' && this.terrain.baked && !!g.bake
