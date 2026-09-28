@@ -836,6 +836,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.14B](M23/T23.14B-the-jetpack-look.md) — The jetpack's look — flame + space plume on the stick figure, lit (owner priority, out of T23.18)
 - [x] [T23.14C](M23/T23.14C-what-the-character-batch-gate-found.md) — What the character batch gate found — context-budget's 8/9 geometry flip, thrusters-standard's missing body
 - [x] [T23.14D](M23/T23.14D-what-the-character-review-found.md) — What the character review found — remote space flames, one flame length for everyone, feet that don't pop, remote swings, per-box flame gate, atlas cells reused (fps)
+- [ ] [T23.14E](M23/T23.14E-what-the-fix-review-found.md) — What the fix review found — own swing/throw from the predicted sim (no TS fire rules), E throw animates, rounds drawn in matches on slow frames, one cell anchor reverted, remote flame resets
 - [ ] [T23.15](M23/T23.15-no-themes-no-wearables.md) — No themes, no wearables — client only: the theme stamps collision and the join JSON still carries skins
 - [ ] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — **21 of 24 holdable weapons draw nothing in the hand today**; one design per weapon for hand, ground and inventory
 - [ ] [T23.17](M23/T23.17-melee-and-thrown-remodelled.md) — Melee and thrown weapons remodelled — all 23 holdables, silhouettes measured apart
