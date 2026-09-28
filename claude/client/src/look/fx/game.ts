@@ -7,7 +7,7 @@
  *
  * The mockup's pictures are stills; how each effect changes with age is decided here, at each constant.
  */
-import type { Blast, TrackedProjectile } from '../../render/ordnance-state'
+import { bulletStreak, type Blast, type Tracer, type TrackedProjectile } from '../../render/ordnance-state'
 import type { Hazard } from '../../render/ordnanceFx-math'
 import type { Rgb } from '../scene'
 import { F1 } from '../scenes/F1'
@@ -37,6 +37,7 @@ export const PLUME = P.plume
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
 const ramp = (k: number, from: number, to: number): number => clamp01((k - from) / (to - from))
+const scale = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k]
 
 /**
  * An explosion's shape at `k` = age / life (0 the blast, 1 gone). The fire is whole for the first 30 % — the blast
@@ -146,4 +147,149 @@ export function cloudFx(out: FxFrame, h: Pick<Hazard, 'id' | 'kind' | 'x' | 'y' 
     })
   }
   if (toxic) out.soft.push({ x: h.x, y: h.y, size: h.r * 2.4, color: TOXIC_GLOW, alpha: 0.2 * fade, tex: 0, rot: 0 })
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// T23.18 part B: beams, rounds, rockets, muzzles, flame cones, swings, mines — F1's values where F1 has the thing.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** F1's laser: `ribbon([l0, l1], 6, [1.2, 3.4, 3.6], [0.05, 0.5, 0.7], { fadePow: 0.2, headBoost: 0 })`, shooter to impact. */
+export const LASER_WIDTH = 6
+export const LASER_CORE: Rgb = [1.2, 3.4, 3.6]
+export const LASER_GLOW: Rgb = [0.05, 0.5, 0.7]
+/** F1's laser impact: `sprite(softTex(), l1, 43, 46, Color(0.4, 1.6, 2.0), 1, true)`. */
+export const LASER_IMPACT_SIZE = 46
+export const LASER_IMPACT: Rgb = [0.4, 1.6, 2.0]
+
+/** A beam at `k` = its life left (1 → 0): F1's laser and its impact glow, fading with the beam. */
+export function beamFx(out: FxFrame, t: Pick<Tracer, 'x0' | 'y0' | 'x1' | 'y1' | 'life' | 'ttl'>): void {
+  const k = t.ttl > 0 ? clamp01(t.life / t.ttl) : 0
+  if (!(k > 0)) return
+  out.ribbons.push({ pts: [[t.x0, t.y0], [t.x1, t.y1]], width: LASER_WIDTH, core: scale(LASER_CORE, k), glow: scale(LASER_GLOW, k), fadePow: 0.2, headBoost: 0, under: true })
+  out.soft.push({ x: t.x1, y: t.y1, size: LASER_IMPACT_SIZE, color: LASER_IMPACT, alpha: k, tex: 0, rot: 0, under: true })
+}
+
+/** F1's turret tracer: `ribbon([P0(t1), P0(t0)], 3, [4, 3, 1.4], [1.0, 0.45, 0.08], { fadePow: 1.2 })` — front first. */
+export const TRACER_WIDTH_PX = 3
+export const TRACER_CORE: Rgb = [4, 3, 1.4]
+export const TRACER_GLOW: Rgb = [1.0, 0.45, 0.08]
+
+/** A round in flight: F1's tracer streak along its travel, `length` behind the round (`BULLET_LENGTH`). */
+export function bulletFx(out: FxFrame, p: Pick<TrackedProjectile, 'x' | 'y' | 'trail'>, length: number): void {
+  const s = bulletStreak(p, length)
+  // Not yet moving: a streak one px long along nothing would be a dot of NaN; draw it as a point-length streak.
+  const x1 = s.x1 === s.x0 && s.y1 === s.y0 ? s.x0 - 1 : s.x1
+  out.ribbons.push({ pts: [[s.x0, s.y0], [x1, s.y1]], width: TRACER_WIDTH_PX, core: TRACER_CORE, glow: TRACER_GLOW, fadePow: 1.2, headBoost: 1, under: true })
+}
+
+/** F1's rocket motor: `sprite(softTex(), rx − 8, ry, 43, 16, Color(2.4, 1.2, 0.3), 0.9, true)` — `ROCKET_MOTOR_BACK` behind. */
+export const MOTOR_SIZE = 16
+export const MOTOR: Rgb = [2.4, 1.2, 0.3]
+export const MOTOR_BACK = 8
+/** The rocket's smoke trail: `kit.js::smokeTrail` sprites along the trail, in F1's smoke colour (`P.smoke`). */
+export const TRAIL_SIZE = 8
+export const TRAIL_GROW = 3
+
+/** A rocket (or meteor): its motor's glow and its smoke trail. The body is an actor (`fx/rockets.ts`). */
+export function rocketFx(out: FxFrame, p: Pick<TrackedProjectile, 'id' | 'x' | 'y' | 'trail'>): void {
+  const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2]! : null
+  const dx = prev ? p.x - prev.x : 0
+  const dy = prev ? p.y - prev.y : 0
+  const len = Math.hypot(dx, dy)
+  const back = len > 1e-6 ? MOTOR_BACK / len : 0
+  out.soft.push({ x: p.x - dx * back, y: p.y - dy * back, size: MOTOR_SIZE, color: MOTOR, alpha: 0.9, tex: 0, rot: 0, under: true })
+  const pts = p.trail
+  if (pts.length < 2) return
+  const rnd = new Lcg((p.id % 2147483646) + 1)
+  for (let i = 0; i < pts.length - 1; i++) {
+    const t = i / (pts.length - 1)
+    const tint = 0.8 + 0.3 * rnd.next()
+    const jx = (rnd.next() - 0.5) * 6 * (1 - t)
+    const jy = (rnd.next() - 0.5) * 6 * (1 - t)
+    out.smoke.push({
+      x: pts[i]!.x + jx,
+      y: pts[i]!.y + jy - (1 - t) * 10,
+      size: TRAIL_SIZE * (1 + (1 - t) * TRAIL_GROW),
+      color: [SMOKE_RGB[0] * tint, SMOKE_RGB[1] * tint, SMOKE_RGB[2] * tint],
+      alpha: 0.12 + 0.5 * t,
+      tex: 1,
+      rot: rnd.next() * 6,
+    })
+  }
+}
+
+/** A small hot round (a pellet, a fragment, a drop): a glow in its colour and a short streak behind it. */
+export function emberFx(out: FxFrame, p: Pick<TrackedProjectile, 'x' | 'y' | 'trail'>, colour: number, r: number): void {
+  const c = hexToLinear(colour)
+  const hot: Rgb = [c[0] * 2.2, c[1] * 2.2, c[2] * 2.2]
+  out.soft.push({ x: p.x, y: p.y, size: r * 6, color: hot, alpha: 0.9, tex: 0, rot: 0, under: true })
+  const tail = p.trail.length >= 2 ? p.trail[Math.max(0, p.trail.length - 4)]! : null
+  if (tail && Math.hypot(p.x - tail.x, p.y - tail.y) > 1) {
+    out.ribbons.push({ pts: [[tail.x, tail.y], [p.x, p.y]], width: r * 1.5, core: hot, glow: scale(c, 0.6), fadePow: 1.2, headBoost: 1, under: true })
+  }
+}
+
+/** F1's muzzle: `sprite(softTex(), m0, 42, 34, Color(2.5, 1.6, 0.6), 0.9, true)` — where the muzzle light is, as strong. */
+export const MUZZLE_SIZE = 34
+export const MUZZLE: Rgb = [2.5, 1.6, 0.6]
+/** `share`: the muzzle light's intensity over `MUZZLE_LIGHT.i` (1, then ½, for `MUZZLE_FRAMES` lists). */
+export function muzzleFx(out: FxFrame, x: number, y: number, share: number): void {
+  if (!(share > 0)) return
+  out.soft.push({ x, y, size: MUZZLE_SIZE, color: MUZZLE, alpha: 0.9 * Math.min(1, share), tex: 0, rot: 0, under: true })
+}
+
+/**
+ * A flamethrower's cone (`cone` event: aim, range, arc): F1's flamer flame — seven glows along the aim, pale yellow
+ * near the nozzle, orange beyond (`f_scene.js`: `S.glow(15 + i·4.5, …, 3 + i·1.8, i < 3 ? '255,215,110' : '255,110,30',
+ * 0.9 − i·0.08)`) — stretched to the cone's range and as wide as its arc, overlapping into one tongue as the canvas's
+ * glows do; F1's 60 px flamer sprite over it.
+ */
+export const CONE_GLOWS = 7
+const CONE_NEAR = rgbToLinear('255,215,110')
+const CONE_FAR = rgbToLinear('255,110,30')
+export function coneFx(out: FxFrame, j: { x: number; y: number; aim: number; range: number; arc: number; ttl: number; life: number }): void {
+  const k = j.life > 0 ? clamp01(j.ttl / j.life) : 0
+  if (!(k > 0)) return
+  const cx = Math.cos(j.aim)
+  const cy = Math.sin(j.aim)
+  for (let i = 0; i < CONE_GLOWS; i++) {
+    const d = (j.range * (i + 0.5)) / CONE_GLOWS
+    const half = Math.max(3, d * Math.tan(Math.min(1.2, j.arc / 2)))
+    const c = i < 3 ? CONE_NEAR : CONE_FAR
+    const a = (0.9 - i * 0.08) * k
+    out.soft.push({ x: j.x + cx * d, y: j.y + cy * d, size: half * 3.4, color: [c[0] * 1.4, c[1] * 1.4, c[2] * 1.4], alpha: a * 0.55, tex: 0, rot: 0, under: true })
+  }
+  out.soft.push({ x: j.x + cx * j.range * 0.35, y: j.y + cy * j.range * 0.35, size: j.range * 1.1, color: FLAME_GLOW, alpha: 0.5 * k, tex: 0, rot: 0, under: true })
+}
+
+/**
+ * A melee swing: a pale arc ribbon at its reach, across its arc, bright at the leading edge (R10: no new saturated
+ * colour — steel, not fire). A swing that connected is brighter and wider.
+ */
+export const SWING_POINTS = 12
+export function swingFx(out: FxFrame, s: { x: number; y: number; aim: number; reach: number; arc: number; hits: number; ttl: number; life: number }): void {
+  const k = s.life > 0 ? clamp01(s.ttl / s.life) : 0
+  if (!(k > 0)) return
+  const pts: [number, number, number][] = []
+  for (let i = 0; i <= SWING_POINTS; i++) {
+    const t = i / SWING_POINTS
+    const a = s.aim - s.arc / 2 + s.arc * t
+    pts.push([s.x + Math.cos(a) * s.reach, s.y + Math.sin(a) * s.reach, 0.4 + 0.6 * t])
+  }
+  const hit = s.hits > 0
+  const core: Rgb = hit ? [1.6, 1.55, 1.45] : [1.0, 1.05, 1.15]
+  const glow: Rgb = hit ? [0.35, 0.3, 0.25] : [0.12, 0.13, 0.16]
+  out.ribbons.push({ pts, width: hit ? 6 : 4, core: scale(core, k), glow: scale(glow, k), fadePow: 1.5, headBoost: 0.5 })
+}
+
+/** A mine: an ink disc and its tell — amber until armed, then a red blink (danger, R10). `alpha`: its visibility by distance. */
+export const MINE_SIZE = 22
+export const MINE_INK: Rgb = hexToLinear(0x07060a)
+export const MINE_ARMED: Rgb = [2.2, 0.25, 0.12]
+export const MINE_SAFE: Rgb = [1.6, 0.9, 0.2]
+export function mineFx(out: FxFrame, m: { x: number; y: number }, alpha: number, armed: boolean, nowMs: number): void {
+  if (!(alpha > 0)) return
+  out.ink.push({ x: m.x, y: m.y, size: MINE_SIZE, color: MINE_INK, alpha, tex: 0, rot: 0 })
+  const blink = armed ? 0.55 + 0.45 * Math.sin(nowMs * 0.012) : 0.35
+  out.soft.push({ x: m.x, y: m.y - 2, size: MINE_SIZE * 0.55, color: armed ? MINE_ARMED : MINE_SAFE, alpha: alpha * blink, tex: 0, rot: 0 })
 }

@@ -47,12 +47,12 @@ export class OrdnanceFxLayer {
   /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
   private hidden = false
   /** What the last `update` was given, so a repaint draws the same instant. */
-  private eye = { x: 0, y: 0 }
+  private eyeAt = { x: 0, y: 0 }
   private now = 0
 
   constructor(
     scene: Phaser.Scene,
-    private readonly armTime: number,
+    readonly armTime: number,
   ) {
     this.state = new OrdnanceFxState(SWING_LIFE, JET_LIFE)
     // Particles: in front of actors, behind the lightmap, so a flame jet is lit
@@ -115,11 +115,20 @@ export class OrdnanceFxLayer {
     return this.state.hazards.size
   }
 
+  /** T23.18: for the world renderer's mines (`look/fx/feed.ts`): the eye and the clock the last `update` was given. */
+  get eye(): { x: number; y: number } {
+    return this.eyeAt
+  }
+
+  get nowMs(): number {
+    return this.now
+  }
+
   /** `eye` is the local player: mine visibility is a function of distance to
    * them, not to the camera centre, because the camera leads the aim. */
   update(dt: number, eye: { x: number; y: number }, now: number): void {
     this.state.update(dt)
-    this.eye = eye
+    this.eyeAt = eye
     this.now = now
     this.render()
   }
@@ -130,7 +139,7 @@ export class OrdnanceFxLayer {
    */
   render(): void {
     const g = this.gfx
-    const eye = this.eye
+    const eye = this.eyeAt
     const now = this.now
     g.clear()
 
@@ -164,7 +173,7 @@ export class OrdnanceFxLayer {
     }
 
     // --- flame jets ----------------------------------------------------------
-    for (const j of this.state.jets) {
+    for (const j of worldFx ? [] : this.state.jets) {
       const t = fade(j.ttl, j.life)
       g.fillStyle(0xff8a2a, 0.5 * t)
       g.slice(j.x, j.y, j.range, j.aim - j.arc / 2, j.aim + j.arc / 2, false)
@@ -175,7 +184,7 @@ export class OrdnanceFxLayer {
     }
 
     // --- melee arcs ----------------------------------------------------------
-    for (const s of this.state.swings) {
+    for (const s of worldFx ? [] : this.state.swings) {
       const t = fade(s.ttl, s.life)
       // A swing that connected is brighter — the feedback that tells you the
       // hit was yours rather than someone else's shot landing at the same time.
@@ -187,7 +196,7 @@ export class OrdnanceFxLayer {
     }
 
     // --- mines ---------------------------------------------------------------
-    for (const m of this.state.mines.values()) {
+    for (const m of worldFx ? [] : this.state.mines.values()) {
       const d = Math.hypot(m.x - eye.x, m.y - eye.y)
       const alpha = OrdnanceFxState.mineAlpha(d, MINE_NEAR, MINE_FAR)
       if (alpha <= 0) continue

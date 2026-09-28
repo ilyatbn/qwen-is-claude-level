@@ -78,17 +78,20 @@ export interface FxDisc {
 /** One frame's effects, in the order each list is drawn (smoke under the additive layers — `fx/layer.ts`). */
 export interface FxFrame {
   smoke: FxSprite[]
+  /** Normal-blended soft discs over the smoke: ink (a mine's body). */
+  ink: FxSprite[]
   soft: FxSprite[]
   ribbons: FxRibbon[]
   discs: FxDisc[]
 }
 
 export function emptyFrame(): FxFrame {
-  return { smoke: [], soft: [], ribbons: [], discs: [] }
+  return { smoke: [], ink: [], soft: [], ribbons: [], discs: [] }
 }
 
 export function clearFrame(f: FxFrame): void {
   f.smoke.length = 0
+  f.ink.length = 0
   f.soft.length = 0
   f.ribbons.length = 0
   f.discs.length = 0

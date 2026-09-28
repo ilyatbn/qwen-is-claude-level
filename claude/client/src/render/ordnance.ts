@@ -20,9 +20,9 @@ import { DEPTH } from './backdrop'
 import { ensureItemTextures } from './itemTextures'
 import { ICON_UNIT_PX, spriteOf } from '../look/actors/icons'
 import { FIGURE_SCALE } from '../look/actors/pose'
-import { BEAM_FRAGMENT, hasWebGL } from './shaders'
 import { fxFeed, type FxFeed } from '../look/fx/feed'
-import { isHighQuality, onHighQualityChange } from '../ui/settings'
+import { joinCast } from '../look/actors/cast'
+import type { Actor } from '../look/scene'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
 // which is two sources of truth for one thing and the exact shape §B16 warns
@@ -64,15 +64,14 @@ export class OrdnanceLayer {
   /** §F10.3 — fire, painted rather than summed. See the constructor. */
   private readonly flameGfx: Phaser.GameObjects.Graphics
   readonly state: OrdnanceState
-  /** T21.18: the scene, for building shader quads on demand. */
+  /** The scene, for the thrown weapons' images. */
   private readonly scene: Phaser.Scene
-  /** Asked of the renderer once: a canvas fallback must not be handed a shader. */
-  private readonly webgl: boolean
-  private readonly unsubscribeQuality: () => void
-  /** T21.18: one quad per beam painted under High Quality, grown on demand, capped. */
-  private readonly beamShaders: Phaser.GameObjects.Shader[] = []
-  /** How many beams the last render painted with the shader — read back, not the setting. */
-  beamShadersDrawn = 0
+  /**
+   * T23.18: each rocket in flight is F1's rocket (`draw.ts::rocket`, ink with its motor), a member of the scene's cast
+   * while the world renderer draws the effects — its motor glow and smoke trail are `fx/game.ts::rocketFx`. By id: the
+   * member's leave function.
+   */
+  private readonly rockets = new Map<number, () => void>()
   /**
    * T23.18: the scene's effect feed (`look/fx/feed.ts`). While the world renderer draws this scene's effects
    * (`worldDraws`) the blasts and flames are F's, drawn there from this layer's records, and this layer draws none of
@@ -122,18 +121,18 @@ export class OrdnanceLayer {
     // was failing — a 2 px white line at 0.09 s was almost impossible to find.
     this.gfx.setBlendMode(Phaser.BlendModes.ADD)
     this.scene = scene
-    this.webgl = hasWebGL(scene)
     // The icons a thrown weapon flies as (idempotent: the item layer draws the same set).
     ensureItemTextures(scene.textures)
-    // **Repaint on the change, not on the next update.** A check freezes the scene
-    // to photograph one beam in both modes; a frozen scene runs no `update`, so a
-    // toggle that waited for one would photograph the old picture twice.
-    this.unsubscribeQuality = onHighQualityChange(() => this.render())
   }
 
   /** `FLAME_RADIUS`, for the fire the world renderer draws from this layer's flames (`fx/game.ts::flameFx`). */
   get flameRadius(): number {
     return C().FLAME_RADIUS
+  }
+
+  /** `BULLET_LENGTH`, for a round's streak (`fx/game.ts::bulletFx`). */
+  get bulletLength(): number {
+    return C().BULLET_LENGTH
   }
 
   addTracer(x0: number, y0: number, x1: number, y1: number): void {
@@ -204,48 +203,25 @@ export class OrdnanceLayer {
     this.redraws += 1
     this.drawnProjectilesLastFrame = this.state.projectiles.size
 
-    // Beams: a wide warm halo, a bright core, and a muzzle flash.
+    // T23.18: while the world renderer draws this scene's effects (`look/fx/feed.ts::worldDraws`), every beam, round,
+    // rocket, flame, blast and ember is F's, drawn there from these records — this layer draws only the thrown weapons,
+    // which fly as themselves (T23.17). Otherwise (space until T23.20; no three.js) the flat picture below.
+    const worldFx = this.feed.worldDraws
+
+    // Beams: a wide warm halo, a bright core, and a muzzle flash (the flat path; T21.18's beam shader retired, T23.18).
     //
     // **This path is the two laser weapons now** (§F1/§F2). The ballistic guns
     // fire projectiles that fly, drawn below with the other ordnance; a beam is
     // the one thing left in the game that is instant, and `BEAM_LIFETIME` 0.35 s
-    // is how long the afterimage of one hangs there. It was 0.09 s, which is
-    // shorter than a screenshot round-trip and about as long as a player's
-    // chance of seeing it.
-    //
-    // Three passes rather than two, all additive: the halo gives it presence
-    // against terrain, the core gives it the line, and the muzzle flash marks
-    // the shooter. Shooting in the dark should tell everyone where you are.
-    //
-    // **T21.18: under High Quality the three strokes are one shader quad** — the
-    // same tracer, the same life, the same muzzle flash; only the line changes.
-    const shaderBeams = this.useBeamShader()
-    let painted = 0
-    for (const t of this.state.tracers) {
+    // is how long the afterimage of one hangs there.
+    for (const t of worldFx ? [] : this.state.tracers) {
       const k = t.life / t.ttl
-      const sh = shaderBeams ? this.beamShader(painted) : null
-      if (sh) {
-        painted++
-        const dx = t.x1 - t.x0
-        const dy = t.y1 - t.y0
-        const len = Math.max(1, Math.hypot(dx, dy))
-        sh.setPosition((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2)
-        sh.setDisplaySize(len, c.BEAM_SHADER_WIDTH)
-        sh.setRotation(Math.atan2(dy, dx))
-        sh.setUniform('life.value', k)
-        // No `time` here: Phaser sets its own every render (Shader.js, 3.90:
-        // `uniforms.time.value = renderer.game.loop.getDuration()`), and a value written
-        // here was overwritten before it was drawn — found by planting it frozen.
-        sh.setUniform('span.value', len / c.BEAM_SHADER_WIDTH)
-        sh.setVisible(!this.hidden)
-      } else {
-        g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
-        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-        g.lineStyle(c.TRACER_WIDTH * 2, 0xffe9a0, 0.55 * k)
-        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-        g.lineStyle(c.TRACER_WIDTH, 0xffffff, 1.0 * k)
-        g.lineBetween(t.x0, t.y0, t.x1, t.y1)
-      }
+      g.lineStyle(c.TRACER_WIDTH * 5, 0xff9a3c, 0.18 * k)
+      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+      g.lineStyle(c.TRACER_WIDTH * 2, 0xffe9a0, 0.55 * k)
+      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
+      g.lineStyle(c.TRACER_WIDTH, 0xffffff, 1.0 * k)
+      g.lineBetween(t.x0, t.y0, t.x1, t.y1)
 
       // Muzzle flash at the origin, biggest at the instant of firing.
       g.fillStyle(0xffd27a, 0.5 * k)
@@ -254,21 +230,17 @@ export class OrdnanceLayer {
       g.fillCircle(t.x0, t.y0, 3 * k)
     }
 
-    // Quads with no beam this frame are hidden, not destroyed: the pool is reused.
-    for (let i = painted; i < this.beamShaders.length; i++) this.beamShaders[i]!.setVisible(false)
-    this.beamShadersDrawn = painted
-
     // Trails: a tapering polyline, oldest thinnest.
-    const worldFx = this.feed.worldDraws
     const thrown: { id: number; sprite: string; x: number; y: number }[] = []
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
+      if (worldFx && !THROWN_KEY[p.kind]) continue
       // §F10.3: **a flame at rest draws no trail.** A tail behind something that
       // is not moving is a smear, and worse, it says the fire is still travelling
       // when it has settled — the exact class of "the picture and the simulation
       // disagree" that M19 exists to fix.
       const resting = p.kind === 'flame' && (flameAtRest(p) || worldFx)
-      const n = look.trail === 0 || resting ? 0 : p.trail.length
+      const n = look.trail === 0 || resting || worldFx ? 0 : p.trail.length
       // A flame's trail belongs on the flame layer, or a moving flame is a
       // painted head behind an additive tail and the two do not look like one
       // object.
@@ -351,6 +323,7 @@ export class OrdnanceLayer {
       }
     }
 
+    this.syncRockets(worldFx)
     for (let i = thrown.length; i < this.thrown.length; i++) this.thrown[i]!.setVisible(false)
     this.thrownDrawn = thrown
     if (this.tumble.size > thrown.length) for (const id of this.tumble.keys()) if (!thrown.some((d) => d.id === id)) this.tumble.delete(id)
@@ -364,11 +337,6 @@ export class OrdnanceLayer {
       g.lineStyle(2, 0xffd27a, 0.8 * k)
       g.strokeCircle(im.x, im.y, im.r * (1.3 - 0.4 * k))
     }
-  }
-
-  /** T21.18: WebGL and High Quality, both — the one place that decides. */
-  private useBeamShader(): boolean {
-    return this.webgl && isHighQuality()
   }
 
   /**
@@ -387,32 +355,35 @@ export class OrdnanceLayer {
     return !this.hidden
   }
 
-  /** Would a beam drawn now be painted by the shader? For the debug handles. */
-  get beamsAreShader(): boolean {
-    return this.useBeamShader()
+  /** T23.18: one cast member per rocket in flight while the world draws the effects; none otherwise. */
+  private syncRockets(worldFx: boolean): void {
+    for (const [id, leave] of this.rockets) {
+      const p = this.state.projectiles.get(id)
+      if (!worldFx || !p || p.kind !== 'bazooka') {
+        leave()
+        this.rockets.delete(id)
+      }
+    }
+    if (!worldFx) return
+    for (const p of this.state.projectiles.values()) {
+      if (p.kind !== 'bazooka' || this.rockets.has(p.id)) continue
+      const id = p.id
+      this.rockets.set(id, joinCast(this.scene, { actor: () => this.rocketActor(id) }))
+    }
   }
 
-  /** Quad `i` of the pool, built on first use; `null` past `BEAM_SHADER_POOL`. */
-  private beamShader(i: number): Phaser.GameObjects.Shader | null {
-    const c = C()
-    if (i >= c.BEAM_SHADER_POOL) return null
-    while (this.beamShaders.length <= i) {
-      const base = new Phaser.Display.BaseShader('laserBeam', BEAM_FRAGMENT, undefined, {
-        life: { type: '1f', value: 0 },
-        span: { type: '1f', value: 1 },
-      })
-      this.beamShaders.push(
-        this.scene.add
-          .shader(base, 0, 0, c.BEAM_SHADER_WIDTH, c.BEAM_SHADER_WIDTH)
-          .setOrigin(0.5, 0.5)
-          .setDepth(DEPTH.particles)
-          // No `setBlendMode`: a Phaser `Shader` has none (tsc said so). How it
-          // composites is decided by what `BEAM_FRAGMENT` writes, which follows the
-          // fog and cloud shaders' convention.
-          .setVisible(false),
-      )
-    }
-    return this.beamShaders[i] ?? null
+  /** A rocket as F1 draws it: `S.rocket(g, x, y, atan2(−dy, dx))` along its last step (mask y down). */
+  private rocketActor(id: number): Actor | null {
+    const p = this.state.projectiles.get(id)
+    if (!p || this.hidden) return null
+    const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2]! : null
+    const ang = prev && (p.x !== prev.x || p.y !== prev.y) ? Math.atan2(-(p.y - prev.y), p.x - prev.x) : 0
+    return { kind: 'rocket', x: p.x, y: p.y, opts: { ang }, lit: { size: 1, halo: null, shadow: false }, box: null }
+  }
+
+  /** How many rockets are cast members now (a check counts both ends). */
+  get rocketsCast(): number {
+    return this.rockets.size
   }
 
   /** T23.17: image `i` of the thrown-weapon pool, built on first use (normal blend: ink is not light). */
@@ -426,10 +397,8 @@ export class OrdnanceLayer {
     this.thrown.length = 0
     this.flameGfx.destroy()
     this.gfx.destroy()
-    for (const s of this.beamShaders) s.destroy()
-    this.beamShaders.length = 0
     if (this.feed.ordnance === this) this.feed.ordnance = null
-    // Or every round leaks a listener, and a setting flip repaints a dead layer.
-    this.unsubscribeQuality()
+    for (const leave of this.rockets.values()) leave()
+    this.rockets.clear()
   }
 }

@@ -2,13 +2,15 @@
  * T23.14E F4/F8, e2e only: **was each round painted on the canvas?** — the pixels, not the layer's record count.
  *
  * While on, after every rendered frame (`POST_RENDER`, the frame's pixels still in the drawing buffer) each round the
- * ordnance layer holds for the first time has the Phaser canvas read in a `ROUND_PATCH_PX` square around where it is
+ * ordnance layer holds for the first time has the Phaser canvas — and, T23.18, the world canvas the rounds are drawn on
+ * while it draws the effects — read in a `ROUND_PATCH_PX` square around where it is
  * drawn, and a square as far on the other side of the player (the control region). On the first frame after the round
  * has left the layer the same two squares are read again (the control frame). A painted round moves its square and
  * not the control region's. Both scenes use it (`watchRounds` on their `__game`): one function, not two copies.
  */
 import Phaser from 'phaser'
 import type { OrdnanceState } from './ordnance-state'
+import { fxFeed } from '../look/fx/feed'
 
 /** The side of the square read around a round, canvas px. */
 export const ROUND_PATCH_PX = 24
@@ -57,7 +59,19 @@ export class RoundWatch {
     return this.rounds.map(({ id, kind, frames, diff, farDiff }) => ({ id, kind, frames, diff, farDiff }))
   }
 
-  private read([x, y, w, h]: Rect): Uint8Array {
+  /** Both canvases' pixels in `rect`: Phaser's, then the world's (T23.18: the rounds are drawn there now) if it draws. */
+  private read(rect: Rect): Uint8Array {
+    const phaser = this.readPhaser(rect)
+    // T23.18: the camera's scene's effect feed — the world renderer that draws the rounds there hands its pixels over.
+    const world = fxFeed(this.camera.scene).readWorld?.(rect[0], rect[1], rect[2], rect[3]) ?? null
+    if (!world) return phaser
+    const out = new Uint8Array(phaser.length + world.length)
+    out.set(phaser)
+    out.set(world, phaser.length)
+    return out
+  }
+
+  private readPhaser([x, y, w, h]: Rect): Uint8Array {
     const r = this.game.renderer
     if (r instanceof Phaser.Renderer.WebGL.WebGLRenderer) {
       const out = new Uint8Array(w * h * 4)
@@ -98,8 +112,10 @@ export class RoundWatch {
 
 function meanDiff(a: Uint8Array, b: Uint8Array): number {
   let sum = 0
-  for (let i = 0; i < a.length; i += 4) {
+  // The two reads cover the same canvases unless the world renderer stopped drawing between them: compare what both have.
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i += 4) {
     sum += Math.max(Math.abs(a[i]! - b[i]!), Math.abs(a[i + 1]! - b[i + 1]!), Math.abs(a[i + 2]! - b[i + 2]!))
   }
-  return sum / Math.max(1, a.length / 4)
+  return sum / Math.max(1, n / 4)
 }

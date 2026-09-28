@@ -467,7 +467,29 @@ export class WorldRenderer implements SceneRenderer {
    */
   setFxFeed(feed: FxFeed): void {
     this.fxSource = feed
+    feed.readWorld = (x, y, w, h) => this.readPatch(x, y, w, h)
     this.syncFxDrawer()
+  }
+
+  /**
+   * e2e (`fx/feed.ts::readWorld`): the drawn frame's pixels in a rect of Phaser canvas px, at this canvas's buffer
+   * resolution (R18: the low tier's is half), rows bottom-up as GL reads them; null when not drawing this scene.
+   */
+  private readPatch(x: number, y: number, w: number, h: number): Uint8Array | null {
+    if (!this.owns || !this.desc) return null
+    const gl = this.gl
+    const sx = gl.drawingBufferWidth / this.phaserCanvas.width
+    const sy = gl.drawingBufferHeight / this.phaserCanvas.height
+    const bx = Math.max(0, Math.round(x * sx))
+    const by = Math.max(0, Math.round(y * sy))
+    const bw = Math.max(1, Math.min(gl.drawingBufferWidth - bx, Math.round(w * sx)))
+    const bh = Math.max(1, Math.min(gl.drawingBufferHeight - by, Math.round(h * sy)))
+    const out = new Uint8Array(bw * bh * 4)
+    const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.readPixels(bx, gl.drawingBufferHeight - by - bh, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, out)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prev)
+    return out
   }
 
   private syncFxDrawer(): void {
@@ -479,10 +501,11 @@ export class WorldRenderer implements SceneRenderer {
     const f = this.fxFrame
     clearFrame(f)
     if (this.hidden.has('fx')) return false
-    if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000)
-    const live = f.smoke.length + f.soft.length + f.ribbons.length + f.discs.length > 0
+    if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000, this.desc?.look.lights ?? [])
+    const live = f.smoke.length + f.ink.length + f.soft.length + f.ribbons.length + f.discs.length > 0
     const s = this.sceneFxFrame
     f.smoke.push(...s.smoke)
+    f.ink.push(...s.ink)
     f.soft.push(...s.soft)
     f.ribbons.push(...s.ribbons)
     f.discs.push(...s.discs)
@@ -495,7 +518,7 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /** Dev (T23.18): what the effects layer laid out on its last drawn frame, by list. */
-  fxDrawn(): { smoke: number; soft: number; ribbons: number; discs: number; flames: number; worldDraws: boolean } {
+  fxDrawn(): { smoke: number; ink: number; soft: number; ribbons: number; discs: number; flames: number; worldDraws: boolean } {
     return { ...this.fxLayer.drawn, worldDraws: this.fxSource?.worldDraws ?? false }
   }
 
@@ -904,7 +927,10 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.dispose()
     this.glowLayer.dispose()
     this.fxLayer.dispose()
-    if (this.fxSource) this.fxSource.worldDraws = false
+    if (this.fxSource) {
+      this.fxSource.worldDraws = false
+      this.fxSource.readWorld = null
+    }
     this.terrainMesh.geometry.dispose()
     this.terrainMats.full.dispose()
     this.terrainMats.low.dispose()

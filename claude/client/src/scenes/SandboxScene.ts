@@ -1273,7 +1273,6 @@ export class SandboxScene extends Phaser.Scene {
         return {
           setting: isHighQuality(),
           shaderFog: self.world.weather.fogIsShader,
-          shaderBeams: self.world.ordnance.beamsAreShader,
         }
       },
       toggleOverlays() {

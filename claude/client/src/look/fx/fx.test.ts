@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { F1 } from '../scenes/F1'
 import { explosion, emptyFrame, Lcg, sceneFx, SMOKE_TEX_DRAWS, STILL } from './kit'
 import { blastFx, blastScale, BLAST_REACH, cloudFx, CLOUD_SIZE, CLOUD_SPREAD, CLOUD_SPRITES, FLAME_LIFT, FLAME_REACH, flameFx, IMPACT_LIFE, IMPACT_MAX_R } from './game'
-import { fxFeed, gameFrame } from './feed'
+import { fxFeed, gameFrame, MINE_FAR, MINE_NEAR } from './feed'
+import { beamFx, LASER_CORE, MUZZLE_SIZE } from './game'
+import { MUZZLE_LIGHT } from '../effectLights'
 import { OrdnanceState } from '../../render/ordnance-state'
 import { OrdnanceFxState } from '../../render/ordnanceFx-math'
 
@@ -110,9 +112,9 @@ describe('the feed', () => {
     const z = new OrdnanceFxState(0.15, 0.08)
     z.addHazard(7, 'toxic', 0, 0, 90, 8)
     z.hazards.get(7)!.ttl = 4
-    const src = { state: o, visible: true, flameRadius: 10 }
+    const src = { state: o, visible: true, flameRadius: 10, bulletLength: 10 }
     feed.ordnance = src
-    feed.zones = { state: z, visible: true }
+    feed.zones = { state: z, visible: true, eye: { x: 0, y: 0 }, nowMs: 0, armTime: 1 }
     const out = emptyFrame()
     gameFrame(feed, out, 1)
     expect(out.discs.filter((d) => d.max).length).toBe(1)
@@ -121,5 +123,68 @@ describe('the feed', () => {
     gameFrame(feed, out, 1)
     expect(out.discs.length).toBe(0)
     expect(out.smoke.length).toBe(CLOUD_SPRITES)
+  })
+})
+
+describe('part B: beams, rounds, muzzles, swings, mines', () => {
+  const feedWith = (o: OrdnanceState, z: OrdnanceFxState, eye = { x: 0, y: 0 }) => {
+    const feed = fxFeed({})
+    feed.ordnance = { state: o, visible: true, flameRadius: 10, bulletLength: 10 }
+    feed.zones = { state: z, visible: true, eye, nowMs: 0, armTime: 1 }
+    return feed
+  }
+
+  it('a beam is F1’s laser and impact, fading with its life, and gone at its end', () => {
+    const out = emptyFrame()
+    beamFx(out, { x0: 0, y0: 0, x1: 100, y1: 0, life: 0.35, ttl: 0.35 })
+    expect(out.ribbons[0]!.core).toEqual(LASER_CORE)
+    expect(out.soft[0]!.alpha).toBe(1)
+    const half = emptyFrame()
+    beamFx(half, { x0: 0, y0: 0, x1: 100, y1: 0, life: 0.175, ttl: 0.35 })
+    expect(half.soft[0]!.alpha).toBeCloseTo(0.5, 9)
+    const gone = emptyFrame()
+    beamFx(gone, { x0: 0, y0: 0, x1: 100, y1: 0, life: 0, ttl: 0.35 })
+    expect(gone.ribbons.length + gone.soft.length).toBe(0)
+  })
+
+  it('a muzzle glow is where a muzzle light is, as strong; other lights make none', () => {
+    const feed = feedWith(new OrdnanceState(0.35, 8), new OrdnanceFxState(0.15, 0.08))
+    const out = emptyFrame()
+    gameFrame(feed, out, 0, [
+      { x: 5, y: 6, z: 30, r: 120, rgb: MUZZLE_LIGHT.rgb, i: MUZZLE_LIGHT.i / 2, muzzle: true },
+      { x: 50, y: 60, z: 70, r: 460, rgb: '255,140,50', i: 3.2 },
+    ])
+    expect(out.soft.length).toBe(1)
+    expect(out.soft[0]!).toMatchObject({ x: 5, y: 6, size: MUZZLE_SIZE })
+    expect(out.soft[0]!.alpha).toBeCloseTo(0.45, 9)
+  })
+
+  it('a round is a streak, a rocket a motor and a trail, a thrown weapon nothing (Phaser draws it)', () => {
+    const o = new OrdnanceState(0.35, 8)
+    o.addProjectile(1, 'bullet', 0, 0)
+    o.moveProjectile(1, 20, 0)
+    o.addProjectile(2, 'bazooka', 100, 0)
+    for (let i = 1; i < 5; i++) o.moveProjectile(2, 100 + i * 10, 0)
+    o.addProjectile(3, 'grenade', 200, 0)
+    const out = emptyFrame()
+    gameFrame(feedWith(o, new OrdnanceFxState(0.15, 0.08)), out, 0)
+    expect(out.ribbons.length).toBe(1)
+    expect(out.ribbons[0]!.pts[0]![0]).toBe(20)
+    expect(out.soft.length).toBe(1)
+    expect(out.smoke.length).toBe(4)
+  })
+
+  it('a mine reads at close range and not far off (§B6); a swing is an arc at its reach', () => {
+    const z = new OrdnanceFxState(0.15, 0.08)
+    z.addMine(1, 0, 0, 0)
+    z.addSwing(0, 0, 0, 40, 1.6, 0)
+    const near = emptyFrame()
+    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: MINE_NEAR - 1, y: 0 }), near, 0)
+    expect(near.ink.length).toBe(1)
+    const far = emptyFrame()
+    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: MINE_FAR + 1, y: 0 }), far, 0)
+    expect(far.ink.length).toBe(0)
+    const arc = near.ribbons[0]!.pts
+    for (const [x, y] of arc) expect(Math.hypot(x, y)).toBeCloseTo(40, 9)
   })
 })

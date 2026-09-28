@@ -56,6 +56,11 @@ export interface Light {
   r: number
   rgb: RgbString
   i: number
+  /**
+   * T23.18: a gun's muzzle light (`effectLights.ts::MUZZLE_LIGHT`) — the effects layer draws F1's muzzle glow where it
+   * is, as strong: one bookkeeping of which rounds flash, not two. Absent on every other light (and in the look-lab).
+   */
+  muzzle?: true
 }
 
 /** The key light `lit()` falls back to, and the cool fill from the sky. */

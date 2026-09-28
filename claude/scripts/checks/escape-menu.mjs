@@ -16,7 +16,7 @@
  *   the room never reaps, which is §B14's shape exactly. That is asserted from
  *   the *server's* player count, not from the client's opinion of itself.
  */
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort } from './harness.mjs'
+import { startStack, enterBattle, tally, sleep, freePort } from './harness.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('escape-menu')
@@ -30,39 +30,14 @@ const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'escape-menu' })
 
 /**
- * Fire a laser with the menu down and report the most beam quads the ordnance layer
- * painted while that beam lived — `null` if no beam was ever held.
- *
- * **The most, over the beam's life, not the first reading.** `tracersDrawn` is the
- * state's tracer count and rises the moment the shot arrives, *before* the render
- * that paints it, so a single read took `beamShadersDrawn` from the previous frame
- * and reported 0 with High Quality On (measured, first run of this check). A beam is
- * used because it is the one High Quality effect a player can make on demand; what it
- * *looks like* is `beams-shader`'s claim, not this check's.
+ * T23.18: what the setting changes now is the world renderer's **tier** (R14: High Quality picks full or low) — the
+ * beam quads this used to count (T21.18's Phaser beam shader, the one High Quality effect a player could make on
+ * demand) retired with every effect moving into the world renderer, drawn on both tiers. Read off the renderer after a
+ * few drawn frames, not the setting: `null` without three.js.
  */
-async function beamQuadsAfterAShot() {
-  await selectWeapon(page, 'laser_pistol')
-  await standStill(page)
-  await page.mouse.move(1000, 300)
-  await sleep(150)
-  for (let shot = 0; shot < 10; shot++) {
-    await page.evaluate(() => window.__game.fire())
-    let held = false
-    let most = 0
-    for (let i = 0; i < 60; i++) {
-      const d = await dbg()
-      if ((d.tracersDrawn ?? 0) > 0) {
-        held = true
-        if (typeof d.beamShadersDrawn !== 'number') return null
-        most = Math.max(most, d.beamShadersDrawn)
-      } else if (held) {
-        break
-      }
-      await sleep(20)
-    }
-    if (held) return most
-  }
-  return null
+async function drawnTier() {
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  return page.evaluate(() => window.__world?.info?.().tier ?? null)
 }
 
 const shown = (id) =>
@@ -132,7 +107,7 @@ if (!(await shown('escape-menu'))) {
   // what was in it (red 6.5 in a gate, green 0.5 alone). **What the setting paints is
   // those five checks' claim**, each with a control frame. This check's claim is the
   // menu's: the click reaches storage, and a layer drawing *after* it reads the new
-  // value without a restart — measured as beam quads painted by the ordnance layer.
+  // value without a restart — measured as the tier the world renderer draws (T23.18; it was beam quads, T21.18).
   await page.evaluate(() => document.getElementById('options-quality')?.click())
   await sleep(150)
   const flipped = await page.evaluate(() => ({
@@ -158,7 +133,7 @@ if (!(await shown('escape-menu'))) {
   await page.keyboard.press('Escape')
   await sleep(250)
 
-  const onBeams = await beamQuadsAfterAShot()
+  const onTier = await drawnTier()
   // The control, set from the same panel: Off must paint none, or "On painted some"
   // is a statement about a layer that ignores the setting.
   await page.keyboard.press('Escape')
@@ -172,14 +147,14 @@ if (!(await shown('escape-menu'))) {
   await sleep(120)
   await page.keyboard.press('Escape')
   await sleep(250)
-  const offBeams = await beamQuadsAfterAShot()
-  console.log(`  beam quads painted after a shot: High Quality On ${onBeams}, Off ${offBeams} (label "${offLabel}")`)
-  if (onBeams === null || offBeams === null) {
-    fail('no beam was drawn after ten shots, so "read live" was never measured')
-  } else if (!(onBeams > 0) || offBeams !== 0 || offLabel !== 'Off') {
-    fail(`the renderer did not follow the panel live: On painted ${onBeams} beam quad(s), Off painted ${offBeams}`)
+  const offTier = await drawnTier()
+  console.log(`  world renderer tier: High Quality On ${onTier}, Off ${offTier} (label "${offLabel}")`)
+  if (onTier === null || offTier === null) {
+    fail('no world renderer to read, so "read live" was never measured')
+  } else if (onTier !== 'full' || offTier !== 'low' || offLabel !== 'Off') {
+    fail(`the renderer did not follow the panel live: On drew the ${onTier} tier, Off the ${offTier}`)
   } else {
-    ok(`the renderer follows the panel with no restart: On painted ${onBeams} beam quad(s), Off 0`)
+    ok('the renderer follows the panel with no restart: On draws the full tier, Off the low')
   }
 
   // Back to the menu, as the section below expects to find it.

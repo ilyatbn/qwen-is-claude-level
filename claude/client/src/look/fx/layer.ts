@@ -165,6 +165,7 @@ export class FxLayer {
   private readonly glowUnder: Batch
   private readonly ribbonsUnder: Batch
   private readonly smoke: Batch
+  private readonly ink: Batch
   private readonly glow: Batch
   private readonly ribbons: Batch
   private readonly discs: Batch
@@ -172,7 +173,7 @@ export class FxLayer {
   private readonly discsMax: Batch
   private readonly time = { value: 0 }
   /** Dev: what the last `place` laid out, by list (`flames`: the discs blended by the brightest — the fire on the ground). */
-  drawn = { smoke: 0, soft: 0, ribbons: 0, discs: 0, flames: 0 }
+  drawn = { smoke: 0, ink: 0, soft: 0, ribbons: 0, discs: 0, flames: 0 }
 
   constructor() {
     const spriteMat = (blend: object, map: Texture, premul = 0): ShaderMaterial =>
@@ -190,6 +191,7 @@ export class FxLayer {
     this.glowUnder = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_ORDER - 0.2)
     this.ribbonsUnder = new Batch(ribbonMat(), ribbonAttrs, FX_ORDER - 0.1)
     this.smoke = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.smokeT), spriteAttrs, FX_ORDER)
+    this.ink = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.soft), spriteAttrs, FX_ORDER + 0.05)
     this.glow = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_ORDER + 0.1)
     this.ribbons = new Batch(ribbonMat(), ribbonAttrs, FX_ORDER + 0.2)
     const discMat = (blend: object): ShaderMaterial =>
@@ -204,7 +206,7 @@ export class FxLayer {
   }
 
   private get batches(): Batch[] {
-    return [this.glowUnder, this.ribbonsUnder, this.smoke, this.glow, this.ribbons, this.discs, this.glowMax, this.discsMax]
+    return [this.glowUnder, this.ribbonsUnder, this.smoke, this.ink, this.glow, this.ribbons, this.discs, this.glowMax, this.discsMax]
   }
 
   get meshes(): Mesh[] {
@@ -213,7 +215,7 @@ export class FxLayer {
 
   /** Is anything drawn? (An empty layer lets the renderer skip an unchanged frame.) */
   get busy(): boolean {
-    return this.drawn.smoke + this.drawn.soft + this.drawn.ribbons + this.drawn.discs > 0
+    return this.drawn.smoke + this.drawn.ink + this.drawn.soft + this.drawn.ribbons + this.drawn.discs > 0
   }
 
   /** Lay out one frame's effects (mask px) in the y-up world of height `maskH`; `seconds` drives the flames' flow. */
@@ -222,12 +224,13 @@ export class FxLayer {
     this.sprites(this.glowUnder, f.soft.filter((s) => s.under), maskH)
     this.ribbonStrips(this.ribbonsUnder, f.ribbons.filter((r) => r.under), maskH)
     this.sprites(this.smoke, f.smoke, maskH)
+    this.sprites(this.ink, f.ink, maskH)
     this.sprites(this.glow, f.soft.filter((s) => !s.under && !s.max), maskH)
     this.ribbonStrips(this.ribbons, f.ribbons.filter((r) => !r.under), maskH)
     this.discQuads(this.discs, f.discs.filter((d) => !d.max), maskH)
     this.sprites(this.glowMax, f.soft.filter((s) => s.max), maskH)
     this.discQuads(this.discsMax, f.discs.filter((d) => d.max), maskH)
-    this.drawn = { smoke: f.smoke.length, soft: f.soft.length, ribbons: f.ribbons.length, discs: f.discs.length, flames: f.discs.filter((d) => d.max).length }
+    this.drawn = { smoke: f.smoke.length, ink: f.ink.length, soft: f.soft.length, ribbons: f.ribbons.length, discs: f.discs.length, flames: f.discs.filter((d) => d.max).length }
   }
 
   private sprites(b: Batch, list: readonly FxSprite[], H: number): void {

@@ -3206,9 +3206,7 @@ export class GameScene extends Phaser.Scene {
         setHighQuality(localStorage, on)
         return {
           setting: isHighQuality(),
-          // Off the layer, not the setting: without WebGL this is false however set.
-          shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
-          // T23.18: blasts, fire and clouds are F's, drawn by the world renderer on both tiers (not a setting's shader).
+          // T23.18: every effect is F's, drawn by the world renderer on both tiers (not a setting's shader).
           worldFx: fxFeed(self).worldDraws,
         }
       },
@@ -3780,8 +3778,6 @@ export class GameScene extends Phaser.Scene {
           // many the layer is currently drawing, against `observed.hitscans`
           // for how many the server has narrated.
           tracersDrawn: self.world?.ordnance.state.tracers.length ?? 0,
-          // T21.18: beams the last render painted with the shader, read off the layer.
-          beamShadersDrawn: self.world?.ordnance.beamShadersDrawn ?? 0,
           // The snapshot roster includes the local player, so this is the
           // total — not remotes plus one.
           playerCount: self.mirror.players.size,

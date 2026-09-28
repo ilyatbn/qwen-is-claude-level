@@ -440,7 +440,10 @@ export const CHECKS = [
   { name: 'toxic-rain-game', file: 'scripts/checks/toxic-rain-game.mjs', standalone: true, disabled: 'T21.41' },
   // T23.04 retired `ambient-rain` with the ambient rain (F has no rain; no gameplay reader).
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
-  { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
+  // T23.18: F1's laser in the world renderer, both tiers, painted along its length in its colour (retired `beams-shader`).
+  { name: 'beams-fx', file: 'scripts/checks/beams-fx.mjs', standalone: true },
+  // T23.18: a melee swing's arc and a placed mine, F's, on the pixels (neither was photographed before).
+  { name: 'swing-mine-fx', file: 'scripts/checks/swing-mine-fx.mjs', standalone: true },
   // T23.18: F's smoke, both tiers, covering the ground that blinds; vision unmoved (retired `smoke-shader`).
   { name: 'smoke-fx', file: 'scripts/checks/smoke-fx.mjs', standalone: true },
   // T23.18: F's fire, both tiers, every damage circle covered (retired `fire-shader`: T21.18's flame quads, T21.36's discs).

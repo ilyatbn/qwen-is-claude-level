@@ -213,6 +213,8 @@ export class EffectLights {
       l.r = spec.r
       l.rgb = spec.rgb
       l.i = spec.i * f
+      if (kind === 'muzzle') l.muzzle = true
+      else delete l.muzzle
       this.scratchKinds[this.n] = kind
       this.n++
     }

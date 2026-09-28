@@ -154,7 +154,7 @@ test('the real game-server selects standalone checks, not in-page ones', () => {
 
 test('the real harness selects the standalone checks that import it', () => {
   const r = affected(['scripts/checks/harness.mjs'], real)
-  for (const n of ['beams-shader', 'quick-throw', 'lobby-start']) assert.ok(r.e2e.includes(n), n)
+  for (const n of ['beams-fx', 'quick-throw', 'lobby-start']) assert.ok(r.e2e.includes(n), n)
   assert.ok(!r.e2e.includes('sky'), 'sky does not import the harness')
   assert.ok(!r.e2e.includes('two-clients'), 'two-clients is parked')
 })
