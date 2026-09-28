@@ -13,7 +13,7 @@ import { LOOK, type OrdnanceState } from '../../render/ordnance-state'
 import { OrdnanceFxState } from '../../render/ordnanceFx-math'
 import type { Light } from '../scene'
 import { MUZZLE_LIGHT } from '../effectLights'
-import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, swingFx } from './game'
+import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, smokeLook, swingFx } from './game'
 import { clearFrame, type FxFrame } from './kit'
 import { weatherFrame, type WeatherSource } from './hazards'
 
@@ -102,10 +102,12 @@ export const MINE_FAR = 300
  */
 export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: readonly Light[] = []): void {
   clearFrame(out)
+  // T23.11 (R7): the smoke in the palette of the scene's hour.
+  const smoke = smokeLook(feed.night)
   const z = feed.zones
   if (z?.visible) {
     const st = z.state
-    for (const h of st.hazards.values()) if (h.kind !== 'other') cloudFx(out, h, seconds)
+    for (const h of st.hazards.values()) if (h.kind !== 'other') cloudFx(out, h, seconds, smoke)
     for (const j of st.jets) coneFx(out, j)
     for (const s of st.swings) swingFx(out, s)
     for (const m of st.mines.values()) {
@@ -116,13 +118,13 @@ export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: r
   const o = feed.ordnance
   if (o?.visible) {
     for (const t of o.state.tracers) beamFx(out, t)
-    for (const b of o.state.blasts) blastFx(out, b)
+    for (const b of o.state.blasts) blastFx(out, b, smoke)
     for (const p of o.state.projectiles.values()) {
       if (p.kind === 'flame') flameFx(out, p, o.flameRadius)
       else if (p.kind === 'bullet') bulletFx(out, p, o.bulletLength)
-      else if (p.kind === 'bazooka') rocketFx(out, p)
+      else if (p.kind === 'bazooka') rocketFx(out, p, smoke)
       else if (p.kind === 'meteor') {
-        rocketFx(out, p)
+        rocketFx(out, p, smoke)
         emberFx(out, p, LOOK.meteor.colour, LOOK.meteor.r)
       } else if (p.kind === 'pellet' || p.kind === 'fragment' || p.kind === 'drop') emberFx(out, p, LOOK[p.kind].colour, LOOK[p.kind].r)
       // The thrown weapons (grenade, airburst, smoke, molotov, toxic) fly as themselves, drawn by Phaser (T23.17).

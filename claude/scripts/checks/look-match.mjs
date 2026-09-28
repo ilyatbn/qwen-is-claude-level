@@ -29,6 +29,9 @@
  * animation or grain), and the rect is rock (hiding the terrain moves ≥ `ROCK_SHARE` of its px).
  */
 import { startStack, enterBattle, standStill, tally, freePort, drawnFrames } from './harness.mjs'
+// T23.11: the sky follows the hour now (the palettes' blend, the moons on their arcs); this check was calibrated on
+// F1's look with nothing in the sky moving, so it pins that hour (`worldRenderer-math.ts::hourFromUrl`).
+const HOUR = '&hour=1'
 
 const { fail, ok, finish } = tally('look-match')
 
@@ -87,7 +90,7 @@ async function openMatch(seed) {
     label: `look-match ${seed}`,
     env: { MAP_SCALE: 'medium', ROUND_SECONDS: '300', BOT_COUNT: '0', FIXED_SEED: String(seed), WEATHER: 'off' },
   })
-  const { page, pageErrors } = await stack.openClient({ name: `m${seed}` })
+  const { page, pageErrors } = await stack.openClient({ name: `m${seed}`, query: HOUR })
   await enterBattle(page, { waitPlaying: true, label: `look-match ${seed}` })
   await page.waitForFunction(() => window.__game.debug().terrainReady && !!window.__world, null, { timeout: 120_000 })
   await standStill(page)

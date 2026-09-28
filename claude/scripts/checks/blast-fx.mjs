@@ -28,6 +28,9 @@
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, drawnFrames } from './harness.mjs'
 import { photo, comparePhotos, phaserPatch, phaserDelta } from './pixels.mjs'
 import { BLOOM_LUMA } from '../lib/look-compare.mjs'
+// T23.11: the sky follows the hour now (the palettes' blend, the moons on their arcs); this check was calibrated on
+// F1's look with nothing in the sky moving, so it pins that hour (`worldRenderer-math.ts::hourFromUrl`).
+const HOUR = '&hour=1'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('blast-fx')
@@ -51,7 +54,7 @@ const stack = await startStack({
   label: 'blast-fx',
   env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', DEV_START_HEALTH: '150', FIXED_SEED: '4242', WEATHER: 'off' },
 })
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: HOUR })
 await enterBattle(page, { waitPlaying: true, label: 'blast-fx' })
 const k = await page.evaluate(() => window.__game.constants())
 

@@ -41,7 +41,7 @@ import type { EffectComposer } from 'three/examples/jsm/postprocessing/EffectCom
 import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import type { Actor, Background, Box, Light, SceneDescription, ViewRect } from './scene'
+import type { Actor, Background, Box, FrameLook, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere } from './atmosphere'
 import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
@@ -52,6 +52,8 @@ import { castOf } from './actors/cast'
 import { NIGHT_CIRCLES, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
 import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
+import { blendLook, blendPalette, clamp01, MOON_REACH, MOON_TRAVEL, moonArcs } from './daylight'
+import { F5 } from './scenes/F5'
 import { gameSky, skyOffsets, type Offset } from './skyLayout'
 import { exposeWorldHandle } from './worldHandle'
 import type { TerrainFeed } from './terrainFields'
@@ -59,7 +61,7 @@ import { TerrainLayer } from './terrainLayer'
 import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
 import { makeTerrainMaterials, setLights, setLook, setTextures } from './terrainMaterial'
 import { TERRAIN_LIGHTS, TERRAIN_LIGHTS_LOW, pickLights } from './terrainLights'
-import { CAVE_WALL_DEFAULT, bufferFor, caveWallFromUrl, mustDraw, nightUniforms, orthoFromView, toWorld, type NightView, type QualityTier } from './worldRenderer-math'
+import { CAVE_WALL_DEFAULT, bufferFor, caveWallFromUrl, hourFromUrl, mustDraw, nightUniforms, orthoFromView, toWorld, type NightView, type QualityTier } from './worldRenderer-math'
 
 /**
  * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
@@ -137,6 +139,12 @@ function thePageRenderer(): PageRenderer {
  * buffer's size cost 8.3 ms of a 19.3 ms drawn frame and the match fell 60 → 43 fps.
  */
 export const LOW_BLOOM_SCALE = 0.5
+/**
+ * T23.11: steps of `t` the hour is drawn in. Dusk takes ~14 s (`world/cycle.rs`: u 0.50 → 0.62 of 120 s), so 256
+ * steps is one every ~0.06 s — a change no one sees as a step (the sky's colours are 8-bit hex anyway), and the
+ * redraw skip still holds between them.
+ */
+export const DAYLIGHT_T_STEPS = 256
 
 export class WorldRenderer implements SceneRenderer {
   readonly backend = 'three' as const
@@ -155,6 +163,12 @@ export class WorldRenderer implements SceneRenderer {
   /** T23.10: the scene's night view (`setNightView`), and the uniforms it made on the last drawn frame. */
   private night: NightView | null = null
   private nightLast: NightUniforms | null = null
+  /** T23.11: the hour drawn — `t` (0 moonlit day, 1 night) and the cycle position (null: the moons at the pictures' places), quantised. */
+  private hour: { t: number; u: number | null } = { t: 1, u: null }
+  /** T23.11: the sky as handed to the composite — the blend at `hour`, its moons moved (null: the description's own). */
+  private skyNow: Background | null = null
+  /** T23.11 (dev, `&hour=`): the hour every frame draws, whatever the scene hands over (`hourFromUrl`). */
+  private readonly pinnedHour = devSurface() ? hourFromUrl(location.search) : null
   /** T23.08: the composer's passes the look drives (`post.ts`). */
   private post!: Post
   /** T23.08: back fog, front fog, foreground leaves (`atmosphere.ts`). */
@@ -357,9 +371,17 @@ export class WorldRenderer implements SceneRenderer {
     this.warmTerrain()
   }
 
-  /** T23.07 (R14): the low tier keeps a lit bake for the scene's terrain look; the full tier none. */
+  /**
+   * T23.07 (R14): the low tier keeps a lit bake for the scene's terrain look; the full tier none.
+   * **T23.11: baked for the night's look at every hour.** The bake holds the sun's shadow march, which reads
+   * `sunDir` — and F1's and F5's differ (z 0.40 / 0.45) — so a `sunDir` blended per frame would rebake the whole
+   * world every step of dusk (the bake is a round-start pass: seconds on SwiftShader, the full shader meanwhile).
+   * The per-frame shading (the diffuse, the rim, the colours) takes the blended look; only the shadows' direction
+   * stays the night's. What that costs by day is measured in `look-day-night` (low vs full at `t` 0).
+   */
   private syncBake(): void {
-    this.terrain.setBake(this.tier === 'low' && this.desc?.litTerrain ? this.desc.look.terrain : null)
+    const d = this.desc
+    this.terrain.setBake(this.tier === 'low' && d?.litTerrain ? (d.daylight?.night ?? d.look).terrain : null)
   }
 
   setScene(desc: SceneDescription): void {
@@ -368,8 +390,46 @@ export class WorldRenderer implements SceneRenderer {
     this.sceneFxFrame = sceneFx(desc.fx)
     this.syncFxDrawer()
     this.stats.scene = sceneCounts(desc)
-    this.sky.setSky(desc.look.bg)
+    this.sky.setSky(desc.daylight ? desc.daylight.night.bg : desc.look.bg, desc.daylight?.day.bg ?? null, desc.daylight ? MOON_REACH : [0, 0])
+    this.skyNow = desc.look.bg
+    if (desc.daylight) this.blendHour()
     this.syncBake()
+  }
+
+  /**
+   * T23.11 (R7): the hour — `t` = darkness / `NIGHT_DARKNESS` (0 moonlit day, 1 night) and the cycle position `u`
+   * (`sky-math.ts::cycleU`; `null`: the moons stay at the pictures' places — the look-lab). The description's `look`
+   * and `palette` become the blend of its two palettes (`daylight.ts`); the sky takes the blend with its moons moved.
+   * Quantised so that an unchanged picture stays unchanged (the redraw skip): `t` in `DAYLIGHT_T_STEPS`, `u` in the
+   * steps the fastest moon needs to move one buffer px. A description with no palettes to blend ignores it.
+   */
+  setDaylight(t: number, u: number | null): void {
+    if (this.pinnedHour) ({ t, u } = this.pinnedHour)
+    const qt = Math.round(clamp01(t) * DAYLIGHT_T_STEPS) / DAYLIGHT_T_STEPS
+    const texel = this.buf.w > 0 ? this.phaserCanvas.width / this.buf.w : 1
+    const du = texel / MOON_TRAVEL
+    const qu = u === null ? null : Math.floor(u / du) * du
+    if (qt === this.hour.t && qu === this.hour.u) return
+    this.hour = { t: qt, u: qu }
+    if (this.desc?.daylight) this.blendHour()
+  }
+
+  /** The description's look, palette and sky at `this.hour` — its effect lights kept (they are the scenes' per frame). */
+  private blendHour(): void {
+    const d = this.desc
+    if (!d?.daylight) return
+    const { day, night, dayPalette, nightPalette } = d.daylight
+    const look = blendLook(day, night, this.hour.t)
+    d.look = { ...look, lights: d.look.lights }
+    d.palette = blendPalette(dayPalette, nightPalette, this.hour.t)
+    this.skyNow = look.bg ? moonArcs(look.bg, this.hour.u) : null
+    if (this.skyNow) this.sky.setColours(this.skyNow, this.hour.t)
+    this.dirty = true
+  }
+
+  /** Dev (T23.11): the hour last handed over, quantised as drawn. */
+  get daylight(): { t: number; u: number | null } {
+    return { ...this.hour }
   }
 
   render(view: ViewRect): void {
@@ -873,9 +933,23 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /** Dev: the sky as last drawn — its layers' factors and periods, and the offsets that frame used. */
-  skyInfo(): { drawn: boolean; hidden: number[]; layers: { parallax: number; period: number }[]; offsets: Offset[]; horizon: Offset } {
+  skyInfo(): {
+    drawn: boolean
+    hidden: number[]
+    layers: { parallax: number; period: number }[]
+    offsets: Offset[]
+    horizon: Offset
+    /** T23.11: the hour drawn, and where the moons (and F1's, `sun`) are in frame px, with their visibility. */
+    hour: { t: number; u: number | null }
+    moons: { x: number; y: number; r: number; vis: number }[]
+    sun: { x: number; y: number; r: number; vis: number } | null
+  } {
     const bg = this.desc?.look.bg ?? null
+    const now = this.skyNow
     return {
+      hour: { ...this.hour },
+      moons: (now?.moons ?? []).map((m) => ({ x: m.x, y: m.y, r: m.r, vis: m.vis ?? 1 })),
+      sun: now?.sun ? { x: now.sun.x, y: now.sun.y, r: now.sun.r, vis: now.sun.vis ?? 1 } : null,
       drawn: this.sky.mesh.visible,
       hidden: this.sky.hiddenLayers,
       layers: (bg?.layers ?? []).map((l) => ({ parallax: l.parallax ?? 0, period: l.period ?? 0 })),
@@ -916,6 +990,8 @@ export class WorldRenderer implements SceneRenderer {
     /** T23.04B (R21): sky bakes made so far, and the bytes the current bakes hold. */
     skyBakes: number
     skyBakeBytes: number
+    /** T23.11: of `skyBakeBytes`, the moon sets' rays — one size at every tier (`skyMaterial.ts::RAY_TEXEL`). */
+    skyRayBytes: number
     /** T23.04C (R22): what three holds on the page's one context — the same at every title and every match, or a scene leaked. */
     memory: { geometries: number; textures: number; programs: number }
     /** T23.14C: the programs' names (`material.name`, '?' unnamed), sorted — which one a memory difference is. */
@@ -935,6 +1011,7 @@ export class WorldRenderer implements SceneRenderer {
       sky: this.sky.mesh.visible,
       skyBakes: this.sky.bakeStats.bakes,
       skyBakeBytes: this.sky.bakeStats.bytes,
+      skyRayBytes: this.sky.bakeStats.rayBytes,
       memory: {
         geometries: this.renderer.info.memory.geometries,
         textures: this.renderer.info.memory.textures,
@@ -1009,14 +1086,26 @@ export interface GameMap {
 }
 
 /**
- * The game's scene description until the sim fills more of it: F1's night look (R7 — T23.11
- * blends it with F5's by darkness) with its sky laid out as seeded parallax bands for this map
+ * The game's scene description until the sim fills more of it: F1's night look and F5's moonlit day (R7 —
+ * T23.11: `setDaylight` blends them by darkness) with its sky laid out as seeded parallax bands for this map
  * (`skyLayout.ts::gameSky`), none on a space map; the map's size for the y flip; no mask yet
  * (T23.07), no actors (T23.12+). Rebuild it when the map changes.
  */
 export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): SceneDescription {
   const f1 = F1.look.bg as Background
+  const f5 = F5.look.bg as Background
+  // T23.11 (R7): night is F1's look, the moonlit day F5's, one seeded sky layout for both (the shapes are equal, so
+  // `gameSky` lays both out alike); `setDaylight` blends them. F1's lights are the mockup scene's, not this map's.
+  const end = (look: FrameLook, bg: Background): FrameLook => ({
+    ...look,
+    bg: map.space ? null : gameSky(map.seed, bg),
+    lights: [],
+    fg: null,
+    ...(map.space ? { fogBack: null, fogFront: null } : {}),
+  })
+  const night = end(F1.look, f1)
   return {
+    daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette },
     id: 'game',
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },
@@ -1031,7 +1120,7 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
     // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
     // Space has no fog (F3 draws none); its bloom and grade stay F1's until T23.20 gives space its look.
-    look: { ...F1.look, bg: map.space ? null : gameSky(map.seed, f1), lights: [], fg: null, ...(map.space ? { fogBack: null, fogFront: null } : {}) },
+    look: { ...night },
     palette: F1.palette,
     actors: [],
     fx: [],
@@ -1077,6 +1166,8 @@ export interface GameWorld {
   setLights(lights: Light[]): void
   /** T23.10 (R7): this frame's night view; dropped where three did not start. */
   setNightView(v: NightView | null): void
+  /** T23.11 (R7): this frame's hour — `t` = darkness / `NIGHT_DARKNESS`, `u` the cycle position (`WorldRenderer.setDaylight`). */
+  setDaylight(t: number, u: number | null): void
   /** T23.13/T23.14: this frame's cast (`look/actors/`); dropped where three did not start. */
   setActors(actors: Actor[]): void
 }
@@ -1136,6 +1227,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
     },
     setNightView: (v) => {
       if (renderer instanceof WorldRenderer) renderer.setNightView(v)
+    },
+    setDaylight: (t, u) => {
+      if (renderer instanceof WorldRenderer) renderer.setDaylight(t, u)
     },
     setActors: (actors) => {
       if (renderer instanceof WorldRenderer) renderer.setActors(actors)

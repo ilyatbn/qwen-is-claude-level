@@ -78,6 +78,14 @@ export const CHECKS = [
     url: '?look=F1&only=sky',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.11 (R7): night and moonlit day — the look-lab's blend at t=1 / t=0 against F1's / F5's references at Level A
+  // (sky, world, whole frame; the middle fails against both), and live: advancing the cycle moves a moon.
+  // T23.11: `&hour=1` on a check's URL pins F1's still sky (`worldRenderer-math.ts::hourFromUrl`) — the look every
+  // check before T23.11 was calibrated on; the scene's own clock (and its night view) runs as before.
+  { name: 'look-day-night', file: 'scripts/checks/look-day-night.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.11 (T23.04C F5's owed claim): in a live match the world canvas's sky differs day against night, many times more
+  // than two readings at one hour (the control).
+  { name: 'look-day-night-match', file: 'scripts/checks/look-day-night-match.mjs', standalone: true },
   // T23.06: the rock's albedo painted on the GPU — the look-lab's F1 albedo (lighting flat) against
   // the mockup's (fields = T23.05's dump, GLSL hash = world.js's, Level A), and live: a sandbox blast
   // changes only the repainted rects and scorches only its circle (pre-blast frame as the control).
@@ -117,7 +125,7 @@ export const CHECKS = [
   // and leave rock beyond the light's radius unchanged (control region); the blast's light decays.
   // T23.09C F6: and §4 through GameScene — a remote's jet lit at its flame, networked rounds flashing at the gun (its
   // own two-client stack).
-  { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242&hour=1' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
   // GPU process's memory, which other checks' pages would move.
@@ -137,7 +145,7 @@ export const CHECKS = [
   // deep-rock world rect on two seeds wears different rock (the albedo's per-map offset), and the same
   // seed twice the same.
   { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242&hour=1' },
   // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
   // clouds) and the ambient rain that fell from them.
   // T21.02: the boots have to be visible on the player. In the sandbox
@@ -280,7 +288,7 @@ export const CHECKS = [
   { name: 'night-view-match', file: 'scripts/checks/night-view-match.mjs', standalone: true },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
   // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
-  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345' },
+  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345&hour=1' },
   { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345' },
   { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345' },
   // `serial` (measured): red in 3 of 4 `--jobs 4` runs — a landing played at
@@ -326,7 +334,7 @@ export const CHECKS = [
   // T23.19E rewrote it (R13): the networked `WEATHER=lava` path cannot start while lava is switched off
   // (LAVA_ENABLED, owner 2026-09-16), so the sandbox stands vents in the world through the same weather layer and
   // effect lights a match uses; the jet covers its burning cone, the ground is lit, both tiers, at night.
-  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', url: '?sandbox=1&seed=31337' },
+  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', url: '?sandbox=1&seed=31337&hour=1' },
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },

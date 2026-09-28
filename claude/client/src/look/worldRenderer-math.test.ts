@@ -3,7 +3,7 @@
  * tiers, and the CPU copy of the output transform `world-canvas` compares the screen against.
  */
 import { describe, expect, it } from 'vitest'
-import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP, hourFromUrl } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -106,5 +106,15 @@ describe('nightUniforms lit by effect lights (T23.10, R7)', () => {
     expect(u.circles[2]!.outer).toBeCloseTo(60)
     // Control: with no lights, the sight alone.
     expect(nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 })!.circles.length).toBe(1)
+  })
+})
+
+describe('T23.11: hourFromUrl (dev &hour=)', () => {
+  it('pins t (and u when given), refuses anything else', () => {
+    expect(hourFromUrl('?sandbox=1&hour=1')).toEqual({ t: 1, u: null })
+    expect(hourFromUrl('?hour=0.5,0.76')).toEqual({ t: 0.5, u: 0.76 })
+    expect(hourFromUrl('?sandbox=1')).toBeNull()
+    expect(hourFromUrl('?hour=2')).toBeNull()
+    expect(hourFromUrl('?hour=night')).toBeNull()
   })
 })

@@ -39,6 +39,7 @@ import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { fovRadius, nightView } from '../render/lightmap-math'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
+import { nightShare } from '../look/daylight'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
@@ -1836,6 +1837,8 @@ export class SandboxScene extends Phaser.Scene {
     const darkness = this.darkness()
     // T23.19D F2: what the furniture's night halo fades with.
     fxFeed(this).night = darkness / C().NIGHT_DARKNESS
+    // T23.11 (R7): night and moonlit day blended by the darkness, the moons where the local clock puts them.
+    this.worldRenderer?.setDaylight(nightShare(darkness, C().NIGHT_DARKNESS), cycleU(this.roundTime))
     const sight: { x: number; y: number; r: number }[] = []
     if (body) {
       const fov =

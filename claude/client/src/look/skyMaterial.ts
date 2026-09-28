@@ -37,10 +37,20 @@
  * **Rebaked** only when the sky (the map seed), the tier (the texel size) or the extents (the
  * view's zoom, the map's size) change — never by a pan, a hidden band or the redraw skip.
  *
- * **Not animated.** `bgMaterial` has no clock: its stars are a static hash grid and its god rays
- * a function of angle only. So the layer is registered `animated: false` and the redraw skip
- * stays valid; a still camera redraws nothing. (R7's moving moons and star fade by darkness are
- * T23.11's, and will change that.)
+ * **Not animated by itself.** `bgMaterial` has no clock: its stars are a static hash grid and its god rays
+ * a function of angle only; a still camera redraws nothing.
+ *
+ * **T23.11 (R7): night and moonlit day, and moons that move.** The blend moves every colour of the palette and
+ * the moons move with the cycle, so neither may be baked. The split above is re-cut so that **no bake holds a
+ * palette colour or a moon's place** — still exact algebra: the gradient bakes its weight and grain
+ * (`col = mix(top, bottom, w)·g`) and each end's stars (weighed by `t` — star alpha follows it); a band its colour
+ * weights and alpha parts (`lc = C·n + haze·hz`, `α = a0 + a1·(fade − 1)`, linear in the palette, so the linear
+ * filter still commutes); the glow its shape at each end's height. The moons are two **sets**, each baked once in
+ * its own frame and read at the set's offset (whole texels, nearest): the night's (F1's moon disc — `bgMaterial`'s
+ * sun — and its rays: one colour each, so one texture of scalars) and the day's (F5's three moons, `col·k + b`, and
+ * their rays, coarse). A new `t` or a moved moon never rebakes; it is a new picture (`WorldRenderer.setDaylight`).
+ * In the game the stars ride the gradient's parallax (0.04) rather than none — measured cheaper than a hash per
+ * pixel on SwiftShader; at the look-lab's zero offset the same pixels.
  */
 import {
   FloatType,
@@ -85,8 +95,21 @@ const VSQ = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(positio
 
 const N = SKY_LAYERS
 
-/** What a bake pass writes: `Bp,K`; `R+M, starK`; `0.75R+0.8M`; the gradient; one band; the glow and haze-band weight. */
-const MODE = { base: 0, rays: 1, raysOcc: 2, gradient: 3, layer: 4, post: 5 } as const
+/**
+ * What a bake pass writes (T23.11: **no colour of the palette is baked** — the blend moves them every frame):
+ * the gradient's weight and brushed grain; the glow's shape at each end's `glowY` and the haze band's weight;
+ * one band's colour weights and alpha parts; and per **moon set** — the night's (F1's moon disc, `bgMaterial`'s
+ * sun, and its rays) and the day's (F5's three moons) — its screen-fixed part `col ↦ col·k + b` and its rays, in
+ * the set's own frame (it moves as one, `daylight.ts::moonArcs`).
+ */
+const MODE = { gradient: 0, post: 1, layer: 2, night: 3, fixed: 4, rays: 5 } as const
+
+/**
+ * T23.11: the rays' bake, frame px per texel. The rays are smooth — `exp` in the radius, value noise in the angle,
+ * off inside `2.5 r` of a moon (60 px of the night moon) — so a coarse texel, linearly read, carries them (Level A:
+ * `look-sky` / `look-day-night`).
+ */
+export const RAY_TEXEL = 4
 
 /**
  * The bake: `bgMaterial` evaluated at `p = org + uv·ext` (frame px, y down), one part per pass
@@ -94,7 +117,8 @@ const MODE = { base: 0, rays: 1, raysOcc: 2, gradient: 3, layer: 4, post: 5 } as
  */
 const BAKE =
   NOISE_GLSL +
-  /* glsl */ `varying vec2 vUv; uniform vec4 A[${N}], B[${N}], D[${N}], E[${N}]; uniform vec3 C[${N}]; uniform vec3 skyTop, skyBottom, haze, sunC; uniform float horizon, stars, jitterY; uniform vec4 sun, rays; uniform vec3 rayC, glowC; uniform vec2 RES, glowY; uniform vec4 MO[3], ML[3]; uniform vec3 MC[3];
+  /* glsl */ `varying vec2 vUv; uniform vec4 A[${N}], B[${N}], D[${N}], E[${N}]; uniform float horizon, jitterY; uniform vec2 RES, glowY, stars;
+  uniform vec4 sun, rays, MO[3], ML[3]; uniform vec3 MC[3];
   uniform int mode, li; uniform vec2 org, ext;
   float edgeY(int i, float x, float ay){
     vec4 a = A[i], b = B[i]; float t = b.x;
@@ -118,20 +142,27 @@ const BAKE =
   void main(){
     vec2 p = org + vec2(vUv.x, 1.-vUv.y)*ext;
     if (mode == ${MODE.gradient}) {
-      // p is ps here: the gradient and its brushed grain, before anything is drawn over them.
+      // p is ps here. col = mix(skyTop, skyBottom, w)·g: the weight and the brushed grain, not the colours; and the
+      // stars of each end (z night's density, w day's), which the composite weighs by t. T23.11: baked here, the stars
+      // ride the gradient's parallax (HORIZON_PARALLAX, 0.04) in the game instead of none — at the look-lab's zero
+      // offset the same pixels as bgMaterial's; measured, a star hash per pixel cost SwiftShader ~0.4 ms a frame.
       float h = p.y/RES.y;
-      vec3 col = mix(skyTop, skyBottom, smoothstep(0., horizon/RES.y, h));
-      col *= 1. + (fbm(vec2(p.x*0.003, p.y*0.08), 3) - 0.5)*0.025;
-      gl_FragColor = vec4(col, 1.); return;
+      vec2 st = vec2(0.);
+      float s = hash12(floor(p/3.));
+      if (s > 1. - max(stars.x, stars.y)) {
+        float sv = 0.8*smoothstep(0.6, 0., length(fract(p/3.)-0.5))*(1. - h*1.3);
+        st = vec2(s > 1. - stars.x ? sv : 0., s > 1. - stars.y ? sv : 0.); }
+      gl_FragColor = vec4(smoothstep(0., horizon/RES.y, h), 1. + (fbm(vec2(p.x*0.003, p.y*0.08), 3) - 0.5)*0.025, st); return;
     }
     if (mode == ${MODE.post}) {
-      // p is ps here: the horizon glow, and the ground haze band's weight at the horizon.
-      vec3 glow = vec3(0.);
-      if (glowY.x > 0.) glow = glowC * exp(-abs(p.y - glowY.x)/90.);
-      gl_FragColor = vec4(glow, 0.55*exp(-abs(p.y - horizon)/38.)); return;
+      // p is ps here: the horizon glow's shape at night's and day's glowY (x, y), and the ground haze band's weight.
+      float gn = glowY.x > 0. ? exp(-abs(p.y - glowY.x)/90.) : 0.;
+      float gd = glowY.y > 0. ? exp(-abs(p.y - glowY.y)/90.) : 0.;
+      gl_FragColor = vec4(gn, gd, 0., 0.55*exp(-abs(p.y - horizon)/38.)); return;
     }
     if (mode == ${MODE.layer}) {
-      // p is this band's q = p − E.
+      // p is this band's q = p − E. lc = C·n + haze·hz, alpha = a0 + a1·(D.z − 1): linear in the palette's colour
+      // and fade, which the composite supplies (bgMaterial's lc = mix(C·noise, haze, 0.25 f), alpha = inside·mix(1, D.z, f^0.8)).
       int i = li; vec2 q = p;
       float st = A[i].w;
       float row = floor(q.y/st);
@@ -141,38 +172,45 @@ const BAKE =
       float soft = B[i].z;
       float inside = smoothstep(ey - soft, ey + soft, q.y);
       float f = smoothstep(D[i].x, D[i].y, q.y);
-      float alpha = inside * mix(1., D[i].z, pow(f, 0.8));
-      vec3 lc = C[i] * (1. + (fbm(vec2(q.x*0.004, q.y*0.45), 3) - 0.5)*0.07*D[i].w);
-      lc = mix(lc, haze, 0.25*f);
-      gl_FragColor = vec4(lc, alpha); return;
+      float n = (1. + (fbm(vec2(q.x*0.004, q.y*0.45), 3) - 0.5)*0.07*D[i].w)*(1. - 0.25*f);
+      gl_FragColor = vec4(n, 0.25*f, inside, inside*pow(f, 0.8)); return;
     }
-    // Screen-fixed parts, with skyOff = 0: col ↦ col·k + b over the sun, stars and moon discs.
-    float h = p.y/RES.y;
-    float k = 1., sk = 0.; vec3 b = vec3(0.);
-    if (sun.z > 0.) { float d = length(p - sun.xy); float a = smoothstep(sun.z+1., sun.z-1., d)*sun.w; k *= 1.-a; b = mix(b, sunC, a); b += sunC*0.06*exp(-d/(sun.z*4.)); }
-    if (stars > 0.) { vec2 g = floor(p/3.); float s = hash12(g); if (s > 1. - stars) { float sv = 0.8*smoothstep(0.6, 0.,length(fract(p/3.)-0.5)); b += vec3(sv) * (1.-h*1.3); sk += sv; } }
-    for (int m=0;m<3;m++){ if (MO[m].z <= 0.) continue; vec2 d = p - MO[m].xy; float r = MO[m].z; float dl = length(d);
-      b += MC[m] * 0.22 * ML[m].z * exp(-max(dl - r, 0.)/(r*1.1));
-      if (dl < r + 1.) { vec2 n = d/r; float z = sqrt(max(0., 1. - dot(n,n)));
-        float lit = clamp(dot(vec3(n, z), normalize(vec3(-ML[m].y, -0.35, 0.85))), 0., 1.);
-        vec3 mc = MC[m] * (0.35 + 0.75*lit) * (0.82 + 0.25*fbm(n*4. + float(m)*7., 4)) * (0.8 + 0.2*z);
-        float a = smoothstep(r + 1., r - 1., dl); k *= 1.-a; sk *= 1.-a; b = mix(b, mc, a); } }
-    if (mode == ${MODE.base}) { gl_FragColor = vec4(b, k); return; }
-    vec3 R = vec3(0.), M = vec3(0.);
-    if (rays.z > 0.) { vec2 d = p - rays.xy; float ang = atan(d.y, d.x); float r = length(d);
-      vec2 cs = vec2(cos(ang), sin(ang)); float st = pow(vnoise(cs*4.2 + 11.), 2.5)*0.7 + pow(vnoise(cs*1.5 + 37.), 3.)*0.6;
-      R = rayC * rays.z * st * exp(-r/rays.w) * smoothstep(0., 60., r); }
+    // The night set, in its own frame: F1's moon disc (bgMaterial's sun) is one colour, and so are its rays, so the
+    // whole set is three numbers — b = sunC·x, k = y, R = rayC·z — and one read: col ↦ col·k + b, then R after the bands.
+    if (mode == ${MODE.night}) {
+      float k = 1., b = 0., R = 0.;
+      if (sun.z > 0.) { float d = length(p - sun.xy); float a = smoothstep(sun.z+1., sun.z-1., d)*sun.w; k *= 1.-a; b = mix(b, 1., a); b += 0.06*exp(-d/(sun.z*4.)); }
+      if (rays.z > 0.) { vec2 d = p - rays.xy; float ang = atan(d.y, d.x); float r = length(d);
+        vec2 cs = vec2(cos(ang), sin(ang)); float st = pow(vnoise(cs*4.2 + 11.), 2.5)*0.7 + pow(vnoise(cs*1.5 + 37.), 3.)*0.6;
+        R = rays.z * st * exp(-r/rays.w) * smoothstep(0., 60., r); }
+      gl_FragColor = vec4(b, k, R, 0.); return;
+    }
+    // The day set, in its own frame (p: where the set is at its picture's place): the moons, col ↦ col·k + b
+    // (the stars, drawn between the sun and the moons in bgMaterial, are the composite's).
+    if (mode == ${MODE.fixed}) {
+      float k = 1.; vec3 b = vec3(0.);
+      for (int m=0;m<3;m++){ if (MO[m].z <= 0.) continue; vec2 d = p - MO[m].xy; float r = MO[m].z; float dl = length(d);
+        b += MC[m] * 0.22 * ML[m].z * exp(-max(dl - r, 0.)/(r*1.1));
+        if (dl < r + 1.) { vec2 n = d/r; float z = sqrt(max(0., 1. - dot(n,n)));
+          float lit = clamp(dot(vec3(n, z), normalize(vec3(-ML[m].y, -0.35, 0.85))), 0., 1.);
+          vec3 mc = MC[m] * (0.35 + 0.75*lit) * (0.82 + 0.25*fbm(n*4. + float(m)*7., 4)) * (0.8 + 0.2*z);
+          float a = smoothstep(r + 1., r - 1., dl); k *= 1.-a; b = mix(b, mc, a); } }
+      gl_FragColor = vec4(b, k); return;
+    }
+    // The day set's rays: bgMaterial's M, which the composite occludes by the bands.
+    vec3 M = vec3(0.);
     for (int m=0;m<3;m++){ if (MO[m].w <= 0.) continue; vec2 d = p - MO[m].xy; float ang = atan(d.y, d.x); float r = length(d);
       vec2 cs = vec2(cos(ang), sin(ang)); float st = pow(vnoise(cs*3.6 + float(m)*9. + 3.), 2.5)*0.7 + pow(vnoise(cs*1.3 + 21. + float(m)*5.), 3.)*0.6;
       M += MC[m] * MO[m].w * st * exp(-r/ML[m].x) * smoothstep(MO[m].z, MO[m].z*2.5, r); }
-    gl_FragColor = mode == ${MODE.rays} ? vec4(R + M, sk) : vec4(0.75*R + 0.8*M, 0.);
+    gl_FragColor = vec4(M, 0.);
   }`
 
 /**
- * Per frame: sample the bakes, mix the bands in slot order, add the rays and glow, mix the haze
- * band, add the grain. Every bake's texture coordinate is linear in the quad's, so all of them are
- * computed at the four corners (`COMPOSITE_V`) and interpolated; measured, the per-pixel
- * arithmetic, not the texture reads, was what SwiftShader spent its time on.
+ * Per frame: the palette's colours on the baked weights; the night set, the stars and the day set at their places
+ * and weights (`daylight.ts`); the bands mixed in slot order; the sets' rays, occluded by the bands; the glow, the
+ * haze band and the grain. Every bake's texture coordinate is linear in the quad's, so all of them are computed at
+ * the four corners (`COMPOSITE_V`) and interpolated; measured, the per-pixel arithmetic, not the texture reads, was
+ * what SwiftShader spent its time on.
  */
 const COMPOSITE_V = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
   uniform vec4 LR[${N}], GR; uniform vec2 E[${N}]; uniform vec2 RES, skyOff;
@@ -190,23 +228,48 @@ const COMPOSITE_V = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
 const BAND_UV = ['T0.xy', 'T0.zw', 'T1.xy', 'T1.zw', 'T2.xy', 'T2.zw']
 const bandMix = Array.from(
   { length: N },
-  (_, i) => `    if (on[${i}] > 0.5) { vec4 L = texture2D(L${i}, ${BAND_UV[i]}); col = mix(col, L.rgb, L.a); occ = max(occ, L.a*(0.4 + 0.6*float(${i})/${N - 1}.)); }`,
+  (_, i) =>
+    `#if NB > ${i}
+    if (on[${i}] > 0.5) { vec4 L = texture2D(L${i}, ${BAND_UV[i]}); float al = L.z + L.w*(Dz[${i}] - 1.); col = mix(col, C[${i}]*L.x + haze*L.y, al); occ = max(occ, al*(0.4 + 0.6*float(${i})/${N - 1}.)); }
+#endif`,
 ).join('\n')
 const COMPOSITE = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
-  uniform sampler2D P1, P2, P3, G, Q, ${Array.from({ length: N }, (_, i) => `L${i}`).join(', ')};
-  uniform float on[${N}];
-  uniform vec3 haze; uniform float lin, grainK; uniform vec2 RES, skyOff;
+  // T23.11: each moon set's texture coordinate is gl_FragCoord·xy + zw (place(): its offset, extent and the tier's
+  // texel folded in) — one multiply-add a pixel; measured on SwiftShader, two more varyings cost ~0.5 ms a frame.
+  uniform vec4 NFt, DFt, DRt;
+  uniform sampler2D G, Q, NF, DF, DR, ${Array.from({ length: N }, (_, i) => `L${i}`).join(', ')};
+  uniform float on[${N}], Dz[${N}];
+  uniform vec3 C[${N}], skyTop, skyBottom, haze, glowC, sunC, rayC;
+  uniform float lin, grainK, t; uniform vec2 RES, skyOff, sets;
   uniform vec4 flatC; // dev (T23.19C, rock-opaque): a = 1 draws the whole sky this one linear colour
   float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
   void main(){
     if (flatC.a > 0.5) { gl_FragColor = vec4(flatC.rgb, 1.); return; }
-    vec4 b1 = texture2D(P1, vUv), b2 = texture2D(P2, vUv), b3 = texture2D(P3, vUv);
-    vec3 col = texture2D(G, T3.xy).rgb * b1.a + b1.rgb + vec3(b2.a * 1.3 * skyOff.y/RES.y);
+    vec4 g = texture2D(G, T3.xy);
+    vec3 col = mix(skyTop, skyBottom, g.x)*g.y;
+    // The night set (F1's moon disc: bgMaterial's sun) at its weight (sets.x: t, or 1 for one palette).
+#if NSET
+    vec4 n = texture2D(NF, gl_FragCoord.xy*NFt.xy + NFt.zw); col = mix(col, col*n.y + sunC*n.x, sets.x);
+#endif
+    // Stars: each end's set (baked in G: z night's, w day's) at its end's weight — alpha follows t (R7).
+    col += vec3(g.z*t + g.w*(1. - t));
+    // The day set (F5's moons) at its weight (sets.y: 1 − t).
+#if DSET
+    vec4 d = texture2D(DF, gl_FragCoord.xy*DFt.xy + DFt.zw); col = mix(col, col*d.a + d.rgb, sets.y);
+#endif
     float occ = 0.;
 ${bandMix}
-    col += b2.rgb - occ*b3.rgb;
+    // The rays, occluded by the bands (bgMaterial's 0.75 R, 0.8 M).
+#if NSET
+    vec3 R = rayC*n.z*sets.x;
+    col += R*(1. - 0.75*occ);
+#endif
+#if DSET
+    vec3 M = texture2D(DR, gl_FragCoord.xy*DRt.xy + DRt.zw).rgb*sets.y;
+    col += M*(1. - 0.8*occ);
+#endif
     vec4 q = texture2D(Q, T3.xy);
-    col += q.rgb;
+    col += glowC * mix(q.y, q.x, t);
     // ground haze band at the horizon
     col = mix(col, haze, q.a);
     // Per pixel, verbatim: a hash of the pixel's own position. Baked, its input differed by an ulp
@@ -219,16 +282,16 @@ ${bandMix}
 type U = Record<string, { value: unknown }>
 
 /**
- * A bake target, RGBA, **float32**; **nearest**-sampled except the bands. Nearest, because every
- * screen-fixed and gradient read lands on a texel centre (`snapOffsets`), and measured on SwiftShader
- * linear filtering cost ~0.7 ms a frame more. **The bands are linear at unsnapped offsets**
- * (T23.04C F6): snapped to whole texels, a slow pan moved them in 2-px (low) / 1-px (full) jumps with
- * still frames between — a band now slides by its exact parallax offset every frame; at a zero
- * offset (the look-lab) each read is still a texel centre, so Level A is the same picture. Float32, because half float's 11 bits flip the last bit of a few per cent of pixels:
- * measured on `look-sky`, half-float bands and gradient put F5's `deltaE_cave` at 0.011 of its
- * 0.0125 and half-float screen parts moved F5's `paletteDE` 0.000 → 0.089; float32 gives 0.00000,
- * as unbaked (and on SwiftShader it is the faster of the two). Where a float32 colour buffer is
- * not renderable (no `EXT_color_buffer_float`), half float.
+ * A bake target, RGBA, **float32**; **nearest**-sampled except the bands, the moon sets and their rays. Nearest,
+ * because every gradient read lands on a texel centre (`snapOffsets`), and measured on SwiftShader linear filtering
+ * cost ~0.7 ms a frame more. **The bands are linear at unsnapped offsets** (T23.04C F6): snapped to whole texels, a
+ * slow pan moved them in 2-px (low) / 1-px (full) jumps with still frames between — a band now slides by its exact
+ * parallax offset every frame; at a zero offset (the look-lab) each read is still a texel centre, so Level A is the
+ * same picture. The moon sets (T23.11) move in whole texels (`place`), nearest; their coarse rays are linear.
+ * Float32, because half float's 11 bits flip the last bit of a few per cent of pixels: measured on `look-sky`,
+ * half-float bands and gradient put F5's `deltaE_cave` at 0.011 of its 0.0125 and half-float screen parts moved F5's
+ * `paletteDE` 0.000 → 0.089; float32 gives 0.00000, as unbaked (and on SwiftShader it is the faster of the two).
+ * Where a float32 colour buffer is not renderable (no `EXT_color_buffer_float`), half float.
  */
 const target = (w: number, h: number, float32: boolean, linear: boolean): WebGLRenderTarget =>
   new WebGLRenderTarget(w, h, {
@@ -243,16 +306,26 @@ const target = (w: number, h: number, float32: boolean, linear: boolean): WebGLR
 const texelBytes = (float32: boolean): number => (float32 ? 16 : 8)
 const rect = (e: Extent): Vector4 => new Vector4(e.org[0], e.org[1], e.ext[0], e.ext[1])
 
+/** A moon set's place: F5's first moon for the day set, F1's moon disc (or its rays) for the night's — `null`: none. */
+const dayAnchor = (bg: Background | null): [number, number] | null => (bg?.moons?.[0] ? [bg.moons[0].x, bg.moons[0].y] : null)
+const nightAnchor = (bg: Background | null): [number, number] | null =>
+  bg?.sun ? [bg.sun.x, bg.sun.y] : bg?.rays ? [bg.rays[0], bg.rays[1]] : null
+
 /**
- * The sky's full-screen quad (`bgQuad`: clip space, drawn first, never culled, no depth), fed
- * with `setSky`, baked and moved by `place` before a frame is drawn. `hide` is a
- * dev check's control: those layer slots are skipped exactly as an empty slot is.
+ * The sky's full-screen quad (`bgQuad`: clip space, drawn first, never culled, no depth), fed with `setSky`
+ * (what is baked: the shapes, both ends' glow heights and star densities, the two moon sets) and `setColours`
+ * (per frame: the palette at `t` and where the moon sets are — `daylight.ts`), baked and moved by `place` before a
+ * frame is drawn. `hide` is a dev check's control: those layer slots are skipped exactly as an empty slot is.
  */
 export class SkyQuad {
   readonly mesh: Mesh<PlaneGeometry, ShaderMaterial>
-  /** Bakes made so far, and the bytes the current ones hold (the dev handle reports both). */
-  readonly bakeStats = { bakes: 0, bytes: 0 }
+  /** Bakes made so far, and the bytes the current ones hold (the dev handle reports both; T23.11: `rayBytes` the moon sets' rays, one size at every tier). */
+  readonly bakeStats = { bakes: 0, bytes: 0, rayBytes: 0 }
+  /** What the bakes are shaped from: the night end (its shapes, its moon disc) and the day end (its moons). */
   private bg: Background | null = null
+  private day: Background | null = null
+  /** T23.11: how far past the frame the moon sets are baked, frame px — `MOON_REACH` when they move, 0 when not. */
+  private reach: [number, number] = [0, 0]
   /** Bumped by `setSky`: part of the bake key, so a new sky (a new seed) is rebaked. */
   private skyId = 0
   private hidden = new Set<number>()
@@ -262,29 +335,26 @@ export class SkyQuad {
   private readonly bakeCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1)
   private targets: WebGLRenderTarget[] = []
   private bakedKey = ''
+  /** T23.11: where each moon set is against where it was baked, frame px (unsnapped; `place` snaps them). */
+  private setOffsets: { night: Offset; day: Offset } = { night: [0, 0], day: [0, 0] }
+  /** T23.11: the moon sets' baked extent (frame px, in a set's own frame). */
+  private setsExtent: Extent = { org: [0, 0], ext: [1, 1] }
 
   constructor() {
     this.bakeMat = new ShaderMaterial({
       uniforms: {
         A: { value: Array.from({ length: N }, () => new Vector4()) },
         B: { value: Array.from({ length: N }, () => new Vector4()) },
-        C: { value: Array.from({ length: N }, () => new Vector3()) },
         D: { value: Array.from({ length: N }, () => new Vector4()) },
         E: { value: Array.from({ length: N }, () => new Vector4()) },
-        skyTop: { value: new Vector3() },
-        skyBottom: { value: new Vector3() },
-        haze: { value: new Vector3() },
         horizon: { value: 0 },
         sun: { value: new Vector4() },
-        sunC: { value: new Vector3() },
-        stars: { value: 0 },
+        rays: { value: new Vector4() },
         MO: { value: Array.from({ length: SKY_MOONS }, () => new Vector4()) },
         MC: { value: Array.from({ length: SKY_MOONS }, () => new Vector3()) },
         ML: { value: Array.from({ length: SKY_MOONS }, () => new Vector4()) },
-        rays: { value: new Vector4() },
-        rayC: { value: new Vector3() },
-        glowY: { value: new Vector2(-1, 0) },
-        glowC: { value: new Vector3() },
+        glowY: { value: new Vector2(-1, -1) },
+        stars: { value: new Vector2() },
         RES: { value: new Vector2(1280, 720) },
         jitterY: { value: APEX_JITTER },
         mode: { value: 0 },
@@ -302,17 +372,29 @@ export class SkyQuad {
     this.bakeScene.add(this.bakeQuad)
     const mat = new ShaderMaterial({
       uniforms: {
-        P1: { value: null },
-        P2: { value: null },
-        P3: { value: null },
         G: { value: null },
         Q: { value: null },
+        NF: { value: null },
+        DF: { value: null },
+        DR: { value: null },
         ...Object.fromEntries(Array.from({ length: N }, (_, i) => [`L${i}`, { value: null }])),
         LR: { value: Array.from({ length: N }, () => new Vector4(0, 0, 1, 1)) },
         GR: { value: new Vector4(0, 0, 1, 1) },
+        NFt: { value: new Vector4(0, 0, 0, 0) },
+        DFt: { value: new Vector4(0, 0, 0, 0) },
+        DRt: { value: new Vector4(0, 0, 0, 0) },
         E: { value: Array.from({ length: N }, () => new Vector2()) },
         on: { value: new Array<number>(N).fill(0) },
+        Dz: { value: new Array<number>(N).fill(1) },
+        C: { value: Array.from({ length: N }, () => new Vector3()) },
+        skyTop: { value: new Vector3() },
+        skyBottom: { value: new Vector3() },
         haze: { value: new Vector3() },
+        glowC: { value: new Vector3() },
+        sunC: { value: new Vector3() },
+        rayC: { value: new Vector3() },
+        sets: { value: new Vector2(1, 1) },
+        t: { value: 1 },
         // `bgQuad` builds `bgMaterial(o, true)`: the result is raised to 2.2 before the post chain.
         lin: { value: 1 },
         grainK: { value: 0 },
@@ -322,6 +404,9 @@ export class SkyQuad {
       },
       vertexShader: COMPOSITE_V,
       fragmentShader: COMPOSITE,
+      // T23.11: the band slots compiled are the sky's own (`setSky`): SwiftShader runs every slot's arithmetic even
+      // when its uniform switch skips it (the game's sky has four bands in six slots).
+      defines: { NB: N, NSET: 1, DSET: 1 },
       depthTest: false,
       depthWrite: false,
     })
@@ -339,36 +424,94 @@ export class SkyQuad {
     return this.bakeMat.uniforms as U
   }
 
-  /** Hand over the sky (`null`: draw none — a space map). Packs the uniforms as `bgMaterial` does. */
-  setSky(bg: Background | null): void {
-    this.bg = bg
+  /**
+   * Hand over the sky (`null`: draw none — a space map): `night` and, for the blend (T23.11), `day` — the same
+   * shapes (a band's shape never blends), each end's glow height, star density and moon set. `reach`: how far the
+   * moon sets may move (`daylight.ts::MOON_REACH`; none for the look-lab's still scenes). Then `setColours(night, 1)`
+   * until the scene says otherwise. One background (the look-lab's scenes): both ends, both its sets at full weight.
+   */
+  setSky(night: Background | null, day: Background | null = null, reach: [number, number] = [0, 0]): void {
+    this.bg = night
+    this.day = day
+    this.reach = night ? reach : [0, 0]
     this.skyId++
-    this.mesh.visible = bg !== null
-    if (!bg) return
+    this.mesh.visible = night !== null
+    if (!night) return
+    this.define('NB', Math.min(N, night.layers.length))
+    const d = day ?? night
+    this.packLayers()
+    this.bu['horizon']!.value = night.horizon
+    ;(this.bu['glowY']!.value as Vector2).set(night.glowY ?? -1, d.glowY ?? -1)
+    ;(this.bu['stars']!.value as Vector2).set(night.stars ?? 0, d.stars ?? 0)
+    this.setColours(night, 1)
+  }
+
+  /**
+   * T23.11: this frame's sky — `bg` the blend at `t` with its moons at their places (`daylight.ts`): every colour,
+   * each band's fade, where each moon set is (against where it was baked) and its weight (`vis`); `t` weighs each
+   * end's stars and glow. Nothing here is baked: a new `t` or a moved moon never rebakes.
+   */
+  setColours(bg: Background, t: number): void {
+    const u = this.u
+    ;(u['skyTop']!.value as Vector3).copy(v3(bg.skyTop))
+    ;(u['skyBottom']!.value as Vector3).copy(v3(bg.skyBottom))
+    ;(u['haze']!.value as Vector3).copy(v3(bg.haze))
+    ;(u['glowC']!.value as Vector3).copy(v3(bg.glowColor ?? 0x000000))
+    u['t']!.value = t
+    // `bgMaterial`'s own defaults, where a scene leaves a field out.
+    u['grainK']!.value = bg.grainK ?? 0.035
+    const nightBase = nightAnchor(this.bg)
+    const dayBase = dayAnchor(this.day ?? this.bg)
+    const night = nightAnchor(bg)
+    const day = dayAnchor(bg)
+    // Snapped to whole texels where the frame is placed (`place`): the sets are read nearest, texel centre on texel centre.
+    this.setOffsets = {
+      night: night && nightBase ? [night[0] - nightBase[0], night[1] - nightBase[1]] : [0, 0],
+      day: day && dayBase ? [day[0] - dayBase[0], day[1] - dayBase[1]] : [0, 0],
+    }
+    // A set absent from the blend is invisible; present, at its `vis` (whole when the scene has one palette).
+    const nightVis = bg.sun ? bg.sun.vis ?? 1 : bg.rays ? 1 : 0
+    const dayVis = bg.moons?.length ? bg.moons[0]!.vis ?? 1 : 0
+    ;(u['sets']!.value as Vector2).set(nightVis, dayVis)
+    // A set at weight 0 is compiled out (full day, full night: most of the cycle) — measured on SwiftShader, its
+    // reads cost even behind a uniform switch. three keeps each variant's program, so a switch compiles once.
+    this.define('NSET', nightVis > 0 ? 1 : 0)
+    this.define('DSET', dayVis > 0 ? 1 : 0)
+    const C = u['C']!.value as Vector3[]
+    const Dz = u['Dz']!.value as number[]
+    for (let i = 0; i < N; i++) {
+      const L = bg.layers[i]
+      C[i]!.set(...(L ? hexLinear(L.color) : ([0, 0, 0] as [number, number, number])))
+      Dz[i] = L ? (L.fade ?? [L.y, bg.horizon, 0.15])[2] : 1
+    }
+  }
+
+  private define(name: string, v: number): void {
+    const mat = this.mesh.material
+    if (mat.defines[name] === v) return
+    mat.defines[name] = v
+    mat.needsUpdate = true
+  }
+
+  /** Pack one moon set into the bake's uniforms: `sunOf`'s disc and rays, `moonsOf`'s moons (either may be null). */
+  private packSet(sunOf: Background | null, moonsOf: Background | null): void {
     const u = this.bu
-    const moons = bg.moons ?? []
+    const s = sunOf?.sun
+    ;(u['sun']!.value as Vector4).set(...(s ? ([s.x, s.y, s.r, s.k] as const) : ([0, 0, 0, 0] as const)))
+    const r = sunOf?.rays
+    ;(u['rays']!.value as Vector4).set(...(r ? ([r[0], r[1], r[2], r[3]] as const) : ([0, 0, 0, 0] as const)))
+    // The night set's two colours are the composite's (its bake holds scalars) — set by the night set's own packing.
+    if (sunOf) {
+      ;(this.u['sunC']!.value as Vector3).copy(v3(sunOf.sun?.color ?? 0xffffff))
+      ;(this.u['rayC']!.value as Vector3).copy(v3(sunOf.rayColor ?? 0xffffff))
+    }
+    const moons = moonsOf?.moons ?? []
     for (let i = 0; i < SKY_MOONS; i++) {
       const m = moons[i]
       ;(u['MO']!.value as Vector4[])[i]!.set(...(m ? ([m.x, m.y, m.r, m.rays ?? 0] as const) : ([0, 0, 0, 0] as const)))
       ;(u['MC']!.value as Vector3[])[i]!.set(...hexLinear(m?.color ?? 0))
       ;(u['ML']!.value as Vector4[])[i]!.set(...(m ? ([m.rayLen ?? 400, m.phase ?? 0.3, m.halo ?? 1, 0] as const) : ([1, 0, 0, 0] as const)))
     }
-    this.packLayers()
-    ;(u['skyTop']!.value as Vector3).copy(v3(bg.skyTop))
-    ;(u['skyBottom']!.value as Vector3).copy(v3(bg.skyBottom))
-    ;(u['haze']!.value as Vector3).copy(v3(bg.haze))
-    ;(this.u['haze']!.value as Vector3).copy(v3(bg.haze))
-    u['horizon']!.value = bg.horizon
-    const s = bg.sun
-    ;(u['sun']!.value as Vector4).set(...(s ? ([s.x, s.y, s.r, s.k] as const) : ([0, 0, 0, 0] as const)))
-    ;(u['sunC']!.value as Vector3).copy(v3(s?.color ?? 0xffffff))
-    u['stars']!.value = bg.stars ?? 0
-    // `bgMaterial`'s own defaults, where a scene leaves a field out.
-    this.u['grainK']!.value = bg.grainK ?? 0.035
-    ;(u['rays']!.value as Vector4).set(...(bg.rays ?? ([0, 0, 0, 0] as const)))
-    ;(u['rayC']!.value as Vector3).copy(v3(bg.rayColor ?? 0xffffff))
-    ;(u['glowY']!.value as Vector2).set(bg.glowY ?? -1, 0)
-    ;(u['glowC']!.value as Vector3).copy(v3(bg.glowColor ?? 0x000000))
   }
 
   private packLayers(): void {
@@ -377,7 +520,6 @@ export class SkyQuad {
     const u = this.bu
     const A = u['A']!.value as Vector4[]
     const B = u['B']!.value as Vector4[]
-    const C = u['C']!.value as Vector3[]
     const D = u['D']!.value as Vector4[]
     const E = u['E']!.value as Vector4[]
     const on = this.u['on']!.value as number[]
@@ -388,15 +530,13 @@ export class SkyQuad {
       if (!L) {
         A[i]!.set(0, 9999, 1, 4)
         B[i]!.set(-1, 0, 0, 0)
-        C[i]!.set(0, 0, 0)
         D[i]!.set(0, 1, 1, 0)
         E[i]!.set(0, 0, 0, 0)
         continue
       }
       A[i]!.set(L.x, L.y, L.slope ?? L.r ?? 1, L.step ?? 6)
       B[i]!.set(SHAPE[L.shape], L.top ?? 0, L.soft ?? 1, L.jitter ?? 0.8)
-      C[i]!.set(...hexLinear(L.color))
-      // `L.streak ?? 1`: no scene sets a streak, so the mockup's default.
+      // `L.streak ?? 1`: no scene sets a streak, so the mockup's default. D.z (the fade's floor) is the composite's.
       D[i]!.set(...(L.fade ?? [L.y, bg.horizon, 0.15]), 1)
       E[i]!.set(0, 0, L.period ?? 0, L.seed ?? 0)
     }
@@ -427,6 +567,19 @@ export class SkyQuad {
     for (let i = 0; i < N; i++) E[i]!.set(drawn.layers[i]?.[0] ?? 0, drawn.layers[i]?.[1] ?? 0)
     ;(this.u['skyOff']!.value as Vector2).set(drawn.horizon[0], drawn.horizon[1])
     ;(this.u['RES']!.value as Vector2).set(frame[0], frame[1])
+    // The moon sets move in whole texels (as the gradient does), so their nearest reads are the bake's own values —
+    // measured on SwiftShader, linear reads of the two sets cost ~0.7 ms a frame more.
+    const snap = (v: number): number => Math.round(v / texel) * texel + 0
+    // A frame px p = (fragX·texel, H − fragY·texel) reads its set at q = p − offset, whose texture coordinate is
+    // ((q.x − org.x)/ext.x, 1 − (q.y − org.y)/ext.y) — linear in gl_FragCoord: scale and bias, per set.
+    const fold = (k: string, off: Offset): void => {
+      const e = this.setsExtent
+      const [ox, oy] = [snap(off[0]), snap(off[1])]
+      ;(this.u[k]!.value as Vector4).set(texel / e.ext[0], texel / e.ext[1], -(ox + e.org[0]) / e.ext[0], 1 - (frame[1] - oy - e.org[1]) / e.ext[1])
+    }
+    fold('NFt', this.setOffsets.night)
+    fold('DFt', this.setOffsets.day)
+    fold('DRt', this.setOffsets.day)
     return drawn
   }
 
@@ -437,17 +590,19 @@ export class SkyQuad {
     this.bakedKey = key
     this.freeTargets()
     ;(this.bu['RES']!.value as Vector2).set(frame[0], frame[1])
-    const screen: Extent = { org: [0, 0], ext: [frame[0], frame[1]] }
     const bake = (mode: number, e: Extent, li = 0): Texture => {
       // The glow and haze weight read `ps.y` alone: one column, which every x reads (clamp to edge).
-      const w = mode === MODE.post ? 1 : Math.max(1, Math.round(e.ext[0] / texel))
-      const band = mode === MODE.layer
+      const px = mode === MODE.rays ? RAY_TEXEL : texel
+      const w = mode === MODE.post ? 1 : Math.max(1, Math.round(e.ext[0] / px))
+      const linear = mode === MODE.layer || mode === MODE.rays
       // A linear float32 read needs `OES_texture_float_linear`; without it a band bakes half float,
       // which is always filterable (measured on look-sky: F5 deltaE_cave 0.011 of 0.0125, T23.04B).
-      const f32 = band ? float32Linear : float32
-      const rt = target(w, Math.max(1, Math.round(e.ext[1] / texel)), f32, band)
+      const f32 = linear ? float32Linear : float32
+      const rt = target(w, Math.max(1, Math.round(e.ext[1] / px)), f32, linear)
       this.targets.push(rt)
-      this.bakeStats.bytes += rt.width * rt.height * texelBytes(f32)
+      const bytes = rt.width * rt.height * texelBytes(f32)
+      this.bakeStats.bytes += bytes
+      if (mode === MODE.rays) this.bakeStats.rayBytes += bytes
       this.bu['mode']!.value = mode
       this.bu['li']!.value = li
       ;(this.bu['org']!.value as Vector2).set(e.org[0], e.org[1])
@@ -460,12 +615,21 @@ export class SkyQuad {
     const float32Linear = float32 && renderer.extensions.has('OES_texture_float_linear')
     const prev = renderer.getRenderTarget()
     const u = this.u
-    u['P1']!.value = bake(MODE.base, screen)
-    u['P2']!.value = bake(MODE.rays, screen)
-    u['P3']!.value = bake(MODE.raysOcc, screen)
     u['G']!.value = bake(MODE.gradient, x.horizon)
     u['Q']!.value = bake(MODE.post, x.horizon)
     ;(u['GR']!.value as Vector4).copy(rect(x.horizon))
+    // The moon sets, each at its picture's place, the frame plus how far the set can move (whole texels).
+    const up = (v: number): number => Math.ceil(v / texel) * texel
+    const [rx, ry] = [up(this.reach[0]), up(this.reach[1])]
+    const sets: Extent = { org: [-rx, -ry], ext: [frame[0] + 2 * rx, frame[1] + ry] }
+    const night = this.bg
+    const day = this.day ?? this.bg
+    this.packSet(night, null)
+    u['NF']!.value = bake(MODE.night, sets)
+    this.packSet(null, day)
+    u['DF']!.value = bake(MODE.fixed, sets)
+    u['DR']!.value = bake(MODE.rays, sets)
+    this.setsExtent = sets
     for (let i = 0; i < N; i++) {
       const e = x.layers[i]
       u[`L${i}`]!.value = e ? bake(MODE.layer, e, i) : null
@@ -479,6 +643,7 @@ export class SkyQuad {
     for (const t of this.targets) t.dispose()
     this.targets = []
     this.bakeStats.bytes = 0
+    this.bakeStats.rayBytes = 0
   }
 
   /** Dev: draw only the layers not in `hide` (the parallax check isolates one band at a time). */

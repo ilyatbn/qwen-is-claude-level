@@ -109,6 +109,8 @@ export interface SkyMoon {
   rayLen: number
   phase: number
   halo: number
+  /** T23.11: how much of it shows, 0–1 (absent: whole) — a moon only one palette has, faded by the blend (`daylight.ts`). */
+  vis?: number
 }
 
 /** `e_style.js::bgMaterial`'s options. */
@@ -118,7 +120,8 @@ export interface Background {
   haze: number
   horizon: number
   grainK?: number
-  sun?: { x: number; y: number; r: number; k: number; color: number }
+  /** T23.11: `vis` as `SkyMoon.vis` (F1's moon disc is `bgMaterial`'s sun). */
+  sun?: { x: number; y: number; r: number; k: number; color: number; vis?: number }
   rays?: [number, number, number, number]
   rayColor?: number
   stars?: number
@@ -380,7 +383,21 @@ export interface ViewRect {
  * scenes build it from the sim. `masks` is `null` where no mask is fed yet — the game until
  * the terrain layer reads one (T23.07); a renderer must draw its sky without one.
  */
+/**
+ * T23.11 (R7): the two palettes a description blends between — `night` (F1's) and `day` (F5's, the moonlit day),
+ * the same shapes; `WorldRenderer.setDaylight(t, u)` makes `look` and `palette` their blend at `t`
+ * (`daylight.ts`) and moves the moons to cycle position `u`.
+ */
+export interface Daylight {
+  day: FrameLook
+  night: FrameLook
+  dayPalette: CombatPalette | null
+  nightPalette: CombatPalette | null
+}
+
 export interface SceneDescription {
+  /** T23.11: the palettes `look` is blended from (the game; the look-lab's `&t=`); absent: `look` as given. */
+  daylight?: Daylight
   /**
    * T23.09A: `false` draws no cave wall (the terrain shader's `back` branch) — carved air shows what is
    * behind the rock. Absent: drawn, as in every mockup scene (the look-lab).

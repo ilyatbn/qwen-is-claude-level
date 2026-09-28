@@ -551,11 +551,10 @@ export default async function ({ page, shot, log }) {
   if (day.d.spaceSky !== null) problems.push('the space sky is up in standard gravity')
   if (groundUp !== true) problems.push(`the ground's sky is not drawn on the standard map (world renderer sky: ${groundUp})`)
   if (!(night.d.darkness > 0.5 * k.NIGHT_DARKNESS)) problems.push(`night darkness ${night.d.darkness}`)
-  // T23.07: the pixel half of this control retired — night's darkening was Phaser's MULTIPLY lightmap
-  // over Phaser's rock, and the rock is the lit terrain on the world canvas now, which that layer cannot
-  // darken (F1's night at every hour until T23.11's night/moonlit-day blend, R7). The darkness itself
-  // is still asserted above; T23.11 puts the pixel presence back with the new night.
-  log(`standard: night changed the frame's mean by ${(dm.mean - nm.mean).toFixed(1)} (reported: the terrain is F1's night at every hour until T23.11)`)
+  // The presence control's pixel half (T23.07 retired it while the world was F1's night at every hour; T23.11 put
+  // it back): on the standard map night darkens the frame — F5's moonlit day → F1's night and the night view (R7).
+  if (!(dm.mean - nm.mean > 15)) problems.push(`night darkened the frame by only ${(dm.mean - nm.mean).toFixed(1)}`)
+  log(`standard: night darkened the frame's mean by ${(dm.mean - nm.mean).toFixed(1)} (min 15)`)
   // T23.04C F4: the star counter's negative control, back. (Retired in T23.04: "the daytime sky
   // counts < STAR_FLOOR / 4" — the ground sky is F1's night, stars included, at every hour until
   // T23.11.) So the day sky is supplied without the world renderer: at the top of the map, open

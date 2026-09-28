@@ -50,6 +50,9 @@
 import { join } from 'node:path'
 import { startStack, enterBattle, tally, freePort, drawnFrames, shotsDir } from './harness.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
+// T23.11: the sky follows the hour now (the palettes' blend, the moons on their arcs); this check was calibrated on
+// F1's look with nothing in the sky moving, so it pins that hour (`worldRenderer-math.ts::hourFromUrl`).
+const HOUR = '&hour=1'
 
 /** Agreement between the two canvases, CSS px: sub-pixel placement differs (MSAA vs roundPixels). */
 const MAX_DX = 1.5
@@ -355,7 +358,7 @@ try {
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   const openSandbox = async (extra = '') => {
-    await page.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242${extra}`)
+    await page.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242${HOUR}${extra}`)
     await page.waitForFunction('!!window.__game', null, { timeout: 60_000 })
     await worldReady(page, 60_000)
   }
@@ -462,7 +465,7 @@ try {
   // ---------------------------------------------------------------- R18 on a DPR-2 screen
   const hi = await stack.browser.newContext({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2 })
   const hp = await hi.newPage()
-  await hp.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242`)
+  await hp.goto(`${stack.viteUrl}/?e2e=1&sandbox=1&seed=4242${HOUR}`)
   await hp.waitForFunction('!!window.__game', null, { timeout: 60_000 })
   await worldReady(hp, 60_000)
   await assertOrder(hp, 'DPR 2, 1100x900')
@@ -475,7 +478,7 @@ try {
   await hi.close()
 
   // ---------------------------------------------------------------- networked match
-  const { page: gp, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+  const { page: gp, shot, pageErrors } = await stack.openClient({ name: 'ana', query: HOUR })
   await enterBattle(gp, { label: 'world-canvas', waitPlaying: true })
   await worldReady(gp, 30_000)
   await assertOrder(gp, 'match')

@@ -38,7 +38,7 @@
  */
 import Phaser from 'phaser'
 import { devSurface } from '../dev'
-import { actorBoxes, describeScene, type Box, type SceneDescription } from './scene'
+import { actorBoxes, describeScene, type Box, type FrameLook, type SceneDescription } from './scene'
 import { SCENES } from './scenes'
 import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
@@ -100,62 +100,79 @@ export class LookScene extends Phaser.Scene {
     }
     if (devSurface()) (window as unknown as { __look: LookHandle }).__look = handle
 
-    const data = SCENES[id]
+    const q = new URLSearchParams(location.search)
+    // T23.11: `&t=` (0–1) draws the scene at that hour of the game's blend — F5's moonlit day at 0, F1's night at 1
+    // (`daylight.ts`), the moons at the pictures' places. Only for the combat pair (F1/F5: "only the palette differs");
+    // the cast and effects are the nearer end's scene (shapes never blend).
+    const tArg = q.get('t')
+    const tLab = tArg === null ? null : Number(tArg)
+    if (tLab !== null && (!(tLab >= 0 && tLab <= 1) || (id !== 'F1' && id !== 'F5'))) {
+      handle.error = `&t=${tArg}: a number in 0..1, on F1 or F5 only`
+      console.error(handle.error)
+      return
+    }
+    const data = tLab === null ? SCENES[id] : tLab >= 0.5 ? SCENES['F1'] : SCENES['F5']
     if (!data) {
       handle.error = `unknown look scene "${id}" — have ${Object.keys(SCENES).join(', ')}`
       console.error(handle.error)
       return
     }
     const full = describeScene(data)
-    const q = new URLSearchParams(location.search)
     const only = q.get('only')
     // T23.18: every `knob` parameter, joined — a check adds `&knob=fx-off` to a URL that already names a knob.
     const knobs = q.getAll('knob').join(',')
-    const terrainLook = { ...full.look.terrain }
     let actorRim = true
     let jetOff = false
     let fxOff = false
     let gameBlast = false
-    let look: SceneDescription['look'] = { ...full.look, terrain: terrainLook }
-    const P = full.look
-    // T23.13: knobs combine, comma-separated (`actor-rim-off,exposure-up`: a control of T23.12's picture).
-    for (const knob of (knobs ?? '').split(',').filter(Boolean)) {
-      if (knob === 'rim-off') terrainLook.rimK = 0
-      else if (knob === 'bevel-off') terrainLook.bevel = 0.001
-      else if (knob === 'lights-off') look.lights = []
-      // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
-      else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
-      // T23.08C (R25): the halo's spread alone — `worldonly.js`'s 'bloom-radius-0'; the halo ring must see it.
-      else if (knob === 'bloom-radius-0') look.bloom = [P.bloom[0], 0, P.bloom[2]]
-      else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
-      else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
-      else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9
-      else if (knob === 'fg-off') look.fg = null
-      else if (knob === 'grade-off') look.grade = null
-      // T23.13: the actors without lit()'s two rim passes (castonly.js 'rim-off') — rim-light's must-fail control.
-      else if (knob === 'actor-rim-off') actorRim = false
-      // T23.14B: every jet flame out (a figure's `J.jet`, a stick's `jet`) — `jet-flame`'s must-fail control.
-      else if (knob === 'actor-jet-off') jetOff = true
-      // T23.18: the scene without its effects (`fx`) — what `castonly.js`/`posesonly.js`/`weaponsonly.js` render, and
-      // `look-fx`'s must-fail control.
-      else if (knob === 'fx-off') fxOff = true
-      // T23.19D F6: the scene's explosion drawn **the game's way** — a `Blast` record in an ordnance layer's state, built
-      // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one, with the mockup's stream —
-      // instead of the scene's still (`sceneFx`). `&blastk=` is its age as a share of its life (default: the peak, R27).
-      else if (knob === 'game-blast') gameBlast = true
-      else handle.error = `unknown knob "${knob}"`
+    // T23.11: the knobs and `only=` applied to a look — the scene's, or each end of the `&t=` blend.
+    const lookOf = (src: FrameLook): FrameLook => {
+      const terrainLook = { ...src.terrain }
+      let look: FrameLook = { ...src, terrain: terrainLook }
+      const P = src
+      // T23.13: knobs combine, comma-separated (`actor-rim-off,exposure-up`: a control of T23.12's picture).
+      for (const knob of (knobs ?? '').split(',').filter(Boolean)) {
+        if (knob === 'rim-off') terrainLook.rimK = 0
+        else if (knob === 'bevel-off') terrainLook.bevel = 0.001
+        else if (knob === 'lights-off') look.lights = []
+        // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
+        else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
+        // T23.08C (R25): the halo's spread alone — `worldonly.js`'s 'bloom-radius-0'; the halo ring must see it.
+        else if (knob === 'bloom-radius-0') look.bloom = [P.bloom[0], 0, P.bloom[2]]
+        else if (knob === 'fog-off') look = { ...look, fogBack: null, fogFront: null }
+        else if (knob === 'exposure-up') look.exposure = P.exposure * 1.1
+        else if (knob === 'exposure-down') look.exposure = P.exposure * 0.9
+        else if (knob === 'fg-off') look.fg = null
+        else if (knob === 'grade-off') look.grade = null
+        // T23.13: the actors without lit()'s two rim passes (castonly.js 'rim-off') — rim-light's must-fail control.
+        else if (knob === 'actor-rim-off') actorRim = false
+        // T23.14B: every jet flame out (a figure's `J.jet`, a stick's `jet`) — `jet-flame`'s must-fail control.
+        else if (knob === 'actor-jet-off') jetOff = true
+        // T23.18: the scene without its effects (`fx`) — what `castonly.js`/`posesonly.js`/`weaponsonly.js` render, and
+        // `look-fx`'s must-fail control.
+        else if (knob === 'fx-off') fxOff = true
+        // T23.19D F6: the scene's explosion drawn **the game's way** — a `Blast` record in an ordnance layer's state, built
+        // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one, with the mockup's stream —
+        // instead of the scene's still (`sceneFx`). `&blastk=` is its age as a share of its life (default: the peak, R27).
+        else if (knob === 'game-blast') gameBlast = true
+        else handle.error = `unknown knob "${knob}"`
+      }
+      // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
+      const bare = { fogBack: null, fogFront: null, fg: null, bloom: [0, P.bloom[1], P.bloom[2]] as FrameLook['bloom'], grade: null }
+      return only === 'sky' ? { ...src, ...bare } : only === 'terrain' ? { ...look, ...bare } : look
     }
-    // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
-    const bare = { fogBack: null, fogFront: null, fg: null, bloom: [0, P.bloom[1], P.bloom[2]] as SceneDescription['look']['bloom'], grade: null }
+    const look = lookOf(full.look)
     const cast = { actors: [], fx: [], labels: [], hud: null }
     const desc: SceneDescription =
       only === 'sky'
-        ? { ...full, look: { ...full.look, ...bare }, masks: null, litTerrain: false, ...cast }
-        : only === 'terrain'
-          ? { ...full, look: { ...look, ...bare }, ...cast }
-          : only === 'world'
-            ? { ...full, look, ...cast }
-            : { ...full, look }
+        ? { ...full, look, masks: null, litTerrain: false, ...cast }
+        : only === 'terrain' || only === 'world'
+          ? { ...full, look, ...cast }
+          : { ...full, look }
+    if (tLab !== null) {
+      const [f5, f1] = [SCENES['F5']!, SCENES['F1']!]
+      desc.daylight = { day: lookOf(f5.look), night: lookOf(f1.look), dayPalette: f5.palette, nightPalette: f1.palette }
+    }
     desc.actorRim = actorRim
     if (fxOff) desc.fx = []
     const staged = gameBlast ? desc.fx.find((f) => f.kind === 'explosion') : undefined
@@ -182,7 +199,10 @@ export class LookScene extends Phaser.Scene {
     // loaded on demand like theirs (T23.03B, F10), so the lab measures the same path.
     void Promise.all([loadWorldRenderer(this), desc.masks ? Core.init() : null]).then(([m, core]) => {
       if (!m) return
+      // T23.11: the smoke's colours are the hour's (`fx/game.ts::smokeLook`) — F5's scene is the moonlit day, the rest night.
+      fxFeed(this).night = tLab ?? (id === 'F5' ? 0 : 1)
       const renderer = m.createWorldRenderer(this, desc)
+      if (tLab !== null && renderer instanceof m.WorldRenderer) renderer.setDaylight(tLab, null)
       if (staged?.kind === 'explosion' && renderer instanceof m.WorldRenderer) {
         // One blast, at the scene's explosion, sized so `blastScale(r)` is its `scale`, at `blastk` of its life.
         const k = Number(q.get('blastk') ?? GAME_BLAST_K)

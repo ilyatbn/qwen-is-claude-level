@@ -61,6 +61,8 @@ const PAN = 200
 const TOL_PX = 3
 /** A band pixel differs from the all-hidden frame by more than this (max channel). */
 const BAND_DIFF = 6
+/** T23.11: the sandbox second the live legs hold the clock at — `NIGHT_MOON_U` 0.76 of the 120 s cycle. */
+const NIGHT_MOON_T = 0.76 * 120
 /** T23.04C F6: steps of the slow pan, one world px each. */
 const SLOW_STEPS = 16
 
@@ -192,12 +194,21 @@ export default async function ({ page, shot, log }) {
   // ---------------------------------------------------------------- 2. live parallax
   await page.evaluate((k) => localStorage.setItem(k, '0'), HIGH_QUALITY_KEY)
   const base = new URL(page.url())
-  base.search = '?sandbox=1&seed=4242'
+  // T23.11: the sky pinned still at F1's look (`hourFromUrl`) — a moving moon would be read as a band's shift.
+  base.search = '?sandbox=1&seed=4242&hour=1'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world && window.__world.frames() > 2 && !!window.__world.sky()?.drawn, null, { timeout: 60_000 })
+  // T23.11: the sky moves with the clock now (the palettes' blend, the moons on their arcs), so the parallax legs
+  // hold it — at the night moon's moment (`daylight.ts::NIGHT_MOON_U` of the 120 s cycle): F1's look, its moon
+  // disc at its place, which the control below locates. The night view (T23.10: outside your sight the scene fades)
+  // is hidden: it would dim the bands the legs isolate.
+  await page.evaluate((t) => window.__game.setTime(t), NIGHT_MOON_T)
+  await page.evaluate(() => window.__world.hideLayers(['night']))
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
   const sky = await page.evaluate(() => window.__world.sky())
   const tier = await page.evaluate(() => window.__world.info())
   if (tier.tier !== 'low') problems.push(`the live half runs ${tier.tier}, want low (R20: the checks' tier)`)
+  if (sky.hour?.t !== 1) problems.push(`the held clock did not draw night: hour ${JSON.stringify(sky.hour)}`)
   const n = sky.layers.length
   if (n < 2) throw new Error(`the game sky has ${n} layers — nothing to compare`)
   const cssPerBuf = 1280 / tier.buffer[0]
@@ -352,7 +363,10 @@ export default async function ({ page, shot, log }) {
   const lowInfo = await page.evaluate(() => window.__world.info())
   log(`tier: full ${fullInfo.skyBakeBytes / 1e6} MB (${fullTier.w}x${fullTier.h} buffer), low again ${lowInfo.skyBakeBytes / 1e6} MB; bakes ${bakesSeeded} → ${fullInfo.skyBakes} → ${lowInfo.skyBakes}`)
   if (fullInfo.tier !== 'full' || fullInfo.skyBakes !== bakesSeeded + 1 || lowInfo.skyBakes !== bakesSeeded + 2) problems.push(`a tier change did not rebake exactly once each way: ${JSON.stringify([bakesSeeded, fullInfo.tier, fullInfo.skyBakes, lowInfo.skyBakes])}`)
-  if (!(fullInfo.skyBakeBytes > 3.5 * lowInfo.skyBakeBytes)) problems.push(`the full tier's bake (${fullInfo.skyBakeBytes} B) is not ~4x the low tier's (${lowInfo.skyBakeBytes} B)`)
+  // T23.11: the moons' rays bake at one texel size on every tier (`RAY_TEXEL`), so the per-tier part is the rest.
+  const perTier = (i) => i.skyBakeBytes - i.skyRayBytes
+  if (!(lowInfo.skyRayBytes > 0) || lowInfo.skyRayBytes !== fullInfo.skyRayBytes) problems.push(`the rays' bake is ${lowInfo.skyRayBytes} B low, ${fullInfo.skyRayBytes} B full — want one size, not 0`)
+  if (!(perTier(fullInfo) > 3.5 * perTier(lowInfo))) problems.push(`the full tier's bake less the rays (${perTier(fullInfo)} B) is not ~4x the low tier's (${perTier(lowInfo)} B)`)
   if (dOther < same.w * same.h * 0.05) problems.push(`another seed changed only ${dOther} px`)
   if (dBack !== 0) problems.push(`the first seed again differs in ${dBack} px`)
 

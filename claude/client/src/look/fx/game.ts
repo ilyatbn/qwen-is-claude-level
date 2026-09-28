@@ -11,6 +11,8 @@ import { bulletStreak, type Blast, type Tracer, type TrackedProjectile } from '.
 import type { Hazard } from '../../render/ordnanceFx-math'
 import type { Rgb } from '../scene'
 import { F1 } from '../scenes/F1'
+import { F5 } from '../scenes/F5'
+import { blendPalette } from '../daylight'
 import { explosion, hexToLinear, Lcg, rgbToLinear, SMOKE_TEX_DRAWS, type ExplosionAge, type FxFrame } from './kit'
 
 /**
@@ -34,6 +36,26 @@ export const PLUME_RISE = 40
 const P = F1.palette!
 /** `P.plume`, F1's explosion smoke. */
 export const PLUME = P.plume
+
+/** T23.11: the smoke's colours — the explosion's plume (`P.plume`, `0xRRGGBB`) and the smoke's (`P.smoke`, linear). */
+export interface SmokeLook {
+  plume: number
+  smoke: Rgb
+}
+/** At night: F1's. */
+export const NIGHT_SMOKE: SmokeLook = { plume: PLUME, smoke: rgbToLinear(P.smoke.rgb) }
+let smokeAt: { t: number; look: SmokeLook } = { t: 1, look: NIGHT_SMOKE }
+/**
+ * T23.11 (R7): the smoke's colours at `t` (0 moonlit day, 1 night) — the palettes' own blend (`daylight.ts`), F5's
+ * smoke by day (`150,140,160`, plume `0x2a2430`), F1's at night. Remembered for the last `t` (one per frame).
+ */
+export function smokeLook(t: number): SmokeLook {
+  if (t === smokeAt.t) return smokeAt.look
+  const p = blendPalette(F5.palette, F1.palette, t)
+  const look = p ? { plume: p.plume, smoke: rgbToLinear(p.smoke.rgb) } : NIGHT_SMOKE
+  smokeAt = { t, look }
+  return look
+}
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
 const ramp = (k: number, from: number, to: number): number => clamp01((k - from) / (to - from))
@@ -94,7 +116,7 @@ export function blastStream(b: Pick<Blast, 'x' | 'y' | 'stream'>): number {
 export const blastScale = (r: number): number => r / BLAST_REACH
 
 /** One blast into `out`: a plume-less impact under `IMPACT_MAX_R`, F's explosion above it. `null` once it is over. */
-export function blastFx(out: FxFrame, b: Pick<Blast, 'x' | 'y' | 'r' | 'age' | 'ttl' | 'stream'>): void {
+export function blastFx(out: FxFrame, b: Pick<Blast, 'x' | 'y' | 'r' | 'age' | 'ttl' | 'stream'>, look: SmokeLook = NIGHT_SMOKE): void {
   const small = b.r < IMPACT_MAX_R
   const life = small ? Math.min(b.ttl, IMPACT_LIFE) : b.ttl
   const k = life > 0 ? b.age / life : 1
@@ -105,7 +127,7 @@ export function blastFx(out: FxFrame, b: Pick<Blast, 'x' | 'y' | 'r' | 'age' | '
   // The fireball's noise offset, measured from the mockup's stream: its own blast is offset 0 (R27).
   const age = explosionAge(k, s, (((q0 - MOCKUP_STREAM) % 997) + 997) % 997 * 0.37, life)
   if (small) age.smoke = 0
-  explosion(out, b.x, b.y, s, PLUME, rnd, age)
+  explosion(out, b.x, b.y, s, look.plume, rnd, age)
 }
 
 /**
@@ -138,20 +160,20 @@ export const CLOUD_SPREAD = 0.8
 /** A cloud's opacity per sprite, and the seconds it takes to thicken in and thin out. */
 export const CLOUD_ALPHA = 0.55
 export const CLOUD_FADE = 0.6
-/** The smoke grenade's cloud: `P.smoke` (F1's smoke trail colour). */
-export const SMOKE_RGB: Rgb = rgbToLinear(P.smoke.rgb)
+/** The smoke grenade's cloud: `P.smoke` (F1's smoke trail colour; T23.11: the blend's — `SmokeLook`). */
+export const SMOKE_RGB: Rgb = NIGHT_SMOKE.smoke
 /** The toxic cloud: danger, so saturated (R10) — the old zone's green, deepened; and its glow. */
 export const TOXIC_RGB: Rgb = hexToLinear(0x2f6a1a)
 export const TOXIC_GLOW: Rgb = [0.25, 0.9, 0.12]
 /** How fast a cloud's sprites turn (rad/s): smoke is never still. */
 export const CLOUD_SPIN = 0.08
 
-export function cloudFx(out: FxFrame, h: Pick<Hazard, 'id' | 'kind' | 'x' | 'y' | 'r' | 'ttl' | 'life'>, seconds: number): void {
+export function cloudFx(out: FxFrame, h: Pick<Hazard, 'id' | 'kind' | 'x' | 'y' | 'r' | 'ttl' | 'life'>, seconds: number, look: SmokeLook = NIGHT_SMOKE): void {
   const elapsed = h.life - h.ttl
   const fade = Math.min(ramp(elapsed, 0, CLOUD_FADE), ramp(h.ttl, 0, CLOUD_FADE))
   if (!(fade > 0)) return
   const toxic = h.kind === 'toxic'
-  const colour = toxic ? TOXIC_RGB : SMOKE_RGB
+  const colour = toxic ? TOXIC_RGB : look.smoke
   const rnd = new Lcg((Math.abs(h.id) % 2147483646) + 1)
   for (let i = 0; i < CLOUD_SPRITES; i++) {
     const a = rnd.next() * Math.PI * 2
@@ -216,7 +238,7 @@ export const TRAIL_SIZE = 8
 export const TRAIL_GROW = 3
 
 /** A rocket (or meteor): its motor's glow and its smoke trail. The body is an actor (`fx/rockets.ts`). */
-export function rocketFx(out: FxFrame, p: Pick<TrackedProjectile, 'id' | 'x' | 'y' | 'trail'>): void {
+export function rocketFx(out: FxFrame, p: Pick<TrackedProjectile, 'id' | 'x' | 'y' | 'trail'>, look: SmokeLook = NIGHT_SMOKE): void {
   const prev = p.trail.length >= 2 ? p.trail[p.trail.length - 2]! : null
   const dx = prev ? p.x - prev.x : 0
   const dy = prev ? p.y - prev.y : 0
@@ -235,7 +257,7 @@ export function rocketFx(out: FxFrame, p: Pick<TrackedProjectile, 'id' | 'x' | '
       x: pts[i]!.x + jx,
       y: pts[i]!.y + jy - (1 - t) * 10,
       size: TRAIL_SIZE * (1 + (1 - t) * TRAIL_GROW),
-      color: [SMOKE_RGB[0] * tint, SMOKE_RGB[1] * tint, SMOKE_RGB[2] * tint],
+      color: [look.smoke[0] * tint, look.smoke[1] * tint, look.smoke[2] * tint],
       alpha: 0.12 + 0.5 * t,
       tex: 1,
       rot: rnd.next() * 6,

@@ -828,7 +828,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.09C](M23/T23.09C-what-the-lights-review-found.md) — What the lights review found — no false muzzle flashes on late join, night-combat rewritten, one cave-wall switch, lights checked in matches
 - [x] [T23.09D](M23/T23.09D-the-batch-gate-reds.md) — The batch gate's reds — a round shorter than a frame is drawn once, a landing's sound survives a multi-step frame; your own swing is predicted
 - [x] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
-- [ ] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
+- [x] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
 - [x] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels
 - [ ] [T23.13B](M23/T23.13B-the-sky-port-on-d3d12.md) — The sky/terrain port on D3D12 — find the layer that differs from the mockup on the owner's GPU and fix it

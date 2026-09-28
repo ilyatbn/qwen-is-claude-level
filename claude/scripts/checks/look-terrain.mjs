@@ -415,6 +415,10 @@ export default async function ({ page, shot, log }) {
  */
 export async function wallEdges(page, seeds, log) {
   const out = []
+  // T23.11: at the night moon's moment, held — F1's night, the palette `WALL_EDGE_STEP` was measured on (T23.07B/C).
+  // By moonlit day the sky behind the same 10-px fade is brighter, so each px of the ramp steps further (measured at
+  // mid-day: 54/83/90 px of "hard" rows where night reads 6/5/11) — the fade is the same, the contrast is not.
+  await page.evaluate((t) => window.__game.setTime(t), 0.76 * 120)
   for (const seed of seeds) {
     await page.evaluate((s) => window.__game.regenerate(String(s)), seed)
     const warning = await page.evaluate(() => window.__game.debug().terrainWarning)
@@ -626,6 +630,10 @@ async function crater(page, seed, log, problems) {
   }
   const cx = site.x
   const cy = site.y + CRATER_DEPTH
+  // T23.11: the sky moves with the clock (the blend, the moons), so the frame and its control repaint are taken
+  // with it held — at mid-day (`daylight.ts::DAY_MOON_U` of the 120 s cycle): no night view dimming the crater
+  // (measured at night: 589/3136 px moved, under the 20 % control), as the running clock was at this point before.
+  await page.evaluate((t) => window.__game.setTime(t), 0.25 * 120)
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [cx, cy - 60])
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r)))))
   const pre = decode(await page.evaluate(() => window.__world.readFrame()))
@@ -702,6 +710,8 @@ async function crater(page, seed, log, problems) {
   }
   writeFileSync(join(root, 'shots', 'look-terrain-crater.png'), PNG.sync.write(png))
   log('crater (before | its first frame | control repaint): shots/look-terrain-crater.png')
+  // Held for the legs after it too (the wall/sky edges compare frames with the wall shown and hidden): a running
+  // clock moves the moons between two frames (T23.11).
 }
 
 

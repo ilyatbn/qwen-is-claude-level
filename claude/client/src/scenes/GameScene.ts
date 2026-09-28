@@ -86,7 +86,8 @@ import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
 import { crystalLights, joinCrystals } from '../look/actors/furniture'
 import { hazardKind } from '../render/ordnanceFx-math'
-import { sceneDarkness } from '../render/sky-math'
+import { cycleU, sceneDarkness } from '../render/sky-math'
+import { nightShare } from '../look/daylight'
 import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
 import { ResultsScreen } from '../ui/results'
 import { parseVoteTally, phaseDeadline, secondsUntil } from '../ui/results-math'
@@ -2370,6 +2371,9 @@ export class GameScene extends Phaser.Scene {
     this.drawnDarkness = darkness
     // T23.19D F2: what the furniture's night halo fades with.
     fxFeed(this).night = darkness / C().NIGHT_DARKNESS
+    // T23.11 (R7): the world's palette is F1's night and F5's moonlit day blended by the same darkness, the moons
+    // where the round's clock puts them. Only the picture: `phase_change` and its audio are untouched.
+    this.worldRenderer?.setDaylight(nightShare(darkness, C().NIGHT_DARKNESS), cycleU(this.roundTime))
     // T23.04: the space backdrop is up exactly on a space map — derived per frame, no latch —
     // and placed after the rig moved the camera (above).
     if (this.spaceSky.isShown !== this.onSpaceMap) this.spaceSky.setShown(this.onSpaceMap)

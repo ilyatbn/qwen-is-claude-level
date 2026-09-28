@@ -85,6 +85,20 @@ export function caveWallFromUrl(search: string): boolean {
 }
 
 /**
+ * T23.11 (dev): `&hour=<t>[,<u>]` pins the hour the world renderer draws — the palettes' blend at `t` (0 moonlit day,
+ * 1 night) and the moons at cycle position `u` (absent: the pictures' places) — whatever the scene's clock says. The
+ * browser checks calibrated on a still F1 sky (every one before T23.11: F1's look at every hour, nothing in the sky
+ * moving) name `&hour=1`; the scene's darkness, and so its night view, still follows its own clock. `null`: not pinned.
+ */
+export function hourFromUrl(search: string): { t: number; u: number | null } | null {
+  const v = new URLSearchParams(search).get('hour')
+  if (v === null) return null
+  const [t, u] = v.split(',').map(Number)
+  if (!(t !== undefined && t >= 0 && t <= 1)) return null
+  return { t, u: u !== undefined && Number.isFinite(u) ? u : null }
+}
+
+/**
  * T23.10 (R7): the night view a scene hands the world renderer — its `darkness` (0 … `NIGHT_DARKNESS`, the server's
  * byte; 0 in space) and the circles its player sees in (world px: centre and `fovRadius`), and the share of each
  * radius that is the soft edge (`FOV_EDGE_SOFTNESS`, the lightmap's).
