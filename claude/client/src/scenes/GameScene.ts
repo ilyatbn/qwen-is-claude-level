@@ -71,6 +71,7 @@ import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { overlapsAny, overlapsBoxes } from '../look/actors/props'
 import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
+import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
 import { PlayerView } from '../render/playerView'
@@ -3207,9 +3208,8 @@ export class GameScene extends Phaser.Scene {
           setting: isHighQuality(),
           // Off the layer, not the setting: without WebGL this is false however set.
           shaderBeams: self.world?.ordnance.beamsAreShader ?? false,
-          shaderSmoke: self.fx?.smokeIsShader ?? false,
-          shaderFlames: self.world?.ordnance.flamesAreShader ?? false,
-          shaderBlasts: self.world?.ordnance.blastsAreShader ?? false,
+          // T23.18: blasts, fire and clouds are F's, drawn by the world renderer on both tiers (not a setting's shader).
+          worldFx: fxFeed(self).worldDraws,
         }
       },
       /** e2e only (§C2, T21.18): hide the hazard/jet/mine layer for a same-instant control frame. */
@@ -3703,16 +3703,11 @@ export class GameScene extends Phaser.Scene {
             height: self.cameras.main.worldView.height,
           },
           hazardsDrawn: self.fx?.hazardCount ?? 0,
-          // T21.18: smoke clouds the last render painted with the shader, read off the layer.
-          smokeShadersDrawn: self.fx?.smokeShadersDrawn ?? 0,
-          // T21.18: flames the last render painted with the shader, and where the layer has
-          // every flame — the positions its picture was drawn from, not the mirror's.
-          flameShadersDrawn: self.world?.ordnance.flameShadersDrawn ?? 0,
-          // T21.18: explosions the layer holds (flat flashes, and the longer-lived blasts the
-          // shader paints from), where they are, and how many quads the last render painted.
+          // T21.18: explosions the layer holds (flat flashes, and the longer-lived blasts F's explosion is drawn from —
+          // T23.18, counted drawn by `__world.fx()`), where they are; and where the layer has every flame — the
+          // positions its picture was drawn from, not the mirror's.
           impactsDrawn: self.world?.ordnance.state.impacts.length ?? 0,
           blastsAt: (self.world?.ordnance.state.blasts ?? []).map((b) => ({ x: b.x, y: b.y, r: b.r, age: b.age })),
-          blastShadersDrawn: self.world?.ordnance.blastShadersDrawn ?? 0,
           flamesDrawnAt: [...(self.world?.ordnance.state.projectiles.values() ?? [])]
             .filter((p) => p.kind === 'flame')
             .map((p) => ({ x: p.x, y: p.y })),

@@ -45,6 +45,9 @@ import type { Actor, Background, Box, Light, SceneDescription, ViewRect } from '
 import { Atmosphere } from './atmosphere'
 import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
+import { FxLayer } from './fx/layer'
+import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
+import { fxFeed, gameFrame, type FxFeed } from './fx/feed'
 import { castOf } from './actors/cast'
 import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
@@ -184,6 +187,16 @@ export class WorldRenderer implements SceneRenderer {
   private readonly actorLayer: ActorLayer
   /** T23.14B: the actors' additive glows (a jet flame's). */
   private readonly glowLayer = new GlowLayer()
+  /**
+   * T23.18: the effects — the description's (`desc.fx`, the look-lab's reference scenes, laid out once per scene) and
+   * the game's (`fx/feed.ts`, built from the ordnance layers' records every drawn frame).
+   */
+  private readonly fxLayer = new FxLayer()
+  private sceneFxFrame: FxFrame = emptyFrame()
+  private readonly fxFrame: FxFrame = emptyFrame()
+  private fxSource: FxFeed | null = null
+  /** The last built frame had game effects (the scene's own are static: laid out on the frame `setScene` marks). */
+  private fxLive = false
   /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
   private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } = { drawn: false, material: null, lights: 0, wallK: null }
 
@@ -212,12 +225,15 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer = new ActorLayer(this.renderer)
     this.addLayer({ object: this.actorLayer.mesh, animated: false })
     this.addLayer({ object: this.glowLayer.mesh, animated: false })
+    // T23.18: not animated as a layer — an effect on screen ends the redraw skip itself (`placeFx`), an empty one does not.
+    for (const m of this.fxLayer.meshes) this.addLayer({ object: m, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
     // renderer's own context — the GPU that will actually draw the world.
     this.tier = qualityTier(this.gl)
     this.composer = this.buildComposer()
     // T23.14C: the glow's program and geometry exist from scene start, not from the first jet.
     this.glowLayer.warm(this.renderer, this.composer.readBuffer)
+    this.fxLayer.warm(this.renderer, this.composer.readBuffer)
     this.mount()
     this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
   }
@@ -343,6 +359,8 @@ export class WorldRenderer implements SceneRenderer {
   setScene(desc: SceneDescription): void {
     this.desc = desc
     this.dirty = true
+    this.sceneFxFrame = sceneFx(desc.fx)
+    this.syncFxDrawer()
     this.stats.scene = sceneCounts(desc)
     this.sky.setSky(desc.look.bg)
     this.syncBake()
@@ -353,6 +371,10 @@ export class WorldRenderer implements SceneRenderer {
     this.syncBox()
     // A terrain update is a new picture once the terrain is drawn (T23.07) — the carve's frame, not the next.
     if (this.terrain.pump() && (this.albedoView || this.terrain.ready)) this.dirty = true
+    // T23.18: effects move on their own (age, flicker, drift) — a frame with any is a new picture, and so is the first without.
+    const live = this.buildFx()
+    if (live || this.fxLive) this.dirty = true
+    this.fxLive = live
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -384,6 +406,7 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.rimOn = this.desc.actorRim !== false
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
+    this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
@@ -436,6 +459,44 @@ export class WorldRenderer implements SceneRenderer {
   private occluderBoxes(): Box[] {
     const sticks = (this.desc?.actors ?? []).flatMap((a) => (a.kind === 'stick' && a.box ? [a.box] : []))
     return [...sticks, ...this.occluders]
+  }
+
+  /**
+   * T23.18: this scene's game effects come from `feed` (the ordnance layers' records). From now on this renderer draws
+   * them — `worldDraws` — wherever the map has a sky (space's backdrop hides this canvas until T23.20).
+   */
+  setFxFeed(feed: FxFeed): void {
+    this.fxSource = feed
+    this.syncFxDrawer()
+  }
+
+  private syncFxDrawer(): void {
+    if (this.fxSource) this.fxSource.worldDraws = this.owns && !!this.desc && this.desc.look.bg !== null
+  }
+
+  /** This frame's effects into `fxFrame`: the game's, then the scene's (none while `fx` is hidden). Any of the game's? */
+  private buildFx(): boolean {
+    const f = this.fxFrame
+    clearFrame(f)
+    if (this.hidden.has('fx')) return false
+    if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000)
+    const live = f.smoke.length + f.soft.length + f.ribbons.length + f.discs.length > 0
+    const s = this.sceneFxFrame
+    f.smoke.push(...s.smoke)
+    f.soft.push(...s.soft)
+    f.ribbons.push(...s.ribbons)
+    f.discs.push(...s.discs)
+    return live
+  }
+
+  /** Dev (T23.18): the scene's effect feed — the ordnance layers' live records, for a shot to stage effects in. */
+  get fxFeed(): FxFeed | null {
+    return this.fxSource
+  }
+
+  /** Dev (T23.18): what the effects layer laid out on its last drawn frame, by list. */
+  fxDrawn(): { smoke: number; soft: number; ribbons: number; discs: number; flames: number; worldDraws: boolean } {
+    return { ...this.fxLayer.drawn, worldDraws: this.fxSource?.worldDraws ?? false }
   }
 
   /**
@@ -842,6 +903,8 @@ export class WorldRenderer implements SceneRenderer {
     this.atmos.dispose()
     this.actorLayer.dispose()
     this.glowLayer.dispose()
+    this.fxLayer.dispose()
+    if (this.fxSource) this.fxSource.worldDraws = false
     this.terrainMesh.geometry.dispose()
     this.terrainMats.full.dispose()
     this.terrainMats.low.dispose()
@@ -971,6 +1034,8 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   // the update: a paused scene still renders, and a figure hidden or re-posed while it is paused (a check's control
   // frame, `stand-on-asteroid`'s actors-hidden instant) must reach the frame drawn next.
   if (renderer instanceof WorldRenderer) {
+    // T23.18: the scene's effects, from its ordnance layers' records (`fx/feed.ts`).
+    renderer.setFxFeed(fxFeed(scene))
     const gather = (): void => renderer.setActors(castOf(scene))
     scene.events.on('prerender', gather)
     scene.events.once('shutdown', () => scene.events.off('prerender', gather))

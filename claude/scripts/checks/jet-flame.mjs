@@ -76,7 +76,8 @@ function cropSheet(a, b, [x0, y0, x1, y1]) {
 const luma = (d, o) => 0.2126 * d[o] + 0.7152 * d[o + 1] + 0.0722 * d[o + 2]
 
 async function lab(page, origin, id, knob) {
-  await page.goto(`${origin}/?look=${id}&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
+  // T23.18: the lab draws the scenes' effects now; the cast-only references have none — so neither does this lab.
+  await page.goto(`${origin}/?look=${id}&e2e=1&knob=fx-off${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
   const err = await page.evaluate(() => window.__look.error)
   if (err) throw new Error(`look-lab ${id}: ${err}`)

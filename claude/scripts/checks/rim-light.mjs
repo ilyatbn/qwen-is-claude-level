@@ -61,7 +61,8 @@ const decode = (f) => ({ width: f.w, height: f.h, data: Uint8Array.from(Buffer.f
 const luma = (d, o) => 0.2126 * d[o] + 0.7152 * d[o + 1] + 0.0722 * d[o + 2]
 
 async function lab(page, origin, extra) {
-  await page.goto(`${origin}/?look=F4&e2e=1${extra}`, { waitUntil: 'load' })
+  // T23.18: the lab draws F4's effects now; its reference (`castonly.js`) has none — so neither does this lab.
+  await page.goto(`${origin}/?look=F4&e2e=1&knob=fx-off${extra}`, { waitUntil: 'load' })
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
   const look = await page.evaluate(() => window.__look.error)
   if (look) throw new Error(`look-lab F4${extra}: ${look}`)

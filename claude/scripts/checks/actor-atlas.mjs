@@ -59,7 +59,8 @@ const CACHE_FRAMES = 20
 const decode = (f) => ({ width: f.w, height: f.h, data: Uint8Array.from(Buffer.from(f.rgba, 'base64')) })
 
 async function lab(page, origin, extra) {
-  await page.goto(`${origin}/?look=F4&e2e=1${extra}`, { waitUntil: 'load' })
+  // T23.18: the lab draws F4's effects now; its reference (`castonly.js`) has none — so neither does this lab.
+  await page.goto(`${origin}/?look=F4&e2e=1&knob=fx-off${extra}`, { waitUntil: 'load' })
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
   const look = await page.evaluate(() => JSON.parse(JSON.stringify(window.__look)))
   if (look.error) throw new Error(`look-lab F4${extra}: ${look.error}`)

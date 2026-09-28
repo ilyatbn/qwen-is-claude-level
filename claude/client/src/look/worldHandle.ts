@@ -84,7 +84,7 @@ export interface WorldHandle {
   hideTerrain(hide: boolean): void
   /** T23.07B (F4): draw the lit terrain without its cave wall (`gate-ground`: rock changes with the terrain, not with the wall). */
   hideWall(hide: boolean): void
-  /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`); `[]` restores. */
+  /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`; T23.18 `fx`, every effect); `[]` restores. */
   hideLayers(names: string[]): void
   /** T23.09: the point lights the renderer holds now (before `pickLights`); `null` without three.js. */
   lights(): Light[] | null
@@ -103,6 +103,10 @@ export interface WorldHandle {
   atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
   /** T23.12: the cast as last laid out — quads, and the atlas's redraws/uploads/resets/cells. */
   actors(): ReturnType<WorldRenderer['actorsDrawn']> | null
+  /** T23.18: the effects as last laid out, by list, and whether this renderer draws the game's (`fx/feed.ts`). */
+  fx(): ReturnType<WorldRenderer['fxDrawn']> | null
+  /** T23.18: the scene's effect feed (`fx/feed.ts`) — the ordnance layers' live records; a shot stages effects in them. */
+  fxFeed(): WorldRenderer['fxFeed']
   /** T23.08: the foreground leaves' own alpha over a mask-px box (`WorldRenderer.foregroundAlpha`). */
   foregroundAlpha(box: [number, number, number, number]): ReturnType<WorldRenderer['foregroundAlpha']>
 }
@@ -376,6 +380,8 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     atmosphere: () => three?.atmosphereDrawn() ?? null,
     actors: () => three?.actorsDrawn() ?? null,
+    fx: () => three?.fxDrawn() ?? null,
+    fxFeed: () => three?.fxFeed ?? null,
     foregroundAlpha: (box) => three?.foregroundAlpha(box) ?? null,
     forceTerrainMaterial(m) {
       if (!three) return

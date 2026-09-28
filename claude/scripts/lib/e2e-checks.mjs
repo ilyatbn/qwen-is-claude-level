@@ -57,6 +57,14 @@ export const CHECKS = [
     url: '?look=F4',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.18: the look-lab's F1 with its effects against F1 at Level A on each effect's box (where the lab without
+  // effects agrees with the mockup without them, `controls/F1-nofx.png`); fx-off is every box's must-fail.
+  {
+    name: 'look-fx',
+    file: 'scripts/checks/look-fx.mjs',
+    url: '?look=F1',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.13: rim-lit silhouettes — lit()'s rim passes at Level A on F4's actor boxes (rim-off must fail), then live
   // in the sandbox: a laser light rims the figure's near side only; the dark halo on a cave-wall spot only.
   { name: 'rim-light', file: 'scripts/checks/rim-light.mjs', url: '?sandbox=1&seed=4242' },
@@ -433,9 +441,12 @@ export const CHECKS = [
   // T23.04 retired `ambient-rain` with the ambient rain (F has no rain; no gameplay reader).
   { name: 'minimap-crates', file: 'scripts/checks/minimap-crates.mjs', standalone: true },
   { name: 'beams-shader', file: 'scripts/checks/beams-shader.mjs', standalone: true },
-  { name: 'smoke-shader', file: 'scripts/checks/smoke-shader.mjs', standalone: true },
-  { name: 'fire-shader', file: 'scripts/checks/fire-shader.mjs', standalone: true },
-  { name: 'explosion-shader', file: 'scripts/checks/explosion-shader.mjs', standalone: true },
+  // T23.18: F's smoke, both tiers, covering the ground that blinds; vision unmoved (retired `smoke-shader`).
+  { name: 'smoke-fx', file: 'scripts/checks/smoke-fx.mjs', standalone: true },
+  // T23.18: F's fire, both tiers, every damage circle covered (retired `fire-shader`: T21.18's flame quads, T21.36's discs).
+  { name: 'fire-fx', file: 'scripts/checks/fire-fx.mjs', standalone: true },
+  // T23.18: F's explosion in the world renderer, both tiers, lit (retired `explosion-shader`: T21.18's blast quad and flat flash).
+  { name: 'blast-fx', file: 'scripts/checks/blast-fx.mjs', standalone: true },
   // T23.08C F9: T23.08's fog and grade drawn in a live match (pixels with each hidden, a control patch and a
   // control hide), and two matches with different `map_init` seeds showing different rock at one world rect.
   { name: 'look-match', file: 'scripts/checks/look-match.mjs', standalone: true },

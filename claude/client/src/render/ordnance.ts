@@ -20,7 +20,8 @@ import { DEPTH } from './backdrop'
 import { ensureItemTextures } from './itemTextures'
 import { ICON_UNIT_PX, spriteOf } from '../look/actors/icons'
 import { FIGURE_SCALE } from '../look/actors/pose'
-import { BEAM_FRAGMENT, BLAST_FRAGMENT, FLAME_FRAGMENT, hasWebGL } from './shaders'
+import { BEAM_FRAGMENT, hasWebGL } from './shaders'
+import { fxFeed, type FxFeed } from '../look/fx/feed'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
 // The colour and radius tables used to live here as well as in ordnance-state,
@@ -72,14 +73,12 @@ export class OrdnanceLayer {
   private readonly beamShaders: Phaser.GameObjects.Shader[] = []
   /** How many beams the last render painted with the shader — read back, not the setting. */
   beamShadersDrawn = 0
-  /** T21.18: one quad per flame painted under High Quality, grown on demand, capped. */
-  private readonly flameShaders: Phaser.GameObjects.Shader[] = []
-  /** How many flames the last render painted with the shader. */
-  flameShadersDrawn = 0
-  /** T21.18: one quad per blast painted under High Quality, grown on demand, capped. */
-  private readonly blastShaders: Phaser.GameObjects.Shader[] = []
-  /** How many blasts the last render painted with the shader. */
-  blastShadersDrawn = 0
+  /**
+   * T23.18: the scene's effect feed (`look/fx/feed.ts`). While the world renderer draws this scene's effects
+   * (`worldDraws`) the blasts and flames are F's, drawn there from this layer's records, and this layer draws none of
+   * them; otherwise (space until T23.20, no three.js) it draws the flat picture below.
+   */
+  private readonly feed: FxFeed
   /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
   private hidden = false
   /** T23.17: the thrown weapons in flight, one image each, pooled (hidden when unused). */
@@ -98,6 +97,8 @@ export class OrdnanceLayer {
     // T21.18: record every explosion for the painted blast, whatever the setting now —
     // turning High Quality on mid-blast then paints the blast already in progress.
     this.state.blastLife = c.BLAST_SHADER_LIFE
+    this.feed = fxFeed(scene)
+    this.feed.ordnance = this
     // §F10.3: **flames get their own Graphics, and it is not additive.**
     //
     // Created first, so it sits under the additive layer at the same depth. This
@@ -128,6 +129,11 @@ export class OrdnanceLayer {
     // to photograph one beam in both modes; a frozen scene runs no `update`, so a
     // toggle that waited for one would photograph the old picture twice.
     this.unsubscribeQuality = onHighQualityChange(() => this.render())
+  }
+
+  /** `FLAME_RADIUS`, for the fire the world renderer draws from this layer's flames (`fx/game.ts::flameFx`). */
+  get flameRadius(): number {
+    return C().FLAME_RADIUS
   }
 
   addTracer(x0: number, y0: number, x1: number, y1: number): void {
@@ -253,7 +259,7 @@ export class OrdnanceLayer {
     this.beamShadersDrawn = painted
 
     // Trails: a tapering polyline, oldest thinnest.
-    let flamesPainted = 0
+    const worldFx = this.feed.worldDraws
     const thrown: { id: number; sprite: string; x: number; y: number }[] = []
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
@@ -261,7 +267,7 @@ export class OrdnanceLayer {
       // is not moving is a smear, and worse, it says the fire is still travelling
       // when it has settled — the exact class of "the picture and the simulation
       // disagree" that M19 exists to fix.
-      const resting = p.kind === 'flame' && flameAtRest(p)
+      const resting = p.kind === 'flame' && (flameAtRest(p) || worldFx)
       const n = look.trail === 0 || resting ? 0 : p.trail.length
       // A flame's trail belongs on the flame layer, or a moving flame is a
       // painted head behind an additive tail and the two do not look like one
@@ -301,18 +307,8 @@ export class OrdnanceLayer {
       // edge, the orange body, and a yellow heart. Drawn on `flameGfx` — see the
       // constructor for why that layer is not additive.
       if (p.kind === 'flame') {
-        // **T21.18: under High Quality a flame is one shader quad**, centred on the
-        // flame's own position — its damage centre — and solid past `FLAME_RADIUS`.
-        const sh = shaderBeams ? this.flameShader(flamesPainted) : null
-        if (sh) {
-          flamesPainted++
-          const w = 2 * c.FLAME_RADIUS * c.FLAME_SHADER_SCALE
-          sh.setPosition(p.x, p.y)
-          sh.setDisplaySize(w, w * c.FLAME_SHADER_ASPECT)
-          sh.setUniform('seed.value', (p.id % 97) * 0.6180339887)
-          sh.setVisible(!this.hidden)
-          continue
-        }
+        // T23.18: F's fire, drawn by the world renderer from this record (`fx/game.ts::flameFx`).
+        if (worldFx) continue
         // T21.36: sized from the burn radius, so the body covers every point that burns.
         const f = flameFlicker(p.id, nowMs)
         const disc = flameDiscs(c.FLAME_RADIUS, f)
@@ -358,31 +354,10 @@ export class OrdnanceLayer {
     for (let i = thrown.length; i < this.thrown.length; i++) this.thrown[i]!.setVisible(false)
     this.thrownDrawn = thrown
     if (this.tumble.size > thrown.length) for (const id of this.tumble.keys()) if (!thrown.some((d) => d.id === id)) this.tumble.delete(id)
-    for (let i = flamesPainted; i < this.flameShaders.length; i++) this.flameShaders[i]!.setVisible(false)
-    this.flameShadersDrawn = flamesPainted
 
-    // **T21.18: under High Quality an explosion is a shader quad painted from its
-    // `Blast`**, and the flat flash is not drawn — past `BLAST_SHADER_POOL` it is.
-    let blastsPainted = 0
-    if (shaderBeams) {
-      for (const b of this.state.blasts) {
-        const sh = this.blastShader(blastsPainted)
-        if (!sh) break
-        blastsPainted++
-        const side = 2 * b.r * c.BLAST_SHADER_SCALE
-        sh.setPosition(b.x, b.y)
-        sh.setDisplaySize(side, side)
-        sh.setUniform('age.value', Math.min(1, b.age / b.ttl))
-        sh.setUniform('seed.value', ((b.x * 7 + b.y * 13) % 97) * 0.6180339887)
-        sh.setVisible(!this.hidden)
-      }
-    }
-    for (let i = blastsPainted; i < this.blastShaders.length; i++) this.blastShaders[i]!.setVisible(false)
-    this.blastShadersDrawn = blastsPainted
-    const flatFlashes = shaderBeams && blastsPainted === this.state.blasts.length ? 0 : this.state.impacts.length
-
-    // Impacts: a flash that collapses fast.
-    for (const im of this.state.impacts.slice(this.state.impacts.length - flatFlashes)) {
+    // Impacts: a flash that collapses fast — where the world renderer does not draw F's explosion from the blast
+    // records (T23.18: `fx/game.ts::blastFx`, which retired T21.18's painted blast quad).
+    for (const im of worldFx ? [] : this.state.impacts) {
       const k = im.life / im.ttl
       g.fillStyle(0xfff0c0, 0.55 * k)
       g.fillCircle(im.x, im.y, im.r * (1.15 - 0.5 * k))
@@ -440,56 +415,6 @@ export class OrdnanceLayer {
     return this.beamShaders[i] ?? null
   }
 
-  /** Would a flame drawn now be painted by the shader? The same decider as the beams. */
-  get flamesAreShader(): boolean {
-    return this.useBeamShader()
-  }
-
-  /** Would an explosion drawn now be painted by the shader? The same decider. */
-  get blastsAreShader(): boolean {
-    return this.useBeamShader()
-  }
-
-  /** Blast quad `i` of the pool, built on first use; `null` past `BLAST_SHADER_POOL`. */
-  private blastShader(i: number): Phaser.GameObjects.Shader | null {
-    const c = C()
-    if (i >= c.BLAST_SHADER_POOL) return null
-    while (this.blastShaders.length <= i) {
-      const base = new Phaser.Display.BaseShader('blast', BLAST_FRAGMENT, undefined, {
-        age: { type: '1f', value: 0 },
-        seed: { type: '1f', value: 0 },
-        scale: { type: '1f', value: c.BLAST_SHADER_SCALE },
-      })
-      this.blastShaders.push(
-        this.scene.add.shader(base, 0, 0, 64, 64).setOrigin(0.5, 0.5).setDepth(DEPTH.particles).setVisible(false),
-      )
-    }
-    return this.blastShaders[i] ?? null
-  }
-
-  /** Flame quad `i` of the pool, built on first use; `null` past `FLAME_SHADER_POOL`. */
-  private flameShader(i: number): Phaser.GameObjects.Shader | null {
-    const c = C()
-    if (i >= c.FLAME_SHADER_POOL) return null
-    while (this.flameShaders.length <= i) {
-      const base = new Phaser.Display.BaseShader('flame', FLAME_FRAGMENT, undefined, {
-        seed: { type: '1f', value: 0 },
-        scale: { type: '1f', value: c.FLAME_SHADER_SCALE },
-        aspect: { type: '1f', value: c.FLAME_SHADER_ASPECT },
-        base: { type: '1f', value: c.FLAME_SHADER_BASE },
-      })
-      this.flameShaders.push(
-        this.scene.add
-          .shader(base, 0, 0, 64, 64)
-          // Phaser's origin y is from the top; the flame centre is `base` up from the bottom.
-          .setOrigin(0.5, 1 - c.FLAME_SHADER_BASE)
-          .setDepth(DEPTH.particles)
-          .setVisible(false),
-      )
-    }
-    return this.flameShaders[i] ?? null
-  }
-
   /** T23.17: image `i` of the thrown-weapon pool, built on first use (normal blend: ink is not light). */
   private thrownImage(i: number): Phaser.GameObjects.Image {
     while (this.thrown.length <= i) this.thrown.push(this.scene.add.image(0, 0, '__DEFAULT').setDepth(DEPTH.particles).setVisible(false))
@@ -503,10 +428,7 @@ export class OrdnanceLayer {
     this.gfx.destroy()
     for (const s of this.beamShaders) s.destroy()
     this.beamShaders.length = 0
-    for (const s of this.flameShaders) s.destroy()
-    this.flameShaders.length = 0
-    for (const s of this.blastShaders) s.destroy()
-    this.blastShaders.length = 0
+    if (this.feed.ordnance === this) this.feed.ordnance = null
     // Or every round leaks a listener, and a setting flip repaints a dead layer.
     this.unsubscribeQuality()
   }

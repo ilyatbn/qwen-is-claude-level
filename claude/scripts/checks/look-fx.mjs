@@ -1,0 +1,121 @@
+/**
+ * `look-fx` — T23.18: the look-lab's F1 **with its effects** (`look/fx/`: the turret's four tracers and muzzle glow,
+ * the laser and its impact glow, the jet, rocket and flamethrower glows, the explosion) against the picture itself,
+ * `F1-night-combat.png`, at Level A on the effect boxes. At T23.08's gate these were the only thing missing.
+ *
+ * ## The metric
+ *
+ * Per effect, its box (`fx/kit.ts::fxBox`, the whole of what it can paint), mean CIEDE2000 of the lab (full tier, the
+ * reference harness's browser — `actor-atlas` §1 says why) against F1, **over the pixels of the box where the lab
+ * without its effects already agrees with the mockup without its effects** (ΔE ≤ `AGREE`: the lab's `&knob=fx-off`
+ * against `controls/F1-nofx.png`, which is `f_scene.js::combatF` with only its fx3d group taken out,
+ * `controls/fxoff.js`). So the cast's own known distance (T23.12's 0.12, which sits under the jet and rocket glows)
+ * is not charged to the effects — and a box where that leaves under `MIN_KEPT` of its pixels is reported, not gated.
+ * The threshold is this back end's actor threshold (R25), the Level A number for a small region of the cast.
+ *
+ * **Must fail:** `&knob=fx-off` against F1 on the same pixels, every box — so every box is one its effect decides.
+ * The floor: the mockup's F1 re-rendered through the same harness is byte-identical to F1-night-combat.png (T23.18).
+ *
+ * F3's effects (space) are not measured: the lab draws no terrain or sky for F3 until T23.20 (`labFields.ts`), so no
+ * box of it can agree with the picture — owed to T23.20.
+ */
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { lab as toLab, deltaE2000, loadPng, thresholdsFor } from '../lib/look-compare.mjs'
+import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
+import { chromePath, libDir } from '../lib/browser-args.mjs'
+import { REFERENCE_ARGS } from './actor-atlas.mjs'
+import { decode } from './figure-frames.mjs'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const require = createRequire(join(root, 'client/package.json'))
+const { chromium } = require('playwright-core')
+const { PNG } = require('pngjs')
+const RAW = JSON.parse(readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
+
+/** A pixel counts toward an effect's box when the lab and mockup without effects agree there within this ΔE2000. */
+const AGREE = 1
+/** A box keeping fewer of its pixels than this is the cast's more than the effect's: reported, not gated. */
+const MIN_KEPT = 0.5
+/** F1's effects (`scenes.test.ts`): 5 ribbons, 5 sprites, 1 explosion. */
+const F1_FX = 11
+
+const dE = (a, b, o) =>
+  a.data[o] === b.data[o] && a.data[o + 1] === b.data[o + 1] && a.data[o + 2] === b.data[o + 2]
+    ? 0
+    : deltaE2000(toLab(a.data[o], a.data[o + 1], a.data[o + 2]), toLab(b.data[o], b.data[o + 1], b.data[o + 2]))
+
+/** Mean ΔE of `a` against `b` over `box`, on the pixels where `agreeA` and `agreeB` agree within `AGREE`. */
+function masked(a, b, agreeA, agreeB, [x0, y0, x1, y1]) {
+  let s = 0
+  let n = 0
+  let all = 0
+  for (let y = Math.max(0, y0); y < Math.min(a.height, y1); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(a.width, x1); x++) {
+      const o = (y * a.width + x) * 4
+      all++
+      if (dE(agreeA, agreeB, o) > AGREE) continue
+      n++
+      s += dE(a, b, o)
+    }
+  }
+  return { d: n ? s / n : NaN, kept: all ? n / all : 0 }
+}
+
+async function lab(page, origin, knob) {
+  await page.goto(`${origin}/?look=F1&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
+  await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
+  const err = await page.evaluate(() => window.__look.error)
+  if (err) throw new Error(`look-lab F1: ${err}`)
+  return { frame: decode(await page.evaluate(() => window.__world.readFrame())), info: await page.evaluate(() => window.__world.info()), fx: await page.evaluate(() => window.__world.fx()) }
+}
+
+export default async function ({ page, shot, log }) {
+  const origin = new URL(page.url()).origin
+  const problems = []
+  const browser = await chromium.launch({ executablePath: chromePath, env: { ...process.env, LD_LIBRARY_PATH: libDir }, headless: true, args: REFERENCE_ARGS })
+  try {
+    const own = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 })
+    await own.goto(`${origin}/?e2e=1`, { waitUntil: 'load' })
+    await own.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
+    const boxes = await own.evaluate(async () => {
+      const { SCENES } = await import('/src/look/scenes/index.ts')
+      const { fxBox } = await import('/src/look/fx/kit.ts')
+      return SCENES.F1.fx.map((f) => ({ kind: f.kind, box: fxBox(f) }))
+    })
+    if (boxes.length !== F1_FX) problems.push(`F1 describes ${boxes.length} effects, want ${F1_FX}`)
+    const ref = loadPng(join(root, 'tasks/M23/reference/F1-night-combat.png'))
+    const refOff = loadPng(join(root, 'tasks/M23/reference/controls/F1-nofx.png'))
+    const on = await lab(own, origin, '')
+    const off = await lab(own, origin, 'fx-off')
+    const T = thresholdsFor(RAW, on.info.gpu)
+    if (T.backEnd !== 'swiftshader') throw new Error(`the F1 references are SwiftShader's; this is ${T.backEnd}`)
+    if (on.info.tier !== 'full') problems.push(`the lab drew the ${on.info.tier} tier, want full`)
+    // Both ends: what the scene describes against what the effects layer laid out.
+    const laid = on.fx.ribbons + on.fx.soft + on.fx.discs + on.fx.smoke
+    log(`both ends: F1 describes ${boxes.length} effects; the layer laid out ${JSON.stringify(on.fx)} (the explosion is 22 smoke, 1 glow, 2 discs, 22 sparks); fx-off laid out ${off.fx.ribbons + off.fx.soft + off.fx.discs + off.fx.smoke}`)
+    if (!(on.fx.ribbons === 5 + 22 && on.fx.soft === 5 + 1 && on.fx.discs === 2 && on.fx.smoke === 22)) problems.push(`the effects layer laid out ${laid} parts, ${JSON.stringify(on.fx)}`)
+    if (off.fx.ribbons + off.fx.soft + off.fx.discs + off.fx.smoke !== 0) problems.push('fx-off still laid out effects')
+    const thr = T.actors.threshold
+    for (const { kind, box } of boxes) {
+      const m = masked(on.frame, ref, off.frame, refOff, box)
+      const c = masked(off.frame, ref, off.frame, refOff, box)
+      const gated = m.kept >= MIN_KEPT
+      log(`${kind} ${JSON.stringify(box)}: ${m.d.toFixed(4)} over ${(m.kept * 100).toFixed(1)}% of the box (max ${thr}) ${gated ? (m.d <= thr ? 'ok' : 'FAIL') : 'reported'}; fx-off ${c.d.toFixed(3)} ${c.d > thr ? 'fails, as it must' : 'PASSES'}`)
+      if (gated && !(m.d <= thr)) problems.push(`Level A on the ${kind} box ${JSON.stringify(box)}: ${m.d.toFixed(4)} > ${thr}`)
+      if (!(c.d > thr)) problems.push(`control fx-off passes on the ${kind} box ${JSON.stringify(box)} (${c.d.toFixed(4)}) — the box cannot see its effect`)
+    }
+    // Looked at: lab | F1, side by side.
+    const sb = new PNG({ width: 1280 * 2 + 8, height: 720 })
+    sb.data.fill(255)
+    for (let y = 0; y < 720; y++) for (const [img, x0] of [[on.frame, 0], [ref, 1288]]) Buffer.from(img.data.buffer, img.data.byteOffset + y * 1280 * 4, 1280 * 4).copy(sb.data, (y * sb.width + x0) * 4)
+    writeFileSync(join(root, 'shots/look-fx-F1-lab-vs-ref.png'), PNG.sync.write(sb))
+    log('looked at: shots/look-fx-F1-lab-vs-ref.png (lab | F1)')
+  } finally {
+    await browser.close()
+  }
+  await shot('look-fx')
+  if (problems.length) throw new Error(problems.join('\n'))
+}
