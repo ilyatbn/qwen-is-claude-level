@@ -78,6 +78,26 @@ export function animalActor(kind: number, x: number, y: number, right: boolean, 
   }
 }
 
+/** `draw.ts::bird`'s span at `s` 1 (wing tip to wing tip), which the hit box's width scales to. */
+export const BIRD_ART_W = 20
+/**
+ * F4 lights its 3× birds at `size` 1.5 (`variant_F4.js`): per unit of scale, as the animals'. No halo: a bird is
+ * against the sky, not the rock.
+ */
+export const BIRD_LIT_PER_S = 1.5 / 3
+/**
+ * Wing positions a bird is drawn in (`flap` 0 down … 1 up): its phase is continuous (`birds-math.ts::wingPhase`), its
+ * drawing is not — each step is one atlas cell, reused every beat, where a continuous flap redrew every bird every frame.
+ */
+export const BIRD_FLAP_STEPS = 6
+
+/** A bird whose hit box (`w` wide) is centred on (x, y), flying right or left, wings at `phase` (−1 down … 1 up). */
+export function birdActor(metal: boolean, x: number, y: number, right: boolean, w: number, phase: number): Actor {
+  const s = w / BIRD_ART_W
+  const flap = Math.round(((phase + 1) / 2) * (BIRD_FLAP_STEPS - 1)) / (BIRD_FLAP_STEPS - 1)
+  return { kind: 'bird', x, y, opts: { s, face: right ? 1 : -1, flap, ...(metal ? { metal: true } : {}) }, lit: { size: BIRD_LIT_PER_S * s, halo: null, shadow: false }, box: null }
+}
+
 /**
  * The objects manifest's crystal entries (`assets/objects/manifest.json`, category `crystal`): ids `from` … `to - 1`.
  * `furniture.test.ts` reads the manifest and holds this to it.

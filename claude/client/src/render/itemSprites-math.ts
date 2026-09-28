@@ -10,6 +10,8 @@
  * the wire only carries a numeric `item_id`.
  */
 
+import { drawnIcon } from '../look/actors/icons'
+
 export interface ItemDefView {
   id: number
   key: string
@@ -188,6 +190,9 @@ export function artFor(
   hasTexture: (k: string) => boolean,
 ): ItemArt {
   if (!sprite) return null
+  // T23.16/T23.19B (R12): a drawn icon (a weapon's model, a drawn item) is the one design the hand, the ground and the
+  // bag share — it wins over a packed frame of the same key, which is the old painting.
+  if (drawnIcon(sprite) && hasTexture(sprite)) return { kind: 'texture', key: sprite }
   if (hasAtlasFrame(sprite)) return { kind: 'atlas', frame: sprite }
   if (hasTexture(sprite)) return { kind: 'texture', key: sprite }
   return null

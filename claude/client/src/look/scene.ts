@@ -267,6 +267,8 @@ export interface ActorOpts {
   seed?: number
   eye?: string
   flap?: number
+  /** T23.19B `bird`: §C16's metal bird (a machine's silhouette, `draw.ts::metalBird`). */
+  metal?: boolean
   /**
    * T23.16 (F6): `weapon` — a weapon alone, `actors/weapons.ts::WEAPONS[key]` drawn in its shoulder frame at (x, y)
    * scaled by `s` (F6's sheet, a pickup, an icon). `stick` — `held` is a weapon in the hands (`weapons.js::held`,

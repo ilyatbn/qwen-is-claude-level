@@ -11,7 +11,7 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { ICON_RES, iconWeapon } from '../look/actors/icons'
+import { ICON_RES, drawnIcon } from '../look/actors/icons'
 import { joinCast } from '../look/actors/cast'
 import { VIEW_MARGIN, labelActor, nearView, pickupActor } from '../look/actors/furniture'
 import { ensureItemTextures } from './itemTextures'
@@ -308,8 +308,8 @@ export class ItemLayer {
       sprite = this.scene.add.image(item.x, item.y, ATLAS, art.frame).setOrigin(0.5, 0.5)
     } else if (art?.kind === 'texture') {
       sprite = this.scene.add.image(item.x, item.y, art.key).setOrigin(0.5, 0.5)
-      // T23.16: a remodelled weapon's icon is drawn at ICON_RES texture px per world px (the tile shows it whole).
-      if (iconWeapon(art.key)) sprite.setScale(1 / ICON_RES)
+      // T23.16/T23.19B: a drawn icon (weapon or item) is drawn at ICON_RES texture px per world px (the tile shows it whole).
+      if (drawnIcon(art.key)) sprite.setScale(1 / ICON_RES)
     } else {
       // docs/50 §8: the game starts with no art, and every fallback logs once.
       const key = `item:${item.item ?? 'unknown'}`

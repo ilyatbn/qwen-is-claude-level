@@ -79,11 +79,19 @@ describe('artFor', () => {
   it('prefers a packed atlas frame over the procedural canvas', () => {
     // Both exist. Packed art wins — docs/51 §5 makes the procedural icon the
     // fallback, not a competitor, and a test that only offered one could not
-    // tell which was chosen.
-    expect(artFor('weapon_bazooka', any, any)).toEqual({
+    // tell which was chosen. (A key with no drawing: see the next test.)
+    expect(artFor('item_crate_supply', any, any)).toEqual({
       kind: 'atlas',
-      frame: 'weapon_bazooka',
+      frame: 'item_crate_supply',
     })
+  })
+
+  it('T23.19B (R12): a drawn icon wins over its old packed frame — one drawing for the hand, the ground and the bag', () => {
+    for (const sprite of ['item_medkit', 'item_shield', 'item_flashlight', 'weapon_bazooka']) {
+      expect(artFor(sprite, any, any)).toEqual({ kind: 'texture', key: sprite })
+      // …and with no drawing registered, the packed frame is still there to fall back on.
+      expect(artFor(sprite, any, none)).toEqual({ kind: 'atlas', frame: sprite })
+    }
   })
 
   it('falls back to the procedural canvas when the atlas lacks the frame', () => {

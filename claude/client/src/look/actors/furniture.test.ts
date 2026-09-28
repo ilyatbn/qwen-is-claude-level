@@ -14,7 +14,10 @@ import {
   NIGHT_HALO,
   SPIDER_ART_W,
   VIEW_MARGIN,
+  BIRD_ART_W,
+  BIRD_FLAP_STEPS,
   animalActor,
+  birdActor,
   crystalActors,
   crystalLights,
   graveActor,
@@ -109,5 +112,28 @@ describe('furniture (T23.19)', () => {
     expect(nearView(v, 50, 50, VIEW_MARGIN)).toBe(true)
     expect(nearView(v, 100 + VIEW_MARGIN - 1, 50, VIEW_MARGIN)).toBe(true)
     expect(nearView(v, 100 + VIEW_MARGIN + 1, 50, VIEW_MARGIN)).toBe(false)
+  })
+
+  it('T23.19B: a bird is F4\'s drawing scaled to its hit box, its wing drawn at one of BIRD_FLAP_STEPS positions', () => {
+    const w = 18
+    const a = birdActor(false, 100, 50, true, w, 0.3)
+    expect(a.kind).toBe('bird')
+    expect(a.opts.s).toBeCloseTo(w / BIRD_ART_W, 12)
+    expect(a.opts.face).toBe(1)
+    expect(a.opts.metal).toBeUndefined()
+    expect(birdActor(true, 100, 50, false, w, 0.3).opts).toMatchObject({ metal: true, face: -1 })
+    // The phase is continuous; the drawing takes BIRD_FLAP_STEPS values (one atlas cell each), both ends included.
+    const flaps = new Set<number>()
+    for (let k = 0; k <= 400; k++) flaps.add(birdActor(false, 0, 0, true, w, -1 + (2 * k) / 400).opts.flap ?? -1)
+    expect(flaps.size).toBe(BIRD_FLAP_STEPS)
+    expect(Math.min(...flaps)).toBe(0)
+    expect(Math.max(...flaps)).toBe(1)
+    // The box the cell is cut from holds the drawing (span ±10 units, flap ±6).
+    const b = estimateBox(a)
+    const s = a.opts.s ?? 1
+    expect(b[0]).toBeLessThanOrEqual(a.x - 10 * s)
+    expect(b[2]).toBeGreaterThanOrEqual(a.x + 10 * s)
+    expect(b[1]).toBeLessThanOrEqual(a.y - 7 * s)
+    expect(b[3]).toBeGreaterThanOrEqual(a.y + 7 * s)
   })
 })

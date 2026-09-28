@@ -382,14 +382,38 @@ if (onScreen && onScreen.inView.length > 0) {
   const CONTROL_RECT = { x: 40, y: 40, w: 120, h: 90 }
 
   const flightShot = await page.screenshot({ path: join(shotsDir, 'birds-in-flight.png') })
+  // T23.19B: the world canvas's own pixels in the same two states — a bird the world renderer draws (F4's, rim-lit)
+  // changes them; one Phaser draws on its canvas above leaves them as they were.
+  const worldWith = await page.evaluate(() => window.__world?.readFrame() ?? null)
   await page.evaluate(() => window.__game.setBirdsVisible(false))
   await page.evaluate(
     () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
   )
   const emptyShot = await page.screenshot({ path: join(shotsDir, 'birds-patch-empty.png') })
   const emptyShot2 = await page.screenshot()
+  const worldWithout = await page.evaluate(() => window.__world?.readFrame() ?? null)
+  const worldWithout2 = await page.evaluate(() => window.__world?.readFrame() ?? null)
   await page.evaluate(() => window.__game.setBirdsVisible(true))
   await page.evaluate(() => window.__game.freeze(false))
+
+  /**
+   * T23.19B: **drawn by the world renderer** — with the layer hidden, the world canvas loses a bird-sized set of
+   * pixels (its own null: two reads of the hidden state, 0). Plant: `birds.ts` ignoring `worldDraws` (Phaser's shapes
+   * drawn instead) leaves the world canvas unchanged — red.
+   */
+  const worldDiff = (a, b) => {
+    if (!a || !b || a.w !== b.w || a.h !== b.h) return null
+    const A = Buffer.from(a.rgba, 'base64')
+    const B = Buffer.from(b.rgba, 'base64')
+    let n = 0
+    for (let i = 0; i < A.length; i += 4) if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 30) n++
+    return n
+  }
+  const inWorld = worldDiff(worldWith, worldWithout)
+  const worldNull = worldDiff(worldWithout, worldWithout2)
+  if (inWorld === null || worldNull === null) fail('no world canvas to read — the birds cannot be the world renderer\'s')
+  else if (!(inWorld > Math.max(3 * worldNull, 4))) fail(`hiding the birds changed ${inWorld} world-canvas px (null ${worldNull}) — they are not drawn by the world renderer`)
+  else ok(`the birds are the world renderer's: hiding them changed ${inWorld} world-canvas px (null ${worldNull})`)
 
   /**
    * **Find the bird in the picture; do not predict where it should be.**
@@ -801,6 +825,44 @@ if (onScreen && onScreen.inView.length > 0) {
       }
     }
   }
+}
+
+/**
+ * T23.19B: the metal bird is told apart **by silhouette** (§C16: it is worth more; R10: no new colour for it) — both
+ * birds drawn by the game's own `draw.ts::bird` in this page (vite serves the module), same span and wing position,
+ * ink masks compared. Bound: R26's 0.72, the readability line the holdables are held to. Control: the normal bird
+ * against itself is 1.0 (the instrument can see a match).
+ */
+{
+  const r = await page.evaluate(async () => {
+    const D = await import('/src/look/actors/draw.ts')
+    const mask = (metal) => {
+      const cv = document.createElement('canvas')
+      cv.width = 96
+      cv.height = 64
+      const g = cv.getContext('2d')
+      D.bird(g, 48, 32, { s: 4, face: 1, flap: 0.5, metal })
+      const d = g.getImageData(0, 0, 96, 64).data
+      const m = new Uint8Array(96 * 64)
+      for (let i = 0; i < m.length; i++) m[i] = d[i * 4 + 3] > 127 ? 1 : 0
+      return m
+    }
+    const iou = (a, b) => {
+      let i = 0
+      let u = 0
+      for (let k = 0; k < a.length; k++) {
+        i += a[k] & b[k]
+        u += a[k] | b[k]
+      }
+      return u ? i / u : 0
+    }
+    const n = mask(false)
+    const m = mask(true)
+    return { metal: iou(n, m), self: iou(n, mask(false)), inkN: n.reduce((s, v) => s + v, 0), inkM: m.reduce((s, v) => s + v, 0) }
+  })
+  if (!(r.self === 1) || !(r.inkN > 50) || !(r.inkM > 50)) fail(`silhouette instrument: self IoU ${r.self}, ink ${r.inkN}/${r.inkM} px`)
+  else if (!(r.metal <= 0.72)) fail(`the metal bird's ink mask overlaps the bird's at IoU ${r.metal.toFixed(3)} (> 0.72): not told apart by silhouette`)
+  else ok(`the metal bird reads apart by silhouette: ink IoU ${r.metal.toFixed(3)} (≤ 0.72; control self ${r.self})`)
 }
 
 if (pageErrors.length) fail(`page errors:\n${pageErrors.join('\n')}`)

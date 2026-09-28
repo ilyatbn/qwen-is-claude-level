@@ -2,88 +2,38 @@
  * Ground and inventory icons (§B20).
  *
  * **T23.16/T23.17 (R12): every weapon's icon is its held model** — `look/actors/icons.ts` draws it, lit by F6's
- * moon; one design per weapon for the hand, the ground and the bag. What is still painted here is the non-weapon
- * items that have no model yet (battery, fangs, boots, wings — T23.19's furniture), at 16 px, **distinct by
- * silhouette, not by palette**: at 16 px on the ground the outline is all a player can read.
+ * moon; one design per weapon for the hand, the ground and the bag. **T23.19B: every non-weapon item's too** — the
+ * world draws medkit, shield, flashlight, battery, fangs, boots and wings as `draw.ts::item` (T23.19), and their tiles
+ * are that drawing now (`DRAWN_ITEMS`), where they were 16-px painted icons and packed atlas frames: silhouettes
+ * distinct by outline, as the painted ones were (`draw.ts::item`'s comment).
  */
 
 import Phaser from 'phaser'
-import { ICON_CENTRE_UNITS, ICON_RES, ICON_SPRITES, ICON_UNIT_PX, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
+import { DRAWN_ITEMS, ICON_CENTRE_UNITS, ICON_RES, ICON_SPRITES, ICON_UNIT_PX, PICKUP_S, litItem, litWeapon, pickupScale } from '../look/actors/icons'
+import { ITEM_S } from '../look/actors/furniture'
 
-type Ctx = CanvasRenderingContext2D
-const S = 16
-
-/** Sprite key → painter. Keys are the registry's `ItemDef.sprite`, verbatim. */
-const ART: Record<string, (c: Ctx) => void> = {
-  // --- consumables ---------------------------------------------------------
-  item_battery: (c) => {
-    c.fillStyle = '#2d3540'
-    c.fillRect(3, 4, 10, 9)
-    c.fillStyle = '#8a939e'
-    c.fillRect(6, 2, 4, 2) // terminal
-    c.fillStyle = '#5ce06a'
-    c.fillRect(4, 9, 8, 3) // charge bar
-  },
-
-  // T23.16/T23.17: every weapon's icon is its held drawing (`look/actors/icons.ts`), drawn below — not painted here
-  // (the retired melee weapons too: the registry keeps them, so they keep art).
-
-  // --- M21's effect items: silhouette first, colour second -----------------
-  //
-  // A pair of fangs, drawn as two downward tapers under a dark upper lip. No
-  // other icon here is two thin vertical spikes, which is the property that
-  // makes it readable at 16 px on the ground — the same rule `tombstoneTextures`
-  // states.
-  item_vampire_fangs: (c) => {
-    c.fillStyle = '#2a1016'
-    c.fillRect(3, 3, 10, 4) // the gum line
-    c.fillStyle = '#f2eee6'
-    for (const x of [5, 9]) {
-      c.beginPath()
-      c.moveTo(x - 1.5, 6)
-      c.lineTo(x + 1.5, 6)
-      c.lineTo(x, 13)
-      c.closePath()
-      c.fill()
-    }
-    c.fillStyle = '#b0202a'
-    c.fillRect(4, 14, 2, 1) // a drop under each point
-    c.fillRect(10, 14, 2, 1)
-  },
-  item_ironman_boots: (c) => {
-    // The pair seen from the side: a chunky sole is the whole silhouette, and
-    // nothing else in this table is a wide flat slab under a block.
-    c.fillStyle = '#c8322a'
-    c.fillRect(3, 4, 9, 6) // upper
-    c.fillRect(4, 2, 5, 2) // cuff
-    c.fillStyle = '#f0c020'
-    c.fillRect(2, 10, 12, 3) // sole, overhanging both ends
-    c.fillStyle = '#8a1f18'
-    c.fillRect(3, 7, 9, 1) // lace band
-  },
-  item_unicorn_wings: (c) => {
-    // Two swept wings meeting at a stem — the only outline here that is wider
-    // than it is tall and split down the middle, which is what makes it
-    // readable beside the boots' slab at 16 px.
-    c.fillStyle = '#f2eef8'
-    for (const dir of [-1, 1]) {
-      c.beginPath()
-      c.moveTo(8, 12)
-      c.lineTo(8 + dir * 7, 4)
-      c.lineTo(8 + dir * 6, 11)
-      c.closePath()
-      c.fill()
-    }
-    c.fillStyle = '#c48ce0'
-    c.fillRect(7, 6, 2, 7) // the stem between them
-    c.fillStyle = '#7ad0f0'
-    c.fillRect(6, 3, 4, 2) // a bright crest, so it is not a white blob
-  },
-}
+/**
+ * T23.19B: a drawn item's icon — `draw.ts::item` at `ITEM_S` world scale (~16 units), `ICON_RES` texture px per world
+ * px, lit by the icon moon (`icons.ts::litItem`); `ITEM_ICON_PAD` world px of room for the rim passes' offsets.
+ */
+const ITEM_ICON_UNITS = 16
+const ITEM_ICON_PAD = 3
 
 /** Sprite keys this module can draw — the painters and the remodelled weapons' icons. The check asserts against the registry. */
 export function proceduralItemKeys(): string[] {
-  return [...Object.keys(ART), ...Object.keys(ICON_SPRITES)]
+  return [...DRAWN_ITEMS, ...Object.keys(ICON_SPRITES)]
+}
+
+/** A drawn item's icon texture (`DRAWN_ITEMS`), `sprite` its registry key. */
+function itemIcon(textures: Phaser.Textures.TextureManager, sprite: string): void {
+  const R = ICON_RES
+  const side = Math.ceil((ITEM_ICON_UNITS * ITEM_S + 2 * ITEM_ICON_PAD) * R)
+  const tex = textures.createCanvas(sprite, side, side)
+  const ctx = tex?.getContext()
+  if (!ctx) return
+  ctx.clearRect(0, 0, side, side)
+  litItem(ctx, sprite, side / 2, side / 2, ITEM_S * R, R)
+  tex?.refresh()
 }
 
 /**
@@ -144,13 +94,5 @@ export function ensureItemTextures(textures: Phaser.Textures.TextureManager): vo
   for (const [sprite, key] of Object.entries(ICON_SPRITES)) {
     if (!textures.exists(sprite)) weaponIcon(textures, sprite, key)
   }
-  for (const [key, paint] of Object.entries(ART)) {
-    if (textures.exists(key)) continue
-    const tex = textures.createCanvas(key, S, S)
-    const ctx = tex?.getContext()
-    if (!ctx) continue
-    ctx.clearRect(0, 0, S, S)
-    paint(ctx)
-    tex?.refresh()
-  }
+  for (const sprite of DRAWN_ITEMS) if (!textures.exists(sprite)) itemIcon(textures, sprite)
 }

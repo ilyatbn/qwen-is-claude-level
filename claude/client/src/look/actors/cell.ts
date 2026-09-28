@@ -202,6 +202,11 @@ export function estimateBox(a: Actor): Box {
     const m = 2 * 1.15 * size + 2
     b = a.kind === 'grave' ? [a.x - 9 * s - m, a.y - 17 * s - m, a.x + 9 * s + m, a.y + 3 * s + m] : [a.x - 9 * s - m, a.y - 9 * s - m, a.x + 9 * s + m, a.y + 9 * s + m]
   }
+  if (a.kind === 'bird') {
+    // T23.19B: `draw.ts::bird` spans ±10 and flaps ±6 about its body (the metal one's fin 4 up), plus the rim passes.
+    const m = 2 * 1.15 * size + 2
+    b = [a.x - 11 * s - m, a.y - 8 * s - m, a.x + 11 * s + m, a.y + 8 * s + m]
+  }
   if (a.kind === 'label') {
     // T23.19: the plate, from the text's length at the label font (monospace: ~0.62 em a glyph) — generous.
     const w = (a.opts.text ?? '').length * D.LABEL_FONT_PX * 0.7 + 2 * D.LABEL_PAD[0] + 4

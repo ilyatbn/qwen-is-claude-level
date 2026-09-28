@@ -7602,4 +7602,11 @@ Profiled first: main thread 78 % in WaitForGetOffset (GPU process 75 % busy) —
 Fixes (13.5 → 10.6 ms): low tier scene target R11F_G11F_B10F; bloom's blend folded into the output pass + its 12 needless clears dropped (both tiers); terrain light loop skips out-of-radius lights, inversesqrt, bound 10 on low (mockup's MAX_PL); no depth buffers; low fog 3 octaves, low fire 4/3.
 Square halos: low bright pass takes 4 taps (shots/t2318b-rocket-halo-{before,after}-low.png: square → round). Reviewer items: fx layer no per-frame filter/closure/set([..]), partial uploads, Batch.grow disposes (GPU leak); pickLights ranks combat before `fixed` gates/crystals (vitest, plant red).
 Declined, measured: game.ts pooling (GC 0.3 % of main thread); lightmap update/draw (A/B Δ 0); 2-D small-mip blur (bloom 2.2 → 2.5 ms, reverted); atlas upload (0.3 ms). Level A unchanged (F1 dssim .00005, bloomBox .009); the missing composite alpha turned 6 Level A checks red before the fix.
-Done-when + 17 more: 22/23 — night-combat red once in the batch (no rocket light in 5 s), green 2/2 alone (reported). Low-tier look-gate-f1 report 7/11 → 8/11 fails (reported, not gating).
+Done-when + 17 more: 22/23 — night-combat red once in the batch (no rocket light in 5 s), green 2/2 alone (reported); check.sh --changed HEAD~1 --fast EXIT 0. Low look-gate-f1 report 7/11 → 8/11 (not gating).
+
+## T23.19B part A — birds and item icons from one drawing (builder, 2026-09-28)
+Birds: F4's actor in the world renderer while it draws the scene (`fxFeed.worldDraws`), metal = machine silhouette (ink IoU 0.613 ≤ 0.72, self 1.0), 6 flap cells; behind figures, in front of rock (decided).
+Icons (R12): the 7 drawn items' tiles/ground icons are `draw.ts::item` lit like the weapons (`litIcon` shared); `artFor` drawn-before-packed (vitest; 16-px painters retired). Crate beacon/parachute ruled fine. 31337 stamp: mask air above it (T23.19C).
+Done-when was green before starting (4/4) → added: birds world-canvas leg (36 px, null 0; plant Phaser-only → 0, red), silhouette leg, birdActor + artFor vitests.
+Done-when EXIT 0 (vitest 1144; birds, weather-visible, crates, furniture 4/4) + inventory-ui, weapons-held ok. Rest → T23.19E (vents, hazard drops, 4 checks). Shots: t2319b-birds-sheet, t2319b-item-icons-x4, t2319b-bird-in-flight-x6.
+

@@ -205,7 +205,13 @@ export function spider(g: G, x: number, y: number, { s = 1, face = 1, rot = 0, e
   })
 }
 
-export function bird(g: G, x: number, y: number, { s = 1, face = 1, flap = 0.5 } = {}): void {
+/**
+ * `metal` (T23.19B, §C16's metal bird — worth more, so it must read apart at a glance, and R10 keeps it ink): a
+ * machine, not a bird — straight swept wings with a notched trailing edge, a longer boxy fuselage and a tail fin, where
+ * F4's bird is all curves. Same span and flap, so it flies the same box.
+ */
+export function bird(g: G, x: number, y: number, { s = 1, face = 1, flap = 0.5, metal = false } = {}): void {
+  if (metal) return metalBird(g, x, y, s, face, flap)
   withT(g, x, y, s, face, 0, () => {
     const up = -6 + flap * 12
     g.fillStyle = INK
@@ -220,6 +226,44 @@ export function bird(g: G, x: number, y: number, { s = 1, face = 1, flap = 0.5 }
     g.ellipse(0.5, 0.6, 3.2, 1.3, 0, 0, 7)
     g.fill()
     disc(g, 3.6, 0.1, 1.1)
+  })
+}
+
+function metalBird(g: G, x: number, y: number, s: number, face: number, flap: number): void {
+  withT(g, x, y, s, face, 0, () => {
+    const up = -6 + flap * 12
+    g.fillStyle = INK
+    // Wings: straight leading edges root → tip, a trailing edge a chord behind them (thinning to the tip) with a notch
+    // cut in it — built along the span, so the shape holds at every wing position.
+    const lead = (t: number): number => -1.2 + t * (up + 1.2)
+    const trail = (t: number): number => lead(t) + 2.8 * (1 - t) + 0.5
+    for (const side of [-1, 1]) {
+      const at = (t: number): number => side * (1.5 + t * 8.5)
+      g.beginPath()
+      g.moveTo(at(0), lead(0))
+      g.lineTo(at(1), lead(1))
+      g.lineTo(at(0.62), trail(0.62))
+      g.lineTo(at(0.45), trail(0.45) - 1.1)
+      g.lineTo(at(0.3), trail(0.3))
+      g.lineTo(at(0), trail(0))
+      g.closePath()
+      g.fill()
+    }
+    // Fuselage: a long box with a pointed nose (+x) and a fin up at the tail.
+    g.beginPath()
+    g.moveTo(-5.5, -0.9)
+    g.lineTo(3.5, -1.1)
+    g.lineTo(6.2, 0.2)
+    g.lineTo(3.5, 1.4)
+    g.lineTo(-5.5, 1.2)
+    g.closePath()
+    g.fill()
+    g.beginPath()
+    g.moveTo(-5.5, -0.8)
+    g.lineTo(-7.2, -4)
+    g.lineTo(-4.2, -0.8)
+    g.closePath()
+    g.fill()
   })
 }
 

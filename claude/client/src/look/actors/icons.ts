@@ -7,7 +7,7 @@
  * inventory tiles (`getBase64`) both read.
  */
 import { DARK_INK } from './cell'
-import { INK, setInk, type G } from './draw'
+import { INK, item as itemDrawing, setInk, type G } from './draw'
 import { LIT, rimAlpha } from './lit'
 import { FIREARMS, MELEE_THROWN, WEAPONS, drawWeapon } from './weapons'
 
@@ -57,11 +57,11 @@ export function iconWeapon(sprite: string): string | null {
 }
 
 /**
- * `f_kit.js::lit` with the moon as its key light (`dominant` finds no light, so the moon): weapon `key` with its
- * shoulder-frame origin at (x, y), scaled by `s`; `size` is lit()'s (the passes' offsets, px). The ink is restored.
+ * `f_kit.js::lit` with the moon as its key light (`dominant` finds no light, so the moon): `draw(dx, dy, accent)` laid
+ * down once per pass at the pass's offset in the pass's ink; `size` is lit()'s (the passes' offsets, px). The ink is
+ * restored. One lighting for every icon, weapon or item (T23.19B).
  */
-export function litWeapon(g: G, key: string, x: number, y: number, s: number, size = 1): void {
-  if (!WEAPONS[key]) return
+function litIcon(g: G, draw: (dx: number, dy: number, accent: string) => void, size: number): void {
   const L = ICON_MOON
   const a = rimAlpha(L.w)
   const o = LIT.rimOffset * size
@@ -69,7 +69,7 @@ export function litWeapon(g: G, key: string, x: number, y: number, s: number, si
   const was = INK
   const pass = (ink: string, accent: string, dx: number, dy: number): void => {
     setInk(ink)
-    drawWeapon(g, key, x + dx, y + dy, s, accent)
+    draw(dx, dy, accent)
   }
   g.save()
   g.lineCap = 'round'
@@ -78,9 +78,39 @@ export function litWeapon(g: G, key: string, x: number, y: number, s: number, si
   pass(`rgba(${L.rgb},${a})`, `rgba(${L.rgb},${a})`, L.dx * o, L.dy * o)
   pass(`rgba(${L.fill},${LIT.fillAlpha})`, `rgba(${L.fill},${LIT.fillAlpha})`, -L.dx * LIT.fillOffset * size, -L.dy * LIT.fillOffset * size)
   setInk(DARK_INK)
-  drawWeapon(g, key, x, y, s, ICON_ACCENT)
+  draw(0, 0, ICON_ACCENT)
   g.restore()
   setInk(was)
+}
+
+/** Weapon `key` lit by the icon moon, its shoulder-frame origin at (x, y), scaled by `s`. */
+export function litWeapon(g: G, key: string, x: number, y: number, s: number, size = 1): void {
+  if (!WEAPONS[key]) return
+  litIcon(g, (dx, dy, accent) => drawWeapon(g, key, x + dx, y + dy, s, accent), size)
+}
+
+/**
+ * T23.19B (R12): the non-weapon items the world draws as `draw.ts::item` — their inventory tile and (space) ground icon
+ * are that drawing too, lit as a weapon's, where they were painted 16-px icons and packed atlas frames.
+ */
+export const DRAWN_ITEMS: ReadonlySet<string> = new Set([
+  'item_medkit',
+  'item_shield',
+  'item_flashlight',
+  'item_battery',
+  'item_vampire_fangs',
+  'item_ironman_boots',
+  'item_unicorn_wings',
+])
+
+/** Item `key` (`DRAWN_ITEMS`) lit by the icon moon, centred on (x, y), scaled by `s` (`draw.ts::item`: ~16 units). */
+export function litItem(g: G, key: string, x: number, y: number, s: number, size = 1): void {
+  litIcon(g, (dx, dy, accent) => itemDrawing(g, x + dx, y + dy, { s, key, accent }), size)
+}
+
+/** Is `sprite`'s icon a drawing (a weapon's model or a drawn item) — the one design the hand, ground and bag share? */
+export function drawnIcon(sprite: string): boolean {
+  return iconWeapon(sprite) !== null || DRAWN_ITEMS.has(sprite)
 }
 
 /** The scale a weapon whose drawing at `PICKUP_S` measures `w` × `h` world px is shown at, fitted to `PICKUP_BOX`. */
