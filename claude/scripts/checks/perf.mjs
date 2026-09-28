@@ -133,15 +133,47 @@ export default async function ({ page, shot, log }) {
     throw new Error(`round-start bake median ${median(bakes).toFixed(0)} ms exceeds 800`)
   }
 
-  const t0 = await page.evaluate(() => {
-    const t = performance.now()
-    window.__game.carve(1500, 800, 60)
-    return performance.now() - t
-  })
-  await page.waitForTimeout(300)
-  const d2 = await page.evaluate(() => window.__game.debug())
-  log(`carve+rebake: carve ${t0.toFixed(2)} ms, last chunk rebake ${d2.lastRebakeMs.toFixed(2)} ms (ceiling 4)`)
-  if (d2.lastRebakeMs > 4) throw new Error(`chunk rebake ${d2.lastRebakeMs.toFixed(2)} ms exceeds 4`)
+  // ## A carve's rebuild (T23.19F re-derived it; it was "chunk rebake ≤ 4")
+  //
+  // This leg read `debug().lastRebakeMs` — `SandboxScene.carveAt`'s stopwatch round the carve AND
+  // every chunk it dirtied AND, since T23.06, the lit terrain's field update (`terrainFields.ts`,
+  // R4's `renderFieldsDirty` in wasm) — and held it to `docs/60` §6's **single chunk** 4 ms. Two
+  // quantities under one name (the bug `terrain.ts::update` documents for `lastBakeMs`). Measured
+  // on HEAD f2dca6d (sandbox 4242, r 60, SwiftShader, 12 fresh carves): total 5.3 ms median, of
+  // which the fields pass 4.5 ms and Phaser's hidden fallback chunks 0.8 ms (worst single chunk
+  // 0.8); wasm `renderFieldsDirty` alone 1.4 / 2.3 / 3.7 / 6.2 ms at r 8 / 24 / 40 / 60 — its
+  // 64-px EDT read margin (R4) is the floor, so no rect trim brings a big carve under 4.
+  // The single-chunk row stays gated where it is measured right: `chunk-rebake.mjs`.
+  // What this leg gates now is the cost the player pays for a bazooka's crater
+  // (`BAZOOKA_BLAST_RADIUS`, the busy fight's carve; the meteor's 50 and the mine's 48 are not in
+  // `constants_json`, and r 60 was no weapon's), fields included, against **half a sim frame** (1000 / SIM_HZ / 2): the
+  // frame carrying the carve keeps the other half for everything else. §6's "generous, so a
+  // 50× regression is caught and variance is not" — measured ~4 ms against 8.3.
+  const K = await page.evaluate(() => window.__game.constants())
+  const R = K.BAZOOKA_BLAST_RADIUS
+  const ceiling = 1000 / K.SIM_HZ / 2
+  if (!(R > 0) || !(ceiling > 0)) throw new Error(`BAZOOKA_BLAST_RADIUS ${R} / SIM_HZ ${K.SIM_HZ} did not reach the page`)
+  const carves = []
+  for (let i = 0; i < 5; i++) {
+    const r = await page.evaluate(([x, y, r]) => {
+      const before = window.__world.terrain()?.feed?.carves ?? null
+      window.__game.carve(x, y, r)
+      const d = window.__game.debug()
+      const feed = window.__world.terrain()?.feed ?? null
+      return { total: d.lastRebakeMs, chunk: d.lastBakeMs, before, after: feed?.carves ?? null, fields: Number(feed?.lastCarveMs) }
+    }, [1100 + i * 180, 1100, R])
+    // The instrument guard: a carve that changed no field (air, or no lit terrain) reads as "fast".
+    if (r.before === null || !(r.after > r.before)) {
+      throw new Error(`carve ${i} at r ${R} updated no terrain field (${r.before} → ${r.after}) — no number here is evidence`)
+    }
+    carves.push(r)
+    await page.waitForTimeout(150)
+  }
+  const mid = (k) => medianOf(carves.map((c) => c[k]))
+  log(`carve r ${R} (BAZOOKA_BLAST_RADIUS), 5 fresh: whole carve ${mid('total').toFixed(2)} ms median, of it the lit terrain's fields ${mid('fields').toFixed(2)} ms, worst Phaser chunk ${mid('chunk').toFixed(2)} ms (ceiling ${ceiling.toFixed(2)} = half a ${K.SIM_HZ} Hz frame; single chunk gated by chunk-rebake)`)
+  if (mid('total') > ceiling) {
+    throw new Error(`a r ${R} carve's rebuild ${mid('total').toFixed(2)} ms median exceeds half a frame (${ceiling.toFixed(2)} ms)`)
+  }
 
   // The single-chunk rebake budget (R37) was here from T22.00C until the M22 close-out:
   // this check is `flaky: true`, so while it lived here nothing gated it. It is now its

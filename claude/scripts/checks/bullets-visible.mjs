@@ -59,12 +59,20 @@ const stack = await startStack({
 })
 const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'bullets-visible' })
+// **The DOM HUD is taken off the photograph** (T23.19F). The round timer (`ui/hud.ts`, `#hud-timer`,
+// top-centre) sits over the lane whenever the lane climbs to the top of the screen, as it does here
+// (-150 deg): its digits change every second, at one place — a bright column that never moves, which
+// against the control frame read as a round stuck in flight (measured: the "2:54" → "2:51" 4 → 1
+// changed 255 luminance at screen x 649–658, strip column 517). The round is drawn by the world
+// renderer; the timer and the effect banner are not what this check is about.
+await page.addStyleTag({ content: '#hud-timer, #hud-banner { visibility: hidden !important; }' })
 
 const K = await page.evaluate(() => window.__game.constants())
 for (const [name, v] of Object.entries({
   SMG_MUZZLE_SPEED: K.SMG_MUZZLE_SPEED,
   SMG_RANGE: K.SMG_RANGE,
   BULLET_LENGTH: K.BULLET_LENGTH,
+  PICKUP_RADIUS: K.PICKUP_RADIUS,
 })) {
   // §B15: a threshold compared against `undefined` is false forever, and every
   // wait built on one can only time out. Check the instrument first.
@@ -81,12 +89,15 @@ for (const [name, v] of Object.entries({
  */
 async function columnProfile(clip) {
   const b64 = (await page.screenshot({ clip })).toString('base64')
-  return page.evaluate(async (src) => {
+  return page.evaluate(async ([src, clip]) => {
     // The live count rides along in this call. It used to be a second
     // `page.evaluate`, and a second round-trip per sample is a third of the
     // sampling budget spent on a diagnostic — which directly cost catches of the
     // thing under test.
-    const live = window.__game.debug().projectilesLive ?? 0
+    const dbg = window.__game.debug()
+    const live = dbg.projectilesLive ?? 0
+    // T23.19F: where the pickups lie in this strip, in strip columns (see `mostChanged`).
+    const items = (dbg.itemPositions ?? []).map((i) => (i.x - dbg.worldView.x) * dbg.zoom - clip.x)
     const img = new Image()
     img.src = `data:image/png;base64,${src}`
     await img.decode()
@@ -108,8 +119,8 @@ async function columnProfile(clip) {
       }
       cols[x] = peak
     }
-    return { cols, live }
-  }, b64)
+    return { cols, live, items }
+  }, [b64, clip])
 }
 
 /**
@@ -122,10 +133,20 @@ async function columnProfile(clip) {
  * control frame is *for* (§C2), and it is immune to a bright static background
  * in a way an absolute reading is not.
  */
-function mostChanged(profile, baseline) {
+/**
+ * **Pickups are masked** (T23.19F). The server's item schedule drops a pickup where it likes, and on
+ * FIXED_SEED 4242 one lands in this strip a few seconds into the check: a lit, static icon that the
+ * control frame (taken before it existed) does not hold, so it read as a bright column "stuck" at one
+ * x — the parked red of T23.18/T23.19E (x 623 at zoom 2, x 107 at zoom 1; `debug().itemPositions`
+ * put item 9 at strip column 104, the changed columns were 97–108). A pickup never moves, so masking
+ * its columns cannot hide a round's *travel*; half-width `PICKUP_RADIUS` × zoom (20 px at zoom 1)
+ * covers the measured ±7.
+ */
+function mostChanged(profile, baseline, items = []) {
   let bestX = -1
   let best = 0
   for (let x = 0; x < profile.length; x++) {
+    if (items.some((ix) => Math.abs(x - ix) <= ITEM_MASK)) continue
     const d = profile[x] - (baseline[x] ?? 0)
     if (d > best) {
       best = d
@@ -134,6 +155,8 @@ function mostChanged(profile, baseline) {
   }
   return { x: bestX, peak: best }
 }
+
+const ITEM_MASK = K.PICKUP_RADIUS * (await dbg()).zoom
 
 /** World point to screen, the §A35-correct way: `worldView` and zoom. */
 const toScreen = (d, wx, wy) => ({
@@ -278,7 +301,7 @@ async function trackOneShot(label, baseline) {
   while (Date.now() - t0 < budget) {
     const before = Date.now()
     const raw = await columnProfile(STRIP)
-    const s = { ...mostChanged(raw.cols, baseline), live: raw.live }
+    const s = { ...mostChanged(raw.cols, baseline, raw.items), live: raw.live }
     gaps.push(Date.now() - before)
     // Comfortably above the control frame's own peak, so terrain and sky cannot
     // supply it.
@@ -303,7 +326,10 @@ async function trackOneShot(label, baseline) {
 let seen = []
 let liveSeen = 0
 for (let attempt = 0; attempt < 6 && seen.length < 2; attempt++) {
-  const r = await trackOneShot(`attempt ${attempt + 1}`, baseProfile)
+  // A fresh control frame per attempt (T23.19F), the "fired away" leg's rule: the scene as it is
+  // now, not as it was before the first shot — the sky's night blend and moons move (T23.11).
+  const fresh = (await columnProfile(STRIP)).cols
+  const r = await trackOneShot(`attempt ${attempt + 1}`, fresh)
   seen = r.seen
   liveSeen = Math.max(liveSeen, r.liveSeen)
 }
@@ -421,7 +447,7 @@ const controlSeen = []
   await page.evaluate(() => window.__game.fire())
   while (Date.now() - t0 < 1200) {
     const raw = await columnProfile(CONTROL)
-    const c = mostChanged(raw.cols, controlBase)
+    const c = mostChanged(raw.cols, controlBase, raw.items)
     if (c.peak > 40) controlSeen.push({ t: Date.now() - t0, x: c.x, peak: c.peak })
   }
 }

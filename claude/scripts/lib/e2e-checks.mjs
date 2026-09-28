@@ -261,7 +261,7 @@ export const CHECKS = [
   // Standalone and on a real server for the reason `ordnance-visible` is: the
   // sandbox is the one scene that drives its own ordnance layer, so a check that
   // ran there would pass with `GameScene` drawing nothing at all.
-  { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true, flaky: true },
+  { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true },
   // §C6: the weather must reach the screen, not just the simulation.
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
@@ -297,7 +297,7 @@ export const CHECKS = [
   // `flaky` (parked, tasks/flaky-test.md): red at 51.3 fps in the serial tail of a
   // full gate, still under the decaying load of the parallel phase; 59.9 and 59.5
   // fps alone on an idle box. `serial` does not wait for the load to fall.
-  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true, flaky: true },
+  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true },
   // R37's single-chunk rebake budget: moved into `perf` by T22.00C, where the flaky flag
   // meant nothing gated it; its own serial check since the M22 close-out.
   { name: 'chunk-rebake', file: 'scripts/checks/chunk-rebake.mjs', url: '?sandbox=1&seed=4242', serial: true },
