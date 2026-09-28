@@ -7589,3 +7589,9 @@ New check `furniture` (sandbox, frozen frame, control frame + region): crystals 
 fps busy match (seed 31337, 5 bots, meteors): Swift low 49.9 / 40.5 vs HEAD 50.5 / 40.8 (same script, stash) — unchanged; D3D12 full 59.9 / 59.9.
 Shots: shots/t2319-sandbox-{crystals,grave-night,pickup-bazooka,pickup-medkit}-swift.png, t2319-{pickup,animal,crystal,grave}-{swift,gpu}.png (the live grave fell at the map floor, under the hotbar — the sandbox one is the night grave).
 Done-when: vitest 1141 ok; e2e 6/7 — `teleport` red on its parked control-patch signature (7.7 moved; flaky-test.md T23.19A row), the rest + furniture green. check.sh --changed HEAD --fast EXIT 0; subset 19/19. Rest filed as T23.19B (birds, vents, hazards, beacon, item icons).
+
+## T23.19C — sky through the rock: measured absent; guard `rock-opaque` (builder, 2026-09-28)
+Repro = owner PNG (1-px shift). Sky → magenta/black: 0 deep-rock px move (page + world canvas, low + full; full vs low material identical; fields == mask, sandbox + live match 105 carves).
+Only sky term in rock = bloom (0 px bloom off). Real sky vs black, bloom on: mockup F1 max 1, lab F1 full/low 1/0; game = moon disc beside rock (31337 p95 13–26 full, 15–32 low). No renderer fix; moon-over-terrain bloom put to coordinator.
+New `rock-opaque` + `rock-opaque-full` (4 seeds × 3 views, night, bloom off, air control 98–100 %; noon leg dropped: frames identical, day look is T23.10) + dev `__world.skyFlat`. Plant coverage × 0.97 → red (100 % of rock, every view). Not "red before": no defect.
+Done-when EXIT 0 (rock-opaque, rock-opaque-full, look-terrain, look-lab, look-gate-f1, furniture 6/6); check.sh --changed HEAD --fast EXIT 0.

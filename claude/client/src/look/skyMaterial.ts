@@ -196,8 +196,10 @@ const COMPOSITE = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
   uniform sampler2D P1, P2, P3, G, Q, ${Array.from({ length: N }, (_, i) => `L${i}`).join(', ')};
   uniform float on[${N}];
   uniform vec3 haze; uniform float lin, grainK; uniform vec2 RES, skyOff;
+  uniform vec4 flatC; // dev (T23.19C, rock-opaque): a = 1 draws the whole sky this one linear colour
   float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
   void main(){
+    if (flatC.a > 0.5) { gl_FragColor = vec4(flatC.rgb, 1.); return; }
     vec4 b1 = texture2D(P1, vUv), b2 = texture2D(P2, vUv), b3 = texture2D(P3, vUv);
     vec3 col = texture2D(G, T3.xy).rgb * b1.a + b1.rgb + vec3(b2.a * 1.3 * skyOff.y/RES.y);
     float occ = 0.;
@@ -316,6 +318,7 @@ export class SkyQuad {
         grainK: { value: 0 },
         RES: { value: new Vector2(1280, 720) },
         skyOff: { value: new Vector2() },
+        flatC: { value: new Vector4(0, 0, 0, 0) },
       },
       vertexShader: COMPOSITE_V,
       fragmentShader: COMPOSITE,
@@ -482,6 +485,14 @@ export class SkyQuad {
   hideLayers(hide: number[]): void {
     this.hidden = new Set(hide)
     this.packLayers()
+  }
+
+  /**
+   * Dev (T23.19C, `rock-opaque`): draw the whole sky as one flat linear colour (`null` restores) — anything the
+   * sky shows through changes with it, and nothing else does.
+   */
+  setFlat(rgb: [number, number, number] | null): void {
+    ;(this.u['flatC']!.value as Vector4).set(...(rgb ?? [0, 0, 0]), rgb ? 1 : 0)
   }
 
   get hiddenLayers(): number[] {

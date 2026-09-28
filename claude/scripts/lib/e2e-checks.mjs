@@ -161,6 +161,10 @@ export const CHECKS = [
   // T23.19: pickups + labels, a grave at night against dark rock, animals and crystals (glow + light) in the world
   // renderer, each on pixels with a control frame and a control region.
   { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337' },
+  // T23.19C: solid rock hides the sky — deep-rock pixels do not move when the sky is swapped for flat magenta (open
+  // air, the control, does), over four seeds × three views × night and noon; the full-tier leg is `rock-opaque-full`.
+  { name: 'rock-opaque', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337' },
+  { name: 'rock-opaque-full', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337&tier=full' },
   // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn
   // lighting the rock near the flame against the flame planted off (the light at the flame, both ends).
   { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242' },

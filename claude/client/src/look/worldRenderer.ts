@@ -834,6 +834,12 @@ export class WorldRenderer implements SceneRenderer {
     this.dirty = true
   }
 
+  /** Dev (T23.19C, `rock-opaque`): the sky drawn flat in one linear colour; `null` restores it. */
+  skyFlat(rgb: [number, number, number] | null): void {
+    this.sky.setFlat(rgb)
+    this.dirty = true
+  }
+
   /** Dev: the sky as last drawn — its layers' factors and periods, and the offsets that frame used. */
   skyInfo(): { drawn: boolean; hidden: number[]; layers: { parallax: number; period: number }[]; offsets: Offset[]; horizon: Offset } {
     const bg = this.desc?.look.bg ?? null

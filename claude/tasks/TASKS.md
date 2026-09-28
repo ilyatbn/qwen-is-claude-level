@@ -850,7 +850,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.19](M23/T23.19-the-world-furniture.md) — The world's furniture — gates, platforms, crystals, crates, animals, birds, hazards; every gameplay signal re-asserted on pixels
   - [x] T23.19 part A — pickups + labels, graves (night halo), animals, crystals (glow + light) in the world renderer; T23.19A's stopgap retired
 - [ ] [T23.19B](M23/T23.19B-the-rest-of-the-furniture.md) — The rest of the furniture — birds, lava vents, hazard drops, crate beacon, item icons from one drawing (split from T23.19)
-- [ ] [T23.19C](M23/T23.19C-sky-through-the-rock.md) — The sky shows through the rock — solid rock stays opaque on every seed and tier (a check swaps the sky)
+- [x] [T23.19C](M23/T23.19C-sky-through-the-rock.md) — The sky shows through the rock — solid rock stays opaque on every seed and tier (a check swaps the sky)
 - [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
