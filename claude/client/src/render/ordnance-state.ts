@@ -237,6 +237,11 @@ export interface Blast {
   r: number
   age: number
   ttl: number
+  /**
+   * T23.19D (R27): the start of the blast's random stream (`fx/game.ts::blastStream`); absent — the game's case — it
+   * is derived from the blast's place. The look-lab names the mockup's (`MOCKUP_STREAM`) to draw F1's explosion.
+   */
+  stream?: number
 }
 
 export class OrdnanceState {

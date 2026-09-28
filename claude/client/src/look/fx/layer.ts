@@ -65,7 +65,8 @@ const DISC_VS = /* glsl */ `
 attribute vec2 aUv; attribute float aKind; attribute vec4 aP; attribute vec3 aColor;
 varying vec2 vUv; varying float vKind; varying vec4 vP; varying vec3 vColor;
 void main(){ vUv = aUv; vKind = aKind; vP = aP; vColor = aColor; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`
-// Kind 0: `kit.js::explosion`'s fireball, verbatim at noise offset 0, flow 0, heat 1 (vUv here is its p = uv·2 − 1).
+// Kind 0: `kit.js::explosion`'s fireball, verbatim at noise offset 0, boil 0, heat 1 (vUv here is its p = uv·2 − 1). Its
+// boil (vP.y) is how far the noise has moved, set per frame from the blast's age (T23.19D R27: 0 at the peak = the still).
 // Kind 1: the same fire as a flame's tongue — its body lifted and narrowed, boiling upward with time.
 // Kind 2: the shock ring, an additive annulus (vP.x..vP.y of the radius) in vColor · vP.w.
 const DISC_FS =
@@ -87,7 +88,7 @@ void main(){
   // A tongue: long above its body (p.y = −0.35), short below it, faded off before the quad's edge.
   float edge = 1.;
   if (vKind > 0.5) { float dy = p.y + 0.35; q = vec2(p.x, dy * (dy > 0. ? 0.62 : 1.3)); rr = length(q); edge = smoothstep(1., 0.8, max(abs(p.x), abs(p.y))); }
-  vec2 drift = vec2(vP.x, -vP.y * time + vP.x * 0.7);
+  vec2 drift = vec2(vP.x, (vKind > 0.5 ? -vP.y * time : vP.y) + vP.x * 0.7);
   float n = fbm(p*3.2 + vec2(0.,-0.4) + drift, FIRE_OCT_A); float n2 = fbm(p*7. + n*2. + drift, FIRE_OCT_B);
   float shape = smoothstep(0.78, 0.2, rr + (n-0.5)*0.75 + (n2-0.5)*0.25);
   float temp = shape * (1.25 - rr*0.9) * (0.7 + n2*0.6) * vP.z;

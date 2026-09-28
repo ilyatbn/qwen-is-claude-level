@@ -11,6 +11,7 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
+import { C } from '../core'
 import { ICON_RES, drawnIcon } from '../look/actors/icons'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws } from '../look/fx/feed'
@@ -36,6 +37,11 @@ import {
 /** The packed item atlas key. Exported so the inventory tile resolves art
  * through the same atlas the world does rather than naming it a second time. */
 export const ITEM_ATLAS = 'items'
+/**
+ * T23.19D (coordinator): the label's bottom sits a figure's height (`PLAYER_H`) above the pickup's middle — over the
+ * head of whoever stands on it, not across their body (it was 16 px up: `gunner-visible` over a pickup 96.2 → 88.5 %).
+ */
+export const labelRise = (): number => C().PLAYER_H
 /** T23.19D F3: the labels' depth — over the lightmap, under the fog veil (which must still hide them). */
 export const LABEL_DEPTH = DEPTH.fog - 1
 const ATLAS = ITEM_ATLAS
@@ -241,7 +247,7 @@ export class ItemLayer {
       const near = withinLabelRange(item, player)
       if (near && !e.label) {
         e.label = this.scene.add
-          .text(item.x, item.y - 16, labelFor(item, this.defs), {
+          .text(item.x, item.y - labelRise(), labelFor(item, this.defs), {
             fontFamily: 'monospace',
             fontSize: '10px',
             color: '#e8f0ff',
@@ -256,7 +262,7 @@ export class ItemLayer {
         e.label.destroy()
         e.label = null
       }
-      e.label?.setPosition(item.x, item.y - 16 + bobFor(item, id, this.t))
+      e.label?.setPosition(item.x, item.y - labelRise() + bobFor(item, id, this.t))
     }
 
     this.drawCrateMarkers(live)

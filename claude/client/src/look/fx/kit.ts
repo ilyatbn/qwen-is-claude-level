@@ -62,7 +62,7 @@ export interface FxDisc {
   x: number
   y: number
   size: number
-  /** Fire: `a` noise offset (0 = the mockup's), `b` flow (noise units/s, 0 = still); ring: inner/outer radius as fractions of size/2. */
+  /** Fire (kind 0): `a` noise offset (0 = the mockup's), `b` how far it has boiled (noise units, 0 = the still — T23.19D); flame (kind 1): `b` its boil rate (noise units/s); ring: inner/outer radius as fractions of size/2. */
   a: number
   b: number
   /** Fire's temperature multiplier (1 = the mockup's); a cooling fire reddens, then goes. */
@@ -132,11 +132,11 @@ export interface ExplosionAge {
   rise: number
   ring: number
   ringAlpha: number
-  /** Noise offset for the fireball (0 = the mockup's), and how fast its fire boils (noise units/s; 0 = still). */
+  /** Noise offset for the fireball (0 = the mockup's), and how far its fire has boiled from the still (noise units; T23.19D R27). */
   seed: number
-  flow: number
+  boil: number
 }
-export const STILL: ExplosionAge = { fire: 1, heat: 1, fireSize: 1, sparks: 1, sparkReach: 1, smoke: 1, smokeSize: 1, rise: 0, ring: 1, ringAlpha: 1, seed: 0, flow: 0 }
+export const STILL: ExplosionAge = { fire: 1, heat: 1, fireSize: 1, sparks: 1, sparkReach: 1, smoke: 1, smokeSize: 1, rise: 0, ring: 1, ringAlpha: 1, seed: 0, boil: 0 }
 
 const scaled = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k]
 
@@ -166,7 +166,7 @@ export function explosion(out: FxFrame, x: number, y: number, s: number, smoke: 
       })
     }
   }
-  if (age.fire > 0) out.discs.push({ kind: 0, x, y, size: 190 * s * age.fireSize, a: age.seed, b: age.flow, heat: age.heat, alpha: age.fire, color: [0, 0, 0] })
+  if (age.fire > 0) out.discs.push({ kind: 0, x, y, size: 190 * s * age.fireSize, a: age.seed, b: age.boil, heat: age.heat, alpha: age.fire, color: [0, 0, 0] })
   if (age.fire > 0) out.soft.push({ x, y, size: 280 * s, color: EXPLOSION_GLOW, alpha: 0.14 * age.fire, tex: 0, rot: 0 })
   // shock ring: RingGeometry(118s, 126s), opacity 0.04, additive.
   if (age.ringAlpha > 0) {

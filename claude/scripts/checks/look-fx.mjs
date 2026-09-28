@@ -80,18 +80,16 @@ const dropped = (m) => (m.drop.n ? `${m.drop.n} px dropped in [${m.drop.box.join
  * T23.19D F6: the game path's blast (`&knob=game-blast`: a `Blast` record built by `fx/game.ts::blastFx` from the fx
  * feed, as a match draws one) at these shares of its life, on F1's explosion box, same mask and metric as the lab's.
  */
-const GAME_BLAST_KS = [0.03, 0.06, 0.1, 0.2]
 /**
- * **The game path cannot reach Level A, by construction — measured, T23.19D.** Its blast has its own random stream
- * (`game.ts::blastRnd`, by place: every blast is not F1's) and age curves that never pass through the still (heat is 1
- * only before 5 % of the life, the fireball full-size only after 6 %, the ring full only after 20 %), and its fire
- * boils. Best of `GAME_BLAST_KS`: **2.68** at 6 % (0.1761 is Level A); with the mockup's stream and a still fire planted
- * in, still **1.01** — the curves alone are 6× the threshold. So this leg gates what it can mean: the game path draws
- * F1's explosion (every part laid out) and lands **far nearer F1 than no explosion** (`fx-off` on the same box:
- * 23.04), under `GAME_PATH_MAX` — between the measured 2.68 and that control. The Level A number is reported. Put to
- * the coordinator: whether the curves should pass through the still at a peak age (then Level A, given the stream).
+ * T23.19D (R27): the game path's blast (`&knob=game-blast`: a `Blast` record built by `fx/game.ts::blastFx` from the
+ * fx feed, as a match draws one, with the mockup's stream) against F1's explosion box, same mask and metric. **At its
+ * peak (`BLAST_PEAK`, 12 %) it is gated at Level A**; the other ages are reported (the animation is not the still).
+ * Before R27 the curves never passed through the still: best 2.68 at 6 % (no explosion: 23.04).
  */
-const GAME_PATH_MAX = 8
+/** Reported either side of the peak, as shares of the life from it. */
+const AROUND_PEAK = [-0.06, 0.08]
+/** The strip's ages (shares of the blast's life). */
+const STRIP_KS = [0.02, 0.06, 0.12, 0.2, 0.3, 0.45, 0.6, 0.8]
 
 async function lab(page, origin, knob) {
   await page.goto(`${origin}/?look=F1&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
@@ -162,22 +160,36 @@ export default async function ({ page, shot, log }) {
     const ex = boxes.find((b) => b.kind === 'explosion')
     if (!ex) problems.push('F1 describes no explosion — no game-path leg')
     else {
-      let best = Infinity
-      for (const k of GAME_BLAST_KS) {
+      // The peak, read from the code that draws it (pinned to the constant, not restated here).
+      const BLAST_PEAK = await own.evaluate(async () => (await import('/src/look/fx/game.ts')).BLAST_PEAK)
+      let peak = NaN
+      for (const k of [BLAST_PEAK + AROUND_PEAK[0], BLAST_PEAK, BLAST_PEAK + AROUND_PEAK[1]]) {
         const g = await lab(own, origin, `game-blast&blastk=${k}`)
         const st = await own.evaluate(() => window.__look.gameBlast)
         if (!st || st.blasts !== 1) problems.push(`game-blast k ${k}: the lab staged ${JSON.stringify(st)}`)
         const m = masked(g.frame, ref, off.frame, refOff, ex.box)
-        best = Math.min(best, m.d)
-        log(`game path, blast at ${k} of its life: ${m.d.toFixed(4)} on the explosion box over ${(m.kept * 100).toFixed(1)}% (Level A ${thr}: ${m.d <= thr ? 'meets' : 'reported, not reachable'}); laid out ${JSON.stringify(g.fx)}`)
+        if (k === BLAST_PEAK) peak = m.d
+        log(`game path, blast at ${k} of its life: ${m.d.toFixed(4)} on the explosion box over ${(m.kept * 100).toFixed(1)}% (${k === BLAST_PEAK ? `the peak: Level A max ${thr}` : 'reported'}); laid out ${JSON.stringify(g.fx)}`)
         // Both ends: the scene's still laid out, minus its explosion, plus the game's — the same parts as the still.
         if (!(g.fx.worldDraws === true && g.fx.smoke === on.fx.smoke && g.fx.discs === on.fx.discs && g.fx.soft === on.fx.soft && g.fx.ribbons === on.fx.ribbons)) problems.push(`game-blast k ${k}: laid out ${JSON.stringify(g.fx)}, the still ${JSON.stringify(on.fx)}`)
-        if (k === GAME_BLAST_KS[1]) await shot('look-fx-game-blast')
+        if (k === BLAST_PEAK) await shot('look-fx-game-blast')
       }
+      // Looked at: the game's blast through its life, one crop of the explosion's box per age (left to right).
+      const [bx0, by0, bx1, by1] = ex.box
+      const cw = bx1 - bx0
+      const chh = by1 - by0
+      const strip = new PNG({ width: STRIP_KS.length * (cw + 4), height: chh })
+      strip.data.fill(255)
+      for (const [i, k] of STRIP_KS.entries()) {
+        const g = await lab(own, origin, `game-blast&blastk=${k}`)
+        for (let y = 0; y < chh; y++) Buffer.from(g.frame.data.buffer, g.frame.data.byteOffset + ((by0 + y) * 1280 + bx0) * 4, cw * 4).copy(strip.data, (y * strip.width + i * (cw + 4)) * 4)
+      }
+      writeFileSync(join(root, 'shots/look-fx-game-blast-strip.png'), PNG.sync.write(strip))
+      log(`looked at: shots/look-fx-game-blast-strip.png (the game's blast at ${STRIP_KS.join(', ')} of its life)`)
       const ctl = masked(off.frame, ref, off.frame, refOff, ex.box).d
-      log(`game path, best ${best.toFixed(4)} (max ${GAME_PATH_MAX}); no explosion on the same box ${ctl.toFixed(3)} (must be over it)`)
-      if (!(best <= GAME_PATH_MAX)) problems.push(`the game path's blast is ${best.toFixed(3)} from F1's explosion at best (max ${GAME_PATH_MAX})`)
-      if (!(ctl > GAME_PATH_MAX)) problems.push(`no explosion scores ${ctl.toFixed(3)} on the explosion box — the game-path bound cannot tell`)
+      log(`game path at its peak: ${peak.toFixed(4)} (Level A max ${thr}); no explosion on the same box ${ctl.toFixed(3)} (must fail)`)
+      if (!(peak <= thr)) problems.push(`Level A on the game path's blast at its peak: ${peak.toFixed(4)} > ${thr}`)
+      if (!(ctl > thr)) problems.push(`no explosion passes Level A on the explosion box (${ctl.toFixed(3)}) — the box cannot see it`)
     }
   } finally {
     await browser.close()

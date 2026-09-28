@@ -11,7 +11,7 @@ import { bulletStreak, type Blast, type Tracer, type TrackedProjectile } from '.
 import type { Hazard } from '../../render/ordnanceFx-math'
 import type { Rgb } from '../scene'
 import { F1 } from '../scenes/F1'
-import { explosion, hexToLinear, Lcg, rgbToLinear, type ExplosionAge, type FxFrame } from './kit'
+import { explosion, hexToLinear, Lcg, rgbToLinear, SMOKE_TEX_DRAWS, type ExplosionAge, type FxFrame } from './kit'
 
 /**
  * How far from a fireball's centre, per unit of `kit.js::explosion`'s scale `s`, its fire reads (mask px): the
@@ -40,45 +40,70 @@ const ramp = (k: number, from: number, to: number): number => clamp01((k - from)
 const scale = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k]
 
 /**
+ * **R27 (coordinator, T23.19D): the reference still is one frame of the animation.** Every curve below passes through
+ * `STILL` at `BLAST_PEAK` of the blast's life, and the fire's boil is measured from that moment, so a blast drawn at
+ * its peak with the mockup's stream (`MOCKUP_STREAM`) is F1's explosion at Level A (`look-fx`'s game-path leg). The
+ * peak is 12 %: the latest age the growth curves could be pinned to without slowing the fireball — the sparks reach
+ * their full spread there (they flew out over 12 % already), the fireball has been full-size since 6 %, the plume
+ * thick since 10 %. Moved to meet it: white heat holds to 12 % (from 5 %), sparks fade from 12 % (from 10 %), the ring
+ * is full at 12 % (from 20 %) and fades 12–37 % (from 0–25 %), the plume's climb and swell count from the peak.
+ */
+export const BLAST_PEAK = 0.12
+
+/**
+ * The mockup's own explosion stream: `kit.js::rnd` from seed 7, after its smoke texture's draws — what a blast whose
+ * `stream` is this draws (sparks, smoke) and what its fireball's noise offset is measured from (0 here).
+ */
+export const MOCKUP_STREAM: number = (() => {
+  const r = new Lcg(7)
+  for (let i = 0; i < SMOKE_TEX_DRAWS; i++) r.next()
+  return r.q
+})()
+
+/**
  * An explosion's shape at `k` = age / life (0 the blast, 1 gone). The fire is whole for the first 30 % — the blast
  * radius is covered then (`blast-fx` poses it at 25 %) — then cools and goes by 60 %; sparks fly out in the first 12 %
  * and are gone by 35 %; the ring runs out to its size in 20 %; the plume thickens, climbs and fades out from 55 %.
  */
-export function explosionAge(k: number, s: number, seed: number): ExplosionAge {
+export function explosionAge(k: number, s: number, seed: number, life: number): ExplosionAge {
+  const P = BLAST_PEAK
   return {
     fire: 1 - ramp(k, 0.3, 0.6),
-    heat: 1 - 0.5 * ramp(k, 0.05, 0.45),
+    heat: 1 - 0.5 * ramp(k, P, 0.45),
     fireSize: 0.75 + 0.25 * ramp(k, 0, 0.06),
-    sparks: 1 - ramp(k, 0.1, 0.35),
-    sparkReach: 0.35 + 0.65 * ramp(k, 0, 0.12),
+    sparks: 1 - ramp(k, P, 0.35),
+    sparkReach: 0.35 + 0.65 * ramp(k, 0, P),
     smoke: (0.7 + 0.3 * ramp(k, 0, 0.1)) * (1 - ramp(k, 0.55, 1)),
-    smokeSize: 1 + 0.35 * k,
-    rise: PLUME_RISE * s * k,
-    ring: 0.4 + 0.6 * ramp(k, 0, 0.2),
-    ringAlpha: 1 - ramp(k, 0, 0.25),
+    smokeSize: 1 + 0.35 * (k - P),
+    rise: PLUME_RISE * s * (k - P),
+    ring: 0.4 + 0.6 * ramp(k, 0, P),
+    ringAlpha: 1 - ramp(k, P, P + 0.25),
     seed,
-    flow: FIRE_FLOW,
+    // Seconds from the peak × the boil rate: the fire moves through the still, not from it.
+    boil: -FIRE_FLOW * (k - P) * life,
   }
 }
 
-/** A stable stream per blast (its place), so a blast looks the same every frame it is drawn. */
-function blastRnd(x: number, y: number): Lcg {
-  const q = Math.abs(Math.floor(x) * 7919 + Math.floor(y) * 104729) % 2147483646
-  return new Lcg(q + 1)
+/** A stable stream start per blast (its place, unless it names one), so a blast looks the same every frame it is drawn. */
+export function blastStream(b: Pick<Blast, 'x' | 'y' | 'stream'>): number {
+  if (b.stream !== undefined) return b.stream
+  return (Math.abs(Math.floor(b.x) * 7919 + Math.floor(b.y) * 104729) % 2147483646) + 1
 }
 
 /** `s` for a blast of radius `r` (`BLAST_REACH`). */
 export const blastScale = (r: number): number => r / BLAST_REACH
 
 /** One blast into `out`: a plume-less impact under `IMPACT_MAX_R`, F's explosion above it. `null` once it is over. */
-export function blastFx(out: FxFrame, b: Pick<Blast, 'x' | 'y' | 'r' | 'age' | 'ttl'>): void {
+export function blastFx(out: FxFrame, b: Pick<Blast, 'x' | 'y' | 'r' | 'age' | 'ttl' | 'stream'>): void {
   const small = b.r < IMPACT_MAX_R
   const life = small ? Math.min(b.ttl, IMPACT_LIFE) : b.ttl
   const k = life > 0 ? b.age / life : 1
   if (k >= 1) return
   const s = blastScale(b.r)
-  const rnd = blastRnd(b.x, b.y)
-  const age = explosionAge(k, s, (rnd.q % 997) * 0.37)
+  const q0 = blastStream(b)
+  const rnd = new Lcg(q0)
+  // The fireball's noise offset, measured from the mockup's stream: its own blast is offset 0 (R27).
+  const age = explosionAge(k, s, (((q0 - MOCKUP_STREAM) % 997) + 997) % 997 * 0.37, life)
   if (small) age.smoke = 0
   explosion(out, b.x, b.y, s, PLUME, rnd, age)
 }

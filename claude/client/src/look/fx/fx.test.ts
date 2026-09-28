@@ -212,3 +212,29 @@ describe('followWorldDraws (T23.19D F1)', () => {
     expect(heardOther).toEqual([false])
   })
 })
+
+describe('R27: the blast passes through the still (T23.19D)', () => {
+  it('at BLAST_PEAK every curve is STILL; either side of it, not', async () => {
+    const { BLAST_PEAK, explosionAge } = await import('./game')
+    expect(explosionAge(BLAST_PEAK, 0.5, 0, 1.1)).toEqual({ ...STILL, boil: -0 })
+    // Controls: a little before and after the peak the blast is not the still.
+    expect(explosionAge(BLAST_PEAK - 0.05, 0.5, 0, 1.1)).not.toEqual(STILL)
+    expect(explosionAge(BLAST_PEAK + 0.05, 0.5, 0, 1.1)).not.toEqual(STILL)
+  })
+
+  it("a blast with the mockup's stream, at its peak, lays out F1's explosion exactly", async () => {
+    const { BLAST_PEAK, MOCKUP_STREAM } = await import('./game')
+    const f = F1.fx.find((e) => e.kind === 'explosion')
+    if (f?.kind !== 'explosion') throw new Error('F1 has no explosion')
+    const still = sceneFx([f])
+    const out = emptyFrame()
+    const life = 1.1
+    blastFx(out, { x: f.x, y: f.y, r: f.scale * BLAST_REACH, age: BLAST_PEAK * life, ttl: life, stream: MOCKUP_STREAM })
+    const norm = (x: unknown): unknown => JSON.parse(JSON.stringify(x, (_k, v: unknown) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 + 0 : v)))
+    expect(norm(out)).toEqual(norm(still))
+    // Control: the game's own stream (its place) is another explosion.
+    const own = emptyFrame()
+    blastFx(own, { x: f.x, y: f.y, r: f.scale * BLAST_REACH, age: BLAST_PEAK * life, ttl: life })
+    expect(norm(own)).not.toEqual(norm(still))
+  })
+})

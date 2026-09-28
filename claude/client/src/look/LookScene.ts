@@ -45,7 +45,7 @@ import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import { C, Core } from '../core'
 import { LabFields } from './labFields'
 import { fxFeed } from './fx/feed'
-import { BLAST_REACH } from './fx/game'
+import { BLAST_PEAK, BLAST_REACH, MOCKUP_STREAM } from './fx/game'
 import { OrdnanceState } from '../render/ordnance-state'
 
 export interface LookHandle {
@@ -73,8 +73,8 @@ export interface LookHandle {
   gameBlast?: { k: number; blasts: number }
 }
 
-/** T23.19D F6: the staged game blast's default age, as a share of its life (`BLAST_SHADER_LIFE`, the game's). */
-export const GAME_BLAST_K = 0.06
+/** T23.19D F6: the staged game blast's default age, as a share of its life — its peak (R27). */
+export const GAME_BLAST_K = BLAST_PEAK
 
 export class LookScene extends Phaser.Scene {
   constructor() {
@@ -140,8 +140,8 @@ export class LookScene extends Phaser.Scene {
       // `look-fx`'s must-fail control.
       else if (knob === 'fx-off') fxOff = true
       // T23.19D F6: the scene's explosion drawn **the game's way** — a `Blast` record in an ordnance layer's state, built
-      // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one — instead of the scene's
-      // still (`sceneFx`). `&blastk=` is its age as a share of its life (default `GAME_BLAST_K`). `look-fx`'s game-path leg.
+      // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one, with the mockup's stream —
+      // instead of the scene's still (`sceneFx`). `&blastk=` is its age as a share of its life (default: the peak, R27).
       else if (knob === 'game-blast') gameBlast = true
       else handle.error = `unknown knob "${knob}"`
     }
@@ -188,7 +188,8 @@ export class LookScene extends Phaser.Scene {
         const k = Number(q.get('blastk') ?? GAME_BLAST_K)
         const life = C().BLAST_SHADER_LIFE
         const state = new OrdnanceState(0, life)
-        state.blasts.push({ x: staged.x, y: staged.y, r: staged.scale * BLAST_REACH, age: k * life, ttl: life })
+        // The mockup's own stream (R27): at the peak age this is F1's explosion, drawn the game's way.
+        state.blasts.push({ x: staged.x, y: staged.y, r: staged.scale * BLAST_REACH, age: k * life, ttl: life, stream: MOCKUP_STREAM })
         const feed = fxFeed(this)
         feed.ordnance = { state, visible: true, flameRadius: 0, bulletLength: 0 }
         renderer.setFxFeed(feed)

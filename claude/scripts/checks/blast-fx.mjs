@@ -20,10 +20,12 @@
  *   fire itself (`FIRE_VISIBLE`, its basis at the constant). Control: two photographs of the hidden frame paint none.
  * - **Bloom present, and absent in the control:** early, the pixels above `BLOOM_LUMA` in the blast's box against the
  *   same box with the effects hidden.
- * - **It lingers** past the flat flash's 0.35 s (the plume), and **animates** while held (the fire boils): the most
- *   changed of five steps of drawn frames, against the hidden frame's.
+ * - **It lingers** past the flat flash's 0.35 s (the plume), and **animates as it ages** (the fire boils): the most
+ *   changed of five small age steps, against the same steps with the effects hidden. T23.19D (R27): the boil is part
+ *   of the blast's age now (it passes through F1's still at its peak), so a blast held at one age is still — the leg
+ *   used to hold the age and watch a clock-driven boil.
  */
-import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, advanceFrames, drawnFrames } from './harness.mjs'
+import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, drawnFrames } from './harness.mjs'
 import { photo, comparePhotos, phaserPatch, phaserDelta } from './pixels.mjs'
 import { BLOOM_LUMA } from '../lib/look-compare.mjs'
 
@@ -180,33 +182,32 @@ if (arrived) {
   }
   await setHQ(false)
 
-  // --- it animates while held -----------------------------------------------------------
-  const STEP_FRAMES = 18
+  // --- it animates as it ages -----------------------------------------------------------
+  // Five steps of a frame each (`SIM_DT`): a blast seen at 60 fps. Hidden first (its steps are undone by nothing, so the
+  // drawn run starts a little older — both are well inside the fire's life).
   const STEPS = 5
-  const FRAME_BUDGET_MS = 8_000
   const animation = async (hidden) => {
     await hideFx(hidden)
     await frame()
     const first = await photo(page, band)
     let most = 0
-    let frames = 0
     for (let i = 0; i < STEPS; i++) {
-      frames += (await advanceFrames(page, STEP_FRAMES, FRAME_BUDGET_MS)).frames
+      await advance(k.SIM_DT)
+      await frame()
       most = Math.max(most, (await comparePhotos(page, first, await photo(page, band))).fraction)
     }
     await hideFx(false)
-    return { most, frames }
+    return { most }
   }
   const still = await animation(true)
   const living = await animation(false)
-  console.log(`  held blast, most changed of ${STEPS} steps: drawn ${(living.most * 100).toFixed(1)}% (${living.frames} frames), hidden ${(still.most * 100).toFixed(1)}% (${still.frames})`)
-  if (living.frames < STEPS * STEP_FRAMES || still.frames < STEPS * STEP_FRAMES) fail(`the page stopped drawing (${living.frames}, ${still.frames} of ${STEPS * STEP_FRAMES} frames) — nothing here says whether the blast animates`)
-  else if (!(living.most > Math.max(0.01, still.most * 3))) fail(`the held blast changed ${(living.most * 100).toFixed(1)}% at most against ${(still.most * 100).toFixed(1)}% hidden — it does not animate`)
-  else ok(`the held blast animates (${(living.most * 100).toFixed(1)}% against ${(still.most * 100).toFixed(1)}% hidden)`)
+  console.log(`  aging blast, most changed of ${STEPS} one-frame age steps: drawn ${(living.most * 100).toFixed(1)}%, hidden ${(still.most * 100).toFixed(1)}%`)
+  if (!(living.most > Math.max(0.01, still.most * 3))) fail(`the blast changed ${(living.most * 100).toFixed(1)}% at most as it aged, against ${(still.most * 100).toFixed(1)}% hidden — it does not animate`)
+  else ok(`the blast animates as it ages (${(living.most * 100).toFixed(1)}% against ${(still.most * 100).toFixed(1)}% hidden)`)
 
   // --- it lingers past the flat flash ----------------------------------------------------
   const late = k.BLAST_SHADER_LIFE * 0.6
-  const posed = await advance(late - quarter)
+  const posed = await advance(late - quarter - 2 * STEPS * k.SIM_DT)
   await frame()
   const lOn = await photo(page)
   await hideFx(true)
