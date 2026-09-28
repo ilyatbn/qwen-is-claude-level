@@ -327,18 +327,10 @@ export const CHECKS = [
   // ground **in a real match**, and the sandbox — which already did — proves the
   // half that was never broken. It waits for night, which the server only
   // reaches through `round_time`, so it is one of the slower members here.
-  // Owner 2026-09-16: lava is switched off. This check starts its server with
-  // `WEATHER=lava`, which `config.rs` now **refuses** — the server would not come
-  // up at all, so the failure would read as a broken harness rather than as a
-  // disabled effect. Out of the suite the way `toxic-rain-game` is, and for the
-  // same reason: the effect's code is all still here, waiting on the placement
-  // fix the owner asked for (*"coming out of weird places"*).
-  {
-    name: 'lava-lights',
-    file: 'scripts/checks/lava-lights.mjs',
-    standalone: true,
-    disabled: 'lava switched off (LAVA_ENABLED), owner 2026-09-16',
-  },
+  // T23.19E rewrote it (R13): the networked `WEATHER=lava` path cannot start while lava is switched off
+  // (LAVA_ENABLED, owner 2026-09-16), so the sandbox stands vents in the world through the same weather layer and
+  // effect lights a match uses; the jet covers its burning cone, the ground is lit, both tiers, at night.
+  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', url: '?sandbox=1&seed=31337' },
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },

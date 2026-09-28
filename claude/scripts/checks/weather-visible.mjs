@@ -11,7 +11,7 @@
  * for something that covers the whole view: a control *region* cannot work when the
  * subject is a full-screen cast.
  */
-import { samplePatch, assertChanged, assertUnchanged, colourDelta } from './pixels.mjs'
+import { samplePatch, assertChanged, assertUnchanged, colourDelta, comparePhotos, photo, toScreen } from './pixels.mjs'
 import { flag as rustFlag } from '../lib/rust-constants.mjs'
 
 /** T21.39: is toxic rain switched on? Read off `constants.rs`, never typed here. */
@@ -280,6 +280,9 @@ export default async function ({ page, shot, log }) {
     await page.evaluate(() => window.__game.setTime(null))
   }
 
+  // --- T23.19E: hazard drops in F's look, honest about where they hit, both tiers ---
+  await hazardDrops(page, shot, log)
+
   // T21.39: toxic rain is switched off and `forceWeather(0)` does nothing, so its
   // section is skipped rather than deleted. T21.41 turns it back on.
   if (!TOXIC_ON) {
@@ -394,4 +397,134 @@ export default async function ({ page, shot, log }) {
     throw new Error('vents jetted and the layer emitted no embers — the spew is invisible')
   }
   await shot('weather-lava')
+}
+
+/**
+ * T23.19E: **hazard drops stay visible and honest about where they hit**, on both tiers, in the world renderer.
+ *
+ * - **Toxic drops** (switched off in play — `TOXIC_RAIN_ENABLED` — so staged: `__game.stageHazards({ drops })`,
+ *   through the weather layer a match feeds from the server's drops). Both ends: the layer's drawn list is the staged
+ *   list. Pixels: each drop's own point (where it is is where it hits) changes when the hazards are hidden; control:
+ *   the hidden frame twice moves none. Where it hits: the streak runs *up* from the drop — the drop's point is
+ *   brighter than the point `TOXIC_STREAK_LEN` below it, which the streak does not reach.
+ * - **Meteors** (on in play: forced): every meteor in view, its point (the server's position — where it strikes)
+ *   changes when the effects are hidden (`__world.hideLayers(['fx'])`), counted against the meteors in view.
+ */
+const DROP_PAINT = 10
+async function hazardDrops(page, shot, log) {
+  const k = await page.evaluate(() => window.__game.constants())
+  const me = (await page.evaluate(() => window.__game.debug())).player
+  const drops = await page.evaluate(([x, y]) => {
+    const c = window.__game.core
+    const out = []
+    const v = window.__game.debug().worldView
+    const w = v.width ?? v.w
+    const h = v.height ?? v.h
+    // Air with air for a streak above and below it, in view, spread across it: three drops in the open.
+    const air = (px, py) => { for (let d = -30; d <= 30; d += 3) if (c.solidAt(Math.round(px), Math.round(py + d))) return false; return true }
+    for (let gx = v.x + w * 0.2; gx < v.x + w * 0.85 && out.length < 3; gx += w * 0.08) {
+      for (let gy = v.y + h * 0.15; gy < v.y + h * 0.85; gy += 12) {
+        if (air(gx, gy) && out.every((o) => Math.abs(o.x - gx) > 60)) {
+          out.push({ x: Math.round(gx), y: Math.round(gy) })
+          break
+        }
+      }
+    }
+    return out
+  }, [me.x, me.y])
+  if (drops.length < 3) throw new Error(`only ${drops.length} of 3 open-air drop spots in view`)
+  const problems = []
+  for (const hq of [false, true]) {
+    const tier = hq ? 'full' : 'low'
+    await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    const staged = await page.evaluate((d) => window.__game.stageHazards({ drops: d }), drops)
+    if (staged.drawnBy !== 'world') problems.push(`${tier}: toxic drops drawn by ${staged.drawnBy}`)
+    await page.waitForTimeout(500)
+    await page.evaluate(() => window.__game.freeze(true))
+    const drawnList = await page.evaluate(() => window.__game.debug().rainDrops)
+    if (drawnList !== drops.length) problems.push(`${tier}: ${drops.length} drops staged, the layer drew ${drawnList}`)
+    const heads = []
+    const below = []
+    for (const d of drops) {
+      heads.push(await toScreen(page, d.x, d.y))
+      below.push(await toScreen(page, d.x, d.y + k.TOXIC_STREAK_LEN))
+    }
+    const shown = await photo(page)
+    await page.evaluate((d) => window.__game.stageHazards({ drops: d, visible: false }), drops)
+    await page.waitForTimeout(200)
+    const hidden = await photo(page)
+    const hidden2 = await photo(page)
+    const pts = heads.map((h) => ({ x: h.x, y: h.y }))
+    const low = below.map((h) => ({ x: h.x, y: h.y }))
+    const at = await comparePhotos(page, shown, hidden, { points: [...pts, ...low], thr: DROP_PAINT })
+    const idle = await comparePhotos(page, hidden, hidden2, { points: pts, thr: DROP_PAINT })
+    const headPeaks = at.detail.slice(0, pts.length).map((d) => d.peak)
+    const belowPeaks = at.detail.slice(pts.length).map((d) => d.peak)
+    const painted = at.points.slice(0, pts.length).filter(Boolean).length
+    log(`${tier}: toxic drops — ${painted}/${pts.length} drops painted at their own point (peaks ${headPeaks.join(' ')}); ${k.TOXIC_STREAK_LEN} px below each ${belowPeaks.join(' ')}; control ${idle.points.filter(Boolean).length}`)
+    if (painted !== pts.length) problems.push(`${tier}: ${pts.length - painted} toxic drops not painted where they are`)
+    if (idle.points.some(Boolean)) problems.push(`${tier}: control — the hidden frame twice "paints" a drop`)
+    headPeaks.forEach((h, i) => {
+      if (!(h > belowPeaks[i] * 2)) problems.push(`${tier}: drop ${i} is not brightest where it is (${h} at the drop, ${belowPeaks[i]} below it) — the streak does not end at the drop`)
+    })
+    await page.evaluate((d) => window.__game.stageHazards({ drops: d }), drops)
+    await page.waitForTimeout(100)
+    await shot(`weather-toxic-drops-${tier}`)
+    await page.evaluate(() => window.__game.freeze(false))
+    await page.evaluate(() => window.__game.stageHazards(null))
+  }
+
+  // Meteors: forced, then a frame with meteors in view.
+  await page.evaluate(() => window.__game.forceWeather(1))
+  for (const hq of [false, true]) {
+    const tier = hq ? 'full' : 'low'
+    await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    // Wait for any meteor in the air, hold the frame, and look at it (the camera to it: a shower covers the map).
+    const inView = () =>
+      page.evaluate(() => {
+        const st = window.__world.fxFeed()?.ordnance?.state
+        const v = window.__game.debug().worldView
+        const w = v.width ?? v.w
+        const h = v.height ?? v.h
+        const all = [...(st?.projectiles.values() ?? [])].filter((p) => p.kind === 'meteor').map((p) => ({ x: p.x, y: p.y }))
+        return { all, seen: all.filter((p) => p.x > v.x + 20 && p.x < v.x + w - 20 && p.y > v.y + 20 && p.y < v.y + h - 20) }
+      })
+    let seen = []
+    const t0 = Date.now()
+    while (Date.now() - t0 < 25_000) {
+      await page.waitForTimeout(150)
+      await page.evaluate(() => window.__game.freeze(true))
+      const m = await inView()
+      if (m.all.length > 0) {
+        await page.evaluate(([x, y]) => window.__game.watch(x, y), [m.all[0].x, m.all[0].y])
+        await page.waitForTimeout(300)
+        seen = (await inView()).seen
+        if (seen.length > 0) break
+      }
+      await page.evaluate(() => window.__game.freeze(false))
+    }
+    if (seen.length === 0) {
+      problems.push(`${tier}: no meteor came into view in 25 s of a forced shower`)
+      continue
+    }
+    const pts = []
+    for (const m of seen) {
+      const s = await toScreen(page, m.x, m.y)
+      pts.push({ x: s.x, y: s.y })
+    }
+    const shown = await photo(page)
+    await page.evaluate(() => window.__world.hideLayers(['fx']))
+    await page.waitForTimeout(200)
+    const hidden = await photo(page)
+    await page.evaluate(() => window.__world.hideLayers([]))
+    const at = await comparePhotos(page, shown, hidden, { points: pts, thr: DROP_PAINT })
+    const n = at.points.filter(Boolean).length
+    log(`${tier}: meteors — ${n}/${seen.length} in view painted at their own point (peaks ${at.detail.map((d) => d.peak).join(' ')})`)
+    if (n !== seen.length) problems.push(`${tier}: ${seen.length - n} of ${seen.length} meteors in view not painted where they are`)
+    await shot(`weather-meteor-${tier}`)
+    await page.evaluate(() => window.__game.watch(null))
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+  await page.evaluate(() => window.__game.setHighQuality(false))
+  if (problems.length) throw new Error(`hazard drops: ${problems.join('; ')}`)
 }

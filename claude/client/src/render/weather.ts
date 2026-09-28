@@ -28,6 +28,7 @@ import { EmberField, fogVeilAlpha } from './weather-math'
 import { FOG_FRAGMENT, hasWebGL, rgbToUniform3f } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 import { C } from '../core'
+import { fxFeed, type FxFeed } from '../look/fx/feed'
 
 /**
  * Below this, fog is not drawn at all.
@@ -82,9 +83,38 @@ export class WeatherLayer {
   private toxicCast = 0
   private readonly embers = new EmberField(70, 260)
   private readonly cam: Phaser.Cameras.Scene2D.Camera
+  /**
+   * T23.19E: the scene's effect feed. While its world renderer draws the scene (`worldDraws`), the vents' mouths and
+   * jets, the embers and the toxic drops are F's, drawn there from `this.source` (`fx/hazards.ts`); this layer keeps
+   * only what is on the lens — the green cast and the fog. Otherwise (space, `?world=off`, no WebGL2) it draws them
+   * as before. One flag, set by the drawer, so the two never both draw or both not.
+   */
+  private readonly feed: FxFeed
+  private vents: VentView[] = []
+  private visible = true
 
   constructor(scene: Phaser.Scene) {
     this.cam = scene.cameras.main
+    this.feed = fxFeed(scene)
+    const self = this
+    this.feed.weather = {
+      get visible() {
+        return self.visible
+      },
+      get vents() {
+        return self.vents
+      },
+      get embers() {
+        return self.embers.embers
+      },
+      get drops() {
+        return self.toxicDrops
+      },
+      get streak() {
+        const c = C()
+        return { len: c.TOXIC_STREAK_LEN, width: c.TOXIC_STREAK_WIDTH, alpha: c.TOXIC_STREAK_ALPHA }
+      },
+    }
     // T21.31: both rains are **world-space** now (scroll factor 1); only the green
     // cast and the fog stay on the lens.
     // Order matters and is not obvious: created second at the same depth, the
@@ -251,6 +281,7 @@ export class WeatherLayer {
       if (v.jetting) this.embers.emit(dt, v.x, v.y, v.lean, 260)
     }
     this.embers.update(dt, fallScale * 0.9)
+    this.vents = vents
 
     this.drawRain()
     this.drawFire(vents)
@@ -308,7 +339,9 @@ export class WeatherLayer {
     const g = this.rainGfx
     g.clear()
     this.toxicDrawn = []
-    if (this.toxicDrops.length > 0) {
+    // T23.19E: the world renderer draws the drops (`fx/hazards.ts::dropFx`) from the same list.
+    if (this.feed.worldDraws) for (const d of this.toxicDrops) this.toxicDrawn.push({ x: d.x, y: d.y })
+    else if (this.toxicDrops.length > 0) {
       g.lineStyle(c.TOXIC_STREAK_WIDTH, RAIN_COLOUR, c.TOXIC_STREAK_ALPHA)
       for (const d of this.toxicDrops) {
         g.lineBetween(d.x, d.y - c.TOXIC_STREAK_LEN, d.x, d.y)
@@ -327,6 +360,8 @@ export class WeatherLayer {
   private drawFire(vents: VentView[]): void {
     const g = this.fireGfx
     g.clear()
+    // T23.19E: the world renderer draws the embers and the mouths (`fx/hazards.ts`).
+    if (this.feed.worldDraws) return
     for (const e of this.embers.embers) {
       const a = Math.max(0, e.life / e.ttl)
       g.fillStyle(EMBER_COLOUR, 0.8 * a)
@@ -342,7 +377,20 @@ export class WeatherLayer {
     }
   }
 
+  /** Where the vents' hazards are drawn (T23.19E): 'world' (F's) or 'phaser'. */
+  get hazardsDrawnBy(): 'world' | 'phaser' {
+    return this.feed.worldDraws ? 'world' : 'phaser'
+  }
+
+  /** Show or hide the vents, embers and drops, for a check's control frame (§C2). The cast and fog stay. */
+  setHazardsVisible(on: boolean): void {
+    this.visible = on
+    this.rainGfx.setVisible(on)
+    this.fireGfx.setVisible(on)
+  }
+
   destroy(): void {
+    if (this.feed.weather) this.feed.weather = null
     this.embers.clear()
     this.rainGfx.destroy()
     this.fireGfx.destroy()

@@ -1,229 +1,164 @@
-#!/usr/bin/env node
 /**
- * `lava-lights` — T19.24: **a lava vent lights the ground at night, in a real
- * match.**
+ * `lava-lights` — T23.19E (rewrites T19.24's): **a lava vent in F's look — its jet drawn over the whole cone that
+ * burns, its mouth glowing, and its light on the ground at night — on both tiers.**
  *
- * `docs/14` §A3 says fire is a light source at night. It was true only in the
- * sandbox, which owns a local `LavaBurst` and pushes its own per-vent lights. A
- * networked client passed `vents: []` as a hardcoded literal, so it drew no
- * vent, no mouth and no ember, and its light list had nothing to add — while the
- * jet, the only phase that deals `LAVA_JET_DPS`, was damaging the player. This
- * check is against the **networked** scene for that reason: proving the sandbox
- * proves the half that already worked.
+ * T19.24's check was networked (`WEATHER=lava`): a vent lit the ground in a real match. Lava is switched off
+ * (`LAVA_ENABLED`, owner 2026-09-16) and the server refuses `WEATHER=lava`, so that check could not start (it was
+ * `disabled`). Its claim is kept and its path rewritten (R13): the sandbox stands vents in the world
+ * (`__game.stageHazards`) through the **same** weather layer and effect lights a match feeds from `lavaVents`
+ * (`WorldView.update` → `WeatherLayer`, `EffectLights.frame`), and the world renderer draws them (`fx/hazards.ts`).
+ * What it photographed of the old layers — `WeatherLayer.drawFire`'s flat mouth and embers, the MULTIPLY lightmap — is
+ * no longer drawn while the world renderer draws the scene.
  *
- * ## The patch is **ground near the vent**, not the vent
- *
- * The first cut sampled the vent itself and passed — and its falsification
- * passed too, *harder*: deleting `ventLights` moved the number from 9.5 to
- * **28.1**. It was measuring the mouth and embers `WeatherLayer.drawFire` paints
- * regardless of any light, and unlit they contrast *more* against dark ground.
- * A check that scores higher with the feature removed is measuring the wrong
- * thing, and this one would have passed on a build with the lighting deleted.
- *
- * So the patch sits `SAMPLE_DX` px to the side and level with the jet light's
- * centre: inside `JET_LIGHT_R` of it, clear of the drawn mouth, and made of
- * terrain — which is what "fire is a light source" is a claim about. The vent's
- * own patch is still sampled and printed, as the contrast against it is the
- * evidence that the two are different measurements.
- *
- * ## Why the control frame is the assertion that matters
- *
- * "Bright at the vent" is satisfied by a frame that is bright everywhere, and a
- * night scene containing a burst is exactly the frame most likely to be bright
- * everywhere. So the lit patch is compared against **the same patch, in the same
- * place, between bursts** — `WEATHER=lava` re-forces a burst as soon as the last
- * ends, and each new one telegraphs for `EFFECT_TELEGRAPH` before its vents
- * open, which is the dark window this samples. A `CONTROL` region away from the
- * vent is sampled in both frames and must not move: without it, the whole screen
- * getting brighter would read as the vent lighting up.
- *
- * ## How it reaches night without waiting for it
- *
- * Darkness comes from `round_time` through `cycle.rs`, so full night begins at
- * `NIGHT_START` x `CYCLE_LENGTH`. The check used to wait that out on the real
- * clock. The server now starts the round clock at `NIGHT_AT - WARMUP_SECONDS`
- * (`DEV_ROUND_CLOCK`), so night arrives as warmup ends. It is still the same
- * `round_time` driving the same cycle in the scene a player is actually in:
- * only the wait is gone, not the path.
+ * - **Both ends:** two staged vents (one jetting, one burning) → the layer says the world draws them, and the effect
+ *   lights hold one `vent` light each.
+ * - **The jet covers what burns** (`lava.rs::in_jet`, `fx/hazards.ts::VENT_JET_*`): points along the cone's axis and
+ *   edges, out to its height, change when the hazards are hidden (the lights stay: only the drawing is measured).
+ *   Control: two photographs of the hidden frame move none.
+ * - **The ground is lit** (T19.24's claim), by the light alone: the vents staged with their drawing hidden (the
+ *   lights stay) against no vents at all, on the rock beside the jet's foot; a patch far away does not move. (T19.24's
+ *   falsification lesson: a patch the drawing reaches scores *higher* with the lights deleted.)
+ * - Both tiers (`setHighQuality`), at night. Shots: `lava-lights-{low,full}`.
  */
-import { startStack, enterBattle, tally, sleep, standStill, freePort } from './harness.mjs'
-import { toScreen, samplePatch, colourDelta } from './pixels.mjs'
-import { constants as rustConstants } from '../lib/rust-constants.mjs'
+import { comparePhotos, patchLuminance, photo, toScreen } from './pixels.mjs'
 
-const PORT = await freePort()
-const { fail, ok, finish } = tally('lava-lights')
+/** Night (`setTime`, s into the sandbox's cycle — the same as `furniture`'s), read back and asserted. */
+const NIGHT_T = 90
+/** Points along the jet, and across it at this share of its half-angle. */
+const AXIS_POINTS = 8
+const EDGE_SHARE = 0.8
+/** A point counts as painted past this channel change (the pixel harness's own `PIXEL_MOVED` is 6; glows are soft). */
+const PAINT = 10
+/** The rock patch (world px, half-size) — the solid one nearest the jet light, searched out to `ROCK_REACH`. */
+const ROCK_HALF = [8, 5]
+const ROCK_REACH = 120
+/** The lit ground's mean luminance gain over the unlit, 0–255, and the far patch's allowance. */
+const LIT_MIN = 1.5
+const FAR_MAX = 0.5
 
-const C = rustConstants()
-const NIGHT_DARKNESS = C.get('NIGHT_DARKNESS')
-const CYCLE_LENGTH = C.get('DAY_DURATION') + C.get('NIGHT_DURATION')
-/** From the shipped cycle, never a literal: night begins here. */
-const NIGHT_AT = 0.62 * CYCLE_LENGTH
-const WARMUP_SECONDS = C.get('WARMUP_SECONDS')
-
-/** The patch sampled. Small, so terrain either side does not dilute it. */
-const PATCH = { w: 48, h: 48 }
-/**
- * How far to the side of the vent the measured ground sits, and how far up.
- *
- * Level with the jet light's centre (`JET_LIGHT_RISE` above the mouth) and well
- * inside its `JET_LIGHT_R`, so the patch is lit; far enough out that the drawn
- * mouth and the ember spray are not in it. Both numbers are read from the
- * shipped light geometry rather than typed here, so a retune moves the sample
- * with the light instead of leaving it outside.
- */
-const JET_LIGHT_RISE = 60
-const JET_LIGHT_R = 150
-const SAMPLE_DX = Math.round(JET_LIGHT_R * 0.66)
-const SAMPLE_DY = -JET_LIGHT_RISE
-/** Top-left, far from any vent that is centred in frame. */
-const CONTROL = { x: 8, y: 8, w: 120, h: 90 }
-/**
- * The lit ground must beat the same ground between bursts by this much.
- *
- * **Measured, with both arms** — this box, networked, seed 4242:
- *
- * | | ground (asserted) | mouth (printed) | control |
- * |---|---|---|---|
- * | lights on  | **22.4** | 32.1 | 0.4 |
- * | lights off | **1.1**  | 45.0 | ~0  |
- *
- * So the floor sits 2.8x under the signal and 7x over the null. The mouth moving
- * the *other* way when the light is removed is the evidence that the two patches
- * measure different things — an unlit sprite contrasts harder against dark
- * ground, which is exactly how the first cut of this check passed its own
- * falsification.
- */
-const MIN_DELTA = 8
-
-const stack = await startStack({
-  port: PORT,
-  label: 'lava-lights',
-  env: {
-    FIXED_SEED: '4242',
-    // Long enough to reach night at NIGHT_AT and then run a few bursts.
-    ROUND_SECONDS: '200',
-    BOT_COUNT: '0',
-    WEATHER: 'lava',
-    // Night as warmup ends; see the header.
-    DEV_ROUND_CLOCK: String(NIGHT_AT - WARMUP_SECONDS),
-  },
-})
-
-try {
-  const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
-  await enterBattle(page, { waitPlaying: true, label: 'lava-lights' })
-  await standStill(page)
-
-  // --- wait for night ------------------------------------------------------
-  const nightBy = Date.now() + (NIGHT_AT + 45) * 1000
-  let dark = 0
-  while (Date.now() < nightBy) {
-    dark = (await dbg())?.darkness ?? 0
-    if (dark >= NIGHT_DARKNESS * 0.95) break
-    await sleep(1000)
-  }
-  if (dark < NIGHT_DARKNESS * 0.95) {
-    fail(`never reached night: darkness ${dark.toFixed(2)} of ${NIGHT_DARKNESS}`)
-  } else {
-    ok(`night: darkness ${dark.toFixed(2)} of ${NIGHT_DARKNESS}`)
-  }
-
-  // --- find a vent that is actually on screen -------------------------------
-  //
-  // The camera follows the player and vents land anywhere on the map, so this
-  // waits for a burst whose vent is in frame rather than sampling a patch that
-  // might be empty ground. A check that cannot locate what it is photographing
-  // asserts on the wrong pixels and passes for the wrong reason.
-  const findVent = async (deadline) => {
-    while (Date.now() < deadline) {
-      const d = await dbg()
-      for (const v of d?.vents ?? []) {
-        // Jetting only: the sample sits at the *jet* light's radius, and the
-        // afterburn's is smaller and lower. Mixing the two would measure a patch
-        // that is inside the light for half the burst and outside it for the
-        // rest.
-        if (!v.jetting) continue
-        const at = await toScreen(page, v.x + SAMPLE_DX, v.y + SAMPLE_DY)
-        const mouth = await toScreen(page, v.x, v.y)
-        if (at?.onScreen && mouth?.onScreen) return { world: v, screen: at, mouth }
-      }
-      await sleep(250)
-    }
+/** The first solid row at or below `y` in column `x` (world px). */
+async function groundBelow(page, x, y, span = 300) {
+  return page.evaluate(([x, y, span]) => {
+    const c = window.__game.core
+    for (let d = 0; d < span; d++) if (c.solidAt(Math.round(x), Math.round(y + d))) return Math.round(y + d)
     return null
-  }
-
-  const found = await findVent(Date.now() + 90_000)
-  if (!found) {
-    fail('no lava vent came on screen in 90 s of night — nothing to photograph')
-  } else {
-    ok(`a vent is in frame at world (${found.world.x.toFixed(0)}, ${found.world.y.toFixed(0)})`)
-
-    const rect = {
-      x: Math.round(found.screen.x - PATCH.w / 2),
-      y: Math.round(found.screen.y - PATCH.h / 2),
-      w: PATCH.w,
-      h: PATCH.h,
-    }
-    const mouthRect = {
-      x: Math.round(found.mouth.x - PATCH.w / 2),
-      y: Math.round(found.mouth.y - PATCH.h / 2),
-      w: PATCH.w,
-      h: PATCH.h,
-    }
-    const lit = await samplePatch(page, rect)
-    const litMouth = await samplePatch(page, mouthRect)
-    const litControl = await samplePatch(page, CONTROL)
-    await shot('lava-lights-lit')
-
-    // --- the control frame: the same patch between bursts -------------------
-    const darkBy = Date.now() + 40_000
-    let quiet = false
-    while (Date.now() < darkBy) {
-      const d = await dbg()
-      const active = (d?.vents ?? []).some((v) => v.jetting || v.burning)
-      if (!active) {
-        quiet = true
-        break
-      }
-      await sleep(200)
-    }
-    if (!quiet) {
-      fail('no gap between bursts in 40 s — there is no control frame to compare against')
-    } else {
-      const unlit = await samplePatch(page, rect)
-      const unlitMouth = await samplePatch(page, mouthRect)
-      const unlitControl = await samplePatch(page, CONTROL)
-      await shot('lava-lights-unlit')
-
-      const d = colourDelta(unlit, lit)
-      const dMouth = colourDelta(unlitMouth, litMouth)
-      const dControl = colourDelta(unlitControl, litControl)
-      // Printed, never asserted on: the mouth moves whether or not anything is
-      // lit, because `drawFire` paints it either way. It is here so the two
-      // numbers can be read side by side — if they ever converge, this check has
-      // drifted back onto the sprite.
-      console.log(`  ground ${d.toFixed(1)}  |  mouth ${dMouth.toFixed(1)} (not asserted)`)
-      if (d < MIN_DELTA) {
-        fail(
-          `the vent's ground changed by only ${d.toFixed(1)} between burst and gap ` +
-            `(needs ${MIN_DELTA}) — it is not lighting anything`,
-        )
-      } else if (dControl >= d) {
-        fail(
-          `the control region moved ${dControl.toFixed(1)} against the vent's ${d.toFixed(1)} — ` +
-            'the whole frame changed, so this says nothing about the vent',
-        )
-      } else {
-        ok(
-          `the vent lights its ground: patch moved ${d.toFixed(1)}, control ${dControl.toFixed(1)}`,
-        )
-      }
-    }
-  }
-
-  if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`)
-} finally {
-  await stack.close()
+  }, [x, y, span])
 }
 
-await finish()
+export default async function ({ page, shot, log }) {
+  await page.waitForFunction(() => window.__game && window.__world && window.__world.litTerrain()?.drawn, null, { timeout: 120_000 })
+  const problems = []
+  const hz = await page.evaluate(async () => {
+    const m = await import('/src/look/fx/hazards.ts')
+    const l = await import('/src/look/effectLights.ts')
+    return { H: m.VENT_JET_H, half: m.VENT_JET_HALF, rise: l.VENT_JET_RISE }
+  })
+  await page.evaluate((t) => window.__game.setTime(t), NIGHT_T)
+  const dark = (await page.evaluate(() => window.__game.debug())).darkness
+  if (!(dark > 0.5)) problems.push(`setTime(${NIGHT_T}) is not night: darkness ${dark}`)
+
+  const me = (await page.evaluate(() => window.__game.debug())).player
+  const jx = me.x + 90
+  const jy = await groundBelow(page, jx, me.y - 60)
+  const bx = me.x - 90
+  const by = await groundBelow(page, bx, me.y - 60)
+  if (jy === null || by === null) throw new Error(`no ground beside the player at ${Math.round(me.x)},${Math.round(me.y)}`)
+  const vents = [
+    { x: jx, y: jy, jetting: true, burning: false, lean: 0.15 },
+    { x: bx, y: by, jetting: false, burning: true, lean: 0 },
+  ]
+  const stage = (v, visible = true) => page.evaluate(([o]) => window.__game.stageHazards(o), [v ? { vents: v, visible } : null])
+
+  // The cone's sample points (world px) — along the axis and near both edges, out to the height.
+  const pts = []
+  for (let i = 1; i <= AXIS_POINTS; i++) {
+    const d = (hz.H * i) / AXIS_POINTS - 6
+    for (const off of [-hz.half * EDGE_SHARE, 0, hz.half * EDGE_SHARE]) {
+      const a = vents[0].lean + off
+      pts.push({ x: jx + Math.sin(a) * d, y: jy - Math.cos(a) * d, d, off })
+    }
+  }
+
+  for (const hq of [false, true]) {
+    const tier = hq ? 'full' : 'low'
+    await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    const staged = await stage(vents)
+    if (staged.drawnBy !== 'world') problems.push(`${tier}: the vents are drawn by ${staged.drawnBy}, not the world renderer`)
+    await page.waitForTimeout(700)
+    await page.evaluate(() => window.__game.freeze(true))
+    const lights = (await page.evaluate(() => window.__game.effectLights())).filter((l) => l.kind === 'vent')
+    const drawnTier = await page.evaluate(() => window.__world.info().tier)
+    log(`${tier}: ${lights.length} vent lights for 2 staged vents (the world renderer draws the ${drawnTier} tier)`)
+    if (drawnTier !== tier) problems.push(`asked for the ${tier} tier, the world renderer draws ${drawnTier}`)
+    if (lights.length !== 2) problems.push(`${tier}: ${lights.length} vent lights in the list for 2 vents`)
+
+    const screen = []
+    for (const p of pts) {
+      const s = await toScreen(page, p.x, p.y)
+      if (s.onScreen) screen.push({ ...p, sx: s.x, sy: s.y })
+    }
+    if (screen.length < pts.length * 0.75) problems.push(`${tier}: only ${screen.length}/${pts.length} jet points on camera`)
+    const drawn = await photo(page)
+    await stage(vents, false)
+    await page.waitForTimeout(250)
+    const hidden = await photo(page)
+    const hidden2 = await photo(page)
+    const points = screen.map((p) => ({ x: p.sx, y: p.sy }))
+    const painted = await comparePhotos(page, drawn, hidden, { points, thr: PAINT })
+    const idle = await comparePhotos(page, hidden, hidden2, { points, thr: PAINT })
+    const n = painted.points.filter(Boolean).length
+    log(`${tier}: ${n}/${points.length} points of the burning cone painted (height ${hz.H}, half-angle ${hz.half}); control ${idle.points.filter(Boolean).length}; per point ${painted.detail.map((d) => d.peak).join(' ')}`)
+    if (n !== points.length) {
+      const miss = screen.filter((_, i) => !painted.points[i]).map((p) => `${Math.round(p.d)} px ${p.off.toFixed(2)} rad`)
+      problems.push(`${tier}: ${points.length - n} points of the burning cone unpainted: ${miss.join('; ')}`)
+    }
+    if (idle.points.some(Boolean)) problems.push(`${tier}: control — the hidden frame photographed twice "paints" ${idle.points.filter(Boolean).length} points`)
+    await stage(vents, true)
+    await page.waitForTimeout(250)
+    await shot(`lava-lights-${tier}`)
+
+    // The ground beside the jet, lit: the vents' lights alone (drawing hidden) vs no vents — the clock running, so the
+    // light list is rebuilt; the frame is otherwise still (the player idle, the sky fixed at night).
+    await page.evaluate(() => window.__game.freeze(false))
+    await stage(vents, false)
+    await page.waitForTimeout(400)
+    const rock = await page.evaluate(([cx, cy, hw, hh, reach]) => {
+      const c = window.__game.core
+      let best = null
+      for (let dy = -reach; dy <= reach; dy += 4) {
+        for (let dx = -reach; dx <= reach; dx += 4) {
+          const d = Math.hypot(dx, dy)
+          if (d < 20 || d > reach || (best && d >= best.d)) continue
+          let solid = true
+          for (let y = -hh; y <= hh && solid; y += 2) for (let x = -hw; x <= hw && solid; x += 2) if (!c.solidAt(Math.round(cx + dx + x), Math.round(cy + dy + y))) solid = false
+          if (solid) best = { x: cx + dx, y: cy + dy, d }
+        }
+      }
+      return best
+    }, [jx, jy - hz.rise, ROCK_HALF[0], ROCK_HALF[1], ROCK_REACH])
+    if (!rock) problems.push(`${tier}: no rock within ${ROCK_REACH} px of the jet light`)
+    const g = rock ? await toScreen(page, rock.x, rock.y) : { onScreen: false }
+    const far = await toScreen(page, me.x, me.y - 260)
+    const rect = (s) => ({ x: Math.round(s.x - ROCK_HALF[0] * s.scale), y: Math.round(s.y - ROCK_HALF[1] * s.scale), w: Math.round(2 * ROCK_HALF[0] * s.scale), h: Math.round(2 * ROCK_HALF[1] * s.scale) })
+    if (!g.onScreen || !far.onScreen) problems.push(`${tier}: the ground or far patch is off camera`)
+    else {
+      const litG = await patchLuminance(page, rect(g))
+      const litF = await patchLuminance(page, rect(far))
+      await stage(null)
+      await page.waitForTimeout(400)
+      const darkG = await patchLuminance(page, rect(g))
+      const darkF = await patchLuminance(page, rect(far))
+      const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length
+      const dG = mean(litG) - mean(darkG)
+      const dF = Math.abs(mean(litF) - mean(darkF))
+      log(`${tier}: the rock ${Math.round(rock.d)} px from the jet light is lit +${dG.toFixed(2)} (min ${LIT_MIN}); a patch far away moved ${dF.toFixed(2)} (max ${FAR_MAX})`)
+      if (!(dG >= LIT_MIN)) problems.push(`${tier}: the vent does not light the ground beside it (+${dG.toFixed(2)})`)
+      if (!(dF <= FAR_MAX)) problems.push(`${tier}: a patch far from the vents moved ${dF.toFixed(2)} — the frame is not still`)
+    }
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+  await stage(null)
+  await page.evaluate(() => window.__game.setHighQuality(false))
+  await page.evaluate(() => window.__game.setTime(null))
+  if (problems.length) throw new Error(`lava-lights: ${problems.join('; ')}`)
+}

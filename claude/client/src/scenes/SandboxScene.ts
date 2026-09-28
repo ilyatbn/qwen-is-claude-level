@@ -49,6 +49,7 @@ import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { crystalLights, isCrystal, joinCrystals } from '../look/actors/furniture'
 import { fxFeed } from '../look/fx/feed'
+import type { VentView } from '../render/weather'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -174,6 +175,12 @@ export class SandboxScene extends Phaser.Scene {
   private furniture: { graves: TombstoneLayer; animals: AnimalLayer } | null = null
   /** T23.19A: pickups a check stages (`stagePickup`) — the sandbox runs no item spawner of its own. */
   private staged: WorldItemView[] = []
+  /**
+   * T23.19E, e2e only: vents and toxic drops a check stands in the world (`stageHazards`) — lava and toxic rain are
+   * switched off (`LAVA_ENABLED`, `TOXIC_RAIN_ENABLED`) and `forceEffect` refuses them, so nothing else puts one on
+   * screen. Fed through the same layers the live ones go through (weather layer, effect lights).
+   */
+  private stagedHazards: { vents: VentView[] | null; drops: { x: number; y: number }[] | null } | null = null
   /** T21.37: the extra bodies `__game.showSeats` stands up for a check. */
   private seatLineup: PlayerView[] = []
   private localInput!: LocalInput
@@ -1097,6 +1104,15 @@ export class SandboxScene extends Phaser.Scene {
        * the world renderer as the match draws them. `visible` false hides both layers (a same-frame control).
        * Returns what each layer holds, read off it.
        */
+      /**
+       * T23.19E, e2e only: stand lava vents and/or toxic drops in the world (`null`: the live ones again), and show or
+       * hide the weather layer's hazards (`visible` false: a same-frame control). Returns who draws them.
+       */
+      stageHazards(o: { vents?: VentView[]; drops?: { x: number; y: number }[]; visible?: boolean } | null) {
+        self.stagedHazards = o ? { vents: o.vents ?? null, drops: o.drops ?? null } : null
+        self.world.weather.setHazardsVisible(o?.visible ?? true)
+        return { drawnBy: self.world.weather.hazardsDrawnBy, vents: o?.vents?.length ?? 0, drops: o?.drops?.length ?? 0 }
+      },
       stageFurniture(o: { graves?: { x: number; y: number }[]; animals?: { kind: number; x: number; y: number; right?: boolean }[]; visible?: boolean } | null) {
         if (!self.furniture) {
           const c = C()
@@ -1773,7 +1789,9 @@ export class SandboxScene extends Phaser.Scene {
 
     // Weather runs on the real scheduler; the buttons only inject a start.
     this.weatherTime += dt
-    const weather = this.core.weatherStep(this.weatherTime, dt)
+    const stepped = this.core.weatherStep(this.weatherTime, dt)
+    const sv = this.stagedHazards?.vents
+    const weather = sv ? { ...stepped, vents: sv } : stepped
     this.lastWeather = weather
     this.drawHazards(weather)
     // T22.08B: the flare through the query a match would build — `flare_points`
@@ -1802,7 +1820,7 @@ export class SandboxScene extends Phaser.Scene {
     // why the fix has to live in `WeatherLayer` and be fed the same number at both
     // call sites. `liveToxicDrops` reads the projectiles `syncProjectiles` put in
     // the ordnance layer a few lines up, so both scenes count one thing one way.
-    this.world.weather.setToxic(this.world.liveToxicDropList)
+    this.world.weather.setToxic(this.stagedHazards?.drops ?? this.world.liveToxicDropList)
     // §F9's veil. `weather.fog` is `fog.rs`'s own `strength()`, straight off the
     // local world — **not** the `fogActive` boolean, which is a debug override
     // and would make the veil a toggle that cannot ramp.
@@ -1889,7 +1907,10 @@ export class SandboxScene extends Phaser.Scene {
     const g = this.hazardGfx
     g.clear()
 
+    // T23.19E: a jetting or burning vent is the world renderer's (F's glow, `fx/hazards.ts`) while it draws the scene.
+    const world = fxFeed(this).worldDraws
     for (const v of w.vents) {
+      if (world && (v.jetting || v.burning)) continue
       if (v.jetting) {
         // A cone from the vent, leaning as the sim leans it.
         const h = 180

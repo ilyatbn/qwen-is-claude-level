@@ -15,6 +15,7 @@ import type { Light } from '../scene'
 import { MUZZLE_LIGHT } from '../effectLights'
 import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, swingFx } from './game'
 import { clearFrame, type FxFrame } from './kit'
+import { weatherFrame, type WeatherSource } from './hazards'
 
 export interface OrdnanceSource {
   readonly state: OrdnanceState
@@ -38,6 +39,8 @@ export interface ZonesSource {
 export interface FxFeed {
   ordnance: OrdnanceSource | null
   zones: ZonesSource | null
+  /** T23.19E: the weather layer's vents, embers and toxic drops (`render/weather.ts`), drawn by `fx/hazards.ts`. */
+  weather: WeatherSource | null
   /** The world renderer draws this scene's effects (see the file comment). Written only by `setWorldDraws`. */
   worldDraws: boolean
   /** T23.19D F1: the layers that draw themselves in the world or with Phaser by `worldDraws` (`followWorldDraws`). */
@@ -61,7 +64,7 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0 }
+    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0 }
     feeds.set(scene, f)
   }
   return f
@@ -124,4 +127,5 @@ export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: r
     }
     for (const l of lights) if (l.muzzle) muzzleFx(out, l.x, l.y, l.i / MUZZLE_LIGHT.i)
   }
+  if (feed.weather) weatherFrame(feed.weather, out, seconds)
 }

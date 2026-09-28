@@ -32,10 +32,12 @@ const SEEDS = ['31337', '7', '4242', '11', '9', '12', '21', '33', '64', '101']
 const HALO_RING = 22
 /**
  * Mean luminance the ring gains with the grave shown, at night (min) and at noon (max). Measured (T23.19D, seed
- * 31337, low tier): night +7.56, noon 0.00; the halo drawn at noon (the review's bug, planted) reads as night does.
+ * 31337, low tier): night +6.5–7.6, noon −0.06–0.06 alone and **+0.67 once in a 14-check run** (T23.19E: frame noise
+ * under load); the halo drawn at noon (the review's bug, planted) reads as night does, +7.58. The noon bound is half of
+ * the halo's smallest step (a quarter of full night's alpha, `NIGHT_HALO_STEPS`: ~1.7 lum) — any halo at all fails it.
  */
 const HALO_NIGHT_MIN = 3.8
-const HALO_NOON_MAX = 0.3
+const HALO_NOON_MAX = 0.9
 /**
  * T23.19D F3: a label's glyph edge contrast — the 98th percentile of |Δ luminance| between neighbouring pixels across
  * its box. Measured on the low tier (T23.19D): sharp 188.1 / 187.2 (bazooka / medkit), the same crops blurred 3×3
