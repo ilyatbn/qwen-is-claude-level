@@ -123,7 +123,7 @@ export const F6: SceneData = {
     "i": 0.6
    },
    {
-    "x": 341.395,
+    "x": 350.365,
     "y": 374,
     "z": 20,
     "r": 110,
@@ -147,7 +147,7 @@ export const F6: SceneData = {
     "i": 1.8
    },
    {
-    "x": 948.6545,
+    "x": 950,
     "y": 356.06,
     "z": 20,
     "r": 110,
@@ -611,7 +611,7 @@ export const F6: SceneData = {
     "s": 4.484999999999999,
     "accent": "#e8482c",
     "origin": [
-     -53.81999999999999,
+     -62.78999999999999,
      0
     ]
    },
@@ -621,9 +621,9 @@ export const F6: SceneData = {
     "shadow": false
    },
    "box": [
-    269,
-    355,
-    340,
+    260,
+    354,
+    350,
     397
    ]
   },
@@ -696,9 +696,9 @@ export const F6: SceneData = {
     "shadow": false
    },
    "box": [
-    925,
-    337,
-    958,
+    923,
+    332,
+    959,
     378
    ]
   },
@@ -771,9 +771,9 @@ export const F6: SceneData = {
     "shadow": false
    },
    "box": [
-    292,
-    468,
-    311,
+    286,
+    463,
+    316,
     502
    ]
   },
@@ -1128,7 +1128,7 @@ export const F6: SceneData = {
    "box": [
     769,
     650,
-    809,
+    814,
     691
    ]
   },
@@ -1193,7 +1193,7 @@ export const F6: SceneData = {
    },
    "box": [
     940,
-    652,
+    651,
     966,
     696
    ]
@@ -1259,7 +1259,7 @@ export const F6: SceneData = {
    },
    "box": [
     1110,
-    651,
+    650,
     1135,
     695
    ]

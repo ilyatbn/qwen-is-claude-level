@@ -19,3 +19,7 @@ assets in the m23 folder as reference to always be used and compared to."*
 
 Re-render: copy `mockup-src/` to a scratch dir, `npm i`, then
 `LD_LIBRARY_PATH=$HOME/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu nice -n 19 node render.mjs F1`.
+
+**R26 (2026-09-28):** `mockup-src/weapons.js` remodels the hammer, the toxic grenade and the airburst (readability at
+1×, T23.17). `F6-weapon-sheet.png` is kept as the owner approved it, so re-rendering F6 no longer reproduces it for
+those three weapons; `controls/F6-weapons.png` (`controls/weaponsonly.js`) is the current code's render.

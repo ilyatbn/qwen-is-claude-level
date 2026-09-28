@@ -38,7 +38,7 @@ export const WEAPONS = {
   bat: { grips: [[7, 1], [9, 1]], muzzle: [19, -1], cx: 12, melee: true, draw: (g) => { poly(g, [[6, 0.4], [6, 1.6], [19, 1.4], [20, 0], [19, -1.6], [11, 0]]) } },
   axe: { grips: [[7, 1], [10, 1]], muzzle: [19, -2], cx: 12, melee: true, draw: (g) => {
     ln(g, [6, 1], [19, 0.4], 1.4); g.fillStyle = ink(); g.beginPath(); g.moveTo(16, 0.3); g.quadraticCurveTo(15.5, -4, 20, -6); g.quadraticCurveTo(21, -1, 20, 4.5); g.quadraticCurveTo(16.5, 3, 16, 0.3); g.fill() } },
-  hammer: { grips: [[7, 1], [10, 1]], muzzle: [19, 0], cx: 12, melee: true, draw: (g) => { ln(g, [6, 1], [17, 0.6], 1.4); rr(g, 16.2, -3.6, 4.2, 8.4, 0.8) } },
+  hammer: { grips: [[7, 1], [10, 1]], muzzle: [23, 0], cx: 14, melee: true, draw: (g) => { ln(g, [6, 1], [21, 0.5], 1.4); rr(g, 20.2, -3.8, 4.4, 8.6, 0.8) } },   // R26: a long sledge — head past the axe's blade (IoU 0.76 → apart)
   whip: { grips: [[9, 1]], muzzle: [36, 3], cx: 20, melee: true, draw: (g) => {
     rr(g, 7, 0, 4.6, 1.8, 0.8); g.strokeStyle = ink(); g.lineCap = 'round'
     const P = [[11.4, 0.9], [18, -2.5], [26, 2.5], [33, 1], [36.5, 3.2]]
@@ -47,13 +47,14 @@ export const WEAPONS = {
     ln(g, [1, 1.6], [15, 0.6], 1.3); ln(g, [0.5, 0.6], [0.5, 2.8], 1); poly(g, [[14.5, -2.2], [19, -2.4], [21, 0.4], [19, 3.2], [14.5, 3]]) } },
   // ---- thrown / placed (held up in the throwing hand)
   grenade: { grips: [[8, -2]], muzzle: [9.5, -3.5], cx: 9.5, thrown: true, draw: (g) => { dot(g, 9.5, -3, 2.2); rr(g, 8.6, -6.4, 1.8, 1.6, 0.3); g.strokeStyle = ink(); g.lineWidth = 0.6; g.beginPath(); g.arc(11.2, -5.8, 1.1, 0, 7); g.stroke() } },
-  toxic_grenade: { grips: [[8, -2]], muzzle: [9.5, -3.5], cx: 9.5, thrown: true, draw: (g, a) => {
-    rr(g, 8, -6, 3.2, 5.6, 1.4); rr(g, 8.6, -7.4, 2, 1.6, 0.3); if (a !== undefined && !String(a).startsWith('rgba(')) { g.fillStyle = '#7dff3a'; g.fillRect(8.3, -4.2, 2.6, 0.8) } } },
+  toxic_grenade: { grips: [[8, -2]], muzzle: [9.5, -3.5], cx: 9.5, thrown: true, draw: (g, a) => {   // R26: a flask, green liquid the one accent
+    poly(g, [[6.6, -0.4], [12.4, -0.4], [10.3, -4.8], [10.3, -7.4], [8.7, -7.4], [8.7, -4.8]]); rr(g, 8.4, -8.4, 2.2, 1.2, 0.3)
+    if (a !== undefined && !String(a).startsWith('rgba(')) { g.fillStyle = '#7dff3a'; g.beginPath(); g.moveTo(7.6, -1.2); g.lineTo(11.4, -1.2); g.lineTo(10.5, -3); g.lineTo(8.5, -3); g.closePath(); g.fill() } } },
   smoke: { grips: [[8, -2]], muzzle: [9.5, -3.5], cx: 9.5, thrown: true, draw: (g) => { rr(g, 8, -6.8, 3.4, 6.2, 0.6); rr(g, 8.5, -8, 2.4, 1.4, 0.3); ln(g, [8.8, -5.2], [10.6, -5.2], 0.5) } },
   molotov: { grips: [[8, -2]], muzzle: [10.5, -9], cx: 9.8, thrown: true, draw: (g, a) => {
     g.fillStyle = ink(); g.beginPath(); g.roundRect(8, -5.5, 3.6, 5.2, 1.2); g.fill(); rr(g, 9.1, -8.4, 1.4, 3.2, 0.4)
     if (a !== undefined && !String(a).startsWith('rgba(')) { S.glow(g, 10.4, -9.6, 4.5, '255,150,40', 0.95); dot(g, 10.3, -9.4, 0.9, '#fff0b0') } } },
-  airburst: { grips: [[8, -2]], muzzle: [9.5, -4], cx: 9.8, thrown: true, draw: (g) => { rr(g, 8, -5.2, 3.8, 4.4, 0.8); poly(g, [[8.4, -5.2], [9.9, -8.2], [11.4, -5.2]]); poly(g, [[8, -1], [6.6, 0.6], [8, 0.2]]); poly(g, [[11.8, -1], [13.2, 0.6], [11.8, 0.2]]); dot(g, 9.9, -3, 0.5, 'rgba(255,255,255,0.0)') } },
+  airburst: { grips: [[8, -2]], muzzle: [9.8, -4], cx: 9.8, thrown: true, draw: (g) => { rr(g, 8.9, -6.2, 1.8, 5.4, 0.5); poly(g, [[8.9, -6.2], [9.8, -9.4], [10.7, -6.2]]); poly(g, [[8.9, -2.6], [6.2, 0.6], [8.9, -0.8]]); poly(g, [[10.7, -2.6], [13.4, 0.6], [10.7, -0.8]]) } },   // R26: a slim finned rocket
   mine: { grips: [[8, -1]], muzzle: [9.5, -2.5], cx: 9.8, thrown: true, draw: (g, a) => {
     rr(g, 6.5, -3, 6.6, 2.4, 1.1); for (const x of [7.6, 9.8, 12]) ln(g, [x, -3], [x, -4.4], 0.6); if (a !== undefined && !String(a).startsWith('rgba(')) { S.glow(g, 9.8, -3.4, 3, '255,40,30', 0.9); dot(g, 9.8, -3.3, 0.6, '#ff5040') } } },
 }
