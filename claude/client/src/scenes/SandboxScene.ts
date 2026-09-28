@@ -165,8 +165,8 @@ export class SandboxScene extends Phaser.Scene {
   private player!: PlayerView
   /** T23.19A: pickups a check stages (`stagePickup`) — the sandbox runs no item spawner of its own. */
   private staged: WorldItemView[] = []
-  /** T21.37: the extra bodies `__game.showSkins` stands up for a check. */
-  private skinLineup: PlayerView[] = []
+  /** T21.37: the extra bodies `__game.showSeats` stands up for a check. */
+  private seatLineup: PlayerView[] = []
   private localInput!: LocalInput
   private crosshair!: Crosshair
   private seq = 0
@@ -1307,14 +1307,14 @@ export class SandboxScene extends Phaser.Scene {
       /**
        * T21.37: stand extra bodies at world points, `null` to remove them — in one frame, same renderer, light and
        * camera, so one is the other's control. Built through `PlayerView`, the path every scene draws players with,
-       * posed idle facing right. T23.15 (R8): `skin` is the **seat** (its scarf colour, `setSeat`) — the only identity
-       * a figure has; the name is kept for `stick-figure`'s call. Returns how many are standing.
+       * posed idle facing right. T23.15 (R8): each stands in a **seat** (its scarf colour, `setSeat`) — the only identity
+       * a figure has (T23.14F F10: was `showSkins({skin})`). Returns how many are standing.
        */
-      showSkins(list: { skin: number; x: number; y: number }[] | null) {
-        for (const v of self.skinLineup) v.destroy()
-        self.skinLineup = (list ?? []).map(({ skin, x, y }) => {
+      showSeats(list: { seat: number; x: number; y: number }[] | null) {
+        for (const v of self.seatLineup) v.destroy()
+        self.seatLineup = (list ?? []).map(({ seat, x, y }) => {
           const v = new PlayerView(self)
-          v.setSeat(skin)
+          v.setSeat(seat)
           v.container.setDepth(DEPTH.actors)
           v.setState(x, y, 0, 0, 0, {
             alive: true,
@@ -1327,12 +1327,12 @@ export class SandboxScene extends Phaser.Scene {
             space: false,
             thrust: null,
             thrustMax: self.core.fullThrust(),
-            // T22.19: a line-up of skins, posed upright.
+            // T22.19: a line-up of seats, posed upright.
             tilt: 0,
           })
           return v
         })
-        return self.skinLineup.length
+        return self.seatLineup.length
       },
       /**
        * T21.31: frame a world point and hold the camera there, `null` to follow the

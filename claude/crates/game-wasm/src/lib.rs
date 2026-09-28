@@ -59,6 +59,13 @@ struct LocalPlayer {
     /// Health, inventory, cooldowns. The sandbox needs the whole record so firing
     /// goes through the same validation the server will use.
     stats: PlayerState,
+    /// **T23.14F F3: your `death` event was heard, the snapshot saying so not yet.** The event is pushed on the
+    /// tick the server kills you and a snapshot of that tick or later carries `alive` false — socket.io is one
+    /// ordered stream, so no older snapshot can follow the event. In that gap [`GameCore::predict_use`] refuses as
+    /// the server does (`Dead`); nothing else reads it (the movement predictor keeps taking `alive` from the
+    /// snapshot, whose flip `prediction.ts` measures). Set by [`GameCore::note_death`], cleared by the first
+    /// `set_player_state` with `alive` false.
+    death_heard: bool,
 }
 
 /// T22.14C LOW-4: the input seqs an attractor pulls for, `from..until` — from the
@@ -924,7 +931,16 @@ impl GameCore {
             stats,
             prev_input: Input::default(),
             history: std::collections::VecDeque::new(),
+            death_heard: false,
         });
+    }
+
+    /// T23.14F F3: your own `death` event, heard before the snapshot that carries it (`LocalPlayer::death_heard`).
+    /// `GameScene`'s `death` handler is the production caller.
+    pub fn note_death(&mut self, id: u8) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.death_heard = true;
+        }
     }
 
     pub fn remove_player(&mut self, id: u8) {
@@ -1100,6 +1116,10 @@ impl GameCore {
         // snapshot's flags and has been on the wire since M6; nothing carried it
         // across this boundary.
         p.stats.alive = alive;
+        // T23.14F F3: the snapshot has caught up with a heard `death` — `alive` answers from here.
+        if !alive {
+            p.death_heard = false;
+        }
         // **T21.02, and it is here for the same reason `health` and `alive`
         // are** — `apply_input` reads it. `move_mods` feeds
         // `PlayerState::move_mods()`, which scales the walk target and the jump
@@ -1198,8 +1218,10 @@ impl GameCore {
     /// **T23.14E F7: a landing found by a correction's replay.** Over this mirror's history
     /// after `from_seq` (the ack a correction restored — [`GameCore::correct_player_state`] —
     /// its steps then replayed), starting from `grounded_at_from` (the snapshot's word at the
-    /// ack): `[impact, grounded]` — the `landing_impact` of the first step that went from
-    /// airborne to grounded (`-1`: none), and whether the body is grounded now. The client's
+    /// ack): `[impact, grounded]` — the `landing_impact` of the **last** step that went from
+    /// airborne to grounded (`-1`: none), and whether the body is grounded now. The last, not
+    /// the first (T23.14F F4): a replay that lands, hops and lands again ends on the second
+    /// landing, and the one the cue plays is the one the body is standing on. The client's
     /// landing cue observes every step it takes (`LandingLatch`); a replay's steps it never
     /// saw, so a landing the correction moved into the past was heard late at the floor, or
     /// not at all. `GameScene.onSnapshot` asks after each correction; empty for an unknown id.
@@ -1210,7 +1232,7 @@ impl GameCore {
         let mut was = grounded_at_from;
         let mut impact = -1.0;
         for (_, m) in p.history.iter().filter(|(s, _)| *s > from_seq) {
-            if impact < 0.0 && !was && m.body.grounded {
+            if !was && m.body.grounded {
                 impact = m.body.landing_impact;
             }
             was = m.body.grounded;
@@ -1518,14 +1540,15 @@ impl GameCore {
         if self.past_bell(self.players[idx].prev_input.seq) {
             return Err(UseError::RoundOver);
         }
+        let death_heard = self.players[idx].death_heard;
         let p = &mut self.players[idx].stats;
         // `World::fire`: a living rider fires the platform — no use of the bag, so no swing.
         // `World::quick_throw` has no such branch: `inventory_actor` refuses a rider (`WrongKind`).
         if p.alive && p.mount.is_mounted() {
             return Err(UseError::WrongKind);
         }
-        // `World::inventory_actor`.
-        if !p.alive {
+        // `World::inventory_actor`. T23.14F F3: a heard `death` is dead already (`LocalPlayer::death_heard`).
+        if !p.alive || death_heard {
             return Err(UseError::Dead);
         }
         let slot = if quick {
@@ -2497,6 +2520,8 @@ pub fn constants_json() -> String {
         // (T9.01). Exported for the same reason WALK_SPEED is: the alternative
         // is a second copy of the number on the client.
         MAX_FALL_SPEED => c::MAX_FALL_SPEED,
+        // T23.14F F4: a hop's landing speed — `audio`'s hop-after-land leg bounds its cue by it.
+        JUMP_VELOCITY => c::JUMP_VELOCITY,
         EDGE_BAND_PX => c::EDGE_BAND_PX,
         // Physics the client already draws with, and which a check needs to
         // predict where a bird's drop can be: without them a fixture has to
@@ -7463,5 +7488,133 @@ mod t23_14e_predicted_use {
         assert_eq!(found[1], 1.0, "grounded now");
         // Control: from an ack after the landing, nothing lands.
         assert_eq!(core.landing_since(ID, seq, true)[0], -1.0);
+    }
+
+    /// Step the mirror's body (buttons `hold`, from seq `from`) until it lands; the seq it landed on and that
+    /// step's impact.
+    fn fall_until_landed(core: &mut GameCore, from: u32, hold: u8) -> (u32, f32) {
+        for seq in from..from + 400 {
+            core.apply_input(ID, seq, hold, 0, SIM_DT);
+            let st = core.player_state(ID);
+            if st[4] > 0.5 && seq > from {
+                return (seq, st[7]);
+            }
+        }
+        panic!("the body never landed")
+    }
+
+    /// T23.14F F4: a replay that lands, hops and lands again reports the **last** landing — the one the body
+    /// stands on — with that step's impact. A hard landing then a small hop: the first-landing answer (T23.14E)
+    /// would play the hard fall's thud for the hop's touchdown.
+    #[test]
+    fn a_replay_that_lands_hops_and_lands_reports_the_last_landing() {
+        use game_core::player::input::button;
+        let (w, mut core) = pair();
+        core.map = w.map.clone();
+        let pos = w.player(ID).expect("seated").body.pos;
+        core.set_player_state(
+            ID,
+            pos.x,
+            pos.y - 160.0,
+            0.0,
+            0.0,
+            false,
+            0.0,
+            100.0,
+            true,
+            0,
+        );
+        let (first, hard) = fall_until_landed(&mut core, 1, 0);
+        // Control: the same window, before the hop, reports the first landing.
+        assert_eq!(core.landing_since(ID, first - 3, false)[0], hard);
+        // A hop: JUMP held one tick (the edge), then released, stepped until it is back down.
+        core.apply_input(ID, first + 1, button::JUMP, 0, SIM_DT);
+        assert!(core.player_state(ID)[4] < 0.5, "the hop leaves the ground");
+        let (second, soft) = fall_until_landed(&mut core, first + 2, 0);
+        assert!(second > first + 2, "a second landing, later");
+        assert_ne!(
+            hard, soft,
+            "two landings with different impacts, so the answer says which"
+        );
+        let found = core.landing_since(ID, first - 3, false);
+        assert_eq!(
+            found[0], soft,
+            "the last landing's impact (the first's was {hard})"
+        );
+        assert_eq!(found[1], 1.0, "grounded now");
+    }
+
+    /// T23.14F F3, a wire ordering: **predicted consume → stale `set_bag` → use.** The mirror throws the grenade
+    /// (its one stack spent, as the server's); then an `inventory` event the server sent *before* it processed the
+    /// throw (a pickup, say) arrives and re-installs the grenade; the next `E` is predicted a grenade while the
+    /// server throws the molotov. Both are throws, so the figure's animation is right; the key is not — which is
+    /// why `GameScene` matches your own echo to its pending predictions by key (`look/actors/pendingUses.ts`): the
+    /// grenade's prediction expires unmatched, the molotov's echo finds none and plays late. The next, fresh
+    /// `inventory` event restores agreement (the control).
+    #[test]
+    fn a_stale_bag_after_a_predicted_consume_predicts_the_item_the_server_no_longer_has() {
+        let (mut w, mut core) = pair();
+        let cd = |item: ItemId| -> f32 {
+            let ItemKind::Weapon(wid) = registry::def(item).expect("def").kind else {
+                panic!("a weapon")
+            };
+            defs::def(wid).expect("weapon").cooldown
+        };
+        let stale = bag(&w);
+        let mut now = 10.0;
+        assert_eq!(both(&mut w, &mut core, true, now), Ok(GRENADE));
+        // The stale event: the bag as it was before the throw.
+        core.set_bag(ID, &stale.0, &stale.1, stale.2);
+        now += cd(GRENADE) + 0.01;
+        let server = w.quick_throw(ID, now);
+        let mirror = core.predicted_use(ID, true, now);
+        assert_eq!(server, Ok(()), "the server throws");
+        assert_eq!(
+            mirror,
+            Ok(GRENADE),
+            "the mirror predicts the grenade the stale bag gave back"
+        );
+        let thrown = w
+            .player(ID)
+            .expect("seated")
+            .inventory
+            .iter()
+            .any(|(_, s)| s.item == GRENADE);
+        assert!(!thrown, "the server has no grenade: it threw the molotov");
+        // The fresh event: agreement again, use for use.
+        let fresh = bag(&w);
+        core.set_bag(ID, &fresh.0, &fresh.1, fresh.2);
+        assert_eq!(mirror_bag(&core), bag(&w));
+        now += cd(MOLOTOV) + 0.01;
+        assert_eq!(both(&mut w, &mut core, true, now), Ok(MOLOTOV));
+    }
+
+    /// T23.14F F3, a wire ordering: **your `death` event before the snapshot's `alive`.** The server killed you
+    /// on a tick; its `death` event arrives, the snapshot carrying `alive` false after it. In that gap the mirror
+    /// still has you alive — a use would swing a dead figure. `note_death` (the `death` handler) closes it: refused
+    /// as the server refuses. The snapshot then catches up (the flag cleared, `alive` answers), and a respawn's
+    /// snapshot swings again (the control).
+    #[test]
+    fn a_death_heard_before_the_snapshot_refuses_the_use_as_the_server_does() {
+        let (mut w, mut core) = pair();
+        select(&mut w, &mut core, SHOVEL);
+        w.player_mut(ID).expect("seated").alive = false;
+        // The hazard, measured: without the event the mirror takes the use the server refuses.
+        let mut unheard = pair().1;
+        unheard.select_slot(ID, slot_of(&w, SHOVEL));
+        assert_eq!(unheard.predicted_use(ID, false, 10.0), Ok(SHOVEL));
+        assert_eq!(w.fire(ID, 10.0), Err(UseError::Dead));
+        // The event heard: refused, as the server.
+        core.note_death(ID);
+        assert_eq!(both(&mut w, &mut core, false, 10.0), Err(UseError::Dead));
+        // The snapshot: `alive` false; still refused, now by `alive`.
+        let p = w.player(ID).expect("seated").body;
+        core.set_player_state(ID, p.pos.x, p.pos.y, 0.0, 0.0, false, 0.0, 0.0, false, 0);
+        assert!(!core.players[0].death_heard, "the snapshot caught up");
+        assert_eq!(both(&mut w, &mut core, false, 20.0), Err(UseError::Dead));
+        // Respawned (the server's word on the next snapshot): the shovel swings again.
+        w.player_mut(ID).expect("seated").alive = true;
+        core.set_player_state(ID, p.pos.x, p.pos.y, 0.0, 0.0, false, 0.0, 100.0, true, 0);
+        assert_eq!(both(&mut w, &mut core, false, 30.0), Ok(SHOVEL));
     }
 }

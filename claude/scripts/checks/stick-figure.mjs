@@ -157,7 +157,7 @@ export default async function ({ page, shot, log }) {
 
   // ------------------------------------------------------------ 3. identity: two seats' scarves differ on screen
   // T23.14D F12. Skins are drawn as nothing (R8), so a player is told apart by the seat's scarf (R10) — read off the
-  // world canvas: seats 0 and 1 stood side by side (`showSkins` builds them through `PlayerView`, the path every scene
+  // world canvas: seats 0 and 1 stood side by side (`showSeats` builds them through `PlayerView`, the path every scene
   // draws players with); in each figure's box, the pixels of its own seat's hue and of the other's are counted.
   // Control: both figures seat 0 — the right one's box then shows seat 0's hue, not seat 1's (the count reads the
   // colour, not the place).
@@ -201,7 +201,7 @@ async function identity(page, pair, save = null) {
   const [cx, cy] = RUNWAY
   await page.evaluate(([pair, cx, cy, apart]) => {
     window.__game.place(cx, cy - 200)
-    window.__game.showSkins([{ skin: pair[0], x: cx - apart, y: cy }, { skin: pair[1], x: cx + apart, y: cy }])
+    window.__game.showSeats([{ seat: pair[0], x: cx - apart, y: cy }, { seat: pair[1], x: cx + apart, y: cy }])
   }, [pair, cx, cy, APART])
   const raf = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
   await raf()
@@ -209,7 +209,7 @@ async function identity(page, pair, save = null) {
   await raf()
   const f = decode(await page.evaluate(() => window.__world.readFrame()))
   await page.evaluate(() => {
-    window.__game.showSkins(null)
+    window.__game.showSeats(null)
     window.__game.freeze(false)
   })
   const k = f.width / f.view.w

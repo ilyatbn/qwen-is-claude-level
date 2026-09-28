@@ -11,11 +11,10 @@
 import Phaser from 'phaser'
 import type { OrdnanceState } from './ordnance-state'
 import { fxFeed } from '../look/fx/feed'
+import { ROUND_PATCH_PX, clampRect, type Rect } from './ordnanceWatchRect'
 
-/** The side of the square read around a round, canvas px. */
-export const ROUND_PATCH_PX = 24
+export { ROUND_PATCH_PX }
 
-type Rect = readonly [number, number, number, number]
 
 export interface WatchedRound {
   id: number
@@ -103,8 +102,13 @@ export class RoundWatch {
       const sx = (p.x - cam.worldView.x) * cam.zoom
       const sy = (p.y - cam.worldView.y) * cam.zoom
       const mx = c ? (c.x - cam.worldView.x) * cam.zoom : sx
-      const rect: Rect = [Math.round(sx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX]
-      const far: Rect = [Math.round(2 * mx - sx - H), rect[1], ROUND_PATCH_PX, ROUND_PATCH_PX]
+      // T23.14F F6: clamped to the canvas — a square past its edge read zeros (WebGL) or threw nothing but compared
+      // blank against blank. A round whose square, or whose control's, is off the canvas is not watched.
+      const W = this.game.renderer.width
+      const Hc = this.game.renderer.height
+      const rect = clampRect([Math.round(sx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX], W, Hc)
+      const far = clampRect([Math.round(2 * mx - sx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX], W, Hc)
+      if (!rect || !far) continue
       this.rounds.push({ id, kind: p.kind, rect, far, patch: this.read(rect), farPatch: this.read(far), frames: 1, diff: null, farDiff: null })
     }
   }

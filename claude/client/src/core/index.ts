@@ -353,6 +353,7 @@ export interface Constants {
   PLAYER_H: number
   WALK_SPEED: number
   MAX_FALL_SPEED: number
+  JUMP_VELOCITY: number
   EDGE_BAND_PX: number
   /**
    * The three below were in `constants_json` and **not** in this interface
@@ -1400,13 +1401,18 @@ export class Core {
 
   /**
    * T23.14E F7: a landing a correction's replay found — the mirror's history after `fromSeq` (the ack), starting from
-   * `groundedAtFrom` (the snapshot's word there): the first airborne → grounded step's impact (null: none), and whether
-   * the body is grounded now.
+   * `groundedAtFrom` (the snapshot's word there): the **last** airborne → grounded step's impact (null: none; T23.14F F4
+   * — the landing the body stands on), and whether the body is grounded now.
    */
   landingSince(id: number, fromSeq: number, groundedAtFrom: boolean): { impact: number | null; grounded: boolean } {
     const a = this.inner.landing_since(id, fromSeq, groundedAtFrom)
     const impact = a[0] ?? -1
     return { impact: impact >= 0 ? impact : null, grounded: (a[1] ?? 0) > 0.5 }
+  }
+
+  /** T23.14F F3: your own `death` event, heard before the snapshot that carries it — `predictUse` refuses until then. */
+  noteDeath(id: number): void {
+    this.inner.note_death(id)
   }
 
   /** T23.14E F2: the suit battery off the snapshot — an energy weapon's use spends it (`predictUse`). */

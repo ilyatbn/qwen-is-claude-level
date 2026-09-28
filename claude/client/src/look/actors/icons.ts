@@ -8,6 +8,7 @@
  */
 import { DARK_INK } from './cell'
 import { INK, setInk, type G } from './draw'
+import { LIT, rimAlpha } from './lit'
 import { FIREARMS, MELEE_THROWN, WEAPONS, drawWeapon } from './weapons'
 
 /** `variant_F6.js`'s moon — the icons' only light. */
@@ -57,8 +58,9 @@ export function iconWeapon(sprite: string): string | null {
 export function litWeapon(g: G, key: string, x: number, y: number, s: number, size = 1): void {
   if (!WEAPONS[key]) return
   const L = ICON_MOON
-  const a = Math.min(1, 0.45 + L.w * 0.5)
-  const o = 1.15 * size
+  const a = rimAlpha(L.w)
+  const o = LIT.rimOffset * size
+  const far = o * LIT.farOffset
   const was = INK
   const pass = (ink: string, accent: string, dx: number, dy: number): void => {
     setInk(ink)
@@ -67,9 +69,9 @@ export function litWeapon(g: G, key: string, x: number, y: number, s: number, si
   g.save()
   g.lineCap = 'round'
   g.lineJoin = 'round'
-  pass(`rgba(${L.rgb},${a * 0.35})`, `rgba(${L.rgb},${a * 0.3})`, L.dx * o * 1.7, L.dy * o * 1.7)
+  pass(`rgba(${L.rgb},${a * LIT.farInk})`, `rgba(${L.rgb},${a * LIT.farAccent})`, L.dx * far, L.dy * far)
   pass(`rgba(${L.rgb},${a})`, `rgba(${L.rgb},${a})`, L.dx * o, L.dy * o)
-  pass(`rgba(${L.fill},0.35)`, `rgba(${L.fill},0.35)`, -L.dx * 0.7 * size, -L.dy * 0.7 * size)
+  pass(`rgba(${L.fill},${LIT.fillAlpha})`, `rgba(${L.fill},${LIT.fillAlpha})`, -L.dx * LIT.fillOffset * size, -L.dy * LIT.fillOffset * size)
   setInk(DARK_INK)
   drawWeapon(g, key, x, y, s, ICON_ACCENT)
   g.restore()

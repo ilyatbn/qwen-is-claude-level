@@ -277,14 +277,39 @@ export default async function ({ page, shot, log }) {
       await mp.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: Math.max(4000, fallMs * 6) })
       await sleep(4 * MATCH_SLOW_MS)
       const o = (await mp.evaluate(() => window.__game.debug())).observed
-      await mp.evaluate(() => window.__game.slowFrames(0))
       const heard = o.landVolumes.slice(heard0)
       const got = heard.length ? Math.max(...heard) : null
-      const want = Math.min(1, Math.min(k.MAX_FALL_SPEED, Math.sqrt(2 * k.GRAVITY * drop)) / k.MAX_FALL_SPEED + o.landingFloor)
+      const volumeAt = (speed) => Math.min(1, Math.min(k.MAX_FALL_SPEED, speed) / k.MAX_FALL_SPEED + o.landingFloor)
+      const want = volumeAt(Math.sqrt(2 * k.GRAVITY * drop))
       log(`match, slow frames (${MATCH_SLOW_MS} ms, ${o.slowFrames} held): ${drop} px -> ${got === null ? 'none' : got.toFixed(3)} (predicted ${want.toFixed(3)}; replay landings ${o.replayLandings})`)
       if (got === null) throw new Error('in a match on slow frames the fall played no landing')
       if (Math.abs(got - want) > 0.06) {
         throw new Error(`in a match on slow frames the fall from ${drop} px played at ${got.toFixed(3)} against a predicted ${want.toFixed(3)} — the landing step's impact was lost between predicted steps`)
+      }
+      // T23.14F F4: **a hop after the landing**, still on slow frames — heard once, at a hop's volume, never the fall's.
+      // `Core.landingSince` answers a correction with the replay's *last* landing (the one the body stands on); the
+      // first-landing answer played the fall's thud for a later touchdown in the same replay (the Rust unit
+      // `a_replay_that_lands_hops_and_lands_reports_the_last_landing` pins that; here the whole path is checked).
+      const hopFrom = o.landVolumes.length
+      const replayBefore = o.replayLandings
+      await mp.keyboard.down('Space')
+      await sleep(3 * MATCH_SLOW_MS)
+      await mp.keyboard.up('Space')
+      await mp.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: 10_000 })
+      await sleep(4 * MATCH_SLOW_MS)
+      const o2 = (await mp.evaluate(() => window.__game.debug())).observed
+      await mp.evaluate(() => window.__game.slowFrames(0))
+      const hop = o2.landVolumes.slice(hopFrom)
+      const hopMax = volumeAt(k.JUMP_VELOCITY)
+      log(`match, a hop after it: heard ${JSON.stringify(hop.map((v) => +v.toFixed(3)))} (a hop lands at most ${hopMax.toFixed(3)}; the fall ${got.toFixed(3)}); replay landings ${replayBefore} -> ${o2.replayLandings}, over ${o2.slowFrames} slow frames`)
+      if (hop.length !== 1) throw new Error(`the hop's landing was heard ${hop.length} times (want once): ${JSON.stringify(hop)}`)
+      if (hop[0] > hopMax + 0.06 || hop[0] >= got - 0.06) {
+        throw new Error(`the hop landed at ${hop[0].toFixed(3)} — a hop's is at most ${hopMax.toFixed(3)} and the fall's was ${got.toFixed(3)}: an earlier landing's impact`)
+      }
+      // The replay path, asserted rather than logged: every landing a correction's replay reported was heard once (the
+      // two landings above are the only cues), and the count is the scene's (`Core.landingSince` after corrections).
+      if (!(o2.replayLandings >= replayBefore) || o2.replayLandings > 2 + replayBefore + o.replayLandings) {
+        throw new Error(`replay landings ${replayBefore} -> ${o2.replayLandings}: more than the two landings made`)
       }
     } finally {
       await stack.close()

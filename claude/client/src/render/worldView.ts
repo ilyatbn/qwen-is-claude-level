@@ -227,24 +227,7 @@ export class WorldView {
     const seen = new Set<number>()
     for (const p of live) {
       seen.add(p.id)
-      // Two callers, two identifiers: the game carries the numeric weapon id off
-      // the wire, the sandbox simulates locally and already has the key.
-      const kind =
-        p.key !== undefined ? (KIND_BY_WEAPON_KEY[p.key] ?? 'fragment') : this.kindOf(p.weapon ?? -1)
-      if (!this.tracked.has(p.id)) {
-        this.tracked.set(p.id, kind)
-        // T23.09C F2: a round is first drawn where it left the gun when that is known (`origin`: the game's
-        // `projectile_spawn` point — the round may have moved on before this frame's sync), and it may flash a
-        // muzzle only if it was seen leaving one: not on this view's first sync (in flight before this client
-        // looked: a late join, a new scene), and not with `origin: null` (the game never heard its spawn: a
-        // resync, a missed event). The sandbox passes no origin: its rounds are listed the frame they are fired.
-        const from = p.origin ?? p
-        this.ordnance.addProjectile(p.id, kind, from.x, from.y)
-        const rec = this.ordnance.state.projectiles.get(p.id)
-        if (rec && (!this.synced || p.origin === null)) this.staleRounds.add(rec)
-        this.projectilesAddedByKind[kind] = (this.projectilesAddedByKind[kind] ?? 0) + 1
-      }
-      this.ordnance.moveProjectile(p.id, p.x, p.y)
+      this.addRound(p)
     }
     this.synced = true
     for (const id of [...this.tracked.keys()]) {
@@ -252,6 +235,31 @@ export class WorldView {
       this.tracked.delete(id)
       this.ordnance.removeProjectile(id)
     }
+  }
+
+  /**
+   * One round into the layer (and moved to where it is) — `syncProjectiles`' per-round step, and T23.14F F6 the
+   * game's `projectile_spawn`, which adds the one round it names instead of re-syncing every live one.
+   */
+  addRound(p: { id: number; x: number; y: number; weapon?: number; key?: string; origin?: { x: number; y: number } | null }): void {
+    // Two callers, two identifiers: the game carries the numeric weapon id off
+    // the wire, the sandbox simulates locally and already has the key.
+    const kind =
+      p.key !== undefined ? (KIND_BY_WEAPON_KEY[p.key] ?? 'fragment') : this.kindOf(p.weapon ?? -1)
+    if (!this.tracked.has(p.id)) {
+      this.tracked.set(p.id, kind)
+      // T23.09C F2: a round is first drawn where it left the gun when that is known (`origin`: the game's
+      // `projectile_spawn` point — the round may have moved on before this frame's sync), and it may flash a
+      // muzzle only if it was seen leaving one: not on this view's first sync (in flight before this client
+      // looked: a late join, a new scene), and not with `origin: null` (the game never heard its spawn: a
+      // resync, a missed event). The sandbox passes no origin: its rounds are listed the frame they are fired.
+      const from = p.origin ?? p
+      this.ordnance.addProjectile(p.id, kind, from.x, from.y)
+      const rec = this.ordnance.state.projectiles.get(p.id)
+      if (rec && (!this.synced || p.origin === null)) this.staleRounds.add(rec)
+      this.projectilesAddedByKind[kind] = (this.projectilesAddedByKind[kind] ?? 0) + 1
+    }
+    this.ordnance.moveProjectile(p.id, p.x, p.y)
   }
 
   /**

@@ -26,7 +26,10 @@ import { toWorld } from '../worldRenderer-math'
 import { ATLAS_SIZE, ActorAtlas, type Painter } from './atlas'
 import { MASK_STEP, actorRect, atAnchor, hasExtras, type Lighting } from './cell'
 import { Flat, type G } from './flat'
-import { passes } from './lit'
+import { LIT, passes } from './lit'
+
+/** A number as a GLSL float literal (`2` → `2.`). */
+const glsl = (v: number): string => (Number.isInteger(v) ? `${v}.` : String(v))
 
 /** Where the actor layer sits among the world's layers (`atmosphere.ts`: front fog 5, foreground 10). */
 export const ACTOR_ORDER = 7
@@ -70,10 +73,10 @@ void main(){
   vec4 c = img(0., p);
   if (vFill.a > 0.5) {
     if (rimOn > 0.5) {
-      c = pass(c, p, 4., vRim.rgb, vRim.a * 0.35, vRim.a * 0.3);
+      c = pass(c, p, 4., vRim.rgb, vRim.a * ${glsl(LIT.farInk)}, vRim.a * ${glsl(LIT.farAccent)});
       c = pass(c, p, 3., vRim.rgb, vRim.a, vRim.a);
     }
-    c = pass(c, p, 2., vFill.rgb, 0.35, 0.35);
+    c = pass(c, p, 2., vFill.rgb, ${glsl(LIT.fillAlpha)}, ${glsl(LIT.fillAlpha)});
   }
   c = over(img(1., p), c);
   // The mockup's canvas holds 8-bit premultiplied values, and its CanvasTexture is uploaded unpremultiplied —
@@ -211,7 +214,7 @@ export class ActorLayer {
     if (actors.length) this.atlas.beginFrame()
     for (const a of actors) {
       const ps = a.lit ? passes(lights, moon, a.x, a.y, a.lit.size) : null
-      const L: Lighting | null = ps ? { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: this.rim } : null
+      const L: Lighting | null = ps ? { offs: [ps.fillOff, ps.off, ps.farOff], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: this.rim } : null
       const cell = this.atlas.cellFor(a, L)
       if (!cell) continue
       const c = atAnchor(a)

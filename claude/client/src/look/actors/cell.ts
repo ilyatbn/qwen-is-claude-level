@@ -32,6 +32,7 @@
  */
 import type { Actor, ActorOpts, Box } from '../scene'
 import * as D from './draw'
+import { LIT } from './lit'
 import * as F from './figure'
 import { WEAPONS, drawWeapon, held, weaponReach } from './weapons'
 
@@ -237,10 +238,10 @@ export function drawBaked(g: D.G, a: Actor, L: Lighting): void {
     g.restore()
   }
   if (L.rim) {
-    pass(`rgba(${L.rgb},${L.a * 0.35})`, `rgba(${L.rgb},${L.a * 0.3})`, far)
+    pass(`rgba(${L.rgb},${L.a * LIT.farInk})`, `rgba(${L.rgb},${L.a * LIT.farAccent})`, far)
     pass(`rgba(${L.rgb},${L.a})`, `rgba(${L.rgb},${L.a})`, rim)
   }
-  pass(`rgba(${L.fill},0.35)`, `rgba(${L.fill},0.35)`, fill)
+  pass(`rgba(${L.fill},${LIT.fillAlpha})`, `rgba(${L.fill},${LIT.fillAlpha})`, fill)
   drawRole(g, a, 'ink')
 }
 

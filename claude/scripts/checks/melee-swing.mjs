@@ -14,6 +14,8 @@
  * 5. the bazooka, then at once the shovel — inside the **one per-player cooldown** the bazooka started: no swing;
  * 6. `E` (§C11 quick-throw) after that cooldown: a throw at t 0, of the molotov; again at once: not restarted;
  * 7. the round over (`ended`): the shovel swings nothing.
+ * T23.14F F2, reconciled with the server (`look/actors/pendingUses.ts`): 8. a use the mirror refused and the server
+ * took swings late, on the server's echo; 9. a prediction the server never confirms swings once and is dropped.
  * Control: firing the smg swings nothing.
  */
 import { startStack, freePort, enterBattle, selectWeapon, tally, sleep } from './harness.mjs'
@@ -90,7 +92,13 @@ try {
     window.__game.fire()
     return { mid, again: window.__game.debug().localAction }
   })
-  if (mid && again && again.t === mid.t && again.t > 0) t.ok(`a use inside the cooldown swings nothing (t ${mid.t.toFixed(3)} kept)`)
+  // T23.14F: on a loaded box four frames can outlast the swing itself (`MELEE_S`, 0.28 s): it was `null -> null`
+  // once in a 4-wide batch (gate-t2318-B1.txt) — ended, and not restarted, which is the claim. What decides the leg is
+  // that the use is inside the cooldown (the elapsed time, measured) and that the action was not restarted.
+  const inside = await page.evaluate((t0) => performance.now() - t0, sentAt)
+  const kept = mid === null ? again === null : again !== null && again.t === mid.t && again.t > 0
+  if (inside >= cd('shovel') * 1000) t.fail(`the box was too slow to test inside the cooldown: ${inside.toFixed(0)} ms elapsed`)
+  else if (kept) t.ok(`a use inside the cooldown swings nothing (${inside.toFixed(0)} ms in; ${mid ? `t ${mid.t.toFixed(3)} kept` : 'the swing had ended, and stayed ended'})`)
   else t.fail(`a use inside the cooldown restarted the swing: ${JSON.stringify(mid)} -> ${JSON.stringify(again)}`)
   // 3. The echo: once the server's melee is heard, the swing was not restarted by it. Its arrival is the round trip
   // the swing would have waited for (T23.14D's echo-driven swing).
@@ -140,6 +148,59 @@ try {
   })
   if (m2 && e2 && e2.t === m2.t && e2.t > 0) t.ok(`E inside the cooldown throws nothing (t ${m2.t.toFixed(3)} kept)`)
   else t.fail(`E inside the cooldown restarted the throw: ${JSON.stringify(m2)} -> ${JSON.stringify(e2)}`)
+
+  // 8. T23.14F F2 — **a use the mirror refused and the server took swings late, on the server's echo.** The mirror's
+  // bag is emptied (`desyncMirror('empty')`: a pickup it has not heard of, T23.14F's case (c)); the shovel's use is
+  // predicted refused — no swing on its frame — and the server's `melee` for it swings the figure when it lands.
+  await sleep(Math.ceil(cd('molotov') * 1000) + 200)
+  await page.evaluate((s) => window.__game.selectSlot(s), sh)
+  await frames(3)
+  const fn = await page.evaluate(() => {
+    const g = window.__game
+    g.desyncMirror('empty')
+    const before = g.debug().observed
+    g.fire()
+    const d = g.debug()
+    return { key: d.observed.lastUse?.key ?? null, action: d.localAction, swings: before.localSwings, late: before.pendingUses.late }
+  })
+  const lateAt = await page.waitForFunction((n) => {
+    const d = window.__game.debug()
+    return d.observed.pendingUses.late > n ? { action: d.localAction, swings: d.observed.localSwings } : false
+  }, fn.late, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
+  await page.evaluate(() => window.__game.desyncMirror('server'))
+  if (fn.key !== null || (fn.action?.kind === 'melee' && fn.action.t === 0)) t.fail(`the emptied mirror still predicted the shovel: ${JSON.stringify(fn)}`)
+  else if (lateAt === null) t.fail(`the server's echo of a use the mirror refused never swung the figure (${JSON.stringify(fn)})`)
+  else if (lateAt.action?.kind === 'melee' && lateAt.swings === fn.swings + 1) {
+    t.ok(`a use the mirror refused swings late on the server's melee (predicted ${fn.key}; on the echo ${JSON.stringify(lateAt)})`)
+  } else t.fail(`the late echo did not swing the figure once: ${JSON.stringify({ fn, lateAt })}`)
+
+  // 9. T23.14F F2 — **a prediction the server never confirms is dropped, and never swings twice.** The server fires
+  // the smg (selected there); the mirror is told the shovel is selected (`desyncMirror({slot})`: an overwritten
+  // selection, case (d)). The predicted shovel swings on its frame; no `melee` comes; past the bound the prediction
+  // is dropped — one swing in all.
+  await sleep(Math.ceil(cd('shovel') * 1000) + 200)
+  await selectWeapon(page, 'smg')
+  await frames(3)
+  const fp = await page.evaluate((s) => {
+    const g = window.__game
+    g.desyncMirror({ slot: s })
+    const before = g.debug().observed
+    g.fire()
+    const d = g.debug()
+    return { key: d.observed.lastUse?.key ?? null, action: d.localAction, swings0: before.localSwings, swings1: d.observed.localSwings, dropped: before.pendingUses.dropped, bound: d.observed.pendingUses.boundMs }
+  }, sh)
+  await sleep(Math.ceil(fp.bound) + 300)
+  const fpAfter = await page.evaluate(() => {
+    const g = window.__game
+    g.desyncMirror('server')
+    g.fire() // the smg, agreed again: it expires what has waited past the bound, and swings nothing (the control).
+    const o = g.debug().observed
+    return { swings: o.localSwings, pending: o.pendingUses }
+  })
+  if (fp.key === 'shovel' && fp.action?.kind === 'melee' && fp.swings1 === fp.swings0 + 1 &&
+      fpAfter.swings === fp.swings1 && fpAfter.pending.dropped === fp.dropped + 1 && fpAfter.pending.waiting === 0) {
+    t.ok(`an unconfirmed prediction swung once and was dropped after ${fp.bound.toFixed(0)} ms (${JSON.stringify(fpAfter)})`)
+  } else t.fail(`the unconfirmed prediction: ${JSON.stringify({ fp, fpAfter })}`)
 
   // 7. After the bell: nothing swings.
   const ended = await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: (ROUND_S + 30) * 1000 })

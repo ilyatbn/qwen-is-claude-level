@@ -24,6 +24,27 @@ export function dominant(lights: readonly Light[], x: number, y: number, moon: M
   return best
 }
 
+/**
+ * T23.14F F8: **`lit()`'s pass numbers, once.** The baked cells (`cell.ts::drawBaked`), the actor layer's shader
+ * (`layer.ts`) and the icons (`icons.ts::litWeapon`) all draw these passes; each read its own copy until now.
+ * `f_kit.js::lit()`: the far rim at `farOffset`× the rim offset, drawn at `farInk`/`farAccent` of the rim alpha; the
+ * cool fill at `fillAlpha`, `fillOffset`·size against the key; the rim offset `rimOffset`·size, its alpha
+ * `min(1, rimBase + w·rimGain)`.
+ */
+export const LIT = {
+  farInk: 0.35,
+  farAccent: 0.3,
+  farOffset: 1.7,
+  fillAlpha: 0.35,
+  fillOffset: 0.7,
+  rimOffset: 1.15,
+  rimBase: 0.45,
+  rimGain: 0.5,
+} as const
+
+/** The rim passes' alpha for a key of weight `w`. */
+export const rimAlpha = (w: number): number => Math.min(1, LIT.rimBase + w * LIT.rimGain)
+
 /** What `lit()` derives from the key for one actor of `size`: its passes' offsets (px) and alphas. */
 export interface Passes {
   /** The rim passes' colour, 0–1 sRGB, and alpha `a` (`min(1, 0.45 + w·0.5)`). */
@@ -32,8 +53,9 @@ export interface Passes {
   rimRgb: string
   fillRgb: string
   a: number
-  /** Rim pass offset (`L·o`, o = 1.15·size); the far rim sits at 1.7× it. */
+  /** Rim pass offset (`L·o`, o = `LIT.rimOffset`·size), and the far rim's (`LIT.farOffset`× it). */
   off: [number, number]
+  farOff: [number, number]
   /** The cool fill's offset (`−L·0.7·size`) and colour (`moon.fill`, alpha 0.35). */
   fillOff: [number, number]
   fill: [number, number, number]
@@ -46,14 +68,15 @@ const rgb01 = (s: string): [number, number, number] => {
 
 export function passes(lights: readonly Light[], moon: Moon, x: number, y: number, size: number): Passes {
   const L = dominant(lights, x, y - 14 * size, moon)
-  const o = 1.15 * size
+  const o = LIT.rimOffset * size
   return {
     rim: rgb01(L.rgb),
     rimRgb: L.rgb,
     fillRgb: moon.fill,
-    a: Math.min(1, 0.45 + L.w * 0.5),
+    a: rimAlpha(L.w),
     off: [L.dx * o, L.dy * o],
-    fillOff: [-L.dx * 0.7 * size, -L.dy * 0.7 * size],
+    farOff: [L.dx * o * LIT.farOffset, L.dy * o * LIT.farOffset],
+    fillOff: [-L.dx * LIT.fillOffset * size, -L.dy * LIT.fillOffset * size],
     fill: rgb01(moon.fill),
   }
 }

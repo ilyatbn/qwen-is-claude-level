@@ -84,6 +84,7 @@ import { SpaceSky } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
+import { PendingUses, swings as swingsKey } from '../look/actors/pendingUses'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { sceneDarkness } from '../render/sky-math'
 import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
@@ -156,6 +157,8 @@ function freshObserved() {
     /** T23.14E F7: the volume each `land` cue was played at, newest last (the last 8). */
     landVolumes: [] as number[],
     lastUse: null as { quick: boolean; key: string | null } | null,
+    /** T23.14F F2: your figure's swings and throws — each predicted one and each late one (`PendingUses`). */
+    localSwings: 0,
     phases: new Set<string>(),
     dayPhases: new Set<string>(),
     /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
@@ -373,6 +376,8 @@ export class GameScene extends Phaser.Scene {
   private frameDt = 0
   /** T23.14E F4, e2e (`slowFrames`): ms every frame busy-waits — a slow frame on demand, as a loaded box has. */
   private slowFrameMs = 0
+  /** T23.14F F2: your predicted swings, each waiting for the server's echo of it (`look/actors/pendingUses.ts`). */
+  private readonly pendingUses = new PendingUses(() => this.lastRtt)
   /** T23.14E F4, e2e (`watchRounds`): each round's pixels on the canvas (`render/ordnanceWatch.ts`). */
   private roundWatch: RoundWatch | null = null
   /**
@@ -696,6 +701,7 @@ export class GameScene extends Phaser.Scene {
     this.frameDt = 0
     // T23.14E F4: the e2e hooks' state is the round's too.
     this.slowFrameMs = 0
+    this.pendingUses.clear()
     this.roundWatch?.stop()
     this.roundWatch = null
     this.fuel = 0
@@ -1109,7 +1115,11 @@ export class GameScene extends Phaser.Scene {
         // the next frame's sync. A round that spawns and despawns between two frames (an smg round into rock ~3 ticks;
         // a slow frame holds more) was in the mirror at no sync and never drawn; added now, the layer keeps it for one
         // draw (`OrdnanceState.removeProjectile`).
-        if (ev === 'projectile_spawn') this.world?.syncProjectiles(this.withOrigins())
+        // T23.14F F6: the one round this event names, not an O(n) re-sync of every live one.
+        if (ev === 'projectile_spawn') {
+          const r = this.mirror.projectiles.get(Number(p['id'] ?? -1))
+          if (r) this.world?.addRound({ id: r.id, x: r.x, y: r.y, weapon: r.weapon, origin: this.roundOrigins.get(r.id) ?? null })
+        }
         if (ev === 'projectile_despawn') this.roundOrigins.delete(Number(p['id'] ?? -1))
         if (ev === 'carve' || ev === 'carve_capsule') {
           this.minimap?.setTerrainDirty()
@@ -1237,6 +1247,8 @@ export class GameScene extends Phaser.Scene {
     this.conn.on('mine_placed', (raw) => {
       const p = asRecord(raw)
       this.observed.minesPlaced++
+      // T23.14F: a mine is thrown down — anyone's figure throws it (your own reconciled, `swingOf`).
+      this.swingOf(p['owner'], p['weapon'])
       this.fx.addMine(
         Number(p['id'] ?? -1),
         Number(p['owner'] ?? -1),
@@ -1328,6 +1340,8 @@ export class GameScene extends Phaser.Scene {
       const victim = Number(p['victim'] ?? -1)
       const attacker = p['attacker'] === null ? undefined : Number(p['attacker'])
       const cause = String(p['cause'] ?? 'player')
+      // T23.14F F3: dead from this event, not from the snapshot after it — a use in between swings nothing.
+      if (victim === this.me) this.core?.noteDeath(this.me)
       this.observed.deaths.push({
         victim,
         attacker: attacker === undefined ? null : attacker,
@@ -1871,15 +1885,24 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * T23.14D F8: a **remote's** figure swings or throws `weapon` (`WEAPON_KEYS` id) on the server's `melee` and
-   * `projectile_spawn`, which every client receives. Your own is not driven from here: it plays when your predicted
-   * use takes (`useNow`, T23.14E) — the echo is a round trip late and would restart it. A gun changes nothing
-   * (`firedWith`).
+   * T23.14D F8: a **remote's** figure swings or throws `weapon` (`WEAPON_KEYS` id) on the server's `melee`,
+   * `projectile_spawn` and (T23.14F) `mine_placed`, which every client receives. A gun changes nothing (`firedWith`).
+   *
+   * **Your own** plays when your predicted use takes (`useNow`, T23.14E); its echo lands here and is reconciled
+   * (T23.14F F2, `PendingUses`): an echo a prediction was waiting for plays nothing (it would restart the swing); an
+   * echo **no** prediction was waiting for — a use the mirror refused and the server took — swings now, late.
    */
   private swingOf(owner: unknown, weapon: unknown): void {
     if (typeof owner !== 'number' || typeof weapon !== 'number') return
-    if (owner === this.me) return
-    this.remotes.get(owner)?.view.firedWith(WEAPON_KEYS[weapon])
+    const key = WEAPON_KEYS[weapon]
+    if (owner === this.me) {
+      if (key && this.pendingUses.echo(key, performance.now())) {
+        this.localView?.firedWith(key)
+        this.observed.localSwings += 1
+      }
+      return
+    }
+    this.remotes.get(owner)?.view.firedWith(key)
   }
 
   /**
@@ -1916,10 +1939,18 @@ export class GameScene extends Phaser.Scene {
   private useNow(quick: boolean): void {
     if (quick) this.conn.sendQuickThrow()
     else this.conn.sendFire()
-    const key = this.core?.predictUse(this.me, quick, performance.now() / 1000) ?? null
+    const now = performance.now()
+    // The mirror's cooldown runs on this page's clock (`now`), not the server's tick time: the server stamps a use
+    // with its time *on arrival*, which no client clock predicts (jitter bunches or spreads two sends either way), so
+    // a seq-derived clock would be the same guess. What the clocks disagree on, `PendingUses` reconciles (T23.14F F2).
+    const key = this.core?.predictUse(this.me, quick, now / 1000) ?? null
     this.observed.uses += 1
     this.observed.lastUse = { quick, key }
-    if (key) this.localView?.firedWith(key)
+    if (key) {
+      this.localView?.firedWith(key)
+      this.pendingUses.predicted(key, now)
+      if (swingsKey(key)) this.observed.localSwings += 1
+    }
   }
 
   private dropRemote(id: number): void {
@@ -2141,7 +2172,8 @@ export class GameScene extends Phaser.Scene {
     // so switching it on reports the rate you already had rather than starting a
     // fresh window that reads 0 for half a second.
     this.debugMode?.update(_time)
-    if (this.slowFrameMs > 0) {
+    // T23.14F F6: behind the dev surface, so the busy-wait folds out of the production bundle.
+    if (devSurface() && this.slowFrameMs > 0) {
       // T23.14E F4, e2e only: hold this frame — the server's events queue behind it, as behind a loaded box's frame.
       const end = performance.now() + this.slowFrameMs
       while (performance.now() < end) {
@@ -3330,6 +3362,21 @@ export class GameScene extends Phaser.Scene {
         self.fx?.holdHazards(on)
         return { held: self.fx?.hazardsAreHeld ?? false }
       },
+      /**
+       * T23.14F F2, e2e only: make the predicted player disagree with the server, as the wire orderings T23.14F lists
+       * do — `'empty'`: its bag emptied (a pickup it has not heard of: it refuses, the server takes); `slot`: that
+       * slot selected on the mirror only (an overwritten selection: it takes a use the server makes with another
+       * item); `'server'`: the server's bag and selection back (`pushBag`).
+       */
+      desyncMirror(how: 'empty' | 'server' | { slot: number }) {
+        if (!self.core) return false
+        if (how === 'server') self.pushBag()
+        else if (how === 'empty') {
+          const none = self.slots.map(() => 0)
+          self.core.setBag(self.me, none, none, self.selectedSlot)
+        } else self.core.selectSlot(self.me, how.slot)
+        return true
+      },
       /** T23.14E F4, e2e only: every frame busy-waits `ms` (0: off) — a slow frame on demand. */
       slowFrames(ms: number) {
         self.slowFrameMs = Math.max(0, ms)
@@ -4010,6 +4057,8 @@ export class GameScene extends Phaser.Scene {
             landVolumes: [...self.observed.landVolumes],
             landingFloor: LANDING_VOLUME_FLOOR,
             lastUse: self.observed.lastUse,
+            localSwings: self.observed.localSwings,
+            pendingUses: { ...self.pendingUses.stats, waiting: self.pendingUses.waiting, boundMs: self.pendingUses.bound() },
             hitscans: self.observed.hitscans,
             explosions: self.observed.explosions,
             projectileSpawns: self.observed.projectileSpawns,

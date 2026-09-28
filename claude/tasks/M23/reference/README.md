@@ -23,3 +23,18 @@ Re-render: copy `mockup-src/` to a scratch dir, `npm i`, then
 **R26 (2026-09-28):** `mockup-src/weapons.js` remodels the hammer, the toxic grenade and the airburst (readability at
 1×, T23.17). `F6-weapon-sheet.png` is kept as the owner approved it, so re-rendering F6 no longer reproduces it for
 those three weapons; `controls/F6-weapons.png` (`controls/weaponsonly.js`) is the current code's render.
+
+### Re-rendering a control (T23.14F F1)
+`render.mjs` serves `src/scene.html?v=<V>` from its own folder and `main.js` imports `./variant_<V>.js`, so a render
+dir is `render.mjs` + `package.json` at its root and the modules in `src/`. `controls/scene.html` is that page;
+`controls/variant_W6.js` wraps `controls/weaponsonly.js` (R26's control, `controls/F6-weapons.png`). From the repo
+root, exactly (checked 2026-09-28: `cmp` silent, sha256 `2b60f8a5…bb776` both):
+
+    S=$(mktemp -d); R=tasks/M23/reference; mkdir -p $S/src $S/out
+    cp $R/mockup-src/*.js $S/src/; cp $R/mockup-src/render.mjs $R/mockup-src/package.json $S/
+    cp $R/controls/scene.html $R/controls/weaponsonly.js $R/controls/variant_W6.js $S/src/
+    (cd $S && npm i)
+    LD_LIBRARY_PATH=$HOME/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu nice -n 19 node $S/render.mjs W6
+    cmp $S/out/W6.png $R/controls/F6-weapons.png
+
+The other controls (`castonly.js`, `posesonly.js`, …) render the same way with a two-line `variant_<V>.js` of their own.
