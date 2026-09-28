@@ -37,6 +37,11 @@ different story (see § 1).
     `itemRegistryJson`, `constants_json`, `quantize_angle`, `ambient_rain`
   - debug: `maskHash()`, `countSolid()` on `window.__game`
   - **never** `fire`, `combatStep`, `weatherStep`, `give`, `generate*` — projectiles, carving, damage, items, weather
+    *(Updated 2026-09-28, T23.14E 510876b:* GameScene now calls wasm `predict_use` — the server's `World::fire` /
+    `quick_throw` checks run on the predicted player via `PlayerState::try_fire_slot` — **only to decide whether to
+    play your own swing/throw animation at once**; it spawns nothing and the server stays authoritative. The client
+    keeps the predicted player's bag and battery matched to the server's for this. `landing_since` reports landings
+    in steps replayed after a correction.)
     are drawn from server events, not predicted. `fieldAccelAt` has no production caller (the field reaches
     prediction through `attractors::env_at` inside `apply_input`).
 - **SandboxScene (`?sandbox=1`)** calls `generateForScene` (client runs the generator), `applyInput`, `fire`,
