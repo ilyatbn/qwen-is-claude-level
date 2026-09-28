@@ -12,6 +12,8 @@
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { ICON_RES, iconWeapon } from '../look/actors/icons'
+import { joinCast } from '../look/actors/cast'
+import { VIEW_MARGIN, labelActor, nearView, pickupActor } from '../look/actors/furniture'
 import { ensureItemTextures } from './itemTextures'
 import {
   beaconPulse,
@@ -41,6 +43,10 @@ interface Entry {
   sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
   label: Phaser.GameObjects.Text | null
   item: WorldItemView
+  /** The registry sprite (`ItemDef.sprite`) — what the world renderer draws it as (`furniture.ts::pickupActor`). */
+  art: string
+  /** T23.19: its (and its label's) places in the world renderer's cast, while `useWorld` holds. */
+  leave: (() => void) | null
 }
 
 export class ItemLayer {
@@ -60,6 +66,8 @@ export class ItemLayer {
   private fireByKey: Map<string, FireProfile> = new Map()
   private warned = new Set<string>()
   private t = 0
+  /** T23.19: the pickups and labels are the world renderer's (behind the figures), not Phaser's — off in space. */
+  private worldOn = false
 
   constructor(scene: Phaser.Scene) {
     ensureItemTextures(scene.textures)
@@ -70,6 +78,47 @@ export class ItemLayer {
     // ADD, so the beam brightens whatever is behind it instead of laying a
     // translucent wash over it — over a bright sky a wash is invisible.
     this.chutes.setBlendMode(Phaser.BlendModes.ADD)
+  }
+
+  /**
+   * T23.19: draw the pickups and their labels in the world renderer (`on`), behind every figure, or with Phaser's
+   * sprites (space, until T23.20). The Phaser objects stay built and placed either way, hidden — `drawn` reads them.
+   */
+  useWorld(on: boolean): void {
+    this.worldOn = on
+    for (const e of this.entries.values()) this.place(e)
+  }
+
+  /** Whether the pickups are the world renderer's (T23.19). */
+  get drawsInWorld(): boolean {
+    return this.worldOn
+  }
+
+  private place(e: Entry): void {
+    e.sprite.setVisible(!this.worldOn)
+    e.label?.setVisible(!this.worldOn)
+    if (this.worldOn && !e.leave) {
+      const view = this.scene.cameras.main.worldView
+      const pickup = { actor: () => this.actorOf(e, view, false), back: true }
+      const label = { actor: () => this.actorOf(e, view, true), back: true }
+      const a = joinCast(this.scene, pickup)
+      const b = joinCast(this.scene, label)
+      e.leave = () => {
+        a()
+        b()
+      }
+    } else if (!this.worldOn && e.leave) {
+      e.leave()
+      e.leave = null
+    }
+  }
+
+  /** This frame's pickup (or its label) as an actor; null off view, hidden, or with no label up. */
+  private actorOf(e: Entry, view: Phaser.Geom.Rectangle, label: boolean): ReturnType<typeof pickupActor> | null {
+    if (!this.container.visible || !nearView(view, e.sprite.x, e.sprite.y, VIEW_MARGIN)) return null
+    // Whole px: a bob at a sub-pixel phase would be a new atlas cell every frame.
+    if (!label) return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
+    return e.label ? labelActor(e.label.text, e.label.x, Math.round(e.label.y)) : null
   }
 
   /** From `Core.itemRegistryJson()`. Safe to call before any item exists. */
@@ -159,6 +208,7 @@ export class ItemLayer {
       const e = this.entries.get(id)
       e?.sprite.destroy()
       e?.label?.destroy()
+      e?.leave?.()
       this.entries.delete(id)
     }
     for (const id of add) {
@@ -185,6 +235,7 @@ export class ItemLayer {
             padding: { x: 3, y: 1 },
           })
           .setOrigin(0.5, 1)
+          .setVisible(!this.worldOn)
         this.container.add(e.label)
       } else if (!near && e.label) {
         e.label.destroy()
@@ -194,20 +245,6 @@ export class ItemLayer {
     }
 
     this.drawCrateMarkers(live)
-  }
-
-  /**
-   * T23.19A: the labels on screen, world px (read off the text objects). They draw over the world canvas, so the
-   * stopgap (`look/actors/props.ts::overlapsBoxes`) draws a figure one of them overlaps through Phaser, above it.
-   */
-  labelBoxes(): { x0: number; y0: number; x1: number; y1: number }[] {
-    const out: { x0: number; y0: number; x1: number; y1: number }[] = []
-    for (const e of this.entries.values()) {
-      const l = e.label
-      if (!l) continue
-      out.push({ x0: l.x - l.width / 2, y0: l.y - l.height, x1: l.x + l.width / 2, y1: l.y })
-    }
-    return out
   }
 
   /** Parachutes on the crates still falling, beacons on all of them (`docs/32` §4). */
@@ -284,13 +321,16 @@ export class ItemLayer {
       sprite = this.scene.add.rectangle(item.x, item.y, 14, 14, tint).setStrokeStyle(1, 0x101418)
     }
     this.container.add(sprite)
-    this.entries.set(item.id, { sprite, label: null, item })
+    const e: Entry = { sprite, label: null, item, art: spriteKeyFor(item, this.defs) ?? '', leave: null }
+    this.entries.set(item.id, e)
+    this.place(e)
   }
 
   clear(): void {
     for (const e of this.entries.values()) {
       e.sprite.destroy()
       e.label?.destroy()
+      e.leave?.()
     }
     this.entries.clear()
   }

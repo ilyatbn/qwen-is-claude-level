@@ -241,7 +241,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item' | 'label'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -272,6 +272,8 @@ export interface ActorOpts {
   origin?: [number, number]
   held?: string
   heldAccent?: string
+  /** T23.19 `label`: its text. (`item` names its registry sprite in `key`.) */
+  text?: string
   /** T23.14 figure: its pose (`actors/figure.ts::Pose`, `poses.js`'s J) and visor colour (space). */
   J?: Pose
   visor?: string

@@ -69,7 +69,6 @@ import { ClockSync, RemoteInterpolator } from '../net/interpolation'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
-import { overlapsAny, overlapsBoxes } from '../look/actors/props'
 import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
@@ -85,6 +84,7 @@ import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, swings as swingsKey } from '../look/actors/pendingUses'
+import { crystalLights, joinCrystals } from '../look/actors/furniture'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { sceneDarkness } from '../render/sky-math'
 import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
@@ -538,6 +538,8 @@ export class GameScene extends Phaser.Scene {
   private platformViews: Array<{ id: number; x: number; y: number }> = []
   /** §D6's scenery, straight off the wire — the count the index is checked against. */
   private mapObjects: MapObject[] = []
+  /** T23.19: takes this map's crystals out of the cast (`furniture.ts::joinCrystals`). */
+  private leaveCrystals: () => void = () => {}
   /** The local player's pad charge, `0..1`, straight from the snapshot. */
   private teleportCharge = 0
   private results!: ResultsScreen
@@ -761,6 +763,8 @@ export class GameScene extends Phaser.Scene {
     // list decides which one lights up under a rider.
     this.platformViews = []
     this.mapObjects = []
+    this.leaveCrystals()
+    this.leaveCrystals = () => {}
 
     // The three helpers that carry state of their own.
     //
@@ -1636,7 +1640,7 @@ export class GameScene extends Phaser.Scene {
     this.padViews = init.pads.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.pads.build(this.padViews, imagePortal(GATE_KEY))
     // T23.09: the gates are static lights, placed once per map.
-    this.effectLights.statics.set(gateLights(this.padViews))
+    this.effectLights.statics.set([...gateLights(this.padViews), ...(spaceMap ? [] : crystalLights(init.objects))])
     // T21.11's platforms, rebuilt from the wire beside the pads. The index is
     // the id on both sides — `map_init` does not send one (§B16: two registries
     // assumed a positional relationship without asserting it and a laser
@@ -1648,6 +1652,13 @@ export class GameScene extends Phaser.Scene {
     // its figures are Phaser's too — `PlayerView.drawSpace`, until T23.20).
     this.world.pads.useWorld(!spaceMap)
     this.world.platforms.useWorld(!spaceMap, this.core.width)
+    // T23.19: pickups and labels, graves and animals too — Phaser's canvas covered a figure standing on one.
+    this.world.items.useWorld(!spaceMap)
+    this.tombstones.useWorld(!spaceMap)
+    this.animals.useWorld(!spaceMap)
+    // T23.19 (R5): the stamped crystals keep F's glow and light — drawn over their rock, lit beside the gates.
+    this.leaveCrystals()
+    this.leaveCrystals = spaceMap ? () => {} : joinCrystals(this, init.objects, () => true)
 
     // §D6's objects are stamped into the mask (collision, R5) and drawn as rock since T23.07 — the atlas
     // art retired (R15). Kept for the debug handle: what `map_init` carried.
@@ -2298,7 +2309,6 @@ export class GameScene extends Phaser.Scene {
       // T22.19B F6: the name tag, off the lobby's names — it had no caller before.
       this.localView.setName(this.scores.get(this.me)?.name ?? '')
       this.localView.setWeapon(this.slots[this.selectedSlot]?.key ?? '')
-      this.localView.overPhaser = this.overPhaserLayer(rp.x, rp.y)
       this.localView.setState(rp.x, rp.y, body.vx, body.vy, aim, {
         tilt: this.localTilt,
         // T23.14D F8: the server's word (§B4) — your own body draws the dead pose. It was the literal `true`.
@@ -2694,7 +2704,6 @@ export class GameScene extends Phaser.Scene {
       // T23.14: the held item, off the snapshot's selected-item byte (every player's is on the wire).
       const sel = this.mirror.players.get(id)?.selectedItem ?? null
       r.view.setWeapon(sel === null ? '' : (this.itemKeys().get(sel) ?? ''))
-      r.view.overPhaser = this.overPhaserLayer(p.x, p.y)
       const full = this.core.fullThrust()
       const jetting = flag(p.flags, FLAG.jetpack) && flag(p.flags, FLAG.alive)
       let est = this.remotePushes.get(id)
@@ -2944,24 +2953,6 @@ export class GameScene extends Phaser.Scene {
    * The local player is included from their own snapshot rather than from
    * prediction, so the lamp cannot light on a mount the server refused.
    */
-  /**
-   * T23.19A's stopgap: does a body centred at (x, y) overlap a pickup, a pickup's label or a grave — the layers Phaser still draws over
-   * the world canvas (until T23.19)? Such a figure is drawn through Phaser, at the actors' depth, so it is not hidden
-   * under them. The box is the drawn figure's (`FIGURE_SCALE`'s ~36 px over the 28-px body) against an item or grave
-   * sprite's (≤ 24 px); space draws every figure in Phaser anyway.
-   */
-  private overPhaserLayer(x: number, y: number): boolean {
-    if (this.gravity === SPACE_GRAVITY) return false
-    const c = C()
-    const feet = y + c.PLAYER_H / 2
-    const near = (t: Iterable<{ x: number; y: number }>): boolean => overlapsAny(x, feet, c.PLAYER_W + 8, c.PLAYER_H + 12, t, 12, 16)
-    return (
-      near(this.mirror.items.values()) ||
-      near(this.mirror.tombstones.values()) ||
-      overlapsBoxes(x, feet, c.PLAYER_W + 8, c.PLAYER_H + 12, this.world?.items.labelBoxes() ?? [])
-    )
-  }
-
   private occupiedPlatforms(): number[] {
     const c = C()
     return occupiedPlatforms(
@@ -3559,6 +3550,8 @@ export class GameScene extends Phaser.Scene {
           // graves actually on screen.
           tombstones: self.mirror.tombstones.size,
           tombstonesDrawn: self.tombstones?.count ?? 0,
+          // T23.19: where each grave is drawn (the layer's own objects), for a check or a shot to point the camera at.
+          gravesDrawnAt: self.tombstones?.drawn ?? [],
           // Both ends (§A39): what the server said, and what is on screen. A
           // bird nobody can see is a supply line nobody can open.
           birds: self.mirror.birds.size,

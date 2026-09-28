@@ -353,3 +353,121 @@ export function smoke(g: G, pts: P[], { rgb = '70,58,48', a = 0.16, size = 7, gr
     g.fill()
   })
 }
+
+// --- T23.19: the world's furniture in F's vocabulary (ink, rim-lit, one accent at most) ---------------------------
+
+/** A grave: one ink headstone in a low mound (R8), feet at (x, y); 10 × 16 at `s` 1 (`GRAVE_ART` in furniture.ts). */
+export function grave(g: G, x: number, y: number, { s = 1 } = {}): void {
+  withT(g, x, y, s, 1, 0, () => {
+    g.fillStyle = INK
+    g.beginPath()
+    g.moveTo(-5, -1)
+    g.lineTo(-5, -11)
+    g.arc(0, -11, 5, Math.PI, 0)
+    g.lineTo(5, -1)
+    g.closePath()
+    g.fill()
+    g.beginPath()
+    g.ellipse(0, 0, 8, 2.4, 0, Math.PI, 0)
+    g.closePath()
+    g.fill()
+  })
+}
+
+/**
+ * T23.19: a non-weapon pickup by its registry sprite (`ItemDef.sprite`), centred on (x, y), ~16 units across at `s` 1.
+ * Silhouette first (they must differ in outline at pickup size, as the painted icons did), `accent` for its one mark.
+ */
+export function item(g: G, x: number, y: number, { s = 1, key = '', accent = '#e8482c' } = {}): void {
+  withT(g, x, y, s, 1, 0, () => {
+    g.fillStyle = INK
+    const box = (x0: number, y0: number, w: number, h: number, col: string): void => {
+      g.fillStyle = col
+      g.fillRect(x0, y0, w, h)
+    }
+    switch (key) {
+      case 'item_medkit':
+        box(-6.5, -4.5, 13, 9, INK)
+        box(-2, -7, 4, 2.5, INK)
+        box(-1, -3, 2, 6, accent)
+        box(-3, -1, 6, 2, accent)
+        return
+      case 'item_shield':
+        g.beginPath()
+        g.moveTo(-6, -6)
+        g.lineTo(6, -6)
+        g.lineTo(5, 1)
+        g.lineTo(0, 7)
+        g.lineTo(-5, 1)
+        g.closePath()
+        g.fill()
+        line(g, [[0, -4], [0, 4]], 1.2, accent)
+        return
+      case 'item_flashlight':
+        box(-7, -2, 9, 4, INK)
+        g.beginPath()
+        g.moveTo(2, -2)
+        g.lineTo(6, -4)
+        g.lineTo(6, 4)
+        g.lineTo(2, 2)
+        g.closePath()
+        g.fill()
+        box(6, -3, 1.2, 6, accent)
+        return
+      case 'item_battery':
+        box(-6, -4.5, 11, 9, INK)
+        box(5, -2, 2, 4, INK)
+        box(-4.5, -3, 5, 6, accent)
+        return
+      case 'item_vampire_fangs':
+        box(-6, -6, 12, 4, INK)
+        for (const fx of [-3, 3]) {
+          g.fillStyle = INK
+          g.beginPath()
+          g.moveTo(fx - 2, -2.5)
+          g.lineTo(fx + 2, -2.5)
+          g.lineTo(fx, 6)
+          g.closePath()
+          g.fill()
+        }
+        disc(g, 3, 7.4, 0.9, accent)
+        return
+      case 'item_ironman_boots':
+        box(-5, -6, 8, 8, INK)
+        box(-7, 2, 14, 3.5, INK)
+        box(-7, 5, 14, 1, accent)
+        return
+      case 'item_unicorn_wings':
+        for (const d of [-1, 1]) {
+          g.fillStyle = INK
+          g.beginPath()
+          g.moveTo(0, 5)
+          g.quadraticCurveTo(d * 4, -2, d * 8, -6)
+          g.lineTo(d * 7, 4)
+          g.closePath()
+          g.fill()
+        }
+        disc(g, 0, -1, 1.4, accent)
+        return
+      default:
+        box(-5, -5, 10, 10, INK)
+    }
+  })
+}
+
+/** Label text's size and padding (world px) — `furniture.ts` sizes the cell from them. */
+export const LABEL_FONT_PX = 10
+export const LABEL_PAD: readonly [number, number] = [3, 1]
+
+/** T23.19: a pickup's name — pale text on a dark plate, its bottom centre at (x, y). Unlit (a sign, not a thing). */
+export function label(g: G, x: number, y: number, { text = '' } = {}): void {
+  g.font = `${LABEL_FONT_PX}px monospace`
+  const w = g.measureText(text).width + 2 * LABEL_PAD[0]
+  const h = LABEL_FONT_PX + 2 * LABEL_PAD[1] + 2
+  g.fillStyle = 'rgba(0,0,0,0.6)'
+  g.fillRect(x - w / 2, y - h, w, h)
+  g.fillStyle = '#e8f0ff'
+  g.textAlign = 'center'
+  g.textBaseline = 'bottom'
+  g.fillText(text, x, y - LABEL_PAD[1])
+}

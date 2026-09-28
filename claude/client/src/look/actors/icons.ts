@@ -45,6 +45,11 @@ export const ICON_SPRITES: Readonly<Record<string, string>> = Object.fromEntries
  * thrown weapon in flight is scaled by to be the size it is in the hand (`ordnance.ts`).
  */
 export const ICON_UNIT_PX = new Map<string, number>()
+/**
+ * T23.19: the middle of each icon's drawn extent, figure units from the weapon's shoulder-frame origin (filled beside
+ * `ICON_UNIT_PX`) — where a pickup in the world renderer puts its origin so the model is centred on the item.
+ */
+export const ICON_CENTRE_UNITS = new Map<string, [number, number]>()
 
 /** The weapon key a registry sprite draws, or null for art that is not a remodelled weapon. */
 export function iconWeapon(sprite: string): string | null {

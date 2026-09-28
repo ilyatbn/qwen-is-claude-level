@@ -158,6 +158,9 @@ export const CHECKS = [
   { name: 'melee-swing', file: 'scripts/checks/melee-swing.mjs', standalone: true },
   // T23.19A: the figure on a turret, in a gate and over a pickup, photographed on the page (both canvases).
   { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337' },
+  // T23.19: pickups + labels, a grave at night against dark rock, animals and crystals (glow + light) in the world
+  // renderer, each on pixels with a control frame and a control region.
+  { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337' },
   // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn
   // lighting the rock near the flame against the flame planted off (the light at the flame, both ends).
   { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242' },

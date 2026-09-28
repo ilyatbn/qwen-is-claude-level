@@ -847,7 +847,9 @@ look up and see the earth, moved since the round began.
   - [x] T23.18 part A — blasts, fire, smoke/toxic clouds in F's style in the world renderer; `look-fx` Level A on F1's effect boxes
   - [x] T23.18 part B — beams, tracers/bullets, rockets, muzzle glows, flame cones, mines, swing arcs (weather fog kept Phaser's: decision in the task file)
 - [x] [T23.19A](M23/T23.19A-the-gunner-is-visible.md) — The gunner is visible — turrets, gates, pickups, tombstones drawn behind the figures in the new renderer (review F3, pulled forward)
-- [ ] [T23.19](M23/T23.19-the-world-furniture.md) — The world's furniture — gates, platforms, crystals, crates, animals, birds, hazards; every gameplay signal re-asserted on pixels
+- [x] [T23.19](M23/T23.19-the-world-furniture.md) — The world's furniture — gates, platforms, crystals, crates, animals, birds, hazards; every gameplay signal re-asserted on pixels
+  - [x] T23.19 part A — pickups + labels, graves (night halo), animals, crystals (glow + light) in the world renderer; T23.19A's stopgap retired
+- [ ] [T23.19B](M23/T23.19B-the-rest-of-the-furniture.md) — The rest of the furniture — birds, lava vents, hazard drops, crate beacon, item icons from one drawing (split from T23.19)
 - [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B

@@ -8,7 +8,7 @@
  */
 
 import Phaser from 'phaser'
-import { ICON_RES, ICON_SPRITES, ICON_UNIT_PX, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
+import { ICON_CENTRE_UNITS, ICON_RES, ICON_SPRITES, ICON_UNIT_PX, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
 
 type Ctx = CanvasRenderingContext2D
 const S = 16
@@ -132,6 +132,7 @@ function weaponIcon(textures: Phaser.Textures.TextureManager, sprite: string, ke
   litWeapon(ctx, key, PAD + (ox - x0) * k, PAD + (oy - y0) * k, s0 * k, size * k)
   tex?.refresh()
   ICON_UNIT_PX.set(sprite, s0 * k)
+  ICON_CENTRE_UNITS.set(sprite, [((x0 + x1 + 1) / 2 - ox) / s0, ((y0 + y1 + 1) / 2 - oy) / s0])
 }
 
 /**

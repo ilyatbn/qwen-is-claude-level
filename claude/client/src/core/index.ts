@@ -125,6 +125,8 @@ export interface MapMeta {
   surface_points: Point[]
   buried_slots: BuriedSlot[]
   decorations: Decoration[]
+  /** §D6's stamped objects (top-left, size) — T23.19 draws the crystals among them (`look/actors/furniture.ts`). */
+  objects: { id: number; x: number; y: number; w: number; h: number; flip: boolean }[]
   wind: number
   traversable_fraction: number
   /**

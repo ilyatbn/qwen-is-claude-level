@@ -42,9 +42,12 @@ import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
 import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
-import { overlapsAny, overlapsBoxes, turretGeometry } from '../look/actors/props'
+import { turretGeometry } from '../look/actors/props'
 import type { WorldItemView } from '../render/itemSprites-math'
 import { RoundWatch } from '../render/ordnanceWatch'
+import { TombstoneLayer } from '../render/tombstones'
+import { AnimalLayer } from '../render/animals'
+import { crystalLights, isCrystal, joinCrystals } from '../look/actors/furniture'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -163,6 +166,11 @@ export class SandboxScene extends Phaser.Scene {
   private timeScrub = false
 
   private player!: PlayerView
+  /** T23.19: this map's crystals out of the cast (`furniture.ts::joinCrystals`), and their switch (`showCrystals`). */
+  private leaveCrystals: () => void = () => {}
+  private crystalsOn = true
+  /** T23.19, e2e (`stageFurniture`): graves and animals a check stands up — the sandbox simulates neither. */
+  private furniture: { graves: TombstoneLayer; animals: AnimalLayer } | null = null
   /** T23.19A: pickups a check stages (`stagePickup`) — the sandbox runs no item spawner of its own. */
   private staged: WorldItemView[] = []
   /** T21.37: the extra bodies `__game.showSeats` stands up for a check. */
@@ -262,6 +270,11 @@ export class SandboxScene extends Phaser.Scene {
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.leaveCrystals()
+      this.leaveCrystals = () => {}
+      this.furniture?.graves.destroy()
+      this.furniture?.animals.destroy()
+      this.furniture = null
       this.roundWatch?.stop()
       this.roundWatch = null
       this.terrainFields?.dispose()
@@ -443,8 +456,17 @@ export class SandboxScene extends Phaser.Scene {
     // T23.19A: gates and turrets in the world renderer, behind the figures (space keeps Phaser's — `GameScene`).
     this.world.pads.useWorld(this.gravity !== SPACE_GRAVITY)
     this.world.platforms.useWorld(this.gravity !== SPACE_GRAVITY, mapW)
+    // T23.19: pickups (and a check's staged graves and animals) in the world renderer too; the crystals (R5) with
+    // their glow over the stamped rock and their lights beside the gates'.
+    const ground = this.gravity !== SPACE_GRAVITY
+    this.world.items.useWorld(ground)
+    this.furniture?.graves.useWorld(ground)
+    this.furniture?.animals.useWorld(ground)
+    const objects = ground ? (this.core.meta.objects ?? []) : []
+    this.leaveCrystals()
+    this.leaveCrystals = joinCrystals(this, objects, () => this.crystalsOn)
     // T23.09: this map's gates are static lights, from the pads the world view just built.
-    this.effectLights.statics.set(gateLights(this.core.meta.teleport_pads.map((p) => p.pos)))
+    this.effectLights.statics.set([...gateLights(this.core.meta.teleport_pads.map((p) => p.pos)), ...crystalLights(objects)])
     // `worldRenderer` is null on the first call (`create()` regenerates before it asks for it)
     // and until its chunk loads; it is then described from the core as it stands.
     this.worldRenderer?.mapChanged(this.gameMap())
@@ -901,6 +923,8 @@ export class SandboxScene extends Phaser.Scene {
           // T22.06: the space sky's bodies and stars, or null while it is not shown (not a space map).
           spaceSky: self.spaceSky?.isShown ? self.spaceSky.debug() : null,
           darkness: self.darkness(),
+          // T23.19: the pickups are the world renderer's (behind the figures), not Phaser's.
+          itemsInWorld: self.world.items.drawsInWorld,
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           // §F9, counted at both ends (§A39): the strength the scene believes,
           // and the alpha the layer actually filled with. A veil that is
@@ -1068,10 +1092,37 @@ export class SandboxScene extends Phaser.Scene {
         self.world.items.update(0, self.staged, { x: x ?? 0, y })
         return { staged: self.staged.length, drawn: self.world.items.count, items: self.world.items.drawn }
       },
+      /**
+       * T23.19, e2e only: stand graves and ground animals at world points (`null`: none) — the sandbox simulates
+       * neither, so a check stages them through the match's own layers (`TombstoneLayer`, `AnimalLayer`), drawn in
+       * the world renderer as the match draws them. `visible` false hides both layers (a same-frame control).
+       * Returns what each layer holds, read off it.
+       */
+      stageFurniture(o: { graves?: { x: number; y: number }[]; animals?: { kind: number; x: number; y: number; right?: boolean }[]; visible?: boolean } | null) {
+        if (!self.furniture) {
+          const c = C()
+          self.furniture = { graves: new TombstoneLayer(self, c.TOMBSTONE_W, c.TOMBSTONE_H), animals: new AnimalLayer(self) }
+          self.furniture.graves.useWorld(self.gravity !== SPACE_GRAVITY)
+          self.furniture.animals.useWorld(self.gravity !== SPACE_GRAVITY)
+        }
+        const f = self.furniture
+        f.graves.update((o?.graves ?? []).map((g, i) => ({ id: i + 1, owner: 0, x: g.x, y: g.y })))
+        f.animals.update((o?.animals ?? []).map((a, i) => ({ id: i + 1, kind: a.kind, x: a.x, y: a.y, right: a.right ?? true })), self.time.now)
+        const on = o?.visible ?? true
+        f.graves.setVisible(on)
+        f.animals.setVisible(on)
+        return { graves: f.graves.count, animals: f.animals.drawn, inWorld: f.graves.drawsInWorld && f.animals.drawsInWorld }
+      },
+      /** T23.19, e2e only: the crystals on (default) or off, for a same-frame control; what the map carries. */
+      showCrystals(on: boolean) {
+        self.crystalsOn = on
+        const objects = self.core.meta.objects ?? []
+        return { stamps: objects.filter((o) => isCrystal(o.id)).length, at: objects.filter((o) => isCrystal(o.id)) }
+      },
       /** T23.19A: hide or show the local figure (both paths: the world renderer's cast and the Phaser stopgap). */
       showPlayer(on: boolean) {
         self.player.container.setVisible(on)
-        return { visible: self.player.container.visible, overPhaser: self.player.overPhaser }
+        return { visible: self.player.container.visible }
       },
       platforms() {
         return {
@@ -1603,16 +1654,7 @@ export class SandboxScene extends Phaser.Scene {
       // on the rock, so half a body up was a figure floating 14 px over the ground (seen in the first strips).
       const pull = this.core.standPullAt(body.x, body.y, body.moveMods)
       this.tilt = stepTilt(this.tilt, standTarget(pull[0]!, pull[1]!), dt)
-      // T23.19A's stopgap, as the match does it (`GameScene.overPhaserLayer`): over a pickup Phaser still draws, the
-      // figure is drawn through Phaser at the actors' depth.
-      {
-        const c = C()
-        this.player.overPhaser =
-          this.gravity !== SPACE_GRAVITY &&
-          (overlapsAny(body.x, body.y + c.PLAYER_H / 2, c.PLAYER_W + 8, c.PLAYER_H + 12, this.staged, 12, 16) ||
-            overlapsBoxes(body.x, body.y + c.PLAYER_H / 2, c.PLAYER_W + 8, c.PLAYER_H + 12, this.world.items.labelBoxes()))
-        this.world.items.update(dt, this.staged, body)
-      }
+      this.world.items.update(dt, this.staged, body)
       this.player.setState(body.x, body.y, body.vx, body.vy, aim, {
         tilt: this.tilt,
         alive: true,

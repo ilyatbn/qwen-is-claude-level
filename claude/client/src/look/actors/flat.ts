@@ -47,6 +47,12 @@ export interface G {
   fillRect(x: number, y: number, w: number, h: number): void
   createRadialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number): CanvasGradient
   createLinearGradient(x0: number, y0: number, x1: number, y1: number): CanvasGradient
+  /** T23.19: a pickup's label (`draw.ts::label`) — text is the context's own. */
+  font: string
+  textAlign: CanvasTextAlign
+  textBaseline: CanvasTextBaseline
+  fillText(text: string, x: number, y: number): void
+  measureText(text: string): TextMetrics
 }
 
 /** The largest distance, screen px, between a curve and the lines that replace it. */
@@ -190,6 +196,30 @@ export class Flat implements G {
   }
   createLinearGradient(x0: number, y0: number, x1: number, y1: number): CanvasGradient {
     return this.g.createLinearGradient(x0, y0, x1, y1)
+  }
+  get font(): string {
+    return this.g.font
+  }
+  set font(v: string) {
+    this.g.font = v
+  }
+  get textAlign(): CanvasTextAlign {
+    return this.g.textAlign
+  }
+  set textAlign(v: CanvasTextAlign) {
+    this.g.textAlign = v
+  }
+  get textBaseline(): CanvasTextBaseline {
+    return this.g.textBaseline
+  }
+  set textBaseline(v: CanvasTextBaseline) {
+    this.g.textBaseline = v
+  }
+  fillText(text: string, x: number, y: number): void {
+    this.g.fillText(text, x, y)
+  }
+  measureText(text: string): TextMetrics {
+    return this.g.measureText(text)
   }
 
   /** The transform's scale: screen px per unit along its larger axis. */

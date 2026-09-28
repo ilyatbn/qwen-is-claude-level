@@ -78,7 +78,9 @@ function rimOpts(a: Actor, accent: string): ActorOpts {
       return r
     }
     case 'weapon':
+    case 'item':
       // `variant_F6.js`: `Wd.draw(gg, rc ?? '#e8482c')` — a pass's colour drops the accents (`weapons.ts::accentOK`).
+      // T23.19: a non-weapon pickup the same way — its one accent is the pass's colour in a pass.
       return { ...o, accent }
     case 'turret':
       return { ...o, muzzle: false }
@@ -123,6 +125,15 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
       return
     case 'rocket':
       D.rocket(g, x, y, o.ang ?? 0, o)
+      return
+    case 'grave':
+      D.grave(g, x, y, o)
+      return
+    case 'item':
+      D.item(g, x, y, o)
+      return
+    case 'label':
+      D.label(g, x, y, o)
       return
     case 'figure':
       if (o.J) F.figure(g, x, y, o.J, { s: o.s ?? 1.15, face: o.face ?? 1, rot: o.rot ?? 0, accent: o.accent ?? '#e8482c', rim: o.accent?.startsWith('rgba(') ?? false, visor: o.visor ?? null })
@@ -179,6 +190,23 @@ export function estimateBox(a: Actor): Box {
     const ox = a.x + (a.opts.origin?.[0] ?? 0)
     const oy = a.y + (a.opts.origin?.[1] ?? 0)
     b = [ox + x0 * s - m, oy + y0 * s - m, ox + x1 * s + m, oy + y1 * s + m]
+  }
+  if (a.kind === 'crystals' && !a.box) {
+    // T23.19: the shards (±9, 32 up) and their glow (radius 22 about 8 up) — the default square clipped the glow's
+    // lower half in the game, where no measured box is given (a hard-edged blue band across the rock).
+    const m = 2 * 1.15 * size + 2
+    b = [a.x - 23 * s - m, a.y - 33 * s - m, a.x + 23 * s + m, a.y + 15 * s + m]
+  }
+  if (a.kind === 'grave' || a.kind === 'item') {
+    // T23.19: `draw.ts::grave` (±8 × 18 above its feet) and `item` (±8 about its middle), plus the rim passes' reach.
+    const m = 2 * 1.15 * size + 2
+    b = a.kind === 'grave' ? [a.x - 9 * s - m, a.y - 17 * s - m, a.x + 9 * s + m, a.y + 3 * s + m] : [a.x - 9 * s - m, a.y - 9 * s - m, a.x + 9 * s + m, a.y + 9 * s + m]
+  }
+  if (a.kind === 'label') {
+    // T23.19: the plate, from the text's length at the label font (monospace: ~0.62 em a glyph) — generous.
+    const w = (a.opts.text ?? '').length * D.LABEL_FONT_PX * 0.7 + 2 * D.LABEL_PAD[0] + 4
+    const h = D.LABEL_FONT_PX + 2 * D.LABEL_PAD[1] + 4
+    b = [a.x - w / 2, a.y - h, a.x + w / 2, a.y + 1]
   }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size

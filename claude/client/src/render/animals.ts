@@ -21,21 +21,57 @@ import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { BEETLE, bodyColor, bodySize, legPhase } from './animals-math'
 import type { AnimalView } from '../net/worldMirror'
+import { joinCast } from '../look/actors/cast'
+import { VIEW_MARGIN, animalActor, nearView } from '../look/actors/furniture'
 
 interface Entry {
   root: Phaser.GameObjects.Container
   body: Phaser.GameObjects.Ellipse
   legs: Phaser.GameObjects.Rectangle[]
   kind: number
+  right: boolean
+  /** T23.19: its place in the world renderer's cast, while `useWorld` holds. */
+  leave: (() => void) | null
 }
 
 export class AnimalLayer {
   private readonly container: Phaser.GameObjects.Container
   private readonly entries = new Map<number, Entry>()
   private readonly seen = new Set<number>()
+  /** T23.19: the animals are the world renderer's — F4's beetle and spider, rim-lit, behind the figures (not in space). */
+  private worldOn = false
 
   constructor(private readonly scene: Phaser.Scene) {
     this.container = scene.add.container(0, 0).setDepth(DEPTH.actors)
+  }
+
+  /** T23.19: draw the animals in the world renderer (`on`), or as Phaser's shapes (space, until T23.20). */
+  useWorld(on: boolean): void {
+    this.worldOn = on
+    for (const e of this.entries.values()) this.place(e)
+  }
+
+  get drawsInWorld(): boolean {
+    return this.worldOn
+  }
+
+  private place(e: Entry): void {
+    e.root.setVisible(!this.worldOn)
+    if (this.worldOn && !e.leave) {
+      const view = this.scene.cameras.main.worldView
+      const { w, h } = bodySize(e.kind)
+      e.leave = joinCast(this.scene, {
+        back: true,
+        actor: () => {
+          const { x, y } = e.root
+          if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
+          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h)
+        },
+      })
+    } else if (!this.worldOn && e.leave) {
+      e.leave()
+      e.leave = null
+    }
   }
 
   /** Ids currently drawn. A check asserts on this, not on intent (§A15). */
@@ -78,9 +114,12 @@ export class AnimalLayer {
       let e = this.entries.get(a.id)
       if (!e || e.kind !== a.kind) {
         e?.root.destroy()
+        e?.leave?.()
         e = this.make(a)
         this.entries.set(a.id, e)
+        this.place(e)
       }
+      e.right = a.right
       e.root.setPosition(a.x, a.y)
       e.root.setScale(a.right ? 1 : -1, 1)
 
@@ -94,6 +133,7 @@ export class AnimalLayer {
     for (const [id, e] of this.entries) {
       if (!seen.has(id)) {
         e.root.destroy()
+        e.leave?.()
         this.entries.delete(id)
       }
     }
@@ -119,11 +159,14 @@ export class AnimalLayer {
     }
     root.add([...legs, body])
     this.container.add(root)
-    return { root, body, legs, kind: a.kind }
+    return { root, body, legs, kind: a.kind, right: a.right, leave: null }
   }
 
   destroy(): void {
-    for (const e of this.entries.values()) e.root.destroy()
+    for (const e of this.entries.values()) {
+      e.root.destroy()
+      e.leave?.()
+    }
     this.entries.clear()
     this.container.destroy()
   }

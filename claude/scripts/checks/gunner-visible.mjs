@@ -3,8 +3,8 @@
  *
  * The world renderer's canvas lies under Phaser's, so every layer Phaser still drew covered the figures: a player
  * mounted on a turret showed only a flame and a name tag (shots/t2314b-match-jet-gpu.png). Gates and turrets are now
- * the world renderer's, ordered behind the figures; pickups stay Phaser's and a figure over one is drawn through
- * Phaser at the actors' depth (the stopgap, until T23.19).
+ * the world renderer's, ordered behind the figures; since T23.19 the pickups (and labels, graves, animals) are too,
+ * and T23.19A's stopgap (a figure over a pickup drawn through Phaser) is retired.
  *
  * Asserted on the **page** — both canvases composited, which is what a player sees — never on the world canvas
  * alone, where the figure was always intact. For each case, the scene frozen: the figure's box photographed with
@@ -101,7 +101,7 @@ async function figureShows(page, label, shot, layer, layerRect) {
   }
   const shown = await photo(page)
   await shot(`gunner-visible-${label}`)
-  const off = await figure(false)
+  await figure(false)
   const hidden = await photo(page)
   await layer(false)
   await page.waitForTimeout(250)
@@ -113,7 +113,7 @@ async function figureShows(page, label, shot, layer, layerRect) {
   const v = await visibleShare(page, [alone, bare, shown, hidden], box)
   const lay = layerRect ? (await comparePhotos(page, hidden, bare, { rect: layerRect })).fraction : null
   const c = (await comparePhotos(page, shown, hidden, { rect: control })).fraction
-  return { ...v, share: v.foot ? v.seen / v.foot : 0, c, lay, overPhaser: off.overPhaser }
+  return { ...v, share: v.foot ? v.seen / v.foot : 0, c, lay }
 }
 
 /** Let the camera arrive at the placed body (it eases; a loaded box eases slowly), then freeze the scene. */
@@ -178,7 +178,7 @@ export default async function ({ page, shot, log }) {
   judge('standing in a gate', await figureShows(page, 'gate', shot, (on) => page.evaluate((v) => window.__game.showPads(v), on), gb), MIN_VISIBLE.gate)
   await page.evaluate(() => window.__game.freeze(false))
 
-  // --- 3. over a pickup (the stopgap: the figure is drawn through Phaser) -----------------------------------
+  // --- 3. over a pickup (T23.19: pickups are the world renderer's, behind the figure — T23.19A's stopgap retired) --
   const me = (await page.evaluate(() => window.__game.debug())).player
   const at = [me.x, me.y + k.PLAYER_H / 2 - 8]
   const staged = await page.evaluate(([x, y]) => window.__game.stagePickup(x, y, 'bazooka'), at)
@@ -186,7 +186,7 @@ export default async function ({ page, shot, log }) {
   await settle(page)
   const pickup = (on) => page.evaluate(([v, x, y]) => window.__game.stagePickup(v ? x : null, y, 'bazooka'), [on, ...at])
   const r = await figureShows(page, 'pickup', shot, pickup, null)
-  if (r.overPhaser !== true) problems.push('the figure over a pickup was not switched to the Phaser path')
+  if ((await page.evaluate(() => window.__game.debug().itemsInWorld)) !== true) problems.push('the pickups are not drawn by the world renderer')
   judge('over a pickup', r, MIN_VISIBLE.pickup)
   await page.evaluate(() => window.__game.freeze(false))
   await page.evaluate(() => window.__game.stagePickup(null))

@@ -114,36 +114,3 @@ export function turretLamps(): { dy: number; dx: number; w: number; h: number } 
 export function turretFace(x: number, mapW: number): 1 | -1 {
   return x <= mapW / 2 ? 1 : -1
 }
-
-/**
- * The stopgap for the layers still on Phaser's canvas (pickups, graves — T23.19): does a figure whose feet are at
- * (x, y) overlap any of `things` (world px, each a feet-line point with a half width and a height)? A figure that does is
- * drawn through Phaser (`PlayerView.drawSpace`) at the actors' depth, over them, rather than under them.
- */
-export function overlapsAny(
-  x: number,
-  y: number,
-  figW: number,
-  figH: number,
-  things: Iterable<{ x: number; y: number }>,
-  halfW: number,
-  h: number,
-): boolean {
-  for (const t of things) {
-    if (Math.abs(t.x - x) > figW / 2 + halfW) continue
-    // Vertical spans [y - figH, y] and [t.y - h, t.y + h] (an item's anchor is its middle or its feet; both covered).
-    if (t.y + h < y - figH || t.y - h > y) continue
-    return true
-  }
-  return false
-}
-
-/** The stopgap's other half: does the figure (feet at (x, y)) overlap any of `boxes` (world px, a pickup's label)? */
-export function overlapsBoxes(x: number, y: number, figW: number, figH: number, boxes: Iterable<{ x0: number; y0: number; x1: number; y1: number }>): boolean {
-  for (const b of boxes) {
-    if (x + figW / 2 < b.x0 || x - figW / 2 > b.x1) continue
-    if (y < b.y0 || y - figH > b.y1) continue
-    return true
-  }
-  return false
-}
