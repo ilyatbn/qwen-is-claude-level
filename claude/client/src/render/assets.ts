@@ -5,16 +5,12 @@
  * entry, never a code change.
  *
  * **The game must start with no art at all.** Every load here is best-effort: a
- * missing manifest, a 404 atlas, a malformed `skins.json` — each degrades to the
+ * missing manifest or a 404 atlas — each degrades to the
  * procedural placeholders that carried this project from M3 to M6, and each logs
  * exactly once so it is obvious in the console without being noisy.
  */
 
 import Phaser from 'phaser'
-import {
-  validateRegistry,
-  type SkinRegistry,
-} from './skins-math'
 
 /** Where a loose image's interesting region is, normalised to its own size. */
 export interface ImageRegion {
@@ -27,18 +23,11 @@ export interface ImageRegion {
 interface Manifest {
   atlases: { key: string; png: string; json: string }[]
   images: { key: string; path: string; portal?: ImageRegion }[]
-  themes: string[]
   audio: string[]
 }
 
-let registry: SkinRegistry | null = null
 let manifest: Manifest | null = null
 let loadAttempted = false
-
-/** The skin registry, or null if it never loaded. Callers must handle null. */
-export function skins(): SkinRegistry | null {
-  return registry
-}
 
 /**
  * The portal region a loose image declares, or `null`.
@@ -53,13 +42,8 @@ export function imagePortal(key: string): ImageRegion | null {
   return manifest?.images?.find((i) => i.key === key)?.portal ?? null
 }
 
-/** Theme names the manifest declared, for the terrain renderer. */
-export function themeNames(): string[] {
-  return manifest?.themes ?? []
-}
-
 /**
- * Fetch the manifest and skin registry, then queue every atlas onto the scene's
+ * Fetch the manifest, then queue every atlas onto the scene's
  * loader. Await this in `preload`/`create` before `load.start()`.
  *
  * Returns the number of atlases queued, so a caller can log "running on
@@ -68,17 +52,8 @@ export function themeNames(): string[] {
 export async function loadAssetManifest(scene: Phaser.Scene): Promise<number> {
   if (!loadAttempted) {
     loadAttempted = true
+    // T23.15 (R8): `skins.json` — the skin registry — retired with the wearables; nothing reads a skin.
     manifest = await fetchJson<Manifest>('/manifest.json', 'manifest')
-    const raw = await fetchJson<unknown>('/skins.json', 'skins')
-    if (raw) {
-      const errs = validateRegistry(raw)
-      if (errs.length) {
-        // Not fatal: a broken registry means placeholders, not a broken game.
-        console.warn(`[assets] skins.json has ${errs.length} problem(s):`, errs.slice(0, 5))
-      } else {
-        registry = raw as SkinRegistry
-      }
-    }
   }
 
   let queued = 0
@@ -133,7 +108,6 @@ async function fetchJson<T>(url: string, what: string): Promise<T | null> {
 
 /** Test seam: forget what was loaded, so a suite can exercise the empty path. */
 export function resetAssetsForTest(): void {
-  registry = null
   manifest = null
   loadAttempted = false
 }

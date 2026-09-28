@@ -38,16 +38,9 @@ import {
   type TimerBounds,
 } from '../net/lobby'
 import { Connection, type LobbyIntent, type Welcome } from '../net/connection'
-import { MAX_NAME, loadIdentity, nameOrNull, saveName, storedName } from '../ui/skins'
+import { MAX_NAME, loadName, nameOrNull, saveName, storedName } from '../ui/profile'
 import { devSurface } from '../dev'
 import { C } from '../core'
-
-/**
- * T23.14D F12: the Skins screen is hidden until T23.15. Its preview is a `PlayerView`, an actor of the world
- * renderer, and the Skins scene has none — so the screen showed a name tag over nothing (R8: skins are drawn as
- * nothing; the seat's scarf is a player's identity now). T23.15 decides what the screen becomes; this is its switch.
- */
-const SKINS_SCREEN = false
 
 
 /**
@@ -187,10 +180,7 @@ export class MenuScene extends Phaser.Scene {
     })
 
     conn
-      .connect(undefined, id.name, { skinId: id.skinId, hatId: id.hatId, glassesId: id.glassesId }, {
-        ...intent,
-        tombstoneSkinId: id.tombstoneSkinId,
-      } as unknown as LobbyIntent)
+      .connect(undefined, id.name, intent as unknown as LobbyIntent)
       .then((w) => {
         this.welcome = w
         this.mySeat = w.playerId
@@ -238,18 +228,11 @@ export class MenuScene extends Phaser.Scene {
 
 
   /**
-   * Who this browser says it is, on all four lobby verbs.
-   *
-   * **One reader.** This used to spell the three `deepcut.*` keys out again and
-   * read them raw, which meant a stored `"  "` reached the wire as a name the
-   * server refuses and a stored `"banana"` reached it as `Number("banana")` —
-   * `NaN`, which `JSON.stringify` sends as `null` and which this client then
-   * hands to its own atlas. `loadIdentity` is `loadChoice` without the count the
-   * menu has no atlas to supply; see its comment for why unbounded is the right
-   * shape here rather than a second inline read.
+   * Who this browser says it is, on all four lobby verbs: its name (`ui/profile.ts`, one reader). T23.15 (R8): the
+   * name is all of it — the join's appearance fields go out as their defaults (`lobby.ts::identityPayload`).
    */
   private identity(): Identity {
-    return loadIdentity(localStorage)
+    return { name: loadName(localStorage) }
   }
 
   private dispatch(a: MenuAction): void {
@@ -314,14 +297,12 @@ export class MenuScene extends Phaser.Scene {
         <div class="actions">
           <button id="quick" autofocus>Quick Game</button>
           <button id="private">Private Game</button>
-          ${SKINS_SCREEN ? '<button id="skins">Skins</button>' : ''}
         </div>
         ${err}`
       el.querySelector('#quick')?.addEventListener('click', () => this.quickMatch())
       el.querySelector('#private')?.addEventListener('click', () =>
         this.dispatch({ type: 'go', screen: 'private' }),
       )
-      el.querySelector('#skins')?.addEventListener('click', () => this.scene.start('Skins'))
       return
     }
 
@@ -393,7 +374,7 @@ export class MenuScene extends Phaser.Scene {
       // `escapeHtml` on an attribute value, not only on text: a stored name goes
       // straight back into `value="…"`, and `cleanName` strips `<>` and **not**
       // quotes — so without this a name containing `"` breaks out of the
-      // attribute. The same interpolation exists in `SkinsScene`.
+      // attribute.
       const current = storedName(localStorage) ?? ''
       el.innerHTML = `
         <h2>Pick a nickname</h2>

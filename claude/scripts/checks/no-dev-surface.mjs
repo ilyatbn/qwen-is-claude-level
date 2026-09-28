@@ -22,8 +22,8 @@
  * and the **control caught it**: none of the three is a contiguous string in any
  * bundle, because the minifier emits `q.get("preview")==="1"`. Dropping to the
  * bare words is worse, not better — Phaser's own source says `boot` 91 times and
- * `preview` 10, so those greps would fail against a perfectly clean build, and
- * `skins` is a **player** feature that is supposed to ship.
+ * `preview` 10, so those greps would fail against a perfectly clean build (and
+ * `skins` was a player feature; T23.15 removed it).
  *
  * So the parameters are asserted the only way that means anything: by loading the
  * production bundle with each of them and looking at what comes up (§C2). The
@@ -200,7 +200,8 @@ try {
   else fail('the production bundle rendered no title screen at all')
 
   // The parameters the grep cannot see, one load each.
-  for (const q of ['preview=1', 'boot=1', 'game=1', 'menu=1', 'skins=1', 'look=F1']) {
+  // T23.15: `skins=1` went with the Skins screen (R8) — nothing reads it, so it is not a dev surface to guard.
+  for (const q of ['preview=1', 'boot=1', 'game=1', 'menu=1', 'look=F1']) {
     await load(`?${q}&e2e=1`)
     const seen = await page.evaluate(() => ({
       title: Boolean(document.querySelector('#start-game')),

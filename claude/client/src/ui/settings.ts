@@ -3,8 +3,7 @@
  *
  * Phaser-free and DOM-free apart from the storage handle, so the rules — which
  * are the part that can be wrong without looking wrong — are testable in node
- * (§A8). `ui/skins.ts` is the model: a picker that silently fails to save reads
- * exactly like one that saved.
+ * (§A8): a setting that silently fails to save reads exactly like one that saved.
  */
 
 export const HIGH_QUALITY_KEY = 'deepcut.highQuality'
@@ -24,8 +23,7 @@ export const FPS_COUNTER_KEY = 'deepcut.fpsCounter'
  *
  * **`localStorage` holds strings a player can edit**, so `"banana"`, `""` and a
  * missing key all have to resolve to something usable rather than to `NaN`
- * reaching a renderer. The same reasoning `skins.ts::readId` is written from,
- * and the same shape of answer.
+ * reaching a renderer.
  *
  * **The default is `false` and that is load-bearing.** Shaders only run on the
  * better graphics mode; this switch exists precisely because some machines

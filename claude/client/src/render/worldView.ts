@@ -22,7 +22,7 @@ import Phaser from 'phaser'
 import type { Core } from '../core'
 import { TerrainRenderer } from './terrain'
 import { CameraRig } from './cameraRig'
-import { Backdrop, DEFAULT_THEME, DEPTH } from './backdrop'
+import { Backdrop, DEPTH } from './backdrop'
 import { imagePortal } from './assets'
 import { FLAT_BACK, FLAT_ROCK } from './chunkBake'
 import { ItemLayer } from './itemSprites'
@@ -117,7 +117,7 @@ export class WorldView {
     const { width: mapW, height: mapH } = core
     this.core = core
 
-    this.backdrop = new Backdrop(scene, DEFAULT_THEME, mapW, mapH)
+    this.backdrop = new Backdrop(scene, mapW, mapH)
     this.container = scene.add.container(0, 0).setDepth(DEPTH.terrain)
 
     this.terrain = new TerrainRenderer(

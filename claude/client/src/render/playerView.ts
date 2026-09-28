@@ -19,7 +19,6 @@
 import type Phaser from 'phaser'
 import { C } from '../core'
 import { deriveAnimState, facingLeft, type AnimInputs, type AnimState } from './playerView-math'
-import type { Appearance } from '../ui/skins'
 import { feetOffset, toLocal, uprightLocal } from './standTilt-math'
 import type { Actor } from '../look/scene'
 import { joinCast, groundDyAt } from '../look/actors/cast'
@@ -122,22 +121,14 @@ export class PlayerView {
   private last: Parameters<PlayerView['setState']> | null = null
   private drawnTilt = 0
   private animState: AnimState = 'idle'
-  private readonly skinId: number
-  private readonly hatId: number
-  private readonly glassesId: number
   private readonly scene: Phaser.Scene
   /** Space only (above): the figure as a Phaser image over a canvas texture, and the key it was last drawn at. */
   private space: { img: Phaser.GameObjects.Image; tex: Phaser.Textures.CanvasTexture; flat: Flat; key: string } | null = null
 
-  /**
-   * The appearance ids are still taken (the rebuild guard compares them, `look`) and drawn as nothing (R8).
-   */
-  constructor(scene: Phaser.Scene, skinId: number, hatId: number, glassesId: number) {
+  /** T23.15 (R8): no appearance — every figure is the stick figure; a player's identity is the seat's scarf (`setSeat`). */
+  constructor(scene: Phaser.Scene) {
     const c = C()
     this.scene = scene
-    this.skinId = skinId
-    this.hatId = hatId
-    this.glassesId = glassesId
     this.shieldBubble = scene.add.circle(0, -c.PLAYER_H * 0.4, c.PLAYER_H * 0.75, 0x54b6ff, 0.18).setVisible(false)
     this.nameLabel = scene.add.text(0, -c.PLAYER_H - 6, '', { fontSize: '9px', color: '#dfe6ee' }).setOrigin(0.5, 1)
     this.container = scene.add.container(0, 0, [this.shieldBubble, this.nameLabel])
@@ -421,14 +412,5 @@ export class PlayerView {
     this.leave()
     if (this.space) this.scene.textures.remove(this.space.tex)
     this.container.destroy(true)
-  }
-
-  get skin(): number {
-    return this.skinId
-  }
-
-  /** The appearance the room says (T20.12's rebuild guard) — drawn as nothing since M23 (R8). */
-  get look(): Appearance {
-    return { skinId: this.skinId, hatId: this.hatId, glassesId: this.glassesId }
   }
 }

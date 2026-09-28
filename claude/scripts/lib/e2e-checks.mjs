@@ -32,17 +32,8 @@ export const CHECKS = [
     url: '?e2e=1',
     ready: '!!window.__title',
   },
-  // Reached through the menu, not at `?skins=1`: the Skins button was a caller
-  // with no callee (§A39), and a check that types the URL would not have noticed.
-  // T23.14: the skins screen's preview is the stick figure now — no atlas frame, no hat or glasses band to aim at
-  // (R8: wearables are drawn as nothing). The screen itself goes with T23.15, which retires this with it.
-  {
-    name: 'skins',
-    file: 'scripts/checks/skins.mjs',
-    url: '?menu=1&e2e=1',
-    ready: '!!window.__menu',
-    disabled: 'T23.15',
-  },
+  // T23.15 retired `skins` with the Skins screen it photographed (R8: wearables removed on the client; R13: no
+  // orphaned check). The name it kept is `rematch`'s and `quick-rejoin`'s (`client-keys.mjs` → `ui/profile.ts`).
   // The pixel harness self-test. It runs on a synthetic page — it is proving the
   // *harness* can detect a change and, more importantly, can FAIL to detect one.
   { name: 'pixels', file: 'scripts/checks/pixels.mjs', url: '', ready: '!!document.body' },

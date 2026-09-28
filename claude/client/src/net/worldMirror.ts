@@ -656,7 +656,7 @@ export class WorldMirror {
           owner: n(p['owner']),
           x: n(p['x']),
           y: n(p['y']),
-          skinId: n(p['skin_id']),
+          // T23.15 (R8): `skin_id` is on the wire and not read — every grave is the one ink stone.
         })
         break
       }

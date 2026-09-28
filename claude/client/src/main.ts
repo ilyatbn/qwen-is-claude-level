@@ -3,7 +3,6 @@ import { loadSettings } from './ui/settings'
 import { GameScene } from './scenes/GameScene'
 import { TitleScene } from './scenes/TitleScene'
 import { MenuScene } from './scenes/MenuScene'
-import { SkinsScene } from './scenes/SkinsScene'
 import { C, Core } from './core'
 import { devSurface } from './dev'
 import { gateOnWebgl2 } from './webgl2'
@@ -37,8 +36,7 @@ const SCENE_GRAPH: ReadonlyArray<{
   starts: readonly string[]
 }> = [
   { key: 'Title', ctor: TitleScene, starts: ['Menu'] },
-  { key: 'Menu', ctor: MenuScene, starts: ['Game', 'Skins'] },
-  { key: 'Skins', ctor: SkinsScene, starts: ['Menu'] },
+  { key: 'Menu', ctor: MenuScene, starts: ['Game'] },
   { key: 'Game', ctor: GameScene, starts: ['Title'] },
 ]
 
@@ -57,8 +55,8 @@ export function closeOverStarts(
   const out = [...list]
   const keysOf = (l: Phaser.Types.Scenes.SceneType[]) =>
     SCENE_GRAPH.filter((n) => l.includes(n.ctor)).map((n) => n.key)
-  // A worklist rather than one pass: Game reaches Title, Title reaches Menu, and
-  // Menu reaches Skins. A single pass would register Title and stop.
+  // A worklist rather than one pass: Game reaches Title, and Title reaches Menu.
+  // A single pass would register Title and stop.
   const queue = [...keysOf(out)]
   const seen = new Set(queue)
   while (queue.length) {
@@ -88,7 +86,7 @@ function playerScenes(): Phaser.Types.Scenes.SceneType[] {
   // shipped path, and it should not depend on the graph table being right. The
   // closure is a no-op over it — and stays one only while the table is complete,
   // which is the point of asserting it in `scene-graph.test.ts`.
-  return closeOverStarts([TitleScene, MenuScene, SkinsScene, GameScene])
+  return closeOverStarts([TitleScene, MenuScene, GameScene])
 }
 
 /**
@@ -126,12 +124,8 @@ async function pickDevScene(): Promise<Phaser.Types.Scenes.SceneType[] | null> {
   // two-client checks want — they were written before there was a front end and
   // should not have to click through it.
   if (q.get('game') === '1') return closeOverStarts([GameScene])
-  // `?menu=1` starts at the menu rather than the title, so a check can arrive
-  // *through* the Skins button — the button was a caller with no callee (§A39)
-  // and a check that opened the picker by URL would have passed anyway.
+  // `?menu=1` starts at the menu rather than the title. (T23.15: `?skins=1` went with the Skins screen, R8.)
   if (q.get('menu') === '1') return closeOverStarts([MenuScene])
-  // `?skins=1` opens the picker directly, for the same reason `?game=1` exists.
-  if (q.get('skins') === '1') return closeOverStarts([SkinsScene])
   return null
 }
 

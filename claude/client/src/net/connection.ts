@@ -15,7 +15,6 @@
 import { io } from 'socket.io-client'
 import { encodeInputBatch, type InputFrame } from './codec'
 import { identityPayload } from './lobby'
-import type { Appearance } from '../ui/skins'
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
 
@@ -72,9 +71,9 @@ export interface ConnectionOptions {
 
 /** What the menu decided, carried to the socket that acts on it. */
 export type LobbyIntent =
-  | { kind: 'quick'; scale: string; tombstoneSkinId?: number }
-  | { kind: 'create'; scale: string; tombstoneSkinId?: number }
-  | { kind: 'code'; code: string; tombstoneSkinId?: number }
+  | { kind: 'quick'; scale: string }
+  | { kind: 'create'; scale: string }
+  | { kind: 'code'; code: string }
 
 /**
  * Events whose payload is a **current value**, not a change — so a subscriber
@@ -174,17 +173,12 @@ export class Connection {
   }
 
   /**
-   * `look` rather than `skinId` (T20.12).
-   *
-   * **This built its own join payload**, spelling three fields by hand while
-   * `lobby.ts::identityPayload` built the other four verbs' — the second-builder
-   * shape, and it would have dropped the accessories silently on the `?game=1`
-   * path while the menu path carried them. It goes through the one builder now.
+   * Join as `name`, through the one join builder (`lobby.ts::identityPayload`) — which also sends the appearance
+   * fields' defaults an old server expects (T23.15, R8).
    */
   connect(
     url: string | undefined,
     name: string,
-    look: Appearance,
     intent?: LobbyIntent,
   ): Promise<Welcome> {
     if (this.socket) return Promise.reject(new Error('already connected'))
@@ -208,11 +202,7 @@ export class Connection {
 
     socket.on('connect', () => {
       this.setState('connected')
-      const id = identityPayload({
-        name,
-        ...look,
-        tombstoneSkinId: intent?.tombstoneSkinId ?? 0,
-      })
+      const id = identityPayload({ name })
       switch (intent?.kind) {
         case 'quick':
           socket.emit('quick_match', { ...id, scale: intent.scale })

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Validates that every path referenced by assets/manifest.json exists, and that
- * every atlas frame a weapon skin in assets/skins.json names exists in that atlas's JSON.
+ * Validates that every path referenced by assets/manifest.json exists, and that no atlas packs a `weapon_*` frame.
+ * (T23.15, R8: `assets/skins.json` — skins, weapon skins, tombstones — retired with the wearables, and its checks.)
  *
  * Written now, before there are any assets, so that M7 finds it already in the
  * gate rather than having to remember it. Until then a missing file is a SKIP,
@@ -16,7 +16,6 @@ import { incompleteProvenance, missingProvenance, packSources } from './lib/vend
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const assets = join(root, 'assets')
 const manifestPath = join(assets, 'manifest.json')
-const skinsPath = join(assets, 'skins.json')
 
 const problems = []
 
@@ -48,16 +47,14 @@ if (manifest) {
     const p = String(img.path ?? '').split('#')[0]
     if (p && !existsSync(join(assets, p))) problems.push(`image ${img.key}: ${p} not on disk`)
   }
-  for (const theme of manifest.themes ?? []) {
-    for (const f of ['fill.png', 'edge.png', 'back.png', 'theme.json']) {
-      const p = join('terrain', theme, f)
-      if (!existsSync(join(assets, p))) problems.push(`theme ${theme}: ${p} not on disk`)
-    }
-  }
+  // T23.15 (R5): the manifest names no themes — the client draws one world. A `themes` key is a stale writer.
+  if ('themes' in manifest) problems.push('assets/manifest.json still has a "themes" key (retired, T23.15)')
 }
 
-if (existsSync(skinsPath) && manifest) {
-  const skins = readJson(skinsPath)
+// T23.15 (R8): the skin registry is gone; nothing may bring it back unread.
+if (existsSync(join(assets, 'skins.json'))) problems.push('assets/skins.json is back — the skin registry retired with the wearables (T23.15)')
+
+if (manifest) {
   const atlasFrames = new Map()
   for (const atlas of manifest.atlases ?? []) {
     const jsonPath = join(assets, atlas.json ?? '')
@@ -69,15 +66,6 @@ if (existsSync(skinsPath) && manifest) {
     atlasFrames.set(atlas.key, names)
   }
 
-  // T23.14 (R15): the `chars` atlas retired with the sprite body, its last reader (the stick figure is drawn by code),
-  // and the check that every player skin's frames exist in it with it. The ids stay unique: the skins screen reads
-  // the registry until T23.15 removes it (R8).
-  const seenIds = new Set()
-  for (const skin of skins?.players ?? []) {
-    if (seenIds.has(skin.id)) problems.push(`skin id ${skin.id} is duplicated`)
-    seenIds.add(skin.id)
-  }
-
   // (T23.07: the `decor` atlas retired with its reader, and its "a prop, not a tile" check with it.)
 
   // T23.16/T23.17 (R12, R15): every weapon's pickup and inventory icon is its held drawing
@@ -86,20 +74,6 @@ if (existsSync(skinsPath) && manifest) {
   // `weapon_*` frame. The registry's weapon sprites are all `weapon_*` (`weapons.test.ts` reads them).
   for (const [atlas, names] of atlasFrames) {
     for (const n of names) if (n.startsWith('weapon_')) problems.push(`atlas "${atlas}" still packs ${n}, which would hide its remodelled icon (T23.16/T23.17)`)
-  }
-
-  const seenWeaponIds = new Set()
-  for (const w of skins?.weapons ?? []) {
-    if (seenWeaponIds.has(w.id)) problems.push(`weapon skin id ${w.id} is duplicated`)
-    seenWeaponIds.add(w.id)
-    // `atlas: null` is a deliberate declaration that the weapon is drawn at
-    // runtime (client/src/render/weaponTextures.ts), not packed. Verifying a
-    // frame name against an atlas that is not supposed to exist would fail the
-    // gate for a decision the registry is documenting rather than a mistake.
-    if (w.atlas === null) continue
-    const frames = atlasFrames.get(w.atlas)
-    if (!frames) { problems.push(`weapon skin ${w.id}: unknown atlas "${w.atlas}"`); continue }
-    if (!frames.has(w.frame)) problems.push(`weapon skin ${w.id}: frame "${w.frame}" not in atlas ${w.atlas}`)
   }
 }
 

@@ -258,6 +258,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
 
   const seed = r.u64()
   const scale = r.u8()
+  // The wire's theme byte (unchanged, R5): simulation — the terrain fields' landform key (`GameScene.onMapInit`).
   const theme = r.u8()
   const generator = r.u8()
   // Refused, not guessed: a byte naming no generator would otherwise be some map.

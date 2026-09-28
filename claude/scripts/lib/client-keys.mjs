@@ -1,8 +1,8 @@
 /**
- * Read the client's `localStorage` key names from `client/src/ui/skins.ts`.
+ * Read the client's `localStorage` key names from `client/src/ui/profile.ts` (T23.15: was `ui/skins.ts`, R8).
  *
  * The same argument `rust-constants.mjs` makes about tunables, one layer over:
- * `NAME_KEY` is owned by `skins.ts`, and three browser checks had spelled
+ * `NAME_KEY` is owned by `profile.ts`, and three browser checks had spelled
  * `'deepcut.name'` by hand. A rename would move the client and every one of them
  * would keep setting a key nobody reads — and the checks would still pass,
  * because a player with no stored name is a supported state (they get the default
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
-export const SKINS_TS = join(root, 'client/src/ui/skins.ts')
+export const PROFILE_TS = join(root, 'client/src/ui/profile.ts')
 
 const DECL = /^export const ([A-Z][A-Z0-9_]*_KEY)\s*=\s*'([^']+)'/gm
 
@@ -32,11 +32,11 @@ let cached = null
 
 /** `NAME_KEY` → `'deepcut.name'`, as the client spells it today. */
 export function key(name) {
-  cached ??= parseKeys(readFileSync(SKINS_TS, 'utf8'))
+  cached ??= parseKeys(readFileSync(PROFILE_TS, 'utf8'))
   const v = cached.get(name)
   if (v === undefined) {
     throw new Error(
-      `${name} is not an exported \`*_KEY\` in client/src/ui/skins.ts — it was renamed or moved`,
+      `${name} is not an exported \`*_KEY\` in client/src/ui/profile.ts — it was renamed or moved`,
     )
   }
   return v

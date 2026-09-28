@@ -116,7 +116,6 @@ import { FlareClock, FogClock, LavaClock, ServerClock } from '../render/weather-
 import { FlareFx, type FlareBody } from '../render/flareFx'
 import { VortexFx } from '../render/vortexFx'
 import { BlackHoleFx } from '../render/blackHoleFx'
-import { loadIdentity, readId, sameAppearance, type Appearance } from '../ui/skins'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 import { PushEstimate } from '../look/actors/push'
 
@@ -254,30 +253,6 @@ function freshObserved() {
     lastBlackHole: null as unknown,
     /** e2e only (`DEV_PROBE=1`, T22.19): the server's answer to the last `debug_place`. */
     lastPlace: null as unknown,
-  }
-}
-
-/**
- * The dev path's appearance: `?skin=`/`?hat=`/`?glasses=`, else storage.
- *
- * **Query parameters, not `localStorage`** — T20.04's reasoning, extended to the
- * accessories: `openClient` builds its URL and *then* navigates, so a
- * `page.evaluate` on storage runs after `create()` has already read it and is too
- * late. Each id goes through `readId` rather than `Number`, because `?hat=banana`
- * is `NaN`, which `JSON.stringify` puts on the wire as `null` and which the client
- * then hands to its own art array. Unbounded for the same reason `loadIdentity`
- * is: every lookup falls back for an id past the end (`docs/50` §8).
- */
-function devLook(params: URLSearchParams, store: Pick<Storage, 'getItem'>): Appearance {
-  const stored = loadIdentity(store)
-  const pick = (key: string, fallback: number): number =>
-    params.get(key) === null
-      ? fallback
-      : readId({ getItem: () => params.get(key) }, key, Number.POSITIVE_INFINITY)
-  return {
-    skinId: pick('skin', stored.skinId),
-    hatId: pick('hat', stored.hatId),
-    glassesId: pick('glasses', stored.glassesId),
   }
 }
 
@@ -597,21 +572,10 @@ export class GameScene extends Phaser.Scene {
    */
   private phaseEndsAt = 0
   /**
-   * Who is in the room, as the two JSON events describe them.
-   *
-   * **The appearance fields are required and not optional, and that is the
-   * guard.** There are
-   * three writers — `lobby_state` merges, `player_join` clobbers, and `score`
-   * reconstructs field by field from a two-field payload — written in three
-   * different idioms, and `score` fires on every kill. A `skinId?: number` would
-   * let all three compile while the third silently reset everybody to skin 0 on
-   * the next death, which is this bug again one layer down. Required means the
-   * compiler names the writer you forgot.
+   * Who is in the room, as the JSON events describe them: name, score, deaths. T23.15 (R8): no appearance — the
+   * events still carry `skin_id`/`hat_id`/`glasses_id` (the wire is unchanged) and this client reads none of them.
    */
-  private scores = new Map<
-    number,
-    { name: string; score: number; deaths: number } & Appearance
-  >()
+  private scores = new Map<number, { name: string; score: number; deaths: number }>()
   private ready = false
   private lastServerTick = 0
   private serverDarkness = 0
@@ -930,15 +894,8 @@ export class GameScene extends Phaser.Scene {
           name: p.name || `p${p.seat}`,
           score: had?.score ?? 0,
           deaths: had?.deaths ?? 0,
-          // §B9's other half. This has been parsed into `LobbySeat.skinId` all
-          // along and thrown away here, which is why everybody was a Recruit.
-          // T20.12's accessories ride the same path, term for term.
-          skinId: p.skinId,
-          hatId: p.hatId,
-          glassesId: p.glassesId,
         })
       }
-      this.syncLocalSkin()
     })
     this.conn.on('map_init', (p) => this.onMapInit(typeof p === 'string' ? p : ''))
     this.conn.on('snapshot', (p) => this.onSnapshot(typeof p === 'string' ? p : ''))
@@ -1041,14 +998,6 @@ export class GameScene extends Phaser.Scene {
             name: prev?.name ?? `p${id}`,
             score: Number(r['score'] ?? 0),
             deaths: Number(r['deaths'] ?? 0),
-            // **Carried, not defaulted.** A `score` event carries two fields and
-            // is rebuilt field by field from them, so anything not carried
-            // forward here is reset — and this one fires on every kill. The
-            // comment above records the same shape costing the scoreboard a
-            // whole round once (T9.06).
-            skinId: prev?.skinId ?? 0,
-            hatId: prev?.hatId ?? 0,
-            glassesId: prev?.glassesId ?? 0,
           })
         }
       }
@@ -1103,12 +1052,7 @@ export class GameScene extends Phaser.Scene {
           name: String(p['name'] ?? `p${id}`),
           score: 0,
           deaths: 0,
-          // `session.rs` puts it here as `skin_id`; it was never read.
-          skinId: Number(p['skin_id'] ?? 0) || 0,
-          hatId: Number(p['hat_id'] ?? 0) || 0,
-          glassesId: Number(p['glasses_id'] ?? 0) || 0,
         })
-        this.syncLocalSkin()
       }
     })
     this.conn.on('player_leave', (raw) => this.dropRemote(Number(asRecord(raw)['id'] ?? -1)))
@@ -1537,7 +1481,7 @@ export class GameScene extends Phaser.Scene {
     // which wins.
     //
     // **Who owns `<>`:** every HTML sink, through `escapeHtml` — `results.ts`,
-    // `deathOverlay.ts`, `MenuScene`'s roster and `SkinsScene`'s input. The
+    // `deathOverlay.ts` and `MenuScene`'s roster. The
     // server strips control characters and neither brackets nor quotes
     // (`sanitise_name`), and `cleanName`'s strip is a second layer at the
     // storage boundary that this path skips. It is skipped safely because the
@@ -1571,23 +1515,6 @@ export class GameScene extends Phaser.Scene {
       const w = await this.conn.connect(
       undefined,
       name,
-      // **`?skin=` first, storage second** (T20.04). Two clients on the dev path
-      // need two different skins for any check to see a skin at all, and
-      // `openClient` builds its URL and *then* navigates — so `page.evaluate`
-      // on `localStorage` runs after `GameScene.create()` has already read it
-      // and is too late. `ctx.addInitScript` would work and appears nowhere in
-      // `scripts/`; a query parameter sits beside the `name` one this path
-      // already reads, is visible in a failing check's URL, and needs no new
-      // mechanism. It wins over storage for the same reason `?name=` does: on
-      // this path the URL *is* the identity, and two sources that can disagree
-      // is the argument the name half already settled.
-      //
-      // Parsed through `readId`, not `Number`: `?skin=banana` is `NaN`, which
-      // `JSON.stringify` sends as `null` and which this client then hands to its
-      // own atlas. Unbounded for the same reason `loadIdentity` is.
-      // T20.12's accessories take the same `?param` first, storage second rule,
-      // and the same `readId` — `?hat=banana` must become 0 rather than `NaN`.
-      devLook(params, localStorage),
       // `?game=1` skips the front end entirely, so there is no lobby to adopt
       // and a plain `join` happens — which is what every check written before
       // the menu expects. The menu path never reaches here.
@@ -1678,6 +1605,8 @@ export class GameScene extends Phaser.Scene {
     this.terrainFields?.dispose()
     const seedLo = Number(init.seed & 0xffffffffn) >>> 0
     const seedHi = Number((init.seed >> 32n) & 0xffffffffn) >>> 0
+    // T23.15: the theme is read here and nowhere else in the client — as simulation, not look (R5): it picks the
+    // objects stamped into the collision mask, so the landform the fields are derived from needs it to be the server's.
     const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme])
     this.terrainFields = fields
     this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids)
@@ -2631,13 +2560,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Build the local body at whatever skin the room says this seat chose.
-   *
-   * A function rather than three lines at the call site because there are now
-   * two callers — the map arriving, and the skin becoming known afterwards — and
-   * the depth is the part a second copy would forget.
-   */
-  /**
    * Open or close the backpack (§C10, §F4.1's right button).
    *
    * A method because there are two callers now: the canvas's `pointerdown`, and
@@ -2651,30 +2573,6 @@ export class GameScene extends Phaser.Scene {
     this.refreshHud()
   }
 
-  /**
-   * How `scores` says a seat looks, or the default appearance (T20.12).
-   *
-   * **One reader for every construction site.** A remote is rebuilt on return to
-   * the sampled set, the local body is rebuilt when `lobby_state` names its skin,
-   * and the preview builds one too — three places that must agree about what to
-   * pass and what to fall back to. `DEFAULT_CHOICE` is the fallback rather than
-   * three inline zeroes, so "no hat" has one definition.
-   */
-  /**
-   * The dev path's appearance: `?skin=`/`?hat=`/`?glasses=`, else storage.
-   *
-   * **A query parameter, not `localStorage`** (T20.04's reasoning, extended):
-   * `openClient` builds its URL and *then* navigates, so a `page.evaluate` on
-   * storage runs after `create()` has already read it. Every id goes through
-   * `readId` rather than `Number`, because `?hat=banana` is `NaN`, which
-   * `JSON.stringify` puts on the wire as `null`.
-   */
-  private lookOf(id: number): Appearance {
-    const s = this.scores.get(id)
-    if (!s) return { skinId: 0, hatId: 0, glassesId: 0 }
-    return { skinId: s.skinId, hatId: s.hatId, glassesId: s.glassesId }
-  }
-
   /** T23.14: item id → registry key (`item_registry_json`), parsed once — what a remote's figure holds. */
   private itemKeysMap: Map<number, string> | null = null
   private itemKeys(): Map<number, string> {
@@ -2685,36 +2583,13 @@ export class GameScene extends Phaser.Scene {
     return this.itemKeysMap
   }
 
+  /** The local body, built when the map arrives (T23.15: no appearance to rebuild it for). */
   private buildLocalView(): void {
     this.localView?.destroy()
-    const look = this.lookOf(this.me)
-    this.localView = new PlayerView(this, look.skinId, look.hatId, look.glassesId)
+    this.localView = new PlayerView(this)
     // T23.14 (R10): the scarf is the seat's colour.
     this.localView.setSeat(this.me)
     this.localView.container.setDepth(DEPTH.actors)
-  }
-
-  /**
-   * Rebuild the local body if the room has just told us it is a different skin.
-   *
-   * **The local seat has no `player_join` of its own** — that event is broadcast
-   * to everybody *except* the player who joined — so `lobby_state` is the only
-   * thing that ever names this client's own skin. It normally lands well before
-   * `map_init`, and this is what covers the case where it does not, for the same
-   * reason the remotes are rebuilt: there is no setter.
-   *
-   * Cheap: `look` is what the view was built with, so this is a comparison and
-   * not a rebuild on every message.
-   *
-   * **`sameAppearance`, not three `!==`s** (T20.12). With one comparison per
-   * field the next accessory is added to the map and to the constructor and
-   * forgotten here, and the symptom — correct on first draw, reverting on the
-   * next rebuild — is the one this task was told to expect.
-   */
-  private syncLocalSkin(): void {
-    if (this.localView && !sameAppearance(this.localView.look, this.lookOf(this.me))) {
-      this.buildLocalView()
-    }
   }
 
   /**
@@ -2736,24 +2611,8 @@ export class GameScene extends Phaser.Scene {
 
     for (const [id, p] of sampled) {
       let r = this.remotes.get(id)
-      // **Read at the construction site, every rebuild.** `:1592` destroys a
-      // remote that leaves the sampled set and this rebuilds it on return, so
-      // the skin is not read once — it is read from whatever `scores` holds at
-      // that moment, which is exactly why the three writers above had to agree.
-      const want = this.lookOf(id)
-      // A remote can be drawn a frame before anyone says who it is: the snapshot
-      // is binary and `player_join`/`lobby_state` are JSON, so the body can
-      // arrive first. The answer to "what happens then" is **not** a default
-      // that sticks — `PlayerView` takes its appearance in the constructor and
-      // has no setter, so the only way to change it is to build another one,
-      // which is what already happens routinely below.
-      if (r && !sameAppearance(r.view.look, want)) {
-        r.view.destroy()
-        this.remotes.delete(id)
-        r = undefined
-      }
       if (!r) {
-        r = { view: new PlayerView(this, want.skinId, want.hatId, want.glassesId), lastSeen: now }
+        r = { view: new PlayerView(this), lastSeen: now }
         r.view.setSeat(id)
         r.view.container.setDepth(DEPTH.actors)
         this.remotes.set(id, r)
@@ -3584,16 +3443,6 @@ export class GameScene extends Phaser.Scene {
           phase: self.phase,
           players: [...self.mirror.players.keys()],
           /**
-           * §B9 at both ends (§A39): the id each **drawn** body was built with,
-           * keyed by seat.
-           *
-           * `PlayerView.skinId` is read off the views, not off `scores` — the
-           * whole T20.04 bug was that `scores` knew and the views did not, so a
-           * field reporting `scores` would have been green throughout it. It is
-           * a control for the pixel check and never its assertion: an id that
-           * arrived and was not drawn is exactly this bug.
-           */
-          /**
            * Where each body is **drawn**, as the body's centre in world
            * coordinates — §C7, the same distinction `birdsDrawnAt` and
            * `drawnItems` already make.
@@ -3625,10 +3474,6 @@ export class GameScene extends Phaser.Scene {
               y: r.view.container.y - C().PLAYER_H / 2,
             })),
           ],
-          drawnSkins: Object.fromEntries([
-            ...(self.localView ? [[self.me, self.localView.skin] as const] : []),
-            ...[...self.remotes].map(([id, r]) => [id, r.view.skin] as const),
-          ]),
           /** T23.09: the kinds of the last effect-light list handed to the world renderer, in order. */
           effectLights: [...self.effectLights.lastKinds],
           /** T23.09D: the local figure's action (a predicted swing), and the server's melee events heard so far. */
@@ -3638,7 +3483,7 @@ export class GameScene extends Phaser.Scene {
           caveWall: self.worldRenderer?.caveWallDrawn() ?? null,
           /**
            * T22.04B: what each body's jet flame drew last frame (T23.14B: the figure's
-           * flame, was the plume), keyed by seat — read off the **views**, as `drawnSkins` is,
+           * flame, was the plume), keyed by seat — read off the **views**,
            * so there is no second copy to disagree with the picture. It is the only window onto
            * this scene's space wiring (`gravity` off `lobby_state`, `space:` and
            * `jetpack:` at both `setState` calls); `thrusters-match` reads it.

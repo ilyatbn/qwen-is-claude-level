@@ -13,7 +13,7 @@ import { C, Core, MapScale } from '../core'
 import { generateForScene, gravityFromUrl } from './sceneParams'
 import { TerrainRenderer } from '../render/terrain'
 import { CameraRig } from '../render/cameraRig'
-import { Backdrop, DEFAULT_THEME, DEPTH } from '../render/backdrop'
+import { Backdrop, DEPTH } from '../render/backdrop'
 import { FLAT_BACK, FLAT_ROCK } from '../render/chunkBake'
 import { devSurface } from '../dev'
 
@@ -48,7 +48,7 @@ export class PreviewScene extends Phaser.Scene {
 
     const { width: mapW, height: mapH } = this.core
 
-    this.backdrop = new Backdrop(this, DEFAULT_THEME, mapW, mapH)
+    this.backdrop = new Backdrop(this, mapW, mapH)
 
     const container = this.add.container(0, 0).setDepth(DEPTH.terrain)
     this.terrain = new TerrainRenderer(

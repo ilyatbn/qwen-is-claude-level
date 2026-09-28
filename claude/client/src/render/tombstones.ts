@@ -11,10 +11,9 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { diffTombstones, tombstoneFrame, type TombstoneView } from './tombstones-math'
-import { ensureTombstoneTextures, tombstoneArt } from './tombstoneTextures'
+import { diffTombstones, type TombstoneView } from './tombstones-math'
+import { TOMBSTONE_KEY, ensureTombstoneTexture } from './tombstoneTextures'
 
-const ATLAS = 'items'
 /** `TOMBSTONE_W` × `TOMBSTONE_H` from the shared constants. */
 const FALLBACK_FILL = 0x9aa3ad
 
@@ -35,7 +34,7 @@ export class TombstoneLayer {
     private readonly h: number,
   ) {
     this.scene = scene
-    ensureTombstoneTextures(scene.textures)
+    ensureTombstoneTexture(scene.textures)
     // Behind world items and in front of decorations: a grave is scenery you
     // walk past, not something you pick up.
     this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations + 1)
@@ -77,21 +76,9 @@ export class TombstoneLayer {
   }
 
   private make(v: TombstoneView): Entry['sprite'] {
-    const known = this.scene.textures.exists(ATLAS)
-      ? new Set(this.scene.textures.get(ATLAS).getFrameNames())
-      : new Set<string>()
-    const frame = tombstoneFrame(v.skinId, known)
-    if (frame) {
-      const img = this.scene.add.image(v.x, v.y, ATLAS, frame)
-      this.container.add(img)
-      return img
-    }
-    // No packed art — the normal case, since no Kenney pack has a grave marker.
-    // The procedural set (`tombstoneTextures.ts`) is the shipping path, not a
-    // degraded one, so this is checked before the placeholder rectangle.
-    const art = tombstoneArt(v.skinId)
-    if (this.scene.textures.exists(art.key)) {
-      const img = this.scene.add.image(v.x, v.y, art.key)
+    // T23.15 (R8): one ink stone for every grave (`tombstoneTextures.ts`); the wire's `tombstone_skin_id` is not read.
+    if (this.scene.textures.exists(TOMBSTONE_KEY)) {
+      const img = this.scene.add.image(v.x, v.y, TOMBSTONE_KEY)
       this.container.add(img)
       return img
     }

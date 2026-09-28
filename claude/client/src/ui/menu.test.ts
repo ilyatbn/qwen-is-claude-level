@@ -26,7 +26,6 @@ const SCREENS: Record<Screen, true> = {
   join: true,
   matching: true,
   lobby: true,
-  skins: true,
   name: true,
 }
 const ALL = Object.keys(SCREENS) as Screen[]

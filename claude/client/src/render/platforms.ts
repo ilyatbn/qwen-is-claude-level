@@ -8,8 +8,8 @@
  * ## Drawn procedurally, not sprited
  *
  * No vendored pack has a turret. `docs/51` §5 makes the procedural path the
- * shipping one for anything the packs do not cover, and `weaponTextures.ts` and
- * `itemTextures.ts` are the precedent — a generated silhouette that reads
+ * shipping one for anything the packs do not cover, and `itemTextures.ts` is
+ * the precedent — a generated silhouette that reads
  * correctly beats a borrowed sprite that does not. The reference art in
  * `tasks/M21/assets/` is a triple-barrelled turret on a splayed tripod;
  * **silhouette only** is what is copied from it.
@@ -42,10 +42,8 @@ export interface PlatformView {
 const TEXTURE_KEY = '__gun_platform'
 
 /** Steel, shadowed steel, and the warning stripe that makes it read as a machine. */
-// Deliberately light against terrain. Every theme's `fill`/`edge`
-// (`themes-math.ts::THEMES`) is a mid-to-dark earth or a pale grey, and a dark
-// machine on frost reads as a hole while a dark machine on grassland
-// disappears. A bright steel with a hard dark outline reads on all three.
+// Deliberately light against terrain: a dark machine on dark rock reads as a hole. A bright steel with a hard
+// dark outline reads on the lit terrain's one palette (T23.15: the three themes it was chosen against are gone, R5).
 const STEEL = '#8d96a4'
 const STEEL_DARK = '#2b3038'
 const STEEL_LIGHT = '#c3cbd6'
@@ -64,7 +62,7 @@ const ART_H_FRACTION = 0.95
 /**
  * Build the platform texture once per texture manager.
  *
- * Idempotent, like `ensureWeaponTextures`: the scene is rebuilt on every round
+ * Idempotent: the scene is rebuilt on every round
  * and re-registering a key Phaser already has is a silent no-op that leaks
  * nothing.
  */

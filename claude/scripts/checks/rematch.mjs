@@ -124,7 +124,7 @@ async function open(name) {
   // site with no flags, and so does this.
   await page.goto(`${stack.viteUrl}/?e2e=1`)
   await page.waitForSelector('#start-game', { timeout: 60_000 })
-  // The key from `skins.ts`, never spelled here: a rename that missed this line
+  // The key from `ui/profile.ts` (`client-keys.mjs`), never spelled here: a rename that missed this line
   // would seed a value nobody reads, and the roster assertions below would go on
   // passing against the default name.
   await page.evaluate((kv) => localStorage.setItem(kv[0], kv[1]), [clientKey('NAME_KEY'), name])

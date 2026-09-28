@@ -1,5 +1,5 @@
 /**
- * Depth table and theme colours.
+ * The depth table.
  *
  * **The sky belongs to `SkyLayer`** (`docs/70-amendments-v2.md` §A4). This file used
  * to draw a flat placeholder at `DEPTH.sky`; once the real sky arrived the two sat
@@ -12,16 +12,6 @@
  * paper rather than rock. It is baked into each chunk, not drawn here.
  */
 
-
-export interface ThemeColors {
-  skyPlaceholder: number
-  caveBack: number
-}
-
-export const DEFAULT_THEME: ThemeColors = {
-  skyPlaceholder: 0x9cc7e8,
-  caveBack: 0x241f1a,
-}
 
 /** Depths from `docs/12-map-render.md` §5. */
 export const DEPTH = {
@@ -82,13 +72,12 @@ export const DEPTH = {
 export class Backdrop {
   private readonly objects: Array<{ destroy(): void }> = []
 
-  constructor(scene: Phaser.Scene, theme: ThemeColors, mapW: number, mapH: number) {
+  constructor(scene: Phaser.Scene, mapW: number, mapH: number) {
     // Nothing to draw: the sky is SkyLayer's and the cave backdrop is baked into
     // each chunk, masked by `BackdropMask`. A full-map rectangle at depth -10 would
     // hide the sky everywhere, which is what the very first preview screenshot
-    // showed. The class stays as the home of the depth table and theme colours.
+    // showed. The class stays as the home of the depth table (T23.15: the theme colours went, R5).
     void scene
-    void theme
     void mapW
     void mapH
   }

@@ -18,7 +18,7 @@
  * falls back to a procedural placeholder at runtime (`docs/50` §8) — the game
  * must start with no art at all, and that rule has carried this project since M3.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -203,11 +203,7 @@ if (allMissing.length) {
 
 // The manifest lists what to load (`docs/51` §6). Generated from what was
 // actually written, so it cannot promise an atlas that is not on disk.
-const themes = existsSync(join(root, 'assets/terrain'))
-  ? readdirSync(join(root, 'assets/terrain')).filter((d) =>
-      existsSync(join(root, 'assets/terrain', d, 'theme.json')),
-    )
-  : []
+// T23.15 (R5): no `themes` — the client draws one world, and nothing reads a theme list.
 //
 // **Merge, do not replace.** `build-audio.mjs` owns `manifest.audio` and this
 // script owns `manifest.atlases`; the first version of this wrote the whole
@@ -232,12 +228,12 @@ const manifest = {
   ...existing,
   atlases: [...built, ...foreign],
   images: existing.images ?? [],
-  themes,
   audio: existing.audio ?? [],
 }
+delete manifest.themes
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 console.log(
   `\nmanifest: ${manifest.atlases.length} atlas(es)` +
     (foreign.length ? ` (${foreign.length} from another writer, kept)` : '') +
-    `, ${themes.length} theme(s), ${manifest.audio.length} audio file(s)`,
+    `, ${manifest.audio.length} audio file(s)`,
 )

@@ -41,7 +41,6 @@ import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
 import { devSurface } from '../dev'
-import { loadIdentity } from '../ui/skins'
 import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
 import { overlapsAny, overlapsBoxes, turretGeometry } from '../look/actors/props'
 import type { WorldItemView } from '../render/itemSprites-math'
@@ -245,15 +244,8 @@ export class SandboxScene extends Phaser.Scene {
     // Hazards sit just under the ordnance layer: both are world-space FX, and
     // a vent's flame should never draw over a rocket.
     this.hazardGfx = this.add.graphics().setDepth(38)
-    // **Fixed, not left** (T20.04): the sandbox is the one scene you look at
-    // your own character in outside a match, and it was the third hardcoded 0.
-    // `loadIdentity` rather than `loadChoice` for the same reason `MenuScene`
-    // uses it — no atlas count is needed to read an id, and `PlayerView` already
-    // falls back for one past the end of the registry.
-    // T20.12's accessories ride the same read: the sandbox draws *your* character
-    // outside a match, so it must show the whole of what you chose.
-    const look = loadIdentity(localStorage)
-    this.player = new PlayerView(this, look.skinId, look.hatId, look.glassesId)
+    // T23.15 (R8): no appearance to read — every figure is the stick figure.
+    this.player = new PlayerView(this)
     this.player.container.setDepth(DEPTH.actors)
     this.localInput = new LocalInput(this)
     this.crosshair = new Crosshair(this, DEPTH.hud)
@@ -826,7 +818,7 @@ export class SandboxScene extends Phaser.Scene {
     // generator is healthy, and they are invisible unless shown
     // (`docs/10-map-generation.md` §Pass 7d).
     this.readout.textContent =
-      `seed ${m.seed}  scale ${m.scale}  theme ${m.theme}\n` +
+      `seed ${m.seed}  scale ${m.scale}\n` +
       `attempts ${m.attempts}  safe_preset ${m.used_safe_preset}\n` +
       `traversable ${m.traversable_fraction.toFixed(3)}  surface ${m.surface_points.length}\n` +
       `${this.core.width}x${this.core.height}  chunks ${this.world.terrain.stats.chunkCount}\n` +
@@ -1314,17 +1306,15 @@ export class SandboxScene extends Phaser.Scene {
         self.worldRenderer?.mapChanged({ ...self.gameMap(), seed })
       },
       /**
-       * T21.37: stand extra bodies at world points, `null` to remove them.
-       *
-       * The sandbox draws one body, and a tint check needs a tinted and an untinted skin **in
-       * one frame** — same renderer, light and camera — so the untinted one is a control rather
-       * than a memory. Built through `PlayerView`, the path every scene draws players with, and
-       * posed idle facing right so the two differ only in skin. Returns how many are standing.
+       * T21.37: stand extra bodies at world points, `null` to remove them — in one frame, same renderer, light and
+       * camera, so one is the other's control. Built through `PlayerView`, the path every scene draws players with,
+       * posed idle facing right. T23.15 (R8): `skin` is the **seat** (its scarf colour, `setSeat`) — the only identity
+       * a figure has; the name is kept for `stick-figure`'s call. Returns how many are standing.
        */
       showSkins(list: { skin: number; x: number; y: number }[] | null) {
         for (const v of self.skinLineup) v.destroy()
         self.skinLineup = (list ?? []).map(({ skin, x, y }) => {
-          const v = new PlayerView(self, skin, 0, 0)
+          const v = new PlayerView(self)
           v.setSeat(skin)
           v.container.setDepth(DEPTH.actors)
           v.setState(x, y, 0, 0, 0, {

@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   diffTombstones,
-  tombstoneFrame,
   withinNameRange,
   type TombstoneView,
 } from './tombstones-math'
 
-const t = (id: number, x = 0, y = 0, skinId = 0): TombstoneView => ({
+const t = (id: number, x = 0, y = 0): TombstoneView => ({
   id,
   owner: 1,
   x,
   y,
-  skinId,
 })
 
 describe('diffTombstones', () => {
@@ -42,23 +40,6 @@ describe('diffTombstones', () => {
     const d = diffTombstones([1, 2], [t(1), t(2)])
     expect(d.add).toEqual([])
     expect(d.remove).toEqual([])
-  })
-})
-
-describe('tombstoneFrame', () => {
-  it('uses the requested skin when the atlas has it', () => {
-    expect(tombstoneFrame(2, new Set(['tombstone_0', 'tombstone_2']))).toBe('tombstone_2')
-  })
-
-  it('falls back to skin 0 for an unknown id rather than throwing', () => {
-    // `docs/50` §8: an unknown skin resolves to 0. The server never validates a
-    // skin id against a list, so this is a normal path, not an error path.
-    expect(tombstoneFrame(99, new Set(['tombstone_0']))).toBe('tombstone_0')
-  })
-
-  it('returns null when there is no art at all, so the caller can draw a box', () => {
-    // The game must start with zero assets.
-    expect(tombstoneFrame(0, new Set())).toBeNull()
   })
 })
 

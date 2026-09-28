@@ -120,14 +120,17 @@ export type LobbyState =
   | { kind: 'seated'; roomId: number; code?: string }
   | { kind: 'error'; message: string }
 
+/** Who a client says it is. T23.15 (R8): its name — wearables are gone from the client. */
 export interface Identity {
   name: string
-  skinId: number
-  tombstoneSkinId: number
-  /** T20.12's accessories, on the same terms as the two above. */
-  hatId: number
-  glassesId: number
 }
+
+/**
+ * T23.15 (R8): **the join JSON's appearance fields, sent as their defaults.** Wearables are removed on the client
+ * only: the server and the replay format still take `skin_id`, `tombstone_skin_id`, `hat_id` and `glasses_id`
+ * (`session.rs`, `Join{skin_id}`), so the client keeps sending them — at 0 — and reads none of them back.
+ */
+export const WIRE_LOOK_DEFAULTS = { skin_id: 0, tombstone_skin_id: 0, hat_id: 0, glasses_id: 0 } as const
 
 export interface IdentityPayload {
   name: string
@@ -139,13 +142,7 @@ export interface IdentityPayload {
 
 /** The payload every lobby verb carries, so the server has one seating path. */
 export function identityPayload(id: Identity): IdentityPayload {
-  return {
-    name: id.name,
-    skin_id: id.skinId,
-    tombstone_skin_id: id.tombstoneSkinId,
-    hat_id: id.hatId,
-    glasses_id: id.glassesId,
-  }
+  return { name: id.name, ...WIRE_LOOK_DEFAULTS }
 }
 
 export function createRoomPayload(id: Identity, scale: Scale, isPrivate: boolean) {
@@ -171,11 +168,6 @@ export function quickMatchPayload(id: Identity, scale: Scale) {
 export interface LobbySeat {
   seat: number
   name: string
-  skinId: number
-  /** T20.12. Carried for the reason `skinId` is: this is where a client learns
-   *  what everybody in the room looks like. */
-  hatId: number
-  glassesId: number
   ready: boolean
   bot: boolean
 }
@@ -265,9 +257,6 @@ export function parseLobbyState(p: Record<string, unknown>): LobbyStateMsg {
       ? (p['players'] as unknown[]).filter(isRecord).map((q) => ({
           seat: typeof q['seat'] === 'number' ? q['seat'] : -1,
           name: typeof q['name'] === 'string' ? q['name'] : '',
-          skinId: typeof q['skin_id'] === 'number' ? q['skin_id'] : 0,
-          hatId: typeof q['hat_id'] === 'number' ? q['hat_id'] : 0,
-          glassesId: typeof q['glasses_id'] === 'number' ? q['glasses_id'] : 0,
           ready: q['ready'] === true,
           bot: q['bot'] === true,
         }))
