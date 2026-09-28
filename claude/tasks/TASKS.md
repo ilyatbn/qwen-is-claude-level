@@ -853,6 +853,7 @@ look up and see the earth, moved since the round began.
   - [x] T23.19B part A — birds in the world renderer (F4's; the metal one told apart by silhouette), every drawn item's icon its drawing (R12), crate beacon/parachute ruled fine
 - [ ] [T23.19E](M23/T23.19E-vents-and-hazard-drops.md) — Lava vents and hazard drops in F's look, and the checks that photograph them (split from T23.19B)
 - [x] [T23.19C](M23/T23.19C-sky-through-the-rock.md) — The sky shows through the rock — solid rock stays opaque on every seed and tier (a check swaps the sky)
+- [ ] [T23.19D](M23/T23.19D-what-the-fx-furniture-review-found.md) — What the fx/furniture review found — pickups visible without the world renderer, no halo at noon, sharp labels, echoes paired by seq, game-path blast Level A, dead constants
 - [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
