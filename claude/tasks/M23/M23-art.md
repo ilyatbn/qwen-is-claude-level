@@ -194,6 +194,16 @@ To re-render: copy the folder to a scratch dir, `npm i`, then
   annulus box around the moon (a knob for bloom radius 0 must turn it red).
   *Reverse it by:* one threshold set, max over back ends.
 
+- **R26 (coordinator, 2026-09-28, answering T23.16's IoU table) — readability wins over F6 at 1×.** Every pair of
+  the 21 holdables, thrown and melee included, has ink-mask IoU ≤ 0.72 at the figure's scale (1.15, zoom 1); no
+  per-pair exceptions. Colliding pairs are remodelled apart by silhouette in F6's style (ink + rim, one accent at
+  most), **in the mockup's `weapons.js` too**, and the mockup-rendered control (`controls/F6-weapons.png`) is
+  regenerated so Level A stays lab = mockup; `F6-weapon-sheet.png` is never edited (the owner's picture).
+  F6's collisions: airburst/toxic_grenade 0.828, smoke/toxic 0.774, airburst/smoke 0.765, axe/hammer 0.760,
+  grenade/toxic 0.759. Remodelled: **toxic grenade** → a flask (green liquid, its one accent), **airburst** → a slim
+  finned rocket, **hammer** → a long sledge (head past the axe's blade). Now most similar: airburst/toxic_grenade
+  **0.688**, then laser_pistol/pistol 0.679. *Reverse it by:* F6's three lines back in both files.
+
 ## Verification — what "exactly the same" means here
 
 Two levels (`M23-RESEARCH.md` § 7):
