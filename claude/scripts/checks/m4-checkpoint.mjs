@@ -244,6 +244,9 @@ export default async function ({ page, shot, log }) {
   // layer held, not one it painted). `watchRounds` reads the canvas around each round on its first drawn frame against
   // the same square on the frame after it is gone (the control frame) and a square the other side of the player (the
   // control region); impacts held, so the blast's fade is not read as the round.
+  // T23.10: at noon — the night view fades what is outside sight as the clock darkens, and on a running dusk that
+  // moved the whole frame (control region 35, as much as the round's square) between the round's frame and the next.
+  await page.evaluate(() => window.__game.setTime(0))
   await page.evaluate((n) => window.__game.stepsPerFrame(n), SLOW_STEPS)
   try {
     const slow = await page.evaluate(async () => {
@@ -271,6 +274,7 @@ export default async function ({ page, shot, log }) {
     }
   } finally {
     await page.evaluate(() => window.__game.stepsPerFrame(1))
+    await page.evaluate(() => window.__game.setTime(null))
   }
 
   await shieldBubble({ page, shot, log, screenPos })

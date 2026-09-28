@@ -5,7 +5,7 @@
  * **y up**, world y = `H − maskY` where `H` is the mask's height. Phaser's camera and the
  * scene description are y down; this is the one place the flip happens.
  */
-import type { ViewRect } from './scene'
+import type { Light, ViewRect } from './scene'
 
 /** R14: the full tier is the pictures; the low tier renders the world canvas and its target at half resolution without MSAA (the mockup's `scale 2`). */
 export type QualityTier = 'full' | 'low'
@@ -82,4 +82,67 @@ export const CAVE_WALL_DEFAULT = false
 export function caveWallFromUrl(search: string): boolean {
   const v = new URLSearchParams(search).get('cavewall')
   return v === null ? CAVE_WALL_DEFAULT : v === '1' || v === 'true' || v === 'on'
+}
+
+/**
+ * T23.10 (R7): the night view a scene hands the world renderer — its `darkness` (0 … `NIGHT_DARKNESS`, the server's
+ * byte; 0 in space) and the circles its player sees in (world px: centre and `fovRadius`), and the share of each
+ * radius that is the soft edge (`FOV_EDGE_SOFTNESS`, the lightmap's).
+ */
+export interface NightView {
+  darkness: number
+  nightDarkness: number
+  soft: number
+  circles: readonly { x: number; y: number; r: number }[]
+}
+
+/**
+ * How much of the scene's light is kept outside sight at full night. F1 is night everywhere, lit only by its moon and
+ * effects; this is what "outside your sight" adds: the rock, sky and figures there at under a third of their light, a
+ * blast still bright. Stated against the retired lightmap's MULTIPLY at `NIGHT_DARKNESS` 0.82 over `0x000818` (kept
+ * 18 % of the light, as black): here 30 % is kept and the rest goes to the night palette, not to black.
+ */
+export const NIGHT_VIEW_KEEP = 0.3
+/**
+ * Where the dark goes: a tint of F1's darkest sky (`P.bg.skyTop`, 0x080a12, read linear as the mockup reads it) at
+ * `NIGHT_VIEW_TINT` of its strength. At full strength it is brighter than F1's night rock before the tone map (the
+ * first run: the rock outside sight came out *brighter*, 18.8 → 33.6), so the fade would lift the dark instead of
+ * deepening it; at 15 % it tints the fade blue without lighting anything.
+ */
+export const NIGHT_VIEW_TINT = 0.15
+export const NIGHT_VIEW_FLOOR: [number, number, number] = hexLinear(0x080a12).map((v) => v * NIGHT_VIEW_TINT) as [number, number, number]
+
+/**
+ * The night view's uniforms for a frame drawn of `view` (world px) into a `buf`-sized drawing buffer. Null: none.
+ * **Lit by effect lights** (R7): after the sight circles, the frame's effect lights (`lights`, the brightest first, as
+ * many as fit `maxCircles`) each see their own radius, fading over the whole of it — a blast, a burning vent, a gate
+ * lights what is round it out there in the dark, as F1's lights do.
+ */
+export function nightUniforms(
+  v: NightView | null,
+  view: ViewRect,
+  buf: { w: number; h: number },
+  lights: readonly Light[] = [],
+  maxCircles = Infinity,
+): { k: number; floor: [number, number, number]; circles: { x: number; y: number; inner: number; outer: number }[] } | null {
+  if (!v || !(v.nightDarkness > 0)) return null
+  const t = Math.max(0, Math.min(1, v.darkness / v.nightDarkness))
+  const k = (1 - NIGHT_VIEW_KEEP) * t
+  if (!(k > 0)) return null
+  const sx = buf.w / view.w
+  const sy = buf.h / view.h
+  const at = (x: number, y: number, inner: number, outer: number): { x: number; y: number; inner: number; outer: number } => ({
+    x: (x - view.x) * sx,
+    // gl_FragCoord runs bottom up.
+    y: buf.h - (y - view.y) * sy,
+    inner: inner * sx,
+    outer: outer * sx,
+  })
+  const circles = v.circles.map((c) => at(c.x, c.y, c.r * (1 - v.soft), c.r))
+  const lit = [...lights].filter((l) => l.i > 0 && l.r > 0).sort((a, b) => b.i - a.i)
+  for (const l of lit) {
+    if (circles.length >= maxCircles) break
+    circles.push(at(l.x, l.y, 0, l.r))
+  }
+  return { k, floor: NIGHT_VIEW_FLOOR, circles: circles.slice(0, maxCircles) }
 }

@@ -82,6 +82,8 @@ export default async function ({ page, shot, log }) {
   for (const hq of [false, true]) {
     const tier = hq ? 'full' : 'low'
     await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    // The tier's lit terrain whole before anything is measured on it (a swap mid-leg reads as a change).
+    await page.waitForFunction((t) => window.__world.info().tier === t && window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, hq ? 'full' : 'low', { timeout: 60_000 })
     const staged = await stage(vents)
     if (staged.drawnBy !== 'world') problems.push(`${tier}: the vents are drawn by ${staged.drawnBy}, not the world renderer`)
     await page.waitForTimeout(700)

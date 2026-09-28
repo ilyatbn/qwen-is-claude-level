@@ -164,14 +164,19 @@ export default async function ({ page, shot, log }) {
   const scarves = await identity(page, [0, 1], 'shots/stick-figure-scarves.png')
   const same = await identity(page, [0, 0])
   log(`3. scarves, seats 0 | 1: left ${JSON.stringify(scarves[0])}, right ${JSON.stringify(scarves[1])}; control seats 0 | 0: right ${JSON.stringify(same[1])}`)
-  if (!(scarves[0].own >= SCARF_MIN && scarves[0].other <= SCARF_STRAY)) problems.push(`seat 0's figure does not show seat 0's scarf alone: ${JSON.stringify(scarves[0])}`)
-  if (!(scarves[1].own >= SCARF_MIN && scarves[1].other <= SCARF_STRAY)) problems.push(`seat 1's figure does not show seat 1's scarf alone: ${JSON.stringify(scarves[1])}`)
-  if (!(same[1].other >= SCARF_MIN && same[1].own <= SCARF_STRAY)) problems.push(`control: a seat-0 figure on the right did not read as seat 0: ${JSON.stringify(same[1])}`)
+  if (!(scarves[0].own >= scarves[0].min && scarves[0].other <= SCARF_STRAY)) problems.push(`seat 0's figure does not show seat 0's scarf alone: ${JSON.stringify(scarves[0])}`)
+  if (!(scarves[1].own >= scarves[1].min && scarves[1].other <= SCARF_STRAY)) problems.push(`seat 1's figure does not show seat 1's scarf alone: ${JSON.stringify(scarves[1])}`)
+  if (!(same[1].other >= same[1].min && same[1].own <= SCARF_STRAY)) problems.push(`control: a seat-0 figure on the right did not read as seat 0: ${JSON.stringify(same[1])}`)
   if (problems.length) throw new Error(`stick-figure: ${problems.join('; ')}`)
 }
 
-/** §3: a figure's box must hold this many px of its seat's scarf hue, and at most this many of the other seat's. */
-const SCARF_MIN = 6
+/**
+ * §3: a figure's box must hold this much of its seat's scarf hue, and at most this many px of the other seat's.
+ * T23.10: in **world px²** — set as 6 buffer px when a world px was a buffer px (zoom 2, low tier); at zoom 1 the low
+ * tier draws a world px as ½ × ½ buffer px, so the scarf is a quarter of the pixels it was (`scarfMin(k)`).
+ */
+const SCARF_MIN_WORLD = 6
+const scarfMin = (k) => Math.max(2, Math.round(SCARF_MIN_WORLD * k * k))
 const SCARF_STRAY = 1
 /** §3: a pixel "is" a seat's colour within this many degrees of its hue, at saturation and value over these. */
 const HUE_TOL = 20
@@ -252,6 +257,6 @@ async function identity(page, pair, save = null) {
         else if (hueGap(c.h, hues[1 - want]) <= HUE_TOL) n.other++
       }
     }
-    return { seat, ...n }
+    return { seat, ...n, min: scarfMin(k) }
   })
 }

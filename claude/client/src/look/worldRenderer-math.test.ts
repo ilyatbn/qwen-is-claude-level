@@ -3,7 +3,7 @@
  * tiers, and the CPU copy of the output transform `world-canvas` compares the screen against.
  */
 import { describe, expect, it } from 'vitest'
-import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -70,5 +70,41 @@ describe('caveWallFromUrl (T23.09A)', () => {
     expect(caveWallFromUrl('?sandbox=1&seed=4')).toBe(false)
     expect(caveWallFromUrl('?sandbox=1&cavewall=1')).toBe(true)
     expect(caveWallFromUrl('?cavewall=0')).toBe(false)
+  })
+})
+
+describe('nightUniforms (T23.10, R7)', () => {
+  const view = { x: 100, y: 50, w: 1280, h: 720 }
+  const buf = { w: 640, h: 360 }
+  it('none by day or with no night; at full night keeps NIGHT_VIEW_KEEP of the light outside sight', () => {
+    expect(nightUniforms(null, view, buf)).toBeNull()
+    expect(nightUniforms({ darkness: 0, nightDarkness: 0.82, soft: 0.35, circles: [] }, view, buf)).toBeNull()
+    const u = nightUniforms({ darkness: 0.82, nightDarkness: 0.82, soft: 0.35, circles: [] }, view, buf)
+    expect(u?.k).toBeCloseTo(1 - NIGHT_VIEW_KEEP)
+    const half = nightUniforms({ darkness: 0.41, nightDarkness: 0.82, soft: 0.35, circles: [] }, view, buf)
+    expect(half?.k).toBeCloseTo((1 - NIGHT_VIEW_KEEP) / 2)
+  })
+
+  it("a circle lands in buffer px, bottom up, its fade from (1 − soft)·r to r", () => {
+    const u = nightUniforms({ darkness: 0.82, nightDarkness: 0.82, soft: 0.35, circles: [{ x: 100 + 640, y: 50 + 180, r: 220 }] }, view, buf)!
+    const c = u.circles[0]!
+    expect(c.x).toBeCloseTo(320)
+    expect(c.y).toBeCloseTo(360 - 90)
+    expect(c.outer).toBeCloseTo(110)
+    expect(c.inner).toBeCloseTo(110 * 0.65)
+  })
+})
+
+describe('nightUniforms lit by effect lights (T23.10, R7)', () => {
+  it('after the sight circles, the brightest lights see their own radius, as many as fit', () => {
+    const v = { darkness: 0.82, nightDarkness: 0.82, soft: 0.35, circles: [{ x: 0, y: 0, r: 220 }] }
+    const L = (i: number, r: number) => ({ x: 10, y: 10, z: 0, r, rgb: '255,0,0', i })
+    const u = nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 }, [L(0.5, 40), L(2, 150), L(0, 99), L(1, 60)], 3)!
+    expect(u.circles.length).toBe(3)
+    expect(u.circles[1]!.outer).toBeCloseTo(150)
+    expect(u.circles[1]!.inner).toBe(0)
+    expect(u.circles[2]!.outer).toBeCloseTo(60)
+    // Control: with no lights, the sight alone.
+    expect(nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 })!.circles.length).toBe(1)
   })
 })

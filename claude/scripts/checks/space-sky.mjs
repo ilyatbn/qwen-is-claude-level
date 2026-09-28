@@ -67,8 +67,13 @@ const BODY_PIXEL_FLOOR = 40
 const POSITION_TOL = 6
 /** Ten-frame looks for the sandbox player to come to rest before a control patch is chosen. */
 const SETTLE_TRIES = 60
-/** Point lights on the dark that make a star field, in the measured region. */
-const STAR_FLOOR = 60
+/**
+ * Point lights on the dark that make a star field, in the measured region: 60 star px at zoom 2, where each star
+ * (one camera px) was 2 × 2 screen px. T23.10: a star px count scales with the zoom's square — `starFloor(zoom)` (15 at
+ * zoom 1; measured 164 WebGL / 58 Canvas there, 711 at zoom 2).
+ */
+const STAR_FLOOR_ZOOM_2 = 60
+const starFloor = (zoom) => Math.round((STAR_FLOOR_ZOOM_2 * zoom * zoom) / 4)
 /** T23.04C F4: the flat day sky put under Phaser for the star counter's negative control. */
 const DAY_SKY = '#9ec9ff'
 
@@ -297,7 +302,10 @@ export default async function ({ page, shot, log }) {
       // The one legitimate way for a clear body to draw nothing: the moon on the far
       // side of its orbit, behind the earth's disc.
       const behind = name === 'moon' && sky.moon.front === false && overlaps(bodyBox(b, 1), earthDisc)
-      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box), behind }
+      // T23.10: and clear of the rock drawn over the sky — at zoom 1 the view holds four times the asteroids, and a
+      // glow half under one pulled the centroid 8 px (the disc's on-screen size is unchanged, R6).
+      const rock = await overRock(box)
+      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box), rock, behind }
     }
     return out
   }
@@ -307,6 +315,15 @@ export default async function ({ page, shot, log }) {
   // A search over the sky's own positions (read, not predicted) rather than a
   // hardcoded time, which would rot the moment any orbit constant moved. The earth
   // must be clear at both moments; the more of the other two the better.
+  /** T23.10: is any of screen box `bx` over rock (the asteroids, drawn over the sky)? */
+  const overRock = (bx) =>
+    page.evaluate((bx) => {
+      const d = window.__game.debug()
+      const v = d.worldView
+      const c = window.__game.core
+      for (let y = bx.y; y <= bx.y + bx.h; y += 4) for (let x = bx.x; x <= bx.x + bx.w; x += 4) if (c.solidAt(Math.round(v.x + x / d.zoom), Math.round(v.y + y / d.zoom))) return true
+      return false
+    }, bx)
   const searchMoments = async () => {
     const clearAt = new Map()
     for (let t = 0; t <= SEARCH_SPAN + DT; t += SEARCH_STEP) {
@@ -314,13 +331,12 @@ export default async function ({ page, shot, log }) {
       await frames(2)
       const sky = (await dbg()).spaceSky
       if (!sky) throw new Error('debug().spaceSky is null at ?gravity=space — the space sky never came up')
-      clearAt.set(
-        t,
-        ['sun', 'earth', 'moon'].filter((n) => {
-          const box = bodyBox(sky[n], REACH[n])
-          return onScreen(box) && !overlapsAny(box)
-        }),
-      )
+      const clear = []
+      for (const n of ['sun', 'earth', 'moon']) {
+        const box = bodyBox(sky[n], REACH[n])
+        if (onScreen(box) && !overlapsAny(box) && !(await overRock(box))) clear.push(n)
+      }
+      clearAt.set(t, clear)
     }
     let T0 = null
     let best = -1
@@ -394,6 +410,7 @@ export default async function ({ page, shot, log }) {
   const la = await locate(a)
   const lb = await locate(b)
   let moved = 0
+  let measured = 0
   for (const name of ['sun', 'earth', 'moon']) {
     const [p, q] = [la[name], lb[name]]
     const fmt = (r) => (r.cx === null ? 'none' : `${r.cx.toFixed(0)},${r.cy.toFixed(0)} (${r.n} px)`)
@@ -410,6 +427,12 @@ export default async function ({ page, shot, log }) {
       log(`${name}: behind the earth at ${p.behind ? 't0' : 't1'}, not measured`)
       continue
     }
+    // T23.10: a body with an asteroid over part of its box is not where its pixels centre (the rock hides some).
+    if (p.rock || q.rock) {
+      log(`${name}: an asteroid over its box at ${p.rock ? 't0' : 't1'}, not measured`)
+      continue
+    }
+    measured++
     if (p.n < BODY_PIXEL_FLOOR || q.n < BODY_PIXEL_FLOOR) {
       throw new Error(`${name}: clear on screen at both moments but hiding it changed only ${p.n} / ${q.n} px (want ≥ ${BODY_PIXEL_FLOOR}) — it is not drawn`)
     }
@@ -433,6 +456,7 @@ export default async function ({ page, shot, log }) {
   const sa = await measure({ kind: 'stars', a: a.bare, exclude: both })
   const sa2 = await measure({ kind: 'stars', a: a.bare2, exclude: both })
   const sb = await measure({ kind: 'stars', a: b.bare, exclude: both })
+  const STAR_FLOOR = starFloor((await dbg()).zoom)
   if (sa.stars.length < STAR_FLOOR) throw new Error(`only ${sa.stars.length} star pixels in space (want ≥ ${STAR_FLOOR})`)
   const kept = (x, y) => {
     const set = new Set(y.stars)

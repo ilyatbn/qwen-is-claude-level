@@ -6854,9 +6854,18 @@ mod tests {
         assert_eq!(v["VIEWPORT_W"], 1280);
         assert_eq!(v["VIEWPORT_H"], 720);
         assert_eq!(v["CHUNK_SIZE"], 256);
-        assert_eq!(v["CAMERA_ZOOM"], 2.0);
+        assert_eq!(v["CAMERA_ZOOM"], 1.0);
         assert_eq!(v["PLAYER_W"], 16.0);
         assert_eq!(v["PLAYER_H"], 28.0);
+        // T23.10: the owner's words — "more of the map is visible at all times" — on what the client receives: the
+        // view it builds from these shows at least four times the zoom-2 view (640 × 360 world px).
+        let zoom = v["CAMERA_ZOOM"].as_f64().expect("zoom");
+        let (w, h) = (
+            v["VIEWPORT_W"].as_f64().expect("w"),
+            v["VIEWPORT_H"].as_f64().expect("h"),
+        );
+        let zoom_2_area = (w / 2.0) * (h / 2.0);
+        assert!((w / zoom) * (h / zoom) >= 4.0 * zoom_2_area);
     }
 
     /// §F7's bounds cross to the client, pinned to the constants.

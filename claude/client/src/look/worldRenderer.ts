@@ -49,7 +49,7 @@ import { FxLayer } from './fx/layer'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
 import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
 import { castOf } from './actors/cast'
-import { applyPost, buildPost, type Post } from './post'
+import { NIGHT_CIRCLES, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
 import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
 import { gameSky, skyOffsets, type Offset } from './skyLayout'
@@ -59,7 +59,7 @@ import { TerrainLayer } from './terrainLayer'
 import { disposeAlbedoView, makeAlbedoView, syncAlbedoView, type AlbedoView } from './terrainDev'
 import { makeTerrainMaterials, setLights, setLook, setTextures } from './terrainMaterial'
 import { TERRAIN_LIGHTS, TERRAIN_LIGHTS_LOW, pickLights } from './terrainLights'
-import { CAVE_WALL_DEFAULT, bufferFor, caveWallFromUrl, mustDraw, orthoFromView, toWorld, type QualityTier } from './worldRenderer-math'
+import { CAVE_WALL_DEFAULT, bufferFor, caveWallFromUrl, mustDraw, nightUniforms, orthoFromView, toWorld, type NightView, type QualityTier } from './worldRenderer-math'
 
 /**
  * A layer of the world, and whether it changes on its own (T23.03B, F3). An animated layer —
@@ -152,6 +152,9 @@ export class WorldRenderer implements SceneRenderer {
   /** The parallax offsets the last drawn frame used (screen px), for the dev handle. */
   private drawnOffsets: { layers: Offset[]; horizon: Offset } = { layers: [], horizon: [0, 0] }
   private composer: EffectComposer
+  /** T23.10: the scene's night view (`setNightView`), and the uniforms it made on the last drawn frame. */
+  private night: NightView | null = null
+  private nightLast: NightUniforms | null = null
   /** T23.08: the composer's passes the look drives (`post.ts`). */
   private post!: Post
   /** T23.08: back fog, front fog, foreground leaves (`atmosphere.ts`). */
@@ -371,6 +374,10 @@ export class WorldRenderer implements SceneRenderer {
 
   render(view: ViewRect): void {
     if (!this.desc || !this.owns) return
+    // T23.10: a watcher reading this canvas frame after frame (`fx/feed.ts::keepDrawing`) needs every frame drawn: a
+    // skipped one leaves the drawing buffer cleared, and at zoom 1 the camera no longer moves every frame (m4's round
+    // and its control region both read 35 — each against the clear).
+    if (this.fxSource?.keepDrawing) this.dirty = true
     this.syncBox()
     // A terrain update is a new picture once the terrain is drawn (T23.07) — the carve's frame, not the next.
     if (this.terrain.pump() && (this.albedoView || this.terrain.ready)) this.dirty = true
@@ -411,6 +418,8 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
+    this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, this.desc.look.lights, NIGHT_CIRCLES)
+    applyNight(this.post, this.nightLast)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
       this.renderer.setRenderTarget(null)
@@ -481,6 +490,7 @@ export class WorldRenderer implements SceneRenderer {
    */
   private readPatch(x: number, y: number, w: number, h: number): Uint8Array | null {
     if (!this.owns || !this.desc) return null
+
     const gl = this.gl
     const sx = gl.drawingBufferWidth / this.phaserCanvas.width
     const sy = gl.drawingBufferHeight / this.phaserCanvas.height
@@ -535,6 +545,24 @@ export class WorldRenderer implements SceneRenderer {
     if (!this.desc || sameLights(this.desc.look.lights, lights)) return
     this.desc.look.lights = lights
     this.dirty = true
+  }
+
+  /**
+   * T23.10 (R7): this frame's night view (`worldRenderer-math.ts::NightView`) — the scene's darkness and the circles
+   * its player sees in; `null` by day or where there is none (the look-lab). A changed one is a new picture.
+   */
+  setNightView(v: NightView | null): void {
+    const same =
+      (v === null && this.night === null) ||
+      (v !== null && this.night !== null && v.darkness === this.night.darkness && v.soft === this.night.soft &&
+        v.circles.length === this.night.circles.length && v.circles.every((c, i) => c.x === this.night!.circles[i]!.x && c.y === this.night!.circles[i]!.y && c.r === this.night!.circles[i]!.r))
+    this.night = v && { ...v, circles: v.circles.map((c) => ({ ...c })) }
+    if (!same) this.dirty = true
+  }
+
+  /** Dev (T23.10): the night view's uniforms on the last drawn frame (buffer px), or null: none drawn. */
+  nightDrawn(): NightUniforms | null {
+    return this.nightLast
   }
 
   /**
@@ -1047,6 +1075,8 @@ export interface GameWorld {
   caveWallDrawn(): boolean | null
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
+  /** T23.10 (R7): this frame's night view; dropped where three did not start. */
+  setNightView(v: NightView | null): void
   /** T23.13/T23.14: this frame's cast (`look/actors/`); dropped where three did not start. */
   setActors(actors: Actor[]): void
 }
@@ -1103,6 +1133,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
     terrainSwapPending: () => renderer instanceof WorldRenderer && renderer.litTerrainWanted && !renderer.drawsTerrain,
     setLights: (lights) => {
       if (renderer instanceof WorldRenderer) renderer.setLights(lights)
+    },
+    setNightView: (v) => {
+      if (renderer instanceof WorldRenderer) renderer.setNightView(v)
     },
     setActors: (actors) => {
       if (renderer instanceof WorldRenderer) renderer.setActors(actors)

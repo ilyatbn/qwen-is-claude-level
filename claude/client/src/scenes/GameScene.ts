@@ -80,7 +80,7 @@ import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SpaceSky } from '../render/spaceSky'
-import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
+import { fovRadius, nightView } from '../render/lightmap-math'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
@@ -304,7 +304,6 @@ export class GameScene extends Phaser.Scene {
    * independent one.
    */
   private roundSeed = ''
-  private lightmap!: Lightmap
   private fx!: OrdnanceFxLayer
   /** e2e only: point the camera here instead of at the player. */
   private watchPoint: { x: number; y: number } | null = null
@@ -554,6 +553,9 @@ export class GameScene extends Phaser.Scene {
   private inputsSent = 0
   /** The server's word on whether the local player is alive. */
   private meAlive = true
+  /** T23.10: the sight radius the last frame's night view was drawn with (`debug().sight`). */
+  private sightFov = 0
+  private readonly sightSeen = new Map<number, { x: number; y: number; visible: boolean }>()
   private phase: Phase = 'lobby'
   private timeLeft = 0
   /**
@@ -688,6 +690,8 @@ export class GameScene extends Phaser.Scene {
     // than a literal 100 — the field's own initializer is 0 for this reason.
     this.health = C().BASE_HEALTH
     this.meAlive = true
+    this.sightFov = 0
+    this.sightSeen.clear()
     this.battery = 0
     this.heals = 0
     this.batteries = 0
@@ -840,7 +844,6 @@ export class GameScene extends Phaser.Scene {
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
       this.worldRenderer?.setTerrain(this.terrainFields)
     })
-    this.lightmap = new Lightmap(this)
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
@@ -1481,7 +1484,6 @@ export class GameScene extends Phaser.Scene {
       this.minimap?.destroy()
       this.debugHud?.destroy()
       this.world?.destroy()
-      this.lightmap.destroy()
       this.spaceSky.destroy()
       this.fx?.destroy()
       // **Destroyed, then forgotten.** This block used to null seven of its
@@ -2520,7 +2522,7 @@ export class GameScene extends Phaser.Scene {
         x: r.view.container.x,
         y: r.view.container.y,
       }))
-      // The *same* fov the lightmap and the renderer cull with — computed once,
+      // The *same* fov the night view and the renderer cull with — computed once,
       // above, rather than recomputed here. Two copies of this number would let
       // the minimap and the screen disagree about who is visible (§A6).
       // T21.19: dropped crates blink here, from the mirror the item layer draws from,
@@ -2531,10 +2533,9 @@ export class GameScene extends Phaser.Scene {
       this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
     }
 
-    // T23.09: the lightmap keeps its **vision** role only (the player's field of view; T23.10 moves it
-    // into the night view). Its effect lights — ordnance, fire, lava — are the lit terrain's now: the
-    // same effects, as F's point lights (`effectLights.ts`), handed to the world renderer below.
-    const lights: LightSource[] = [{ x: rp.x, y: rp.y, radius: fov, intensity: 1 }]
+    // T23.10 (R7): the player's field of view is drawn as F1 draws night — a soft falloff into the night palette
+    // outside it (`nightView`, the world renderer's output pass), never the old black MULTIPLY lightmap. The effect
+    // lights — ordnance, fire, lava — light the terrain as F's point lights (`effectLights.ts`), handed over below.
     this.debugHud.update(performance.now(), {
       rttMs: this.clock.rtt,
       pendingInputs: this.predictor.stats.pending,
@@ -2558,7 +2559,8 @@ export class GameScene extends Phaser.Scene {
       seed: String(this.core.meta.seed),
       fps: this.game.loop.actualFps,
     })
-    this.lightmap.render(this.cameras.main, darkness, lights)
+    this.sightFov = fov
+    this.worldRenderer?.setNightView(nightView(darkness, [{ x: rp.x, y: rp.y, r: fov }]))
     // T23.09C F7: built every frame whether or not the world renderer is up — its bookkeeping (which rounds have
     // flashed) must not go stale while the renderer loads: a round first listed then would flash late, mid-air.
     const effectLights = this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView))
@@ -2675,6 +2677,8 @@ export class GameScene extends Phaser.Scene {
       const d = Math.hypot(p.x - localPos.x, p.y - localPos.y)
       const visible = darkness <= 0.01 || d <= fov
       r.view.container.setVisible(visible && flag(p.flags, FLAG.alive))
+      // T23.10: where the rule measured this remote (its sampled place — a hidden container is not moved) and the verdict.
+      this.sightSeen.set(id, { x: p.x, y: p.y, visible: r.view.container.visible })
       // T22.19 (R107): the remote's pull at its interpolated position, its own byte.
       // **Stepped before the visibility cull** (T22.19B F5): a remote hidden by the dark
       // used to keep the angle it was last seen at and turn from it when it reappeared.
@@ -4005,6 +4009,12 @@ export class GameScene extends Phaser.Scene {
           // T22.06: what was drawn and lit with, and the sky that drew it. The byte
           // above can be 0 while the frame is dark — that `||` is why both exist.
           drawnDarkness: self.drawnDarkness,
+          // T23.10 (R7): the seeing rule, both ends — the sight radius the night view was drawn with, and each
+          // remote's drawn place and whether it is drawn (`renderRemotes` hides one beyond it at night).
+          sight: {
+            fov: self.sightFov,
+            remotes: [...self.sightSeen].filter(([id]) => self.remotes.has(id)).map(([id, r]) => ({ id, ...r })),
+          },
           // T23.06B (F3/F9): why this map's terrain fields are not the full picture — the worker
           // failed (main-thread fallback, no generated cave walls) or version skew — '' when they are;
           // and whether the new terrain's picture is whole (T23.07's switch from Phaser's rock).

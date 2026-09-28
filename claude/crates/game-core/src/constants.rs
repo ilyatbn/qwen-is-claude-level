@@ -319,9 +319,12 @@ pub const KNOCKBACK_FIRE_GRACE: f32 = 0.6;
 /// what it is — `bot_engage_range_is_half_the_zoom_2_view` pins it to that basis. Owner question, answered by default
 /// (R6): whether bots should see further now that players do — no.
 pub const BOT_ENGAGE_RANGE: f32 = 320.0;
-/// Corrected for CAMERA_ZOOM 2.0 — see docs/70 §A16.
-pub const FOV_DAY: f32 = 320.0;
-pub const FOV_NIGHT: f32 = 110.0;
+/// T23.10 (R6): restated for `CAMERA_ZOOM` 1.0 so the **on-screen** fraction is unchanged — 320 → 640 and 110 → 220
+/// (world px; the view is twice as wide). docs/70 §A16 had restated them for zoom 2. Every reader is the client's
+/// vision (`lightmap-math.ts::fovRadius`, the minimap, the night seeing rule) and `cycle.rs::fov_radius`; bots engage
+/// at `BOT_ENGAGE_RANGE`. `fov_is_the_same_share_of_the_view` pins the pair to that basis.
+pub const FOV_DAY: f32 = 640.0;
+pub const FOV_NIGHT: f32 = 220.0;
 pub const FOV_FOG_MULT: f32 = 0.45;
 pub const FOV_HEALTH_MIN_MULT: f32 = 0.80;
 /// Fraction of the radius used for the gradient falloff.
@@ -1905,8 +1908,8 @@ pub const CAMERA_LERP: f32 = 0.12;
 ///
 /// **Medium, not Large — T11.16, §B27.** §A1 chose Large so the map is something
 /// you explore rather than survey, and that intent stands: at `CAMERA_ZOOM` 2.0
-/// Medium is still 4.8 x 4.3 screens of world, so nothing about discovery, the
-/// minimap or the cave system changes.
+/// Medium was 4.8 x 4.3 screens of world — at 1.0 (T23.10, R6) it is 2.4 x 2.1, still
+/// more world than one screen shows (`zoomed_viewport_is_smaller_than_the_smallest_map`).
 ///
 /// What changed is measured. At the shipping player count, 8 seeds x 150 s:
 ///
@@ -1926,7 +1929,12 @@ pub const CAMERA_LERP: f32 = 0.12;
 /// with no fighting in them.
 pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Medium;
 /// Phaser camera zoom. Visible world = VIEWPORT / this.
-pub const CAMERA_ZOOM: f32 = 2.0;
+///
+/// **T23.10 (R6): 2.0 → 1.0** — what the M23 pictures are drawn at, and the owner's words: *"a bit more zoomed out
+/// and more of the map is visible at all times"*. Four times the visible area (1280 × 720 world px, was 640 × 360);
+/// `the_view_shows_four_times_the_zoom_2_area` pins that, not the number. Not simulation: nothing in `game-core`'s
+/// step reads it (the bird test's half-view is a test).
+pub const CAMERA_ZOOM: f32 = 1.0;
 /// The camera does not move while the player is inside this box.
 pub const CAMERA_DEADZONE_W: f32 = 120.0;
 pub const CAMERA_DEADZONE_H: f32 = 90.0;
@@ -2135,15 +2143,18 @@ pub const STAR_FADE_START: f32 = 0.58;
 //
 // Presentation only: nothing here reaches the simulation or the state hash. Sizes
 // are **camera px** — the space the sky is laid out in, which `CAMERA_ZOOM` then
-// doubles on screen. Every body moves on the **round's** clock, so two players in
+// scales on screen. Every body moves on the **round's** clock, so two players in
 // one round see one sky.
+//
+// T23.10 (R6): the radii were chosen at zoom 2 for their size on screen; restated ×2 for zoom 1 so the bodies
+// keep that size (the earth 256 screen px across, as before).
 
-/// The earth, camera px. 128 screen px across at `CAMERA_ZOOM` 2: the largest thing
+/// The earth, camera px — 256 screen px across at `CAMERA_ZOOM` 1: the largest thing
 /// in the sky by far, which is what makes it read as the planet you are above.
-pub const SPACE_EARTH_RADIUS: f32 = 64.0;
-pub const SPACE_MOON_RADIUS: f32 = 15.0;
+pub const SPACE_EARTH_RADIUS: f32 = 128.0;
+pub const SPACE_MOON_RADIUS: f32 = 30.0;
 /// The sun's disc; its glow is `SPACE_SUN_GLOW` times this.
-pub const SPACE_SUN_RADIUS: f32 = 12.0;
+pub const SPACE_SUN_RADIUS: f32 = 24.0;
 pub const SPACE_SUN_GLOW: f32 = 9.0;
 /// The half-extents of the sun's and the earth's elliptical paths across the view,
 /// as fractions of it (the centres stay in `spaceSky-math.ts`: they are composition —
@@ -4580,6 +4591,31 @@ mod tests {
         assert_eq!(MapScale::Small.params().blob_count, 6);
         assert_eq!(MapScale::Medium.params().blob_count, 10);
         assert_eq!(MapScale::Large.params().blob_count, 15);
+    }
+
+    /// T23.10: the owner's words — *"a bit more zoomed out and more of the map is visible at all times"* — as a
+    /// measure: the view shows at least four times the zoom-2 area (R6: the pictures' zoom). Against the old view, not
+    /// against `CAMERA_ZOOM` itself, so the value is what is tested.
+    #[test]
+    fn the_view_shows_four_times_the_zoom_2_area() {
+        const ZOOM_2: f32 = 2.0;
+        let old = (VIEWPORT_W as f32 / ZOOM_2) * (VIEWPORT_H as f32 / ZOOM_2);
+        let now = (VIEWPORT_W as f32 / CAMERA_ZOOM) * (VIEWPORT_H as f32 / CAMERA_ZOOM);
+        assert!(
+            now >= 4.0 * old,
+            "the view shows {now} px², the zoom-2 view {old}"
+        );
+    }
+
+    /// T23.10 (R6): day and night sight are the same share of the view they were at zoom 2.
+    #[test]
+    fn fov_is_the_same_share_of_the_view() {
+        const ZOOM_2: f32 = 2.0;
+        const FOV_DAY_AT_ZOOM_2: f32 = 320.0;
+        const FOV_NIGHT_AT_ZOOM_2: f32 = 110.0;
+        let (w2, w1) = (VIEWPORT_W as f32 / ZOOM_2, VIEWPORT_W as f32 / CAMERA_ZOOM);
+        assert_eq!(FOV_DAY / w1, FOV_DAY_AT_ZOOM_2 / w2);
+        assert_eq!(FOV_NIGHT / w1, FOV_NIGHT_AT_ZOOM_2 / w2);
     }
 
     #[test]

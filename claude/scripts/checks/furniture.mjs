@@ -136,7 +136,8 @@ async function worldOff({ page, shot, log }) {
   await page.evaluate(() => window.__game.freeze(true))
   const onOff = makeOnOff(page, log, problems)
   const grect = await rectOf(page, gx - k.TOMBSTONE_W / 2 - 2, gy - k.TOMBSTONE_H - 2, gx + k.TOMBSTONE_W / 2 + 2, gy + 1)
-  const arect = await rectOf(page, ax - 26, ay - 16, ax + 26, ay + 1)
+  // Tight to the two bodies (T23.10: at zoom 1 the ±26 px box was 9 % legs and 91 % ground).
+  const arect = await rectOf(page, ax - 14 - k.BEETLE_W / 2, ay - Math.max(k.BEETLE_H, k.SPIDER_H) - 1, ax + 14 + k.SPIDER_W / 2, ay + 1)
   if (!grect || !arect) problems.push('the staged graves/animals are off camera')
   else {
     await onOff('world off: a grave (Phaser)', (on) => stage(on), grect)
@@ -152,8 +153,9 @@ async function worldOff({ page, shot, log }) {
   if (got.drawn !== 1) problems.push(`world off: staged a pickup, the layer holds ${got.drawn}`)
   await page.waitForTimeout(600)
   await page.evaluate(() => window.__game.freeze(true))
-  const pr = await rectOf(page, px - 16, py - 30, px + 16, py + 10)
-  if (pr) await onOff('world off: the bazooka pickup and its label (Phaser)', pickup, pr)
+  // The pickup itself (its label sits a figure's height up since T23.19D, measured by the main leg).
+  const pr = await rectOf(page, px - 8, py - 6, px + 8, py + 6)
+  if (pr) await onOff('world off: the bazooka pickup (Phaser)', pickup, pr)
   else problems.push('world off: the pickup is off camera')
   const inWorld = await page.evaluate(() => window.__game.debug().itemsInWorld)
   if (inWorld !== false) problems.push(`world off: the pickups say they are the world renderer's (itemsInWorld ${inWorld})`)

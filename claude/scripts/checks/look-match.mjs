@@ -161,7 +161,10 @@ try {
   const grade = patch(on, noGrade, [0, 0, W, H])
   const fg = patch(on, noFg, [0, 0, W, H])
   console.log(`  grade: whole frame mean |Δ| ${grade.mean.toFixed(2)} (max ${grade.max}) with the grade hidden; control, fg hidden (no leaves in the game): mean ${fg.mean.toFixed(3)}, max ${fg.max}`)
-  if (fg.max !== 0) fail(`control: hiding the absent foreground moved px (max ${fg.max}) — hides are not what moves the frame`)
+  // T23.10: judged on the mean, a twentieth of the grade's floor — not "no px at all": at zoom 1 the view holds four
+  // times the map, and something animated in it (a bird's wing, a fire) moves a few px between any two frames (seen:
+  // mean 0.002, max 86–94, against the grade's 5.02). The top-rows fog control above stays exact.
+  if (fg.mean > GRADE_MIN_DELTA / 20) fail(`control: hiding the absent foreground moved the frame (mean ${fg.mean.toFixed(3)}, max ${fg.max}) — hides are not what moves the frame`)
   if (grade.mean >= GRADE_MIN_DELTA) ok(`the grade is drawn in the match: hiding it moves the frame by ${grade.mean.toFixed(2)} (min ${GRADE_MIN_DELTA})`)
   else fail(`the grade is not drawn in the match: hiding it moves the frame by ${grade.mean.toFixed(2)} (min ${GRADE_MIN_DELTA})`)
 

@@ -182,6 +182,10 @@ export default async function ({ page, shot, log }) {
   const threeFrames = async () => {
     let on, off, noWall, camA, camB
     await page.evaluate(() => window.__game.freeze(true))
+    // T23.10: the sky flat magenta in all three frames, so a px of rock changes with the terrain hidden however close
+    // the sky's colour behind it — at zoom 1 the sky bands sit elsewhere in the view, and on pad 0's left end a band
+    // near the rock's colour left 11 % of its rock "unchanged". Air shows the same magenta either way.
+    await page.evaluate(() => window.__world.skyFlat([1, 0, 1]))
     try {
       await frames()
       camA = await page.evaluate(() => window.__game.debug().camera)
@@ -193,6 +197,7 @@ export default async function ({ page, shot, log }) {
       noWall = await worldFrame()
       camB = await page.evaluate(() => window.__game.debug().camera)
     } finally {
+      await page.evaluate(() => window.__world.skyFlat(null))
       await page.evaluate(() => window.__world.hideTerrain(false))
       await page.evaluate(() => window.__world.hideWall(false))
       await page.evaluate(() => window.__game.freeze(false))

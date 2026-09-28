@@ -12,14 +12,17 @@
  * ten blur draws), and `look.grade === null` the grade: the look-lab's `only=sky` / `only=terrain`
  * draw the T23.04–T23.07 chain their references were rendered with.
  */
-import { HalfFloatType, RGBFormat, type Scene, type Camera, Vector2, Vector3, type WebGLRenderer, WebGLRenderTarget } from 'three'
+import { HalfFloatType, RGBFormat, type Scene, type Camera, Vector2, Vector3, Vector4, type WebGLRenderer, WebGLRenderTarget } from 'three'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
-import type { FrameLook } from './scene'
+import type { FrameLook, Rgb } from './scene'
 import { TIER_SAMPLES, type QualityTier } from './worldRenderer-math'
 import { NOISE_GLSL } from './skyMaterial'
+
+/** T23.10: the night view's circles, at most — the player's sight, then the brightest effect lights. */
+export const NIGHT_CIRCLES = 8
 
 /**
  * `kit.js::post`'s grade, verbatim, as the tail of three's `OutputShader` — one full-screen pass, not two.
@@ -33,6 +36,7 @@ const GRADE_PARS =
   /* glsl */ `
   uniform float vig, sat, gradeOn; uniform vec3 warm, cool;
   uniform sampler2D tBloom; uniform float bloomOn;
+  uniform float nightK, nightN; uniform vec3 nightFloor; uniform vec4 nightC[${NIGHT_CIRCLES}];
 `
 /**
  * T23.18B: the bloom's additive blend, folded into the output pass — `UnrealBloomPass` drew its composite over the
@@ -42,6 +46,20 @@ const GRADE_PARS =
  */
 const BLOOM_ADD = /* glsl */ `
   if (bloomOn > 0.5) { vec4 b = texture2D(tBloom, vUv); gl_FragColor.rgb += b.rgb * b.a; }
+`
+/**
+ * T23.10 (R7): **the night view** — outside the circles you see (your field of view, `fovRadius`), the scene fades into
+ * the night: its light scaled down by `nightK` toward the night palette's darkest colour (`nightFloor`), in linear HDR
+ * before the tone map — so anything bright out there (a blast, a muzzle, a lit vent: the effect lights, T23.09) still
+ * reads, and nothing is ever flat black. Circles in drawing-buffer px (`gl_FragCoord`): centre, then the radius the
+ * fade starts at and the one it ends at. The seeing rule itself (a remote beyond your `fov` is not drawn) stays the
+ * scenes'. Replaces the Phaser MULTIPLY lightmap (`render/lightmap.ts`, retired).
+ */
+const NIGHT_VIEW = /* glsl */ `
+  if (nightK > 0.) { float vis = 0.;
+    for (int i = 0; i < ${NIGHT_CIRCLES}; i++) { if (float(i) >= nightN) break; vec4 c = nightC[i];
+      vis = max(vis, 1. - smoothstep(c.z, c.w, distance(gl_FragCoord.xy, c.xy))); }
+    float f = 1. - nightK * (1. - vis); gl_FragColor.rgb = gl_FragColor.rgb * f + nightFloor * (1. - f); }
 `
 const GRADE_TAIL = /* glsl */ `
   if (gradeOn > 0.5) { vec3 c = gl_FragColor.rgb;
@@ -63,7 +81,7 @@ function gradedOutput(): OutputPass {
   const read = fs.indexOf('gl_FragColor = texture2D( tDiffuse, vUv );')
   if (read < 0) throw new Error('OutputShader changed shape: the bloom has nowhere to go')
   const afterRead = read + 'gl_FragColor = texture2D( tDiffuse, vUv );'.length
-  m.fragmentShader = fs.slice(0, main) + GRADE_PARS + fs.slice(main, afterRead) + BLOOM_ADD + fs.slice(afterRead, end) + GRADE_TAIL + fs.slice(end)
+  m.fragmentShader = fs.slice(0, main) + GRADE_PARS + fs.slice(main, afterRead) + BLOOM_ADD + NIGHT_VIEW + fs.slice(afterRead, end) + GRADE_TAIL + fs.slice(end)
   Object.assign(pass.uniforms, {
     vig: { value: 0.35 },
     sat: { value: 1.08 },
@@ -72,8 +90,31 @@ function gradedOutput(): OutputPass {
     bloomOn: { value: 0 },
     warm: { value: new Vector3(1.03, 1, 0.95) },
     cool: { value: new Vector3(0.94, 0.98, 1.06) },
+    nightK: { value: 0 },
+    nightN: { value: 0 },
+    nightFloor: { value: new Vector3(0, 0, 0) },
+    nightC: { value: Array.from({ length: NIGHT_CIRCLES }, () => new Vector4()) },
   })
   return pass
+}
+
+/** One frame's night view, in drawing-buffer px (origin bottom left, as `gl_FragCoord`). `k` 0: none. */
+export interface NightUniforms {
+  k: number
+  floor: Rgb
+  circles: readonly { x: number; y: number; inner: number; outer: number }[]
+}
+
+export function applyNight(p: Post, n: NightUniforms | null): void {
+  const u = p.output.uniforms as Record<string, { value: unknown }>
+  const k = n && n.k > 0 ? n.k : 0
+  u['nightK']!.value = k
+  if (!n || k === 0) return
+  const cs = n.circles.slice(0, NIGHT_CIRCLES)
+  u['nightN']!.value = cs.length
+  ;(u['nightFloor']!.value as Vector3).set(...n.floor)
+  const arr = u['nightC']!.value as Vector4[]
+  cs.forEach((c, i) => arr[i]!.set(c.x, c.y, c.inner, c.outer))
 }
 
 /** three's `UnrealBloomPass.BlurDirectionX/Y` (its static fields are not in the type declarations). */

@@ -24,6 +24,9 @@ export interface WatchedRound {
   /** Mean per-pixel max-channel change against the control frame (0–255): the round's square, the control region's. */
   diff: number | null
   farDiff: number | null
+  /** The squares read (canvas px), for a check to say where it looked. */
+  rect: Rect
+  far: Rect
 }
 
 interface Record extends WatchedRound {
@@ -50,12 +53,15 @@ export class RoundWatch {
     private readonly src: WatchSource,
   ) {
     game.events.on(Phaser.Core.Events.POST_RENDER, this.frame, this)
+    // T23.10: every frame drawn while watching — a skipped one reads as a cleared buffer.
+    fxFeed(camera.scene).keepDrawing = true
   }
 
   /** Stop watching; what was seen. */
   stop(): WatchedRound[] {
     this.game.events.off(Phaser.Core.Events.POST_RENDER, this.frame, this)
-    return this.rounds.map(({ id, kind, frames, diff, farDiff }) => ({ id, kind, frames, diff, farDiff }))
+    fxFeed(this.camera.scene).keepDrawing = false
+    return this.rounds.map(({ id, kind, frames, diff, farDiff, rect, far }) => ({ id, kind, frames, diff, farDiff, rect, far }))
   }
 
   /** Both canvases' pixels in `rect`: Phaser's, then the world's (T23.18: the rounds are drawn there now) if it draws. */
@@ -107,7 +113,12 @@ export class RoundWatch {
       const W = this.game.renderer.width
       const Hc = this.game.renderer.height
       const rect = clampRect([Math.round(sx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX], W, Hc)
-      const far = clampRect([Math.round(2 * mx - sx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX], W, Hc)
+      // The control square mirrors the round's across the player — unless that lands on it (a round fired straight up
+      // or down, T23.10: at zoom 1 the camera clamps to the map and m4's aim came out vertical): then 3 squares aside,
+      // toward the middle of the canvas.
+      let fx = 2 * mx - sx
+      if (Math.abs(fx - sx) < ROUND_PATCH_PX * 2) fx = sx + (sx < W / 2 ? 3 : -3) * ROUND_PATCH_PX
+      const far = clampRect([Math.round(fx - H), Math.round(sy - H), ROUND_PATCH_PX, ROUND_PATCH_PX], W, Hc)
       if (!rect || !far) continue
       this.rounds.push({ id, kind: p.kind, rect, far, patch: this.read(rect), farPatch: this.read(far), frames: 1, diff: null, farDiff: null })
     }

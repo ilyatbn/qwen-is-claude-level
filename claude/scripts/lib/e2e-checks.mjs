@@ -271,17 +271,13 @@ export const CHECKS = [
   // T23.14 retired `canvas-tinted-skin` (the red Recruit red on Canvas — the tinted sprite atlas, `canvasTint.ts`,
   // retired with the sprite body; R2 retired Canvas for the world) and `skins-ingame` (two skins told apart in a
   // match — R8: skins are drawn as nothing; the scarf's seat colour is the identity now, `stick-figure`).
-  // `disabled: 'T23.11'` (T23.07): both photograph night as Phaser's MULTIPLY lightmap darkening Phaser's
-  // rock. The rock is the lit terrain on the world canvas now, F1's night at every hour, and that layer
-  // cannot darken it; R7 replaces the lightmap with the night/moonlit-day blend, which T23.11 builds
-  // and re-points these at. Measured: "night corner 14 vs day 14", "kept 100% of daylight".
-  { name: 'lightmap', file: 'scripts/checks/lightmap.mjs', url: '?sandbox=1&seed=4242', disabled: 'T23.11' },
-  {
-    name: 'night_darkens_the_world',
-    file: 'scripts/checks/night_darkens_the_world.mjs',
-    url: '?sandbox=1&seed=4242',
-    disabled: 'T23.11',
-  },
+  // T23.10 retired `lightmap` and `night_darkens_the_world` (both photographed night as Phaser's MULTIPLY lightmap,
+  // `disabled` since T23.07) with the lightmap itself (R7, R13): `night-view` photographs the night view that replaced
+  // it — inside sight unchanged, outside faded into the night palette and never black, a jet out there still bright.
+  { name: 'night-view', file: 'scripts/checks/night-view.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.10 (R7): the night seeing rule in a real match on pixels — a remote at 0.9 × your night sight drawn, one at
+  // 1.1 × not, in one frame. Standalone: three humans on a `DEV_PROBE=1` server at night.
+  { name: 'night-view-match', file: 'scripts/checks/night-view-match.mjs', standalone: true },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
   // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
   { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345' },

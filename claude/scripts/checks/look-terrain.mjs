@@ -378,7 +378,13 @@ export default async function ({ page, shot, log }) {
   await shot('look-terrain-sandbox-crater')
 
   // ---------------------------------------------------------------- 4. cave wall against open sky
+  // T23.10: on the full tier — its bounds (R24's 24 px, the named runs) were measured at one buffer px per world px,
+  // the low tier at zoom 2; at zoom 1 the low tier draws a world px as half a buffer px, and the 10 px fade's steps
+  // doubled past `WALL_EDGE_STEP` (seed 11: 40–60 px "hard" where the fade is drawn).
+  await page.evaluate(() => window.__game.setHighQuality(true))
+  await page.waitForFunction(() => window.__world.info().tier === 'full' && window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, null, { timeout: 60_000 })
   const edges = await wallEdges(page, WALL_EDGE_SEEDS, log)
+  await page.evaluate(() => window.__game.setHighQuality(false))
   for (const e of edges) for (const x of e.over) problems.push(`seed ${e.seed}: ${x}`)
   for (const e of edges) if (e.warning !== '') problems.push(`seed ${e.seed}: the terrain fields warn — got ${JSON.stringify(e.warning)}, want ""`)
   for (const e of edges) {

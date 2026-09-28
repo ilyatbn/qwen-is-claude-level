@@ -44,7 +44,13 @@ await page.waitForFunction(() => window.__world?.litTerrain?.()?.drawn, null, { 
 // --- the swing ------------------------------------------------------------------------------
 await selectWeapon(page, 'shovel')
 await standStill(page)
-await page.mouse.move(900, 330)
+// Aim right and a little up from the player, wherever the camera put them (T23.10: at zoom 1 the view clamps to the
+// map and the player is no longer at the centre — a fixed (900, 330) aimed the arc down into the gate they stand in).
+{
+  const d0 = await dbg()
+  const me = d0.renderPos
+  await page.mouse.move((me.x - d0.worldView.x) * d0.zoom + 160, (me.y - d0.worldView.y) * d0.zoom - 40)
+}
 await sleep(200)
 const swingsHeard = (d) => d.swings ?? d.observed?.swings ?? 0
 const heard0 = swingsHeard(await dbg())

@@ -20,12 +20,18 @@ describe('Core', () => {
     core = await newCore()
   })
 
+  it("T23.10: the view shows at least four times the zoom-2 area (the owner's \"more of the map is visible\")", () => {
+    const c = C()
+    const zoom2 = (c.VIEWPORT_W / 2) * (c.VIEWPORT_H / 2)
+    expect((c.VIEWPORT_W / c.CAMERA_ZOOM) * (c.VIEWPORT_H / c.CAMERA_ZOOM)).toBeGreaterThanOrEqual(4 * zoom2)
+  })
+
   it('initialises and exposes constants from Rust', () => {
     const c = C()
     expect(c.VIEWPORT_W).toBe(1280)
     expect(c.VIEWPORT_H).toBe(720)
     expect(c.CHUNK_SIZE).toBe(256)
-    expect(c.CAMERA_ZOOM).toBe(2)
+    expect(c.CAMERA_ZOOM).toBe(1)
     expect(c.PLAYER_W).toBe(16)
     expect(c.PLAYER_H).toBe(28)
   })

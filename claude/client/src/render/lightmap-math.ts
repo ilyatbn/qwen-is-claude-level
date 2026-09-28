@@ -1,5 +1,6 @@
 /**
- * The pure half of the lightmap (§A8): the field-of-view formula.
+ * The field-of-view formula (§A8) and, since T23.10, the night view it draws (`nightView`) — the lightmap it was the
+ * pure half of is retired.
  *
  * `docs/14-daynight-visibility.md` §3. This is the one genuinely testable piece of
  * the lightmap, and the server needs the identical formula for visibility culling
@@ -66,9 +67,21 @@ export function fovRadius(o: FovOpts): number {
   )
 }
 
-/** Whether the lightmap has anything to do at all this frame. */
-export function lightmapNeeded(darkness: number, fogActive: boolean): boolean {
-  return darkness > 0.001 || fogActive
+/**
+ * T23.10 (R7): the night view both scenes hand the world renderer — one derivation, so the two cannot drift (the
+ * lightmap's calls did: the sandbox passed a fog flag the match left out). `darkness` is `sceneDarkness`'s; each
+ * circle is a body the player sees from and its `fovRadius` (fog, health and a flashlight already in it). The
+ * lightmap this replaces (`render/lightmap.ts`, retired) drew the same circles as holes in a black MULTIPLY layer.
+ */
+export function nightView(darkness: number, circles: readonly { x: number; y: number; r: number }[]): {
+  darkness: number
+  nightDarkness: number
+  soft: number
+  circles: { x: number; y: number; r: number }[]
+} | null {
+  if (!(darkness > 0.001)) return null
+  const c = C()
+  return { darkness, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: circles.map((x) => ({ ...x })) }
 }
 
 // ---------------------------------------------------------------------------

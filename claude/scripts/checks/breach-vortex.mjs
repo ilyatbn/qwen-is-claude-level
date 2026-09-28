@@ -117,13 +117,17 @@ async function coverage(page, k, v, label, wantShader) {
       return { left: r.left, top: r.top, w: r.width, h: r.height }
     })
     const inView = (s) => s.onScreen && s.y > bounds.top + bounds.h / 6 && s.y < bounds.top + (bounds.h * 5) / 6
+    // T23.10: the capture ring is judged on screen (a DOM overlay is `underDom`'s, counted apart): at zoom 1 a breach's
+    // vortex sits by the map's rim, and the camera, clamped to the map, puts it near the top or bottom of the frame —
+    // the sixths were the outer radius's allowance at zoom 2 (`EDGE_MIN_ON_SCREEN`), and stay for the edge probes.
+    const ringInView = (s) => s.onScreen
     const underDom = (s) => page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName !== 'CANVAS', [s.x, s.y])
     const shown = []
     let hidden = 0
     for (let i = 0; i < RING_PROBES; i++) {
       const a = (i / RING_PROBES) * Math.PI * 2
       const s = await toScreen(page, v.x + Math.cos(a) * k.VORTEX_CAPTURE_R, v.y + Math.sin(a) * k.VORTEX_CAPTURE_R)
-      if (!inView(s)) continue
+      if (!ringInView(s)) continue
       if (await underDom(s)) hidden++
       else shown.push({ x: s.x, y: s.y })
     }

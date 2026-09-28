@@ -32,8 +32,11 @@ const ALONG = 8
 const MIDDLE = 0.3
 /** Screen px off the axis for the colour points: in the teal glow, off the core. */
 const EDGE = 3
-/** The shortest beam worth photographing (screen px): the muzzle and impact glows must leave a middle. */
-const MIN_LEN = 220
+/**
+ * The shortest beam worth photographing: the muzzle and impact glows (world px sprites) must leave a middle. Set as
+ * 220 screen px at zoom 2 — T23.10 restates it in world px (110), so at zoom 1 it is 110 screen px, not 220.
+ */
+const MIN_LEN_WORLD = 110
 /**
  * Screen px either side of the beam for the control points: past the ribbon (6 world px) **and its bloom** — measured,
  * 40 px out the HDR core's bloom still moved the frame 38–49 on both tiers (F1's laser blooms as widely).
@@ -72,7 +75,20 @@ await sleep(150)
 const narrated0 = (await dbg()).observed?.hitscans ?? 0
 await hold(true)
 let beam = null
+// T23.10: each shot at another angle up from the player (the zoom-2 aim, clamped to a 640-wide view, happened to find
+// open air; at zoom 1 the same world direction ran into rock short of `MIN_LEN_WORLD`).
+const ANGLES = [-0.13, -0.3, 0, -0.5, 0.15, -0.7, -0.2, -0.4, 0.08, -0.6]
 for (let shotN = 0; shotN < 10 && !beam; shotN++) {
+  const to = await page.evaluate((ang) => {
+    const d = window.__game.debug()
+    const v = d.worldView
+    const r = document.querySelector('canvas').getBoundingClientRect()
+    const wx = d.player.x + Math.cos(ang) * 300
+    const wy = d.player.y + Math.sin(ang) * 300
+    return { x: r.left + ((wx - v.x) / v.width) * r.width, y: r.top + ((wy - v.y) / v.height) * r.height }
+  }, ANGLES[shotN])
+  await page.mouse.move(to.x, to.y)
+  await sleep(150)
   await page.evaluate(() => window.__game.fire())
   try {
     await page.waitForFunction(() => (window.__world.fxFeed()?.ordnance?.state.tracers.length ?? 0) > 0, null, { timeout: 3000 })
@@ -83,9 +99,26 @@ for (let shotN = 0; shotN < 10 && !beam; shotN++) {
       const t = window.__world.fxFeed().ordnance.state.tracers.at(-1)
       const d = window.__game.debug()
       const s = (x, y) => ({ x: (x - d.worldView.x) * d.zoom, y: (y - d.worldView.y) * d.zoom })
-      return { a: s(t.x0, t.y0), b: s(t.x1, t.y1), len: Math.hypot(t.x1 - t.x0, t.y1 - t.y0) * d.zoom }
+      return { a: s(t.x0, t.y0), b: s(t.x1, t.y1), len: Math.hypot(t.x1 - t.x0, t.y1 - t.y0) * d.zoom, zoom: d.zoom }
     })
-    if (!(beam.len > MIN_LEN)) {
+    // T23.10: measured on the part of it inside the canvas, clear of its edges — at zoom 1 a beam runs off the frame
+    // (its far point, 20 px from the top edge, read 7): the beam is clipped to the inset frame first.
+    {
+      const M = 40
+      const dx = beam.b.x - beam.a.x
+      const dy = beam.b.y - beam.a.y
+      let t1 = 1
+      for (const [v, d, lo, hi] of [[beam.a.x, dx, M, 1280 - M], [beam.a.y, dy, M, 720 - M]]) {
+        if (d > 0) t1 = Math.min(t1, (hi - v) / d)
+        else if (d < 0) t1 = Math.min(t1, (lo - v) / d)
+      }
+      t1 = Math.max(0, t1)
+      if (t1 < 1) {
+        beam.b = { x: beam.a.x + dx * t1, y: beam.a.y + dy * t1 }
+        beam.len *= t1
+      }
+    }
+    if (!(beam.len > MIN_LEN_WORLD * beam.zoom)) {
       await freeze(false)
       beam = null
       await page.evaluate(() => window.__game.holdTracers(false))
@@ -97,7 +130,7 @@ for (let shotN = 0; shotN < 10 && !beam; shotN++) {
   }
 }
 
-if (!beam) fail(`no beam longer than ${MIN_LEN} px could be held on screen after ten shots`)
+if (!beam) fail(`no beam longer than ${MIN_LEN_WORLD} world px could be held on screen after ten shots`)
 else {
   const narrated = ((await dbg()).observed?.hitscans ?? 0) - narrated0
   const fx = await page.evaluate(() => window.__world.fx())

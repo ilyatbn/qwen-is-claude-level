@@ -759,7 +759,8 @@ if (!hud.visible) fail('F3 did not show the debug HUD')
   const GAME_LAYERS = [
     // T23.07: 10 (decorations) retired with the `decor` atlas. Measured at T23.07 (bf1490f), the list
     // was stale before that: -27 is T22.06's space sky, and -22/-21/-20 retired with the ridges (T23.04).
-    -30, -29, -28, -27, -19, 0, 9, 11, 19, 20, 30, 39, 40, 45, 50,
+    // T23.10: 50 (the lightmap) retired — the night view is drawn in the world canvas.
+    -30, -29, -28, -27, -19, 0, 9, 11, 19, 20, 30, 39, 40, 45,
   ]
   const depths = await a.page.evaluate('window.__game.sceneDepths()')
   if (!Array.isArray(depths) || depths.length === 0) {

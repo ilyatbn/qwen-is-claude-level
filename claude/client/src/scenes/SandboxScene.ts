@@ -36,7 +36,7 @@ import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
-import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
+import { fovRadius, nightView } from '../render/lightmap-math'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { dequantizeAngle } from '../core'
@@ -102,7 +102,6 @@ export class SandboxScene extends Phaser.Scene {
   private terrainFields: TerrainFields | null = null
   /** T23.06B: counts regenerates — part of the fields' map key, so only a resync is the same map. */
   private terrainEpoch = 0
-  private lightmap!: Lightmap
   private overlay!: DebugOverlay
   private fogActive = false
   /**
@@ -250,7 +249,6 @@ export class SandboxScene extends Phaser.Scene {
       this.worldRenderer?.setTerrain(this.terrainFields)
       this.refreshReadout()
     })
-    this.lightmap = new Lightmap(this)
     // `true`: this is the sandbox, the one place buried slots may be drawn.
     this.overlay = new DebugOverlay(this, this.core, true)
     // The sandbox keeps `F4`. §C12 folded the overlays into debug mode for the
@@ -294,7 +292,6 @@ export class SandboxScene extends Phaser.Scene {
       this.flare?.destroy()
       this.minimap?.destroy()
       this.world.destroy()
-      this.lightmap.destroy()
       this.overlay.destroy()
       this.spaceSky.destroy()
     })
@@ -741,6 +738,9 @@ export class SandboxScene extends Phaser.Scene {
    * no radius on screen to report.
    */
   private lastFov = 0
+  /** T23.10: the night view handed to the world renderer on the last frame (null by day). */
+  private lastNightView: ReturnType<typeof nightView> = null
+  private nightViewOn = false
 
   private grantSandboxLoadout(): void {
     this.core.give(0, 3 /* bazooka */, 4)
@@ -851,7 +851,7 @@ export class SandboxScene extends Phaser.Scene {
       `generate ${t.generateMs.toFixed(0)} ms  bakeAll ${t.buildAllMs.toFixed(0)} ms\n` +
       `last carve rebake ${t.lastRebakeMs.toFixed(1)} ms  bakes/frame ${this.frameBakes}\n` +
       `fps ${Math.round(this.game.loop.actualFps)}  pending ${this.world.terrain.stats.pending}  ` +
-      `lightmap ${this.lightmap?.stats.filled ? 'on' : 'off'} draws ${this.lightmap?.stats.drawsLastFrame ?? 0}\n` +
+      `night view ${this.nightViewOn ? 'on' : 'off'}\n` +
       `cave wall ${wall === null ? '…' : wall ? 'on' : 'off'}  old backdrop ${this.world.terrain.backdropEnabled ? 'on' : 'off'}  ` +
       `backdrop ${this.world.terrain.stats.backdropMs.toFixed(0)} ms`
   }
@@ -942,10 +942,10 @@ export class SandboxScene extends Phaser.Scene {
           // under the HUD — rather than only photographing one half of it.
           fogDepth: DEPTH.fog,
           hudDepth: DEPTH.hud,
-          lightmapDepth: DEPTH.lightmap,
-          lightmapDraws: self.lightmap?.stats.drawsLastFrame ?? 0,
-          lightmapFilled: self.lightmap?.stats.filled ?? false,
-          // The radius the lightmap **last rendered with**, not a fresh
+          // T23.10: the night view handed to the world renderer this frame (its seeing circles), or null by day —
+          // what it drew is `__world.nightDrawn()`.
+          nightView: self.lastNightView,
+          // The radius the night view **last used**, not a fresh
           // computation (T20.07) — see `lastFov`.
           fov: self.lastFov,
           overlays: self.overlay?.enabled ?? false,
@@ -1836,7 +1836,7 @@ export class SandboxScene extends Phaser.Scene {
     const darkness = this.darkness()
     // T23.19D F2: what the furniture's night halo fades with.
     fxFeed(this).night = darkness / C().NIGHT_DARKNESS
-    const lights: LightSource[] = []
+    const sight: { x: number; y: number; r: number }[] = []
     if (body) {
       const fov =
         this.fovOverride ??
@@ -1852,16 +1852,19 @@ export class SandboxScene extends Phaser.Scene {
       // was still rendering the old one, which is §A15's whole lesson. It also
       // silently ignored `fovOverride`, which this branch honours.
       this.lastFov = fov
-      lights.push({ x: body.x, y: body.y, radius: fov, intensity: 1 })
-      // The same `fov` the lightmap uses, not a second copy of the formula —
+      sight.push({ x: body.x, y: body.y, r: fov })
+      // The same `fov` the night view uses, not a second copy of the formula —
       // two of them would let the minimap and the screen disagree (§A6).
       // No crates: the sandbox has no world items to beacon (T21.19).
       // No black hole either: it is a networked round's (T22.12C R93).
       this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov, [], this.roundTime, null)
     }
-    // T23.09: the lightmap keeps its vision role only (the field of view above; T23.10 moves it into
-    // the night view). Ordnance and lava light the lit terrain now, as F's point lights (`effectLights.ts`).
-    this.lightmap.render(this.cameras.main, darkness, lights, this.fogActive || weather.fog > 0)
+    // T23.10 (R7): the field of view above, drawn as F1's night (`nightView` — the same derivation the match uses;
+    // the lightmap's call here passed a fog flag the match's left out). Ordnance and lava light the lit terrain, as
+    // F's point lights (`effectLights.ts`).
+    this.lastNightView = nightView(darkness, sight)
+    this.nightViewOn = this.lastNightView !== null
+    this.worldRenderer?.setNightView(this.lastNightView)
     const o = this.world.ordnance.state
     // T23.09C F7: built every frame, renderer or not (its muzzle bookkeeping must not go stale while it loads).
     const effectLights = this.effectLights.frame(

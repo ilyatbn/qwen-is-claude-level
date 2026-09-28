@@ -52,6 +52,8 @@ const DARK_HALO = '120,120,170'
 const TEAL_MIN = 30
 /** A px is the figure's ink where the figure darkens it by more than this (luminance levels). */
 const INK_DROP = 20
+/** …or this share of the luma behind it, over a sky darker than `INK_DROP / INK_SHARE`. */
+const INK_SHARE = 0.6
 /** Width of each side's patch, buffer px (the rim sits 1.15·size mask px off the ink: 3.45 at size 3). */
 const EDGE_PX = 3
 /** Mean luminance gain the dark halo must add to its ring (levels; measured 2026-09-27, seed 4242: 4.7). */
@@ -127,6 +129,10 @@ export default async function ({ page, shot, log }) {
 
   // ------------------------------------------------------------ 2. live: the rim on the light's side
   await page.waitForFunction(() => window.__game && window.__world && window.__world.litTerrain()?.drawn, null, { timeout: 120_000 })
+  // T23.10: on the full tier — one buffer px per world px at zoom 1, as the low tier gave at zoom 2, which is what
+  // `EDGE_PX` and `TEAL_MIN` were measured at (the low tier's half-resolution buffer at zoom 1 read −6.6, 12 px).
+  await page.evaluate(() => window.__game.setHighQuality(true))
+  await page.waitForFunction(() => window.__world.info().tier === 'full' && window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, null, { timeout: 60_000 })
   // A ground spot in view with a figure's height of air above it and no cave wall under its halo centre (so it is
   // also §3's open-ground control).
   const found = await page.evaluate((h) => {
@@ -150,7 +156,10 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => new Promise((r) => { let i = 0; const f = () => (++i >= 30 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f) }))
   const view = await page.evaluate(() => window.__world.view())
   await page.evaluate(() => window.__game.freeze(true))
-  const held = await page.evaluate(() => window.__world.lights())
+  // The scene's lights, less any that reach the figure (T23.10: at zoom 1 the view holds four times the map's standing
+  // lights, and a gate or crystal within its radius of the figure was the dominant key in every frame — the laser then
+  // changed no rim, teal exactly 0).
+  const held = (await page.evaluate(() => window.__world.lights())).filter((l) => Math.hypot(l.x - found.x, l.y - (found.y - 14 * K)) > l.r)
   const stick = { ...LIVE_STICK, x: cx, y: ground }
   const laser = { x: cx + LASER.dx, y: ground + LASER.dy, z: LASER.z, r: LASER.r, rgb: LASER.rgb, i: LASER.i }
   const aL = await frameWith(page, [stick], [...held, laser])
@@ -169,7 +178,10 @@ export default async function ({ page, shot, log }) {
     let xr = -1
     for (let x = 0; x < W; x++) {
       const o = (y * W + x) * 4
-      if (luma(nM.data, o) - luma(aM.data, o) > INK_DROP) {
+      // T23.10: ink is a drop of `INK_DROP`, or of most of what is behind it over a dark sky (at zoom 1 the figure
+      // stood against the near-black top of the sky, luma 13: the ink's drop was 13, and its edge was never found).
+      const behind = luma(nM.data, o)
+      if (behind - luma(aM.data, o) > Math.min(INK_DROP, behind * INK_SHARE)) {
         if (xl < 0) xl = x
         xr = x
       }
@@ -235,5 +247,6 @@ export default async function ({ page, shot, log }) {
     window.__world.setActors(null)
     window.__game.freeze(false)
   })
+  await page.evaluate(() => window.__game.setHighQuality(false))
   if (problems.length) throw new Error(`rim-light: ${problems.join('; ')}`)
 }

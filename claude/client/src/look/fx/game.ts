@@ -292,6 +292,13 @@ export function coneFx(out: FxFrame, j: { x: number; y: number; aim: number; ran
  * colour — steel, not fire). A swing that connected is brighter and wider.
  */
 export const SWING_POINTS = 12
+/**
+ * The arc's width, world px (miss / hit). T23.10 (R6): tuned at zoom 2 as 4 / 6 — on screen 8 / 12 px; at zoom 1 that
+ * was a 2-buffer-px hairline on the low tier whose fading tail no longer read (`swing-mine-fx`: 2 of 5 arc points), so
+ * restated to keep its on-screen width. Not F's (no picture has a swing): the game's own, like the arc's colours.
+ */
+export const SWING_WIDTH = 8
+export const SWING_HIT_WIDTH = 12
 export function swingFx(out: FxFrame, s: { x: number; y: number; aim: number; reach: number; arc: number; hits: number; ttl: number; life: number }): void {
   const k = s.life > 0 ? clamp01(s.ttl / s.life) : 0
   if (!(k > 0)) return
@@ -304,7 +311,7 @@ export function swingFx(out: FxFrame, s: { x: number; y: number; aim: number; re
   const hit = s.hits > 0
   const core: Rgb = hit ? [1.6, 1.55, 1.45] : [1.0, 1.05, 1.15]
   const glow: Rgb = hit ? [0.35, 0.3, 0.25] : [0.12, 0.13, 0.16]
-  out.ribbons.push({ pts, width: hit ? 6 : 4, core: scale(core, k), glow: scale(glow, k), fadePow: 1.5, headBoost: 0.5 })
+  out.ribbons.push({ pts, width: hit ? SWING_HIT_WIDTH : SWING_WIDTH, core: scale(core, k), glow: scale(glow, k), fadePow: 1.5, headBoost: 0.5 })
 }
 
 /** A mine: an ink disc and its tell — amber until armed, then a red blink (danger, R10). `alpha`: its visibility by distance. */

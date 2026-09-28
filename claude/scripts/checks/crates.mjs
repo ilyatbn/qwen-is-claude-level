@@ -418,7 +418,8 @@ if (!seen) {
         // holds canopy and no beam.
         // Left of the beam (±13 px at this height) and above the crate's own
         // glow disc (radius up to 56 px), so what is left in it is canopy.
-        canopyRect = { x: Math.round(sp.sx - 44), y: Math.round(sp.sy - 100), w: 26, h: 42 }
+        // T23.10: the zoom-2 screen rect (−44, −100, 26 × 42) restated in world px × the live zoom, so it stays on the shoulder.
+        canopyRect = { x: Math.round(sp.sx - 22 * _d.zoom), y: Math.round(sp.sy - 50 * _d.zoom), w: Math.round(13 * _d.zoom), h: Math.round(21 * _d.zoom) }
         canopy = await samplePatch(page, canopyRect)
         // The control, from the SAME FROZEN FRAME: the same band of sky 200 px
         // to either side, where there is no crate, no canopy and no beacon.
@@ -453,7 +454,8 @@ if (!seen) {
         // the original version compared across time and failed was that it
         // compared across *thirty seconds*, after the crate had landed — long
         // enough for the sky to animate. Half a second is not.
-        canopyRect = { x: Math.round(sp.sx - 44), y: Math.round(sp.sy - 100), w: 26, h: 42 }
+        // T23.10: the zoom-2 screen rect (−44, −100, 26 × 42) restated in world px × the live zoom, so it stays on the shoulder.
+        canopyRect = { x: Math.round(sp.sx - 22 * _d.zoom), y: Math.round(sp.sy - 50 * _d.zoom), w: Math.round(13 * _d.zoom), h: Math.round(21 * _d.zoom) }
         canopy = await samplePatch(page, canopyRect)
         // A second rect, sampled in both frames, as the noise term: whatever it
         // moves by is what this scene does on its own in that half second.

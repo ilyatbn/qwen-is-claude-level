@@ -1,5 +1,5 @@
 /**
- * T8.08 — game feel, verified at `CAMERA_ZOOM`.
+ * T8.08 — game feel, verified at `CAMERA_ZOOM` (1 since T23.10; the bug below was found at 2).
  *
  * The first attempt at this feature computed every value correctly and drew
  * nothing: a `scrollFactor(0)` Phaser object is still scaled by camera zoom, so
@@ -18,8 +18,10 @@ export default async function ({ page, shot, log }) {
   const feel = () => page.evaluate(() => window.__game.feel())
 
   const zoom = await page.evaluate(() => window.__game.debug().zoom)
-  log(`camera zoom ${zoom} — the value the bug was invisible at zoom 1`)
-  if (zoom === 1) throw new Error('this check is meaningless at zoom 1')
+  // T23.10 (R6): the game runs at zoom 1 now, where §A35's bug (a `scrollFactor(0)` object scaled off-viewport) cannot
+  // happen to Phaser objects at all; the feel layer is DOM, and what this asserts — each element mounted and on screen
+  // — is the same claim at any zoom. Kept, not retired: it is the player-facing check of hits being felt.
+  log(`camera zoom ${zoom}`)
 
   await page.evaluate(() => window.__game.regenerate('12345', 'medium'))
   await page.waitForTimeout(500)
@@ -136,5 +138,5 @@ export default async function ({ page, shot, log }) {
   }
   await shot('feel-banner')
 
-  log('damage number, vignette, trauma and banner all present and on-screen at zoom 2')
+  log(`damage number, vignette, trauma and banner all present and on-screen at zoom ${zoom}`)
 }

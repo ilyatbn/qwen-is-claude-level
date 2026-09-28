@@ -109,6 +109,8 @@ export interface WorldHandle {
   fx(): ReturnType<WorldRenderer['fxDrawn']> | null
   /** T23.18: the scene's effect feed (`fx/feed.ts`) — the ordnance layers' live records; a shot stages effects in them. */
   fxFeed(): WorldRenderer['fxFeed']
+  /** T23.10: the night view's uniforms on the last drawn frame (buffer px), or null. */
+  nightDrawn(): ReturnType<WorldRenderer['nightDrawn']> | null
   /** T23.08: the foreground leaves' own alpha over a mask-px box (`WorldRenderer.foregroundAlpha`). */
   foregroundAlpha(box: [number, number, number, number]): ReturnType<WorldRenderer['foregroundAlpha']>
 }
@@ -387,6 +389,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     actors: () => three?.actorsDrawn() ?? null,
     fx: () => three?.fxDrawn() ?? null,
     fxFeed: () => three?.fxFeed ?? null,
+    nightDrawn: () => three?.nightDrawn() ?? null,
     foregroundAlpha: (box) => three?.foregroundAlpha(box) ?? null,
     forceTerrainMaterial(m) {
       if (!three) return

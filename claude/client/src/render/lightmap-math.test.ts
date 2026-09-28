@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, coreDarknessAt, coreFovRadius } from '../core'
 import { darknessAt } from './sky-math'
-import { fovRadius, lightmapNeeded } from './lightmap-math'
+import { fovRadius, nightView } from './lightmap-math'
 
 beforeAll(async () => {
   const url = new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url)
@@ -40,10 +40,8 @@ describe('fovRadius', () => {
     })
     expect(v).toBeCloseTo(c.FOV_NIGHT * c.FOV_FOG_MULT, 4)
     // The worst case the game reaches, restated for §A16's radii: roughly
-    // 1.8 player-heights of world, which at CAMERA_ZOOM 2 is about 99 screen px.
-    // The doc's original "three player-heights" was written for a 1x camera.
-    expect(v).toBeGreaterThan(45)
-    expect(v).toBeLessThan(55)
+    // 1.8 player-heights of world at zoom 2, about 99 screen px. T23.10 (R6): at zoom 1 the world
+    // radius doubles and the screen radius — what a player sees — stays about 99 px.
     expect(v * c.CAMERA_ZOOM).toBeGreaterThan(90)
     expect(v * c.CAMERA_ZOOM).toBeLessThan(110)
   })
@@ -100,14 +98,12 @@ describe('fovRadius', () => {
   })
 })
 
-describe('lightmapNeeded', () => {
-  it('is false in plain daylight, so the whole pass can be skipped', () => {
-    expect(lightmapNeeded(0, false)).toBe(false)
-  })
-
-  it('is true for any darkness, or for fog in daylight', () => {
-    expect(lightmapNeeded(0.01, false)).toBe(true)
-    expect(lightmapNeeded(0, true)).toBe(true)
+describe('nightView (T23.10)', () => {
+  it('none by day; at night the darkness, the night, the soft edge and the circles it was given', () => {
+    const c = C()
+    expect(nightView(0, [{ x: 1, y: 2, r: 3 }])).toBeNull()
+    const v = nightView(c.NIGHT_DARKNESS, [{ x: 1, y: 2, r: c.FOV_NIGHT }])
+    expect(v).toEqual({ darkness: c.NIGHT_DARKNESS, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: [{ x: 1, y: 2, r: c.FOV_NIGHT }] })
   })
 })
 

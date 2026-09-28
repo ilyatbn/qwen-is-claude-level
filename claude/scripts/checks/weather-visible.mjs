@@ -120,20 +120,17 @@ export default async function ({ page, shot, log }) {
     await shot('weather-fog-clear')
 
     // The ordering §F9 specifies, read off the layer stack rather than inferred
-    // from a picture: over the world (and over the lightmap, so the measured
-    // delta is the alpha rather than the alpha times the night curve), under
-    // the HUD.
+    // from a picture: under the HUD. (Over the night: T23.10 retired the Phaser
+    // lightmap — the night view is drawn in the world canvas, under every Phaser
+    // layer, so the veil is over it by construction.)
     const depths = await page.evaluate(() => {
       const d = window.__game.debug()
-      return { fog: d.fogDepth, hud: d.hudDepth, lightmap: d.lightmapDepth }
+      return { fog: d.fogDepth, hud: d.hudDepth }
     })
-    if (!(depths.lightmap < depths.fog && depths.fog < depths.hud)) {
-      throw new Error(
-        `the veil is at depth ${depths.fog}; §F9 puts it above the lightmap ` +
-          `(${depths.lightmap}) and below the HUD (${depths.hud})`,
-      )
+    if (!(typeof depths.fog === 'number' && depths.fog < depths.hud)) {
+      throw new Error(`the veil is at depth ${depths.fog}; §F9 puts it below the HUD (${depths.hud})`)
     }
-    log(`veil depth ${depths.fog}, between lightmap ${depths.lightmap} and HUD ${depths.hud}`)
+    log(`veil depth ${depths.fog}, under the HUD ${depths.hud}; the night view is in the world canvas beneath it`)
 
     await page.evaluate(() => window.__game.forceWeather(3))
     // Poll for the strength rather than sleeping a fixed time: the effect has a
@@ -420,10 +417,11 @@ async function hazardDrops(page, shot, log) {
     const v = window.__game.debug().worldView
     const w = v.width ?? v.w
     const h = v.height ?? v.h
-    // Air with air for a streak above and below it, in view, spread across it: three drops in the open.
+    // Air with air for a streak above and below it, in view, spread across it: three drops in the open — clear of
+    // the sandbox's DOM panel (top left) and the hotbar (bottom), which cover the canvas there.
     const air = (px, py) => { for (let d = -30; d <= 30; d += 3) if (c.solidAt(Math.round(px), Math.round(py + d))) return false; return true }
-    for (let gx = v.x + w * 0.2; gx < v.x + w * 0.85 && out.length < 3; gx += w * 0.08) {
-      for (let gy = v.y + h * 0.15; gy < v.y + h * 0.85; gy += 12) {
+    for (let gx = v.x + w * 0.35; gx < v.x + w * 0.85 && out.length < 3; gx += w * 0.08) {
+      for (let gy = v.y + h * 0.4; gy < v.y + h * 0.85; gy += 12) {
         if (air(gx, gy) && out.every((o) => Math.abs(o.x - gx) > 60)) {
           out.push({ x: Math.round(gx), y: Math.round(gy) })
           break
@@ -437,6 +435,8 @@ async function hazardDrops(page, shot, log) {
   for (const hq of [false, true]) {
     const tier = hq ? 'full' : 'low'
     await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    // The tier's lit terrain whole before anything is measured on it (a swap mid-leg reads as a change).
+    await page.waitForFunction((t) => window.__world.info().tier === t && window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, hq ? 'full' : 'low', { timeout: 60_000 })
     const staged = await page.evaluate((d) => window.__game.stageHazards({ drops: d }), drops)
     if (staged.drawnBy !== 'world') problems.push(`${tier}: toxic drops drawn by ${staged.drawnBy}`)
     await page.waitForTimeout(500)
@@ -479,6 +479,8 @@ async function hazardDrops(page, shot, log) {
   for (const hq of [false, true]) {
     const tier = hq ? 'full' : 'low'
     await page.evaluate((v) => window.__game.setHighQuality(v), hq)
+    // The tier's lit terrain whole before anything is measured on it (a swap mid-leg reads as a change).
+    await page.waitForFunction((t) => window.__world.info().tier === t && window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, hq ? 'full' : 'low', { timeout: 60_000 })
     // Wait for any meteor in the air, hold the frame, and look at it (the camera to it: a shower covers the map).
     const inView = () =>
       page.evaluate(() => {

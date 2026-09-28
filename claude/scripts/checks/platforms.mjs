@@ -65,7 +65,9 @@ export default async function ({ page, shot, log }) {
 
   // Frame one. §A22: a screenshot that does not contain its subject is not
   // evidence, and this project has taken one of an empty snowfield before.
-  const target = p.at[0]
+  // T23.10: the highest platform — at zoom 1 the camera, clamped to the map, shows one near the map's floor at the
+  // bottom of the frame, under the hotbar (the band read 0.0 %: a DOM bar photographed twice).
+  const target = [...p.at].sort((a, b) => a.y - b.y)[0]
   // **Stand to the side, not on it.** `place` moves the player *and* the camera,
   // and a player standing on the platform is a player occluding the thing being
   // photographed — which is what the first version of this check did, and why
@@ -164,6 +166,10 @@ export default async function ({ page, shot, log }) {
 
   const shownAt = box(onPlatform)
   const controlAt = box(control)
+  // T23.10: one frozen frame for the pair — at zoom 1 the player placed beside the highest platform can still be
+  // falling, and the camera following it moved the whole frame between the two photographs (control 89.5 %).
+  await page.evaluate(() => window.__game.freeze(true))
+  await page.waitForTimeout(200)
   const drawnFrame = await photo(page)
   await shot('platforms-visible')
 
@@ -192,6 +198,7 @@ export default async function ({ page, shot, log }) {
   // above: the same platform, the same camera, the same frozen clock, with and
   // without a rider.
   const back0 = await page.evaluate(() => window.__game.showPlatforms(true))
+  await page.evaluate(() => window.__game.freeze(false))
   if (back0.visible !== true) throw new Error('the layer did not come back')
   await page.waitForTimeout(200)
 

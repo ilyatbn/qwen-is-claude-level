@@ -50,6 +50,8 @@ export interface FxFeed {
    * scene each frame from `sceneDarkness`. What the furniture's night halo fades with (`furniture.ts::nightHalo`).
    */
   night: number
+  /** e2e (T23.10): something reads the world canvas every frame (`render/ordnanceWatch.ts`) — draw every frame. */
+  keepDrawing: boolean
   /**
    * e2e (`render/ordnanceWatch.ts`): the world canvas's pixels in a rect of **Phaser canvas px**, read from the frame
    * just drawn (call it after the scene's render, in the same task), at the world's own buffer resolution; null when
@@ -64,7 +66,7 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0 }
+    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, keepDrawing: false }
     feeds.set(scene, f)
   }
   return f
