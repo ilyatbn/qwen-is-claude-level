@@ -508,7 +508,9 @@ mod tests {
                 pts.iter()
                     .find(|&&b| {
                         let d = (b - a).len();
-                        (0.75 * crate::constants::FOV_DAY..crate::constants::FOV_DAY).contains(&d)
+                        (0.75 * crate::constants::BOT_ENGAGE_RANGE
+                            ..crate::constants::BOT_ENGAGE_RANGE)
+                            .contains(&d)
                             && clear_run(&w, a, b)
                     })
                     .map(|&b| (a, b))
@@ -579,7 +581,7 @@ mod tests {
             "closing at {BOT_SPACE_CRUISE} px/s, {PLAYER_H} px short: pressed {b:#010b}, not LEFT"
         );
         let far = Dest {
-            at: at + Vec2::new(10.0 * crate::constants::FOV_DAY, 0.0),
+            at: at + Vec2::new(10.0 * crate::constants::BOT_ENGAGE_RANGE, 0.0),
             stop: 0.0,
         };
         let b = steer(&w, me, Some(far), None, &mut Flight::default(), SIM_DT);
@@ -770,7 +772,9 @@ mod tests {
                 pts.iter()
                     .find(|&&b| {
                         let d = (b - a).len();
-                        (0.75 * crate::constants::FOV_DAY..crate::constants::FOV_DAY).contains(&d)
+                        (0.75 * crate::constants::BOT_ENGAGE_RANGE
+                            ..crate::constants::BOT_ENGAGE_RANGE)
+                            .contains(&d)
                             && clear_run(&w, a, b)
                     })
                     .map(|&b| (a, b))
@@ -962,7 +966,7 @@ mod tests {
             .expect("a point just inside a rock face with a way out");
         put(&mut w, at);
         let dest = Some(Dest {
-            at: at + into * crate::constants::FOV_DAY,
+            at: at + into * crate::constants::BOT_ENGAGE_RANGE,
             stop: 0.0,
         });
         let mut flight = Flight::default();

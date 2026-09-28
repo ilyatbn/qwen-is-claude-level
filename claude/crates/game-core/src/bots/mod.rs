@@ -23,8 +23,9 @@ mod walk;
 use explore::Coverage;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_FLEE_HEALTH, BOT_HAZARD_CLEARANCE, BOT_SUIT_SHOP_BELOW,
-    BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP, FLAME_RADIUS, FOV_DAY, INVENTORY_SLOTS, PICKUP_RADIUS,
+    GravityMode, BATTERY_MAX, BOT_ENGAGE_RANGE, BOT_FLEE_HEALTH, BOT_HAZARD_CLEARANCE,
+    BOT_SUIT_SHOP_BELOW, BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP, FLAME_RADIUS, INVENTORY_SLOTS,
+    PICKUP_RADIUS,
 };
 
 use crate::items::registry::{def, ItemKind};
@@ -308,9 +309,9 @@ impl Bot {
                 // keep-out — straight away into a vortex's disc is a destination
                 // `steer` refuses, and the bot sat 65 s against its rock.
                 let at = space::turns(away)
-                    .map(|d| pos + d * FOV_DAY)
+                    .map(|d| pos + d * BOT_ENGAGE_RANGE)
                     .find(|&p| !space::forbidden(world, p))
-                    .unwrap_or(pos + away * FOV_DAY);
+                    .unwrap_or(pos + away * BOT_ENGAGE_RANGE);
                 space::Dest { at, stop: 0.0 }
             }
             // T22.03D: the stand-off is where it can shoot *from*. With rock in
@@ -371,7 +372,7 @@ impl Bot {
                 continue;
             }
             let d = (p.body.pos - pos).len();
-            if d <= FOV_DAY && best.is_none_or(|(bd, _)| d < bd) {
+            if d <= BOT_ENGAGE_RANGE && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((
                     d,
                     if flee {
@@ -409,7 +410,7 @@ impl Bot {
                 // cannot see. Without them a bot walked the width of the map
                 // toward an item on the far side of a mountain, which is the
                 // behaviour exploration is supposed to replace.
-                if d > FOV_DAY || !self.reachable(world, pos, it.pos) {
+                if d > BOT_ENGAGE_RANGE || !self.reachable(world, pos, it.pos) {
                     continue;
                 }
                 // T22.12C F2: never shop inside the black hole's reach (or where a
@@ -542,13 +543,13 @@ impl Bot {
     /// else. That is a perception gap, not a weapon-balance one, which is why
     /// widening the flamethrower's range measured *worse* and was reverted.
     ///
-    /// Only hazards within `FOV_DAY` count. A bot reacting to fire it cannot see
+    /// Only hazards within `BOT_ENGAGE_RANGE` count. A bot reacting to fire it cannot see
     /// would be cheating (§A5); a human sees the fire they are standing in.
     fn hazard_at(&self, world: &World, at: Vec2, margin: f32) -> Option<Hazard> {
         let mut best: Option<(f32, Hazard)> = None;
         let mut consider = |pos: Vec2, radius: f32, lit_by: Option<PlayerId>| {
             let d = (pos - at).len();
-            if d > FOV_DAY {
+            if d > BOT_ENGAGE_RANGE {
                 return; // out of sight: not knowable, so not usable
             }
             if d <= radius + margin && best.is_none_or(|(bd, _)| d < bd) {
@@ -639,7 +640,7 @@ mod tests {
     /// version of the retreat fixture both players fell, and a distance between
     /// two falling bodies measures nothing about which way anybody walked. The
     /// second stood them on generated ground, and the two columns differed enough
-    /// in height to put the enemy outside `FOV_DAY`, so the bot never engaged.
+    /// in height to put the enemy outside `BOT_ENGAGE_RANGE`, so the bot never engaged.
     ///
     /// Carving the ground makes this a test of the bot rather than of whatever
     /// the generator happened to put there — the same reason `clear_line` exists.
@@ -943,7 +944,7 @@ mod tests {
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
         }
-        // Inside `FOV_DAY` (320) — an item further than that is invisible and
+        // Inside `BOT_ENGAGE_RANGE` (320) — an item further than that is invisible and
         // the presence half below would fail for the wrong reason, which the
         // first version of this fixture did — and far enough that a wall between
         // can exceed `BOT_LOS_MAX_BLOCKED * BOT_LOS_STEP` (192 px).

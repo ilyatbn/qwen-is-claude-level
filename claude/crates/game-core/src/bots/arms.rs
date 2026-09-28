@@ -488,7 +488,7 @@ pub(super) fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMo
         // only that the division is safe and the value is derived.
         //
         // **T22.03C (R95): in space the lifetime bound is not the stand-off.**
-        // 1110 px refused every throw inside `FOV_DAY`, so a bot held a molotov it
+        // 1110 px refused every throw inside `BOT_ENGAGE_RANGE`, so a bot held a molotov it
         // could never use. The ruling: not the 137.5 px ring-gap distance, but the
         // stand-off at which a thrower is hit by its own fire **no more often than in
         // standard mode**, measured — `BOT_SPACE_ZONE_REACH`, whose basis is there.
@@ -667,7 +667,7 @@ mod tests {
     /// T22.03E F2).
     ///
     /// Before T22.03C space answered the `speed · FLAME_LIFE` lifetime bound,
-    /// 1110 px, which refused every throw inside `FOV_DAY`; R95 replaced it with
+    /// 1110 px, which refused every throw inside `BOT_ENGAGE_RANGE`; R95 replaced it with
     /// `BOT_SPACE_ZONE_REACH`, measured. Under gravity the ballistic term
     /// `v²/(GRAVITY · FLAME_GRAVITY_SCALE · scale)` is scaled by
     /// `BOT_FLAME_REACH_SCALE` (the thrower's own-hit measurement) and still halves
@@ -754,7 +754,7 @@ mod tests {
     }
 
     /// T22.03C (R95, and the task's Done-when): **a bot holding a molotov in space
-    /// throws it** at an enemy between its stand-off and `FOV_DAY` — floating in
+    /// throws it** at an enemy between its stand-off and `BOT_ENGAGE_RANGE` — floating in
     /// front of a rock, so the straight zero-g flight bursts on it. With the old
     /// 1110 px lifetime reach every such throw was refused (planted: red). Control:
     /// the same bot with the enemy in open space, nothing behind it — the flight
@@ -781,7 +781,7 @@ mod tests {
                 crate::physics::body::Body::new(p).aabb(),
             )
         };
-        let d = (BOT_SPACE_ZONE_REACH + BOT_HAZARD_CLEARANCE + FOV_DAY) * 0.5;
+        let d = (BOT_SPACE_ZONE_REACH + BOT_HAZARD_CLEARANCE + BOT_ENGAGE_RANGE) * 0.5;
         let wid = crate::items::registry::def(MOLOTOV)
             .and_then(|d| match d.kind {
                 ItemKind::Weapon(wid) => Some(wid),
@@ -934,7 +934,7 @@ mod tests {
                 // Enemy spots down the clear part of the line, past the stand-off.
                 let spots: Vec<Vec2> = (0..)
                     .map(|k| from + dir * (k as f32 * 4.0))
-                    .take_while(|&p| clear(&w, p) && (p - from).len() < FOV_DAY * 0.9)
+                    .take_while(|&p| clear(&w, p) && (p - from).len() < BOT_ENGAGE_RANGE * 0.9)
                     .filter(|&p| (p - from).len() >= near_band)
                     .collect();
                 let at = spots

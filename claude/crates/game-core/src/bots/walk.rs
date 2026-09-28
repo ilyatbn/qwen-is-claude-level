@@ -320,7 +320,7 @@ mod tests {
     fn a_hurt_bot_breaks_contact_and_a_healthy_one_holds_its_ground() {
         // Distance per tick, and whether the bot was *fleeing* on that tick.
         // The window that matters is the one where it has chosen to run: once it
-        // has broken contact the enemy is out of `FOV_DAY`, the goal stops being
+        // has broken contact the enemy is out of `BOT_ENGAGE_RANGE`, the goal stops being
         // `Flee`, and exploration takes over — which is the retreat succeeding,
         // not the retreat ending. Asserting past that point would demand the bot
         // never come back to a map it has to keep playing on.
@@ -344,7 +344,7 @@ mod tests {
             }
             if let Some(p) = w.player_mut(2) {
                 // Close, so breaking contact is a walk rather than a step:
-                // `FOV_DAY` is 320, so a pair starting at 220 leaves only 100 px
+                // `BOT_ENGAGE_RANGE` is 320, so a pair starting at 220 leaves only 100 px
                 // of retreat before the goal stops being `Flee` — measured, 29
                 // ticks, too short to have a trend in.
                 p.body.pos = Vec2::new(at.x + 120.0, y);

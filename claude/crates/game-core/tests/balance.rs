@@ -26,9 +26,9 @@ use std::collections::BTreeMap;
 
 use game_core::bots::Bot;
 use game_core::constants::{
-    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_SPACE_FUEL_RESERVE,
-    DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H, ROUND_SECONDS, SIM_DT,
-    SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
+    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE,
+    BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
+    ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
@@ -1931,7 +1931,7 @@ fn encounters(seed: u64, scale: MapScale, bot_count: usize, seconds: f32) -> Enc
         let mut los = false;
         for i in 0..live.len() {
             for j in (i + 1)..live.len() {
-                if (live[i] - live[j]).len() <= FOV_DAY {
+                if (live[i] - live[j]).len() <= BOT_ENGAGE_RANGE {
                     near = true;
                     if clear_line(&w, live[i], live[j]) {
                         los = true;
@@ -2117,7 +2117,7 @@ fn report(label: &str, rs: &[Encounters]) {
 /// what keeps the floors from passing for any configuration at all.
 ///
 /// **Falsified at the production binding site, and the old shape was run beside
-/// it.** Planting `FOV_DAY` 320 -> 80 in `constants.rs` — a sight regression, the
+/// it.** Planting `BOT_ENGAGE_RANGE` 320 -> 80 in `constants.rs` — a sight regression, the
 /// kind of drift this file exists to catch:
 ///
 /// - this test goes red **on the thing that regressed**: *"seed 7: 5.7 % of the
@@ -2246,7 +2246,7 @@ fn the_balance_floors_record_their_basis() {
 #[ignore = "measurement: minutes in release"]
 fn encounter_report() {
     println!(
-        "\n== ENCOUNTERS — {} seeds x {POOL_SECONDS}s, sight {FOV_DAY:.0}px ==",
+        "\n== ENCOUNTERS — {} seeds x {POOL_SECONDS}s, sight {BOT_ENGAGE_RANGE:.0}px ==",
         SEEDS.len()
     );
     println!("   shipping config is {DEFAULT_MAP_SCALE:?} with {BOT_COUNT_DEFAULT} bots + 1 human");

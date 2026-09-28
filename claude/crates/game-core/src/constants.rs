@@ -313,6 +313,12 @@ pub const KNOCKBACK_FIRE_GRACE: f32 = 0.6;
 // Field of view and light
 // ---------------------------------------------------------------------------
 
+/// T23.10 (R6): **how far a bot engages** — sees an enemy, an item, a hazard, and measures its stand-off. It was
+/// `FOV_DAY` until the camera zoomed out: a bot's reach was a player's day sight, which was **half the zoom-2 view**
+/// (`VIEWPORT_W / 2 / 2.0` = 320). R6: bots do not change behaviour when the view does, so the value stays, named for
+/// what it is — `bot_engage_range_is_half_the_zoom_2_view` pins it to that basis. Owner question, answered by default
+/// (R6): whether bots should see further now that players do — no.
+pub const BOT_ENGAGE_RANGE: f32 = 320.0;
 /// Corrected for CAMERA_ZOOM 2.0 — see docs/70 §A16.
 pub const FOV_DAY: f32 = 320.0;
 pub const FOV_NIGHT: f32 = 110.0;
@@ -4388,6 +4394,14 @@ const _: () = assert!(
 #[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
+
+    /// T23.10 (R6): a bot's reach is what a player saw by day at zoom 2 — half that view's width — and stays so when
+    /// the camera zooms out. Against the basis, not against itself (CLAUDE.md, the `ITEM_SPAWN_INTERVAL` rule).
+    #[test]
+    fn bot_engage_range_is_half_the_zoom_2_view() {
+        const ZOOM_2: f32 = 2.0;
+        assert_eq!(BOT_ENGAGE_RANGE, VIEWPORT_W as f32 / ZOOM_2 / 2.0);
+    }
 
     /// **The landmine past the floor** (T21.02).
     ///
