@@ -2580,15 +2580,6 @@ pub const AIRBURST_PELLET_ENERGY: f32 = 4.0;
 
 pub const FOV_SMOKE_MULT: f32 = 0.35;
 pub const SMOKE_RADIUS: f32 = 110.0;
-/// T21.18: a smoke cloud's shader quad, as a multiple of the cloud's radius — its
-/// half-width. The flat path's lobes reach `0.22 r + 0.78 r` = r from the centre;
-/// the painted cloud's eaten edge billows past that, so the quad leaves room for it.
-/// **Purely drawing**: what a player inside can see is `FOV_SMOKE_MULT` at
-/// `SMOKE_RADIUS`, decided by the server either way.
-pub const SMOKE_SHADER_SCALE: f32 = 1.35;
-/// T21.18: how many smoke clouds at once get a shader quad. Past it the rest are
-/// drawn with the flat lobes — a cap, never a cloud dropped.
-pub const SMOKE_SHADER_POOL: u32 = 8;
 pub const SMOKE_DURATION: f32 = 8.0;
 pub const SMOKE_FUSE: f32 = 1.5;
 pub const SMOKE_MUZZLE_SPEED: f32 = 470.0;
@@ -4133,36 +4124,10 @@ pub const BULLET_WIDTH: f32 = 2.0;
 /// `ordnance-visible` could only photograph one by stopping time first: a check
 /// that has to freeze the frame to see a thing is telling you the player cannot.
 pub const BEAM_LIFETIME: f32 = 0.35;
-/// T21.18: the world-px thickness of the quad a laser beam is painted on under
-/// High Quality — the halo's full spread, not the core's. The flat path's widest
-/// pass is `TRACER_WIDTH × 5`; the shader fades to nothing inside this.
-pub const BEAM_SHADER_WIDTH: f32 = 22.0;
-/// T21.18: how many beams at once get a shader quad. Past it, the rest are drawn
-/// with the flat lines — a cap, never a beam dropped.
-pub const BEAM_SHADER_POOL: u32 = 12;
-/// T21.18: a flame's shader quad half-width, in damage radii (`FLAME_RADIUS`). The
-/// painted body is solid out to 1.1 damage radii and ragged a little past it, so this
-/// leaves room for the rag. **The quad must never be what bounds the fire smaller than
-/// the damage** — `fire-shader` samples every flame's damage circle to hold that.
-pub const FLAME_SHADER_SCALE: f32 = 1.8;
-/// T21.18: the quad's height over its width — room above the flame for the tongue
-/// and the heat-haze column.
-pub const FLAME_SHADER_ASPECT: f32 = 2.2;
-/// T21.18: where the flame's centre (its damage centre) sits up the quad, 0 bottom, 1 top.
-pub const FLAME_SHADER_BASE: f32 = 0.3;
-/// T21.18: how many flames at once get a shader quad. Past it, the rest are drawn with
-/// the flat circles — a cap, never a flame dropped. Under `FLAME_MAX_LIVE` on purpose:
-/// every quad is its own draw call.
-pub const FLAME_SHADER_POOL: u32 = 48;
 /// T21.18: seconds a High Quality explosion is painted for — the flash, the front and
 /// then the soot that lingers. Longer than the flat flash (0.35 s) on purpose; the
 /// light and the crater are unchanged.
 pub const BLAST_SHADER_LIFE: f32 = 1.1;
-/// T21.18: a blast's shader quad half-width, in blast radii. The front runs past the
-/// blast radius and the soot beyond it, so the quad leaves room for both.
-pub const BLAST_SHADER_SCALE: f32 = 1.8;
-/// T21.18: how many blasts at once get a shader quad; past it, the flat flash.
-pub const BLAST_SHADER_POOL: u32 = 16;
 
 // ---------------------------------------------------------------------------
 // Special items (M21)

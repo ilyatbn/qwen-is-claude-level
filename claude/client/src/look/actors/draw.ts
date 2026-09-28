@@ -499,19 +499,3 @@ export function item(g: G, x: number, y: number, { s = 1, key = '', accent = '#e
   })
 }
 
-/** Label text's size and padding (world px) — `furniture.ts` sizes the cell from them. */
-export const LABEL_FONT_PX = 10
-export const LABEL_PAD: readonly [number, number] = [3, 1]
-
-/** T23.19: a pickup's name — pale text on a dark plate, its bottom centre at (x, y). Unlit (a sign, not a thing). */
-export function label(g: G, x: number, y: number, { text = '' } = {}): void {
-  g.font = `${LABEL_FONT_PX}px monospace`
-  const w = g.measureText(text).width + 2 * LABEL_PAD[0]
-  const h = LABEL_FONT_PX + 2 * LABEL_PAD[1] + 2
-  g.fillStyle = 'rgba(0,0,0,0.6)'
-  g.fillRect(x - w / 2, y - h, w, h)
-  g.fillStyle = '#e8f0ff'
-  g.textAlign = 'center'
-  g.textBaseline = 'bottom'
-  g.fillText(text, x, y - LABEL_PAD[1])
-}

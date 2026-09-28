@@ -14,6 +14,7 @@ import { DEPTH } from './backdrop'
 import { diffTombstones, type TombstoneView } from './tombstones-math'
 import { TOMBSTONE_KEY, ensureTombstoneTexture } from './tombstoneTextures'
 import { joinCast } from '../look/actors/cast'
+import { followWorldDraws, fxFeed } from '../look/fx/feed'
 import { VIEW_MARGIN, graveActor, nearView } from '../look/actors/furniture'
 
 /** `TOMBSTONE_W` × `TOMBSTONE_H` from the shared constants. */
@@ -33,6 +34,8 @@ export class TombstoneLayer {
   private warned = false
   /** T23.19: graves are the world renderer's — rim-lit ink with F4's night halo, behind the figures (not in space). */
   private worldOn = false
+  /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
+  private readonly unfollow: () => void
 
   constructor(
     scene: Phaser.Scene,
@@ -44,10 +47,11 @@ export class TombstoneLayer {
     // Behind world items and in front of decorations: a grave is scenery you
     // walk past, not something you pick up.
     this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations + 1)
+    this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
   }
 
-  /** T23.19: draw the graves in the world renderer (`on`) or with Phaser's stone (space, until T23.20). */
-  useWorld(on: boolean): void {
+  /** T23.19: draw the graves in the world renderer (`on`) or with Phaser's stone — whatever the drawer says (T23.19D). */
+  private useWorld(on: boolean): void {
     this.worldOn = on
     for (const e of this.entries.values()) this.place(e)
   }
@@ -71,7 +75,7 @@ export class TombstoneLayer {
           const { x, y } = e.sprite
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
           // The sprite is centred on the grave's box; the stone stands on its bottom edge.
-          return graveActor(x, y + this.h / 2, this.h)
+          return graveActor(x, y + this.h / 2, this.h, fxFeed(this.scene).night)
         },
       })
     } else if (!this.worldOn && e.leave) {
@@ -144,6 +148,7 @@ export class TombstoneLayer {
   }
 
   destroy(): void {
+    this.unfollow()
     for (const e of this.entries.values()) {
       e.sprite.destroy()
       e.leave?.()

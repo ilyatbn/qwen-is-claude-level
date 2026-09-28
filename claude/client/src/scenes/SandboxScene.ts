@@ -48,6 +48,7 @@ import { RoundWatch } from '../render/ordnanceWatch'
 import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { crystalLights, isCrystal, joinCrystals } from '../look/actors/furniture'
+import { fxFeed } from '../look/fx/feed'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -453,15 +454,11 @@ export class SandboxScene extends Phaser.Scene {
     // One stack, built the same way the game builds it. Backdrop, chunks,
     // camera and props all live in here now.
     this.world = new WorldView(this, this.core, undefined, this.gravity === SPACE_GRAVITY)
-    // T23.19A: gates and turrets in the world renderer, behind the figures (space keeps Phaser's — `GameScene`).
-    this.world.pads.useWorld(this.gravity !== SPACE_GRAVITY)
-    this.world.platforms.useWorld(this.gravity !== SPACE_GRAVITY, mapW)
-    // T23.19: pickups (and a check's staged graves and animals) in the world renderer too; the crystals (R5) with
-    // their glow over the stamped rock and their lights beside the gates'.
+    // T23.19A/T23.19: gates, turrets, pickups (and a check's staged graves and animals) are the world renderer's
+    // whenever it draws this scene — each layer follows its flag (`fx/feed.ts::followWorldDraws`, T23.19D F1). The
+    // crystals (R5) with their glow over the stamped rock and their lights beside the gates'.
+    this.world.platforms.setMapWidth(mapW)
     const ground = this.gravity !== SPACE_GRAVITY
-    this.world.items.useWorld(ground)
-    this.furniture?.graves.useWorld(ground)
-    this.furniture?.animals.useWorld(ground)
     const objects = ground ? (this.core.meta.objects ?? []) : []
     this.leaveCrystals()
     this.leaveCrystals = joinCrystals(this, objects, () => this.crystalsOn)
@@ -925,6 +922,8 @@ export class SandboxScene extends Phaser.Scene {
           darkness: self.darkness(),
           // T23.19: the pickups are the world renderer's (behind the figures), not Phaser's.
           itemsInWorld: self.world.items.drawsInWorld,
+          // T23.19D F3: the pickup labels up now (Phaser text at screen resolution), for `furniture`'s legibility leg.
+          labels: self.world.items.labelsDrawn,
           fogMult: self.fogActive ? C().FOV_FOG_MULT : 1,
           // §F9, counted at both ends (§A39): the strength the scene believes,
           // and the alpha the layer actually filled with. A veil that is
@@ -1102,8 +1101,6 @@ export class SandboxScene extends Phaser.Scene {
         if (!self.furniture) {
           const c = C()
           self.furniture = { graves: new TombstoneLayer(self, c.TOMBSTONE_W, c.TOMBSTONE_H), animals: new AnimalLayer(self) }
-          self.furniture.graves.useWorld(self.gravity !== SPACE_GRAVITY)
-          self.furniture.animals.useWorld(self.gravity !== SPACE_GRAVITY)
         }
         const f = self.furniture
         f.graves.update((o?.graves ?? []).map((g, i) => ({ id: i + 1, owner: 0, x: g.x, y: g.y })))
@@ -1819,6 +1816,8 @@ export class SandboxScene extends Phaser.Scene {
       : 1 - (1 - C().FOV_FOG_MULT) * weather.fog
 
     const darkness = this.darkness()
+    // T23.19D F2: what the furniture's night halo fades with.
+    fxFeed(this).night = darkness / C().NIGHT_DARKNESS
     const lights: LightSource[] = []
     if (body) {
       const fov =

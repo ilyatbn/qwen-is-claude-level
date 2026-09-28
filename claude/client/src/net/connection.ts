@@ -369,8 +369,9 @@ export class Connection {
     this.emit('select_slot', { slot })
   }
 
-  sendFire(): void {
-    this.emit('fire', {})
+  /** T23.19D F4: `seq` — the input seq the use is made under; the server echoes it on the swing/throw/mine (`use_seq`). */
+  sendFire(seq: number): void {
+    this.emit('fire', { seq })
   }
 
   /** §C9: `Q`. Slotless — the counters are not inventory. */
@@ -384,8 +385,8 @@ export class Connection {
   }
 
   /** §C11: `E`. Slotless — the server picks by the documented order. */
-  sendQuickThrow(): void {
-    this.emit('quick_throw', {})
+  sendQuickThrow(seq: number): void {
+    this.emit('quick_throw', { seq })
   }
 
   sendVoteRestart(restart: boolean): void {

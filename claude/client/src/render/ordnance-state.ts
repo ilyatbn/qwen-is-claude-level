@@ -397,7 +397,8 @@ const FLAME_FLICKER_SWING = 0.125
 export const FLAME_FLICKER_MIN = FLAME_FLICKER_MID - FLAME_FLICKER_SWING
 
 /**
- * The three flat discs of a flame with High Quality off (or past `FLAME_SHADER_POOL`),
+ * The three flat discs of a flame wherever the world renderer does not draw the effects (`fx/feed.ts::worldDraws`
+ * false: space, no WebGL2 — T23.18 retired the shader quads and their pool),
  * sized from the burn radius — T21.36.
  *
  * **The opaque body covers the burn circle at the smallest flicker**: a player takes

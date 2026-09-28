@@ -91,6 +91,14 @@ pub enum Command {
     /// T20.09: put one slot's stack on the ground at the player's feet.
     DropItem(PlayerId, u8),
     Fire(PlayerId),
+    /// T23.19D F4: a `fire` (`quick` false) or `quick_throw` (true) the client made under input seq `seq` — run as
+    /// `Fire`/`QuickThrow` (and recorded as them), and the events it produces carry the seq back
+    /// (`events.rs::UseEcho`), so the client pairs its predicted swing with the echo of that use.
+    UseAt {
+        id: PlayerId,
+        quick: bool,
+        seq: u32,
+    },
     /// The reply says whether the vote was **counted** (T21.32 item 1): a vote
     /// outside the `Ended` window is dropped, and the client must not show
     /// "Voted" for it. The replay runner has nobody to tell and passes a
@@ -204,6 +212,7 @@ impl std::fmt::Debug for Command {
             Command::MoveItem(id, a, b) => write!(f, "MoveItem({id}, {a} -> {b})"),
             Command::DropItem(id, slot) => write!(f, "DropItem({id}, {slot})"),
             Command::Fire(id) => write!(f, "Fire({id})"),
+            Command::UseAt { id, quick, seq } => write!(f, "UseAt({id}, quick {quick}, seq {seq})"),
             Command::VoteRestart(id, v, _) => write!(f, "VoteRestart({id}, {v})"),
             Command::ResyncMap(id) => write!(f, "ResyncMap({id})"),
             Command::Leave(id) => write!(f, "Leave({id})"),
@@ -811,6 +820,9 @@ pub struct Room {
     /// each need both spellings. Asking for a world in a lobby is `None` — an
     /// answer, not a panic.
     world: Option<World>,
+    /// T23.19D F4: the seq each not-yet-flushed use echo answers (`Command::UseAt`), taken with the events
+    /// (`take_use_seqs`). Wire only — not simulation, not recorded.
+    use_seqs: crate::events::UseSeqs,
     /// The clock, while there is no world to hold it.
     ///
     /// `docs/72` §C18-clarified: a lobby room must keep advancing `tick` even
@@ -1083,6 +1095,7 @@ impl Room {
         // lobby.
         Room {
             world: None,
+            use_seqs: Default::default(),
             lobby_tick: 0,
             code: None,
             private: false,
@@ -1573,6 +1586,48 @@ impl Room {
     /// in a lobby, which is the same answer `grant_dev_loadout` gives and for
     /// the same reason: there is no world to put anything in yet, and the caller
     /// runs again at match start.
+    /// `fire` (`quick` false) or §C11's `quick_throw`, recorded as itself; with `seq` (T23.19D F4) the events this
+    /// use produced — its swing, its throw, its mine — are keyed to the seq for the flush (`events.rs::UseEcho`).
+    fn use_weapon(&mut self, id: PlayerId, quick: bool, seq: Option<u32>) {
+        self.note(if quick {
+            crate::replay::ReplayCommand::QuickThrow(id)
+        } else {
+            crate::replay::ReplayCommand::Fire(id)
+        });
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let now = world.round_time;
+        let before = world.events_so_far().len();
+        // `docs/61` §3 row 6: "my rocket did nothing" has six possible
+        // answers and the server already knows which one it was.
+        let result = if quick {
+            world.quick_throw(id, now)
+        } else {
+            world.fire(id, now)
+        };
+        if let Err(e) = result {
+            tracing::debug!(target: "game::weapons", player = id, quick, reason = ?e, "use rejected");
+        }
+        let Some(seq) = seq else {
+            return;
+        };
+        let keys: Vec<crate::events::UseEcho> = world.events_so_far()[before..]
+            .iter()
+            .filter_map(crate::events::UseEcho::of)
+            .filter(|(_, owner)| *owner == id)
+            .map(|(k, _)| k)
+            .collect();
+        for k in keys {
+            self.use_seqs.insert(k, seq);
+        }
+    }
+
+    /// T23.19D F4: the use echoes' seqs for the events just drained — taken with them, so the map never outgrows a tick.
+    pub fn take_use_seqs(&mut self) -> crate::events::UseSeqs {
+        std::mem::take(&mut self.use_seqs)
+    }
+
     fn give_all(&mut self, id: PlayerId, items: &[(game_core::items::registry::ItemId, u8)]) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -1861,15 +1916,7 @@ impl Room {
                     }
                 }
             }
-            Command::QuickThrow(id) => {
-                self.note(R::QuickThrow(id));
-                if let Some(world) = self.world.as_mut() {
-                    let now = world.round_time;
-                    if let Err(e) = world.quick_throw(id, now) {
-                        tracing::debug!(target: "game::weapons", player = id, reason = ?e, "quick throw rejected");
-                    }
-                }
-            }
+            Command::QuickThrow(id) => self.use_weapon(id, true, None),
             Command::MoveItem(id, from, to) => {
                 self.note(R::MoveItem(id, from, to));
                 if let Some(world) = self.world.as_mut() {
@@ -1890,17 +1937,8 @@ impl Room {
                     }
                 }
             }
-            Command::Fire(id) => {
-                self.note(R::Fire(id));
-                if let Some(world) = self.world.as_mut() {
-                    let now = world.round_time;
-                    // `docs/61` §3 row 6: "my rocket did nothing" has six possible
-                    // answers and the server already knows which one it was.
-                    if let Err(e) = world.fire(id, now) {
-                        tracing::debug!(target: "game::weapons", player = id, reason = ?e, "fire rejected");
-                    }
-                }
-            }
+            Command::Fire(id) => self.use_weapon(id, false, None),
+            Command::UseAt { id, quick, seq } => self.use_weapon(id, quick, Some(seq)),
             Command::VoteRestart(id, v, reply) => {
                 self.note(R::VoteRestart(id, v));
                 // No world is a lobby, and a lobby has no window to vote in.
@@ -3248,9 +3286,10 @@ async fn run(
                     .map(|w| w.drain_events())
                     .unwrap_or_default();
                 events.extend(round_events);
+                let uses = room.take_use_seqs();
                 if let Some(world) = room.world() {
                     let votes = room.vote_tally();
-                    crate::events::flush_events(&io, world, &sessions, votes, &events);
+                    crate::events::flush_events(&io, world, &sessions, votes, &events, &uses);
                 } else {
                     crate::events::flush_lobby_events(&io, &sessions, room.seed, &events);
                 }
@@ -3821,6 +3860,76 @@ mod tests {
         // The counter resets, so the next tick accepts again.
         room.seats.begin_tick();
         assert_eq!(room.seats.get_mut(0).expect("seat").accepted_this_tick, 0);
+    }
+
+    /// T23.19D F4: a use made under a seq keys **its own** events to that seq — and only a `UseAt` does (the plain
+    /// command is the control: it keys nothing, so the map cannot be filled by something else).
+    #[test]
+    fn a_use_at_a_seq_keys_its_own_throw_to_the_seq() {
+        let mut room = Room::new(cfg());
+        let (reply, _rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: "a".into(),
+            look: Default::default(),
+            reply,
+        });
+        let w = room.generate_world();
+        room.install_world(w);
+        let grenade = game_core::items::registry::by_key("grenade")
+            .expect("grenade")
+            .id;
+        {
+            let w = room.world_mut().expect("world");
+            w.set_phase(game_core::world::RoundPhase::Playing);
+            game_core::world::give(w, 0, grenade, 3);
+            let _ = w.drain_events();
+        }
+        room.apply(Command::QuickThrow(0));
+        let plain = room
+            .world_for_test()
+            .events_so_far()
+            .iter()
+            .filter_map(crate::events::UseEcho::of)
+            .count();
+        assert_eq!(
+            plain, 1,
+            "the plain throw produced no echo event — the control measures nothing"
+        );
+        assert!(
+            room.take_use_seqs().is_empty(),
+            "a plain quick_throw keyed its echo to a seq"
+        );
+        // Past the cooldown, the same throw made under seq 77.
+        room.world_mut().expect("world").round_time += 10.0;
+        let before = room.world_for_test().events_so_far().len();
+        room.apply(Command::UseAt {
+            id: 0,
+            quick: true,
+            seq: 77,
+        });
+        let echoes: Vec<_> = room.world_for_test().events_so_far()[before..]
+            .iter()
+            .filter_map(crate::events::UseEcho::of)
+            .collect();
+        assert_eq!(
+            echoes.len(),
+            1,
+            "the throw under seq 77 produced {} echo events",
+            echoes.len()
+        );
+        let (key, owner) = echoes[0];
+        assert_eq!(owner, 0);
+        let seqs = room.take_use_seqs();
+        assert_eq!(
+            seqs.get(&key),
+            Some(&77),
+            "the throw's echo is not keyed to its seq: {seqs:?}"
+        );
+        assert_eq!(seqs.len(), 1);
+        assert!(
+            room.take_use_seqs().is_empty(),
+            "taken once, the map is empty"
+        );
     }
 
     #[test]

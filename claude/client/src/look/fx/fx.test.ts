@@ -188,3 +188,27 @@ describe('part B: beams, rounds, muzzles, swings, mines', () => {
     for (const [x, y] of arc) expect(Math.hypot(x, y)).toBeCloseTo(40, 9)
   })
 })
+
+describe('followWorldDraws (T23.19D F1)', () => {
+  it('a follower hears the flag now and on every change, from the drawer only, until it unfollows', async () => {
+    const { followWorldDraws, fxFeed, setWorldDraws } = await import('./feed')
+    const scene = {}
+    const heard: boolean[] = []
+    const off = followWorldDraws(scene, (on) => heard.push(on))
+    // No drawer yet (the stub, `?world=off`): Phaser draws — the layers hear false at once, not nothing.
+    expect(heard).toEqual([false])
+    setWorldDraws(fxFeed(scene), true)
+    setWorldDraws(fxFeed(scene), true)
+    setWorldDraws(fxFeed(scene), false)
+    expect(heard).toEqual([false, true, false])
+    off()
+    setWorldDraws(fxFeed(scene), true)
+    expect(heard).toEqual([false, true, false])
+    // Another scene's drawer is not this scene's.
+    const other = {}
+    const heardOther: boolean[] = []
+    followWorldDraws(other, (on) => heardOther.push(on))
+    setWorldDraws(fxFeed(scene), false)
+    expect(heardOther).toEqual([false])
+  })
+})

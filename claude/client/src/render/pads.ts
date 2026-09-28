@@ -28,6 +28,7 @@ import { DEPTH } from './backdrop'
 // defined`. The portal region is injected by the caller instead.
 import type { ImageRegion } from './assets'
 import { joinCast } from '../look/actors/cast'
+import { followWorldDraws } from '../look/fx/feed'
 import { gateActor, gateGeometry } from '../look/actors/props'
 
 /**
@@ -87,6 +88,8 @@ export class PadLayer {
    * T23.20: its opaque Phaser backdrop hides the world canvas), Phaser's arch as before. Each pad's cast membership.
    */
   private worldGates = false
+  /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
+  private readonly unfollow: () => void
   private readonly inCast = new Map<number, () => void>()
   /** The pad being charged and its charge, as `update` was last told — what the world gate's window shows. */
   private charging: { id: number | null; t: number } = { id: null, t: 0 }
@@ -103,6 +106,7 @@ export class PadLayer {
     // scenery a player is guaranteed to be standing in. Behind the actors, and
     // the portal fill behind the arch, so the stone always frames the glow.
     this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations - 1)
+    this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
   }
 
   /** How many pads are drawn. The e2e counts this against the server's list. */
@@ -217,7 +221,7 @@ export class PadLayer {
    * T23.19A: draw the gates in the world renderer (`on`), behind the figures, or with Phaser's arch. The Phaser
    * objects stay built either way, hidden, so a map that switches back (space) needs no rebuild.
    */
-  useWorld(on: boolean): void {
+  private useWorld(on: boolean): void {
     this.worldGates = on
     for (const [id, e] of this.entries) {
       const hasArt = e.gate !== null
@@ -389,6 +393,7 @@ export class PadLayer {
   }
 
   destroy(): void {
+    this.unfollow()
     for (const leave of this.inCast.values()) leave()
     this.inCast.clear()
     for (const e of this.entries.values()) {

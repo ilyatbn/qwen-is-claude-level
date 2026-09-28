@@ -30,6 +30,7 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { joinCast } from '../look/actors/cast'
+import { followWorldDraws } from '../look/fx/feed'
 import { turretActor, turretFace, turretLamps } from '../look/actors/props'
 
 /** Where a platform is, in world pixels. `pos` is a feet line. */
@@ -242,6 +243,8 @@ export class PlatformLayer {
    * (they are a signal, and sit clear of the rider). `mapW` faces each turret into the map.
    */
   private world: { on: boolean; mapW: number } = { on: false, mapW: 0 }
+  /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
+  private readonly unfollow: () => void
   private readonly inCast = new Map<number, () => void>()
 
   constructor(private readonly scene: Phaser.Scene) {
@@ -250,6 +253,12 @@ export class PlatformLayer {
     // `DEPTH.decorations` would let a bush sort in front depending on creation
     // order.
     this.container = scene.add.container(0, 0).setDepth(DEPTH.decorations - 1)
+    this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on, this.world.mapW))
+  }
+
+  /** The map's width, which faces each turret into the map (`turretFace`). */
+  setMapWidth(mapW: number): void {
+    if (mapW !== this.world.mapW) this.useWorld(this.world.on, mapW)
   }
 
   /** How many platforms are drawn. The e2e counts this against the server's list. */
@@ -384,7 +393,7 @@ export class PlatformLayer {
   }
 
   /** T23.19A: draw the turrets in the world renderer (`on`), behind the figures, or with Phaser's art. */
-  useWorld(on: boolean, mapW: number): void {
+  private useWorld(on: boolean, mapW: number): void {
     this.world = { on, mapW }
     const art = ensurePlatformTexture(this.scene.textures)
     const L = turretLamps()
@@ -428,6 +437,7 @@ export class PlatformLayer {
   }
 
   destroy(): void {
+    this.unfollow()
     for (const leave of this.inCast.values()) leave()
     this.inCast.clear()
     for (const e of this.entries.values()) {

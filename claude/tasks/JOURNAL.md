@@ -7610,3 +7610,10 @@ Icons (R12): the 7 drawn items' tiles/ground icons are `draw.ts::item` lit like 
 Done-when was green before starting (4/4) → added: birds world-canvas leg (36 px, null 0; plant Phaser-only → 0, red), silhouette leg, birdActor + artFor vitests.
 Done-when EXIT 0 (vitest 1144; birds, weather-visible, crates, furniture 4/4) + inventory-ui, weapons-held ok. Rest → T23.19E (vents, hazard drops, 4 checks). Shots: t2319b-birds-sheet, t2319b-item-icons-x4, t2319b-bird-in-flight-x6.
 
+
+## T23.19D — what the fx/furniture review found (builder, 2026-09-28)
+F1 one guard `followWorldDraws` (items/graves/animals/pads/platforms; scenes' `useWorld(!spaceMap)` gone) + `furniture-world-off`. F2 `nightHalo(t)` 4 steps, `fxFeed.night`: ring night +6.9, noon 0.0. F3 labels = Phaser text at camera zoom, depth fog−1, world label actor retired: edge p98 184–189 vs blurred 75–78 (floor 130); gunner-visible over a pickup 88.5 % (was 96.2, min 85).
+F4 `{seq}` on fire/quick_throw → `Command::UseAt` → `use_seq` on the use's melee/projectile_spawn/mine_placed; PendingUses pairs by (seq,key), clears on death/respawn, RFC 6298 RTT filter. No REPLAY_VERSION bump (replays unchanged, nothing simulated reads it).
+F6 finding (to coordinator): game-path blast best 2.68 vs Level A 0.1761 (no-fx 23.04; mockup stream + still fire 1.01) — the age curves never pass through STILL; gated ≤ 8, look-fx logs dropped px + shots/look-fx-F1-mask-dropped.png. F8 10 dead constants retired.
+Plants red: graves always-world (world-off 0.0 %), halo ignores night (noon 7.58), labels 1× (resolution leg), half-scale blast (14.2), no seq insert (room test). Done-when was green before (checks existed): the new legs are the red-before.
+Done-when EXIT 0 (vitest 1151, game-server 172 + game-wasm, 6/6 e2e); check.sh --changed HEAD --fast EXIT 0; subset 18/20: `platforms` red **at HEAD too** (6.4 < 8, stash run: same 6.4 — pre-existing, reported), `two-clients` red once in the 20-wide run (hop burned fuel), green alone (flaky-test.md row exists).

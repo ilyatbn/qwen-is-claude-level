@@ -921,9 +921,6 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             for (event, mk) in [
                 ("use_heal", Command::UseHeal as fn(_) -> Command),
                 ("use_battery", Command::UseBatteryPack as fn(_) -> Command),
-                // §C11: `E`. Slotless too — the slot comes from the documented
-                // order, not from anything the client claims.
-                ("quick_throw", Command::QuickThrow as fn(_) -> Command),
             ] {
                 let ctx = ctx.clone();
                 socket.on(event, move |socket: SocketRef| {
@@ -955,10 +952,29 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 let ctx = ctx.clone();
                 // T22.10D F2: in arrival order, like every in-match verb
                 // (`Ctx::send_as_player`) — a `select_slot` just before it must land first.
-                socket.on("fire", move |socket: SocketRef| {
-                    ctx.send_as_player(socket.id, Command::Fire);
-                    async {}
-                });
+                // T23.19D F4: with the input seq the client used it under (`{ seq }`), echoed on the
+                // swing/throw/mine it produces so the client pairs them by use (`Command::UseAt`). A
+                // missing or malformed seq is a plain `Fire`: the echo is the client's bookkeeping,
+                // never a reason to refuse the use.
+                socket.on(
+                    "fire",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        ctx.send_as_player(socket.id, |id| use_command(id, false, &p));
+                        async {}
+                    },
+                );
+            }
+            {
+                let ctx = ctx.clone();
+                // §C11: `E`. Slotless — the slot comes from the documented order, not from
+                // anything the client claims. Its seq as `fire`'s (T23.19D F4).
+                socket.on(
+                    "quick_throw",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        ctx.send_as_player(socket.id, |id| use_command(id, true, &p));
+                        async {}
+                    },
+                );
             }
             // T22.08D F1: **the server's own flare clock, for a check** (`DEV_PROBE=1`).
             // `solar-flare-match` asked the client's clock where the damage points
@@ -1954,6 +1970,20 @@ pub(crate) fn broadcast_except(
         if let Some(s) = io.get_socket(sid) {
             let _ = s.emit(ev, payload);
         }
+    }
+}
+
+/// T23.19D F4: a `fire` (`quick` false) or `quick_throw` from its payload — `UseAt` when it carries a `seq` that
+/// fits a `u32`, else the plain command.
+fn use_command(id: PlayerId, quick: bool, p: &serde_json::Value) -> Command {
+    match p
+        .get("seq")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        Some(seq) => Command::UseAt { id, quick, seq },
+        None if quick => Command::QuickThrow(id),
+        None => Command::Fire(id),
     }
 }
 

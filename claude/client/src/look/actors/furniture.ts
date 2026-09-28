@@ -1,5 +1,5 @@
 /**
- * T23.19: the world's furniture as world-renderer actors — pickups and their labels, graves, the ground animals and
+ * T23.19: the world's furniture as world-renderer actors — pickups (their labels are Phaser's since T23.19D), graves, the ground animals and
  * the crystals — drawn by `draw.ts` into the actor atlas, **behind** every figure (`cast.ts`, `back`). Until now the
  * first four were Phaser's, on the canvas over the world's, so a figure standing on one was covered by it and T23.19A
  * drew such a figure through Phaser instead (`PlayerView.overPhaser`, retired with this file).
@@ -12,6 +12,7 @@ import type { Actor, Light, LitOpts, RgbString } from '../scene'
 import { joinCast } from './cast'
 import { CRYSTAL_LIGHT, place } from '../effectLights'
 import { ICON_ACCENT, ICON_CENTRE_UNITS, ICON_RES, ICON_UNIT_PX, iconWeapon } from './icons'
+import { HALO_A } from './cell'
 
 /** A pickup's lighting: rim-lit by whatever is near (a muzzle, a gate, the moon), no shadow — it lies on the rock. */
 const PICKUP_LIT: LitOpts = { size: 1, halo: null, shadow: false }
@@ -24,6 +25,18 @@ export const ITEM_S = 1
  * stone disappeared into the night rock).
  */
 export const NIGHT_HALO: RgbString = '120,120,170'
+
+/**
+ * T23.19D F2: **the night halo is a night thing.** It fades with the scene's night (`t` = darkness / `NIGHT_DARKNESS`,
+ * R7's blend factor: 0 noon, 1 full night) — at noon there is none; the review found it drawn at noon. In
+ * `NIGHT_HALO_STEPS` steps, because a halo is baked into its actor's atlas cell: a continuous fade would redraw every
+ * grave and animal every frame through dusk.
+ */
+export const NIGHT_HALO_STEPS = 4
+export function nightHalo(night: number): Pick<LitOpts, 'halo' | 'haloAlpha'> {
+  const q = Math.round(Math.min(1, Math.max(0, night)) * NIGHT_HALO_STEPS) / NIGHT_HALO_STEPS
+  return q > 0 ? { halo: NIGHT_HALO, haloAlpha: HALO_A * q } : { halo: null }
+}
 
 /**
  * A pickup of registry sprite `sprite` centred on (x, y): a weapon is its held model at the icon's fitted scale
@@ -40,16 +53,11 @@ export function pickupActor(sprite: string, x: number, y: number): Actor {
   return { kind: 'item', x, y, opts: { key: sprite, s: ITEM_S, accent: ICON_ACCENT }, lit: PICKUP_LIT, box: null }
 }
 
-/** A pickup's name, its bottom centre at (x, y). Unlit: a sign, not a thing in the scene. */
-export function labelActor(text: string, x: number, y: number): Actor {
-  return { kind: 'label', x, y, opts: { text }, lit: null, box: null }
-}
-
 /** `draw.ts::grave`'s height at `s` 1 (mound to the stone's top). */
 export const GRAVE_ART_H = 16
-/** A grave standing on the feet line at (x, y), `h` world px tall (`TOMBSTONE_H`). */
-export function graveActor(x: number, y: number, h: number): Actor {
-  return { kind: 'grave', x, y, opts: { s: h / GRAVE_ART_H }, lit: { size: 1, halo: NIGHT_HALO, shadow: true }, box: null }
+/** A grave standing on the feet line at (x, y), `h` world px tall (`TOMBSTONE_H`), at the scene's `night` (0–1). */
+export function graveActor(x: number, y: number, h: number, night: number): Actor {
+  return { kind: 'grave', x, y, opts: { s: h / GRAVE_ART_H }, lit: { size: 1, ...nightHalo(night), shadow: true }, box: null }
 }
 
 /** Wire kinds (`animals-math.ts`): 0 spider, 1 beetle. */
@@ -64,8 +72,8 @@ export const SPIDER_ART_W = 12.5
  */
 export const ANIMAL_LIT_PER_S = 2 / 3
 
-/** A ground animal whose hit box (`w` × `h`) is centred on (x, y), facing right or left. */
-export function animalActor(kind: number, x: number, y: number, right: boolean, w: number, h: number): Actor {
+/** A ground animal whose hit box (`w` × `h`) is centred on (x, y), facing right or left, at the scene's `night` (0–1). */
+export function animalActor(kind: number, x: number, y: number, right: boolean, w: number, h: number, night: number): Actor {
   const beetle = kind === BEETLE_KIND
   const s = w / (beetle ? BEETLE_ART_W : SPIDER_ART_W)
   return {
@@ -73,7 +81,7 @@ export function animalActor(kind: number, x: number, y: number, right: boolean, 
     x,
     y: y + h / 2,
     opts: { s, face: right ? 1 : -1 },
-    lit: { size: ANIMAL_LIT_PER_S * s, halo: NIGHT_HALO, shadow: false },
+    lit: { size: ANIMAL_LIT_PER_S * s, ...nightHalo(night), shadow: false },
     box: null,
   }
 }

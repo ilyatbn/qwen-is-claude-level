@@ -47,25 +47,56 @@ const dE = (a, b, o) =>
     ? 0
     : deltaE2000(toLab(a.data[o], a.data[o + 1], a.data[o + 2]), toLab(b.data[o], b.data[o + 1], b.data[o + 2]))
 
-/** Mean ΔE of `a` against `b` over `box`, on the pixels where `agreeA` and `agreeB` agree within `AGREE`. */
-function masked(a, b, agreeA, agreeB, [x0, y0, x1, y1]) {
+/**
+ * Mean ΔE of `a` against `b` over `box`, on the pixels where `agreeA` and `agreeB` agree within `AGREE`. T23.19D F6:
+ * also **which pixels the mask dropped** — their count, bounding box, and (with `dropMap`) each one marked there.
+ */
+function masked(a, b, agreeA, agreeB, [x0, y0, x1, y1], dropMap = null) {
   let s = 0
   let n = 0
   let all = 0
+  const drop = { n: 0, box: [Infinity, Infinity, -Infinity, -Infinity] }
   for (let y = Math.max(0, y0); y < Math.min(a.height, y1); y++) {
     for (let x = Math.max(0, x0); x < Math.min(a.width, x1); x++) {
       const o = (y * a.width + x) * 4
       all++
-      if (dE(agreeA, agreeB, o) > AGREE) continue
+      if (dE(agreeA, agreeB, o) > AGREE) {
+        drop.n++
+        drop.box = [Math.min(drop.box[0], x), Math.min(drop.box[1], y), Math.max(drop.box[2], x + 1), Math.max(drop.box[3], y + 1)]
+        if (dropMap) dropMap[y * a.width + x] = 1
+        continue
+      }
       n++
       s += dE(a, b, o)
     }
   }
-  return { d: n ? s / n : NaN, kept: all ? n / all : 0 }
+  return { d: n ? s / n : NaN, kept: all ? n / all : 0, drop }
 }
+
+/** A dropped-pixel summary for the log. */
+const dropped = (m) => (m.drop.n ? `${m.drop.n} px dropped in [${m.drop.box.join(',')}]` : 'none dropped')
+
+/**
+ * T23.19D F6: the game path's blast (`&knob=game-blast`: a `Blast` record built by `fx/game.ts::blastFx` from the fx
+ * feed, as a match draws one) at these shares of its life, on F1's explosion box, same mask and metric as the lab's.
+ */
+const GAME_BLAST_KS = [0.03, 0.06, 0.1, 0.2]
+/**
+ * **The game path cannot reach Level A, by construction — measured, T23.19D.** Its blast has its own random stream
+ * (`game.ts::blastRnd`, by place: every blast is not F1's) and age curves that never pass through the still (heat is 1
+ * only before 5 % of the life, the fireball full-size only after 6 %, the ring full only after 20 %), and its fire
+ * boils. Best of `GAME_BLAST_KS`: **2.68** at 6 % (0.1761 is Level A); with the mockup's stream and a still fire planted
+ * in, still **1.01** — the curves alone are 6× the threshold. So this leg gates what it can mean: the game path draws
+ * F1's explosion (every part laid out) and lands **far nearer F1 than no explosion** (`fx-off` on the same box:
+ * 23.04), under `GAME_PATH_MAX` — between the measured 2.68 and that control. The Level A number is reported. Put to
+ * the coordinator: whether the curves should pass through the still at a peak age (then Level A, given the stream).
+ */
+const GAME_PATH_MAX = 8
 
 async function lab(page, origin, knob) {
   await page.goto(`${origin}/?look=F1&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
+  // A staged game blast is drawn from the feed on the frames after the scene's first: wait a few.
+  if (knob?.startsWith('game-blast')) await page.waitForFunction(() => window.__look && window.__look.frames > 5, null, { timeout: 120_000 })
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
   const err = await page.evaluate(() => window.__look.error)
   if (err) throw new Error(`look-lab F1: ${err}`)
@@ -99,11 +130,12 @@ export default async function ({ page, shot, log }) {
     if (!(on.fx.ribbons === 5 + 22 && on.fx.soft === 5 + 1 && on.fx.discs === 2 && on.fx.smoke === 22)) problems.push(`the effects layer laid out ${laid} parts, ${JSON.stringify(on.fx)}`)
     if (off.fx.ribbons + off.fx.soft + off.fx.discs + off.fx.smoke !== 0) problems.push('fx-off still laid out effects')
     const thr = T.actors.threshold
+    const dropMap = new Uint8Array(1280 * 720)
     for (const { kind, box } of boxes) {
-      const m = masked(on.frame, ref, off.frame, refOff, box)
+      const m = masked(on.frame, ref, off.frame, refOff, box, dropMap)
       const c = masked(off.frame, ref, off.frame, refOff, box)
       const gated = m.kept >= MIN_KEPT
-      log(`${kind} ${JSON.stringify(box)}: ${m.d.toFixed(4)} over ${(m.kept * 100).toFixed(1)}% of the box (max ${thr}) ${gated ? (m.d <= thr ? 'ok' : 'FAIL') : 'reported'}; fx-off ${c.d.toFixed(3)} ${c.d > thr ? 'fails, as it must' : 'PASSES'}`)
+      log(`${kind} ${JSON.stringify(box)}: ${m.d.toFixed(4)} over ${(m.kept * 100).toFixed(1)}% of the box (max ${thr}) ${gated ? (m.d <= thr ? 'ok' : 'FAIL') : 'reported'}; fx-off ${c.d.toFixed(3)} ${c.d > thr ? 'fails, as it must' : 'PASSES'}; mask: ${dropped(m)}`)
       if (gated && !(m.d <= thr)) problems.push(`Level A on the ${kind} box ${JSON.stringify(box)}: ${m.d.toFixed(4)} > ${thr}`)
       if (!(c.d > thr)) problems.push(`control fx-off passes on the ${kind} box ${JSON.stringify(box)} (${c.d.toFixed(4)}) — the box cannot see its effect`)
     }
@@ -113,6 +145,40 @@ export default async function ({ page, shot, log }) {
     for (let y = 0; y < 720; y++) for (const [img, x0] of [[on.frame, 0], [ref, 1288]]) Buffer.from(img.data.buffer, img.data.byteOffset + y * 1280 * 4, 1280 * 4).copy(sb.data, (y * sb.width + x0) * 4)
     writeFileSync(join(root, 'shots/look-fx-F1-lab-vs-ref.png'), PNG.sync.write(sb))
     log('looked at: shots/look-fx-F1-lab-vs-ref.png (lab | F1)')
+    // T23.19D F6: which pixels the mask dropped, marked magenta over the lab frame.
+    const mk = new PNG({ width: 1280, height: 720 })
+    for (let i = 0; i < 1280 * 720; i++) {
+      const o = i * 4
+      const hit = dropMap[i] === 1
+      mk.data[o] = hit ? 255 : on.frame.data[o]
+      mk.data[o + 1] = hit ? 0 : on.frame.data[o + 1]
+      mk.data[o + 2] = hit ? 255 : on.frame.data[o + 2]
+      mk.data[o + 3] = 255
+    }
+    writeFileSync(join(root, 'shots/look-fx-F1-mask-dropped.png'), PNG.sync.write(mk))
+    log('the mask: shots/look-fx-F1-mask-dropped.png (magenta = dropped: lab and mockup without effects disagree there)')
+
+    // T23.19D F6: the game path's blast, Level A on F1's explosion box.
+    const ex = boxes.find((b) => b.kind === 'explosion')
+    if (!ex) problems.push('F1 describes no explosion — no game-path leg')
+    else {
+      let best = Infinity
+      for (const k of GAME_BLAST_KS) {
+        const g = await lab(own, origin, `game-blast&blastk=${k}`)
+        const st = await own.evaluate(() => window.__look.gameBlast)
+        if (!st || st.blasts !== 1) problems.push(`game-blast k ${k}: the lab staged ${JSON.stringify(st)}`)
+        const m = masked(g.frame, ref, off.frame, refOff, ex.box)
+        best = Math.min(best, m.d)
+        log(`game path, blast at ${k} of its life: ${m.d.toFixed(4)} on the explosion box over ${(m.kept * 100).toFixed(1)}% (Level A ${thr}: ${m.d <= thr ? 'meets' : 'reported, not reachable'}); laid out ${JSON.stringify(g.fx)}`)
+        // Both ends: the scene's still laid out, minus its explosion, plus the game's — the same parts as the still.
+        if (!(g.fx.worldDraws === true && g.fx.smoke === on.fx.smoke && g.fx.discs === on.fx.discs && g.fx.soft === on.fx.soft && g.fx.ribbons === on.fx.ribbons)) problems.push(`game-blast k ${k}: laid out ${JSON.stringify(g.fx)}, the still ${JSON.stringify(on.fx)}`)
+        if (k === GAME_BLAST_KS[1]) await shot('look-fx-game-blast')
+      }
+      const ctl = masked(off.frame, ref, off.frame, refOff, ex.box).d
+      log(`game path, best ${best.toFixed(4)} (max ${GAME_PATH_MAX}); no explosion on the same box ${ctl.toFixed(3)} (must be over it)`)
+      if (!(best <= GAME_PATH_MAX)) problems.push(`the game path's blast is ${best.toFixed(3)} from F1's explosion at best (max ${GAME_PATH_MAX})`)
+      if (!(ctl > GAME_PATH_MAX)) problems.push(`no explosion scores ${ctl.toFixed(3)} on the explosion box — the game-path bound cannot tell`)
+    }
   } finally {
     await browser.close()
   }

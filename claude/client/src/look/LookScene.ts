@@ -42,8 +42,11 @@ import { actorBoxes, describeScene, type Box, type SceneDescription } from './sc
 import { SCENES } from './scenes'
 import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
-import { Core } from '../core'
+import { C, Core } from '../core'
 import { LabFields } from './labFields'
+import { fxFeed } from './fx/feed'
+import { BLAST_REACH } from './fx/game'
+import { OrdnanceState } from '../render/ordnance-state'
 
 export interface LookHandle {
   ready: boolean
@@ -66,7 +69,12 @@ export interface LookHandle {
   fields: ReturnType<LabFields['channelFnv']> | null
   /** T23.07: whether the lit terrain is drawn, or why not (a mask the fields cannot take). */
   terrain: boolean | string
+  /** T23.19D F6 (`&knob=game-blast`): the staged game blast — its age share and the blasts in its state. */
+  gameBlast?: { k: number; blasts: number }
 }
+
+/** T23.19D F6: the staged game blast's default age, as a share of its life (`BLAST_SHADER_LIFE`, the game's). */
+export const GAME_BLAST_K = 0.06
 
 export class LookScene extends Phaser.Scene {
   constructor() {
@@ -107,6 +115,7 @@ export class LookScene extends Phaser.Scene {
     let actorRim = true
     let jetOff = false
     let fxOff = false
+    let gameBlast = false
     let look: SceneDescription['look'] = { ...full.look, terrain: terrainLook }
     const P = full.look
     // T23.13: knobs combine, comma-separated (`actor-rim-off,exposure-up`: a control of T23.12's picture).
@@ -130,6 +139,10 @@ export class LookScene extends Phaser.Scene {
       // T23.18: the scene without its effects (`fx`) — what `castonly.js`/`posesonly.js`/`weaponsonly.js` render, and
       // `look-fx`'s must-fail control.
       else if (knob === 'fx-off') fxOff = true
+      // T23.19D F6: the scene's explosion drawn **the game's way** — a `Blast` record in an ordnance layer's state, built
+      // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one — instead of the scene's
+      // still (`sceneFx`). `&blastk=` is its age as a share of its life (default `GAME_BLAST_K`). `look-fx`'s game-path leg.
+      else if (knob === 'game-blast') gameBlast = true
       else handle.error = `unknown knob "${knob}"`
     }
     // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
@@ -145,6 +158,11 @@ export class LookScene extends Phaser.Scene {
             : { ...full, look }
     desc.actorRim = actorRim
     if (fxOff) desc.fx = []
+    const staged = gameBlast ? desc.fx.find((f) => f.kind === 'explosion') : undefined
+    if (gameBlast) {
+      if (!staged) handle.error = 'game-blast: this scene has no explosion'
+      desc.fx = desc.fx.filter((f) => f.kind !== 'explosion')
+    }
     if (jetOff) {
       desc.actors = desc.actors.map((a) =>
         a.kind === 'figure' && a.opts.J ? { ...a, opts: { ...a.opts, J: { ...a.opts.J, jet: 0 } } } : a.kind === 'stick' ? { ...a, opts: { ...a.opts, jet: false } } : a,
@@ -165,6 +183,17 @@ export class LookScene extends Phaser.Scene {
     void Promise.all([loadWorldRenderer(this), desc.masks ? Core.init() : null]).then(([m, core]) => {
       if (!m) return
       const renderer = m.createWorldRenderer(this, desc)
+      if (staged?.kind === 'explosion' && renderer instanceof m.WorldRenderer) {
+        // One blast, at the scene's explosion, sized so `blastScale(r)` is its `scale`, at `blastk` of its life.
+        const k = Number(q.get('blastk') ?? GAME_BLAST_K)
+        const life = C().BLAST_SHADER_LIFE
+        const state = new OrdnanceState(0, life)
+        state.blasts.push({ x: staged.x, y: staged.y, r: staged.scale * BLAST_REACH, age: k * life, ttl: life })
+        const feed = fxFeed(this)
+        feed.ordnance = { state, visible: true, flameRadius: 0, bulletLength: 0 }
+        renderer.setFxFeed(feed)
+        handle.gameBlast = { k, blasts: state.blasts.length }
+      }
       const stats = (renderer as { stats?: RenderStats }).stats
       handle.backend = renderer.backend
       handle.rendered = stats?.scene ?? null

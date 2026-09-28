@@ -2699,20 +2699,11 @@ pub fn constants_json() -> String {
         // §F2: the beam's life, and the bullet streak's shape. `TRACER_LIFETIME`
         // is retired — that path is the two lasers now.
         BEAM_LIFETIME => c::BEAM_LIFETIME,
-        BEAM_SHADER_WIDTH => c::BEAM_SHADER_WIDTH,
-        BEAM_SHADER_POOL => c::BEAM_SHADER_POOL,
-        FLAME_SHADER_SCALE => c::FLAME_SHADER_SCALE,
-        FLAME_SHADER_ASPECT => c::FLAME_SHADER_ASPECT,
-        FLAME_SHADER_BASE => c::FLAME_SHADER_BASE,
-        FLAME_SHADER_POOL => c::FLAME_SHADER_POOL,
         BLAST_SHADER_LIFE => c::BLAST_SHADER_LIFE,
-        BLAST_SHADER_SCALE => c::BLAST_SHADER_SCALE,
-        BLAST_SHADER_POOL => c::BLAST_SHADER_POOL,
         // T21.18: `smoke-shader` sizes its patches from the cloud and reports the
         // multiplier a player inside it gets, rather than carrying copies.
         SMOKE_RADIUS => c::SMOKE_RADIUS,
         FOV_SMOKE_MULT => c::FOV_SMOKE_MULT,
-        SMOKE_SHADER_SCALE => c::SMOKE_SHADER_SCALE,
         // T22.09B: the radiation glow pulses once per damage entry.
         RADIATION_LOG_INTERVAL => c::RADIATION_LOG_INTERVAL,
         // T22.08B: the flare's painted size and its burn, drawing only — the ribbon's
@@ -2733,7 +2724,6 @@ pub fn constants_json() -> String {
         SOLAR_FLARE_BURN_SECONDS => c::SOLAR_FLARE_BURN_SECONDS,
         SOLAR_FLARE_CONFIRM_SECONDS => c::SOLAR_FLARE_CONFIRM_SECONDS,
         EFFECT_TELEGRAPH => c::EFFECT_TELEGRAPH,
-        SMOKE_SHADER_POOL => c::SMOKE_SHADER_POOL,
         BULLET_LENGTH => c::BULLET_LENGTH,
         BULLET_WIDTH => c::BULLET_WIDTH,
         TRACER_WIDTH => c::TRACER_WIDTH,

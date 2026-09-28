@@ -13,6 +13,7 @@
 //! sprite and nowhere else, which is deliberately imperfect information
 //! (`docs/30-items-inventory.md` §6).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use game_core::effects::scheduler::EffectPhase;
@@ -23,6 +24,39 @@ use socketioxide::SocketIo;
 
 use crate::round::VoteTally;
 use crate::session::SessionMap;
+
+/// T23.19D F4: **which of a player's own uses an event answers**, so the client pairs its predicted swing with the
+/// server's echo of *that* use — by the input seq it was made under — not first-in-first-out per weapon.
+///
+/// The keys are the three events a use of a weapon that moves the figure produces (a swing, a throw, a mine): a
+/// projectile's and a mine's own ids, and a swing's owner and tick (one use per player per tick — the cooldown).
+/// `Room` fills a map of them as it runs a `fire`/`quick_throw` that carried a seq (`Command::UseAt`), and
+/// [`flush_events`] adds `"use_seq"` to those events' payloads. **Wire only**: nothing simulated reads it and replays
+/// do not carry it (`ReplayCommand::Fire`/`QuickThrow` are unchanged), so an old recording replays byte for byte —
+/// no `REPLAY_VERSION` bump (`docs/76` §G8: bumped only when an old recording would silently disagree).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UseEcho {
+    Projectile(game_core::weapons::projectile::ProjectileId),
+    Mine(game_core::weapons::placed::MineId),
+    Melee(PlayerId, u32),
+}
+
+/// The seq each echo answers, for the events waiting to be flushed.
+pub type UseSeqs = HashMap<UseEcho, u32>;
+
+impl UseEcho {
+    /// The key of `e` and the player whose use it was, when `e` is one of the three.
+    pub fn of(e: &GameEvent) -> Option<(UseEcho, PlayerId)> {
+        match e {
+            GameEvent::ProjectileSpawn { id, owner, .. } => {
+                Some((UseEcho::Projectile(*id), *owner))
+            }
+            GameEvent::MinePlaced { id, owner, .. } => Some((UseEcho::Mine(*id), *owner)),
+            GameEvent::Melee { tick, owner, .. } => Some((UseEcho::Melee(*owner, *tick), *owner)),
+            _ => None,
+        }
+    }
+}
 
 /// Where one event goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +197,22 @@ fn effect_phase_name(p: EffectPhase) -> &'static str {
 /// snapshot of it through the event queue.
 pub fn payload_of(e: &GameEvent, world: &World) -> serde_json::Value {
     payload_with_votes(e, world, None)
+}
+
+/// [`payload_with_votes`], plus `"use_seq"` on an event that answers a use made under a seq (T23.19D F4, [`UseEcho`]).
+pub fn payload_with_use(
+    e: &GameEvent,
+    world: &World,
+    votes: Option<VoteTally>,
+    uses: &UseSeqs,
+) -> serde_json::Value {
+    let mut p = payload_with_votes(e, world, votes);
+    if let (Some((key, _)), Some(obj)) = (UseEcho::of(e), p.as_object_mut()) {
+        if let Some(seq) = uses.get(&key) {
+            obj.insert("use_seq".into(), (*seq).into());
+        }
+    }
+    p
 }
 
 /// [`payload_of`], plus the restart vote's tally for a `round_state` sent while
@@ -717,13 +767,18 @@ pub fn flush_events(
     sessions: &Arc<SessionMap>,
     votes: Option<VoteTally>,
     events: &[GameEvent],
+    uses: &UseSeqs,
 ) {
     if events.is_empty() {
         return;
     }
     let mut batch: Vec<(&'static str, serde_json::Value, Scope)> = Vec::with_capacity(events.len());
     for e in events {
-        batch.push((name_of(e), payload_with_votes(e, world, votes), scope_of(e)));
+        batch.push((
+            name_of(e),
+            payload_with_use(e, world, votes, uses),
+            scope_of(e),
+        ));
     }
 
     // Emitted **inline**, not from a spawned task.
@@ -1239,5 +1294,43 @@ mod tests {
             start["duration"],
             game_core::constants::SOLAR_FLARE_DURATION as f64
         );
+    }
+    /// T23.19D F4: `"use_seq"` goes on exactly the event its key names — the control is the same event unkeyed.
+    #[test]
+    fn a_keyed_use_echo_carries_its_seq_and_an_unkeyed_one_does_not() {
+        let w = World::new(1, MapScale::Small);
+        let e = GameEvent::MinePlaced {
+            tick: 3,
+            id: 9,
+            owner: 2,
+            weapon: game_core::items::registry::WeaponId(0),
+            x: 1.0,
+            y: 2.0,
+        };
+        let mut uses = UseSeqs::new();
+        assert!(payload_with_use(&e, &w, None, &uses)
+            .get("use_seq")
+            .is_none());
+        uses.insert(UseEcho::Mine(8), 5);
+        assert!(
+            payload_with_use(&e, &w, None, &uses)
+                .get("use_seq")
+                .is_none(),
+            "another mine's seq landed on this one"
+        );
+        uses.insert(UseEcho::Mine(9), 41);
+        assert_eq!(payload_with_use(&e, &w, None, &uses)["use_seq"], 41);
+        let m = GameEvent::Melee {
+            tick: 3,
+            owner: 2,
+            weapon: game_core::items::registry::WeaponId(0),
+            x: 0.0,
+            y: 0.0,
+            aim: 0.0,
+            reach: 1.0,
+            arc: 1.0,
+            hits: 0,
+        };
+        assert_eq!(UseEcho::of(&m), Some((UseEcho::Melee(2, 3), 2)));
     }
 }

@@ -5,7 +5,8 @@
  * T23.14E). The mirror can be wrong both ways — its cooldown runs on this page's clock, not the server's; a stale
  * `inventory` event can give back a grenade it threw; a pickup can fill the selected slot before the event saying
  * so; an in-flight `inventory` can overwrite a selection — so each predicted swing waits here for the server's echo
- * of it (your own `melee`, `projectile_spawn` of a thrown weapon, or `mine_placed`), matched by the item's key:
+ * of it (your own `melee`, `projectile_spawn` of a thrown weapon, or `mine_placed`), matched by the input seq the use was
+ * sent under and its item's key (T23.19D F4 — the server echoes the seq as `use_seq`):
  * - an echo with a matching prediction is the prediction confirmed: nothing more to play;
  * - an echo with **none** is a use the mirror refused and the server took: the swing plays now, late;
  * - a prediction with no echo within the bound is dropped — it swung once and never swings again.
@@ -41,11 +42,46 @@ export interface PendingStats {
   dropped: number
 }
 
+/**
+ * T23.19D F4: **the round trip the bound uses is filtered**, not the last `pong_rtt` sample — one slow sample (a GC
+ * pause, a busy tick) must not shrink or stretch every waiting prediction's bound. RFC 6298's estimator: a smoothed
+ * mean (gain `RTT_GAIN`) plus `RTT_VAR_K` times the smoothed deviation (gain `RTT_VAR_GAIN`) — the same shape TCP
+ * uses to decide how long an answer may take before it is late.
+ */
+export const RTT_GAIN = 1 / 8
+export const RTT_VAR_GAIN = 1 / 4
+export const RTT_VAR_K = 4
+export class RttFilter {
+  private srtt: number | null = null
+  private rttvar = 0
+
+  sample(ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0) return
+    if (this.srtt === null) {
+      this.srtt = ms
+      this.rttvar = ms / 2
+      return
+    }
+    this.rttvar += RTT_VAR_GAIN * (Math.abs(this.srtt - ms) - this.rttvar)
+    this.srtt += RTT_GAIN * (ms - this.srtt)
+  }
+
+  /** The filtered round trip (ms): 0 before any sample. */
+  get value(): number {
+    return this.srtt === null ? 0 : this.srtt + RTT_VAR_K * this.rttvar
+  }
+
+  reset(): void {
+    this.srtt = null
+    this.rttvar = 0
+  }
+}
+
 export class PendingUses {
-  private readonly list: { key: string; at: number }[] = []
+  private readonly list: { key: string; seq: number; at: number }[] = []
   readonly stats: PendingStats = { predicted: 0, confirmed: 0, late: 0, dropped: 0 }
 
-  /** `rttMs`: the connection's measured round trip, read when the bound is. */
+  /** `rttMs`: the connection's filtered round trip (`RttFilter`), read when the bound is. */
   constructor(private readonly rttMs: () => number) {}
 
   /** How long a prediction waits for its echo, ms. */
@@ -53,22 +89,29 @@ export class PendingUses {
     return PENDING_USE_BASE_MS + PENDING_USE_RTT_FACTOR * Math.max(0, this.rttMs())
   }
 
-  /** The figure swung for a predicted use of `key` at `now` (ms). A key that moves no figure is not kept. */
-  predicted(key: string, now: number): void {
+  /**
+   * The figure swung for a predicted use of `key`, sent under input seq `seq` (the server echoes it — T23.19D F4), at
+   * `now` (ms). A key that moves no figure is not kept.
+   */
+  predicted(key: string, seq: number, now: number): void {
     this.expire(now)
     if (!swings(key)) return
-    this.list.push({ key, at: now })
+    this.list.push({ key, seq, at: now })
     this.stats.predicted += 1
   }
 
   /**
-   * The server's echo of your own use of `key` at `now` (ms). **True: play the swing now** — no prediction was
-   * waiting for it. False: a prediction was (it is confirmed and removed), or `key` moves no figure.
+   * The server's echo of your own use of `key`, made under `seq` (its `use_seq`; `null`: the echo named none), at
+   * `now` (ms). **True: play the swing now** — no prediction of *that* use was waiting. False: one was (it is confirmed
+   * and removed), or `key` moves no figure.
+   *
+   * T23.19D F4: paired by the use's seq, not first-in-first-out per key — so a refused prediction still waiting cannot
+   * swallow the echo of a later use of the same weapon, and that use's swing is not lost.
    */
-  echo(key: string, now: number): boolean {
+  echo(key: string, seq: number | null, now: number): boolean {
     if (!swings(key)) return false
     this.expire(now)
-    const i = this.list.findIndex((p) => p.key === key)
+    const i = seq === null ? -1 : this.list.findIndex((p) => p.seq === seq && p.key === key)
     if (i >= 0) {
       this.list.splice(i, 1)
       this.stats.confirmed += 1
@@ -92,7 +135,7 @@ export class PendingUses {
     return this.list.length
   }
 
-  /** A new round or body: nothing is waiting. */
+  /** A new round, a death or a respawn (T23.19D F4): nothing is waiting. */
   clear(): void {
     this.list.length = 0
   }

@@ -235,6 +235,8 @@ export interface LitOpts {
    * never ink on ink. Absent: `halo` as given (the mockup's scenes).
    */
   darkHalo?: RgbString
+  /** T23.19D F2: the halo's opacity at its centre (`draw.ts::glow`'s `a`). Absent: F's 0.22 (`cell.ts::HALO_A`). */
+  haloAlpha?: number
 }
 
 /** One `S.glow` of a flamethrower's flame, relative to the muzzle. */
@@ -246,7 +248,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item' | 'label'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -279,8 +281,6 @@ export interface ActorOpts {
   origin?: [number, number]
   held?: string
   heldAccent?: string
-  /** T23.19 `label`: its text. (`item` names its registry sprite in `key`.) */
-  text?: string
   /** T23.14 figure: its pose (`actors/figure.ts::Pose`, `poses.js`'s J) and visor colour (space). */
   J?: Pose
   visor?: string

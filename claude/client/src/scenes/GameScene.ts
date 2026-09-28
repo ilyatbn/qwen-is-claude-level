@@ -83,7 +83,7 @@ import { SpaceSky } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
-import { PendingUses, swings as swingsKey } from '../look/actors/pendingUses'
+import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
 import { crystalLights, joinCrystals } from '../look/actors/furniture'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { sceneDarkness } from '../render/sky-math'
@@ -377,7 +377,9 @@ export class GameScene extends Phaser.Scene {
   /** T23.14E F4, e2e (`slowFrames`): ms every frame busy-waits — a slow frame on demand, as a loaded box has. */
   private slowFrameMs = 0
   /** T23.14F F2: your predicted swings, each waiting for the server's echo of it (`look/actors/pendingUses.ts`). */
-  private readonly pendingUses = new PendingUses(() => this.lastRtt)
+  /** T23.19D F4: the round trip, filtered — what the pending uses' bound reads (one slow sample does not move it). */
+  private readonly rtt = new RttFilter()
+  private readonly pendingUses = new PendingUses(() => this.rtt.value)
   /** T23.14E F4, e2e (`watchRounds`): each round's pixels on the canvas (`render/ordnanceWatch.ts`). */
   private roundWatch: RoundWatch | null = null
   /**
@@ -721,6 +723,7 @@ export class GameScene extends Phaser.Scene {
     this.stepAcc = 0
     this.inputsSent = 0
     this.lastRtt = 0
+    this.rtt.reset()
     this.rttSamples = 0
     this.rttAcc = 0
     this.landing.reset()
@@ -1051,6 +1054,7 @@ export class GameScene extends Phaser.Scene {
       const sent = Number(raw)
       if (Number.isFinite(sent)) {
         this.lastRtt = performance.now() - sent
+        this.rtt.sample(this.lastRtt)
         this.flareFx?.setRtt(this.lastRtt)
         this.rttSamples++
       }
@@ -1112,7 +1116,7 @@ export class GameScene extends Phaser.Scene {
         const p = asRecord(raw)
         this.mirror.applyEvent(ev, p, performance.now())
         // T23.14D F8: a thrown weapon leaving a hand throws its figure — the server's word, anyone's.
-        if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'])
+        if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'], p['use_seq'])
         // T23.09C F2: where each round left the gun, for its muzzle flash (`WorldView.syncProjectiles`'s `origin`).
         if (ev === 'projectile_spawn') this.roundOrigins.set(Number(p['id'] ?? -1), { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) })
         // T23.14E F4: **the round goes into the ordnance layer as it spawns**, as the sandbox's `noteOrigin` does — not at
@@ -1226,7 +1230,7 @@ export class GameScene extends Phaser.Scene {
       const x = Number(p['x'] ?? 0)
       const y = Number(p['y'] ?? 0)
       this.observed.swings++
-      this.swingOf(p['owner'], p['weapon'])
+      this.swingOf(p['owner'], p['weapon'], p['use_seq'])
       this.fx.addSwing(
         x,
         y,
@@ -1252,7 +1256,7 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       this.observed.minesPlaced++
       // T23.14F: a mine is thrown down — anyone's figure throws it (your own reconciled, `swingOf`).
-      this.swingOf(p['owner'], p['weapon'])
+      this.swingOf(p['owner'], p['weapon'], p['use_seq'])
       this.fx.addMine(
         Number(p['id'] ?? -1),
         Number(p['owner'] ?? -1),
@@ -1291,6 +1295,8 @@ export class GameScene extends Phaser.Scene {
       if (Number(asRecord(raw)['id'] ?? -1) === this.me) {
         this.meAlive = true
         this.death.cleared()
+        // T23.19D F4: a new body — nothing the old one predicted is waiting.
+        this.pendingUses.clear()
       }
     })
     this.conn.on('item_spawn', () => this.observed.itemSpawns++)
@@ -1369,6 +1375,8 @@ export class GameScene extends Phaser.Scene {
       // latency of this very event.
       if (victim === this.me) {
         this.meAlive = false
+        // T23.19D F4: a dead figure swings nothing more; what it predicted is not waited for.
+        this.pendingUses.clear()
         const respawnAt = Number(p['respawn_at'] ?? NaN)
         this.death.died({
           victim,
@@ -1647,15 +1655,10 @@ export class GameScene extends Phaser.Scene {
     // resolved as a bazooka).
     this.platformViews = init.platforms.map((p, i) => ({ id: i, x: p.x, y: p.y }))
     this.world.platforms.build(this.platformViews)
-    // T23.19A: gates and turrets are the world renderer's, behind the figures — Phaser's canvas lies over the world's,
-    // so there they covered a mounted gunner. Space keeps Phaser's (its opaque backdrop hides the world canvas, and
-    // its figures are Phaser's too — `PlayerView.drawSpace`, until T23.20).
-    this.world.pads.useWorld(!spaceMap)
-    this.world.platforms.useWorld(!spaceMap, this.core.width)
-    // T23.19: pickups and labels, graves and animals too — Phaser's canvas covered a figure standing on one.
-    this.world.items.useWorld(!spaceMap)
-    this.tombstones.useWorld(!spaceMap)
-    this.animals.useWorld(!spaceMap)
+    // T23.19A/T23.19: gates, turrets, pickups and labels, graves and animals are the world renderer's, behind the
+    // figures, whenever it draws this scene — each layer follows the drawer's own flag (`fx/feed.ts::followWorldDraws`,
+    // T23.19D F1); space, `?world=off` and no WebGL2 keep Phaser's. The turrets face into the map.
+    this.world.platforms.setMapWidth(this.core.width)
     // T23.19 (R5): the stamped crystals keep F's glow and light — drawn over their rock, lit beside the gates.
     this.leaveCrystals()
     this.leaveCrystals = spaceMap ? () => {} : joinCrystals(this, init.objects, () => true)
@@ -1902,12 +1905,13 @@ export class GameScene extends Phaser.Scene {
    * **Your own** plays when your predicted use takes (`useNow`, T23.14E); its echo lands here and is reconciled
    * (T23.14F F2, `PendingUses`): an echo a prediction was waiting for plays nothing (it would restart the swing); an
    * echo **no** prediction was waiting for — a use the mirror refused and the server took — swings now, late.
+   * Paired by the seq the use was sent under (`useSeq`, the server's `use_seq` — T23.19D F4).
    */
-  private swingOf(owner: unknown, weapon: unknown): void {
+  private swingOf(owner: unknown, weapon: unknown, useSeq: unknown = null): void {
     if (typeof owner !== 'number' || typeof weapon !== 'number') return
     const key = WEAPON_KEYS[weapon]
     if (owner === this.me) {
-      if (key && this.pendingUses.echo(key, performance.now())) {
+      if (key && this.pendingUses.echo(key, typeof useSeq === 'number' ? useSeq : null, performance.now())) {
         this.localView?.firedWith(key)
         this.observed.localSwings += 1
       }
@@ -1948,8 +1952,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private useNow(quick: boolean): void {
-    if (quick) this.conn.sendQuickThrow()
-    else this.conn.sendFire()
+    // T23.19D F4: sent under the current input seq, which the server echoes on what the use produces.
+    const seq = this.seq
+    if (quick) this.conn.sendQuickThrow(seq)
+    else this.conn.sendFire(seq)
     const now = performance.now()
     // The mirror's cooldown runs on this page's clock (`now`), not the server's tick time: the server stamps a use
     // with its time *on arrival*, which no client clock predicts (jitter bunches or spreads two sends either way), so
@@ -1959,7 +1965,7 @@ export class GameScene extends Phaser.Scene {
     this.observed.lastUse = { quick, key }
     if (key) {
       this.localView?.firedWith(key)
-      this.pendingUses.predicted(key, now)
+      this.pendingUses.predicted(key, seq, now)
       if (swingsKey(key)) this.observed.localSwings += 1
     }
   }
@@ -2360,6 +2366,8 @@ export class GameScene extends Phaser.Scene {
     const space = this.gravity === SPACE_GRAVITY
     const darkness = sceneDarkness(space, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
     this.drawnDarkness = darkness
+    // T23.19D F2: what the furniture's night halo fades with.
+    fxFeed(this).night = darkness / C().NIGHT_DARKNESS
     // T23.04: the space backdrop is up exactly on a space map — derived per frame, no latch —
     // and placed after the rig moved the camera (above).
     if (this.spaceSky.isShown !== this.onSpaceMap) this.spaceSky.setShown(this.onSpaceMap)

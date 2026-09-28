@@ -465,18 +465,9 @@ export interface Constants {
   HEALTH_CAP: number
   SMG_MUZZLE_SPEED: number
   BEAM_LIFETIME: number
-  BEAM_SHADER_WIDTH: number
-  BEAM_SHADER_POOL: number
-  FLAME_SHADER_SCALE: number
-  FLAME_SHADER_ASPECT: number
-  FLAME_SHADER_BASE: number
-  FLAME_SHADER_POOL: number
   BLAST_SHADER_LIFE: number
-  BLAST_SHADER_SCALE: number
-  BLAST_SHADER_POOL: number
   SMOKE_RADIUS: number
   FOV_SMOKE_MULT: number
-  SMOKE_SHADER_SCALE: number
   /** T22.09B — one radiation damage entry per this many seconds; the glow's pulse. */
   RADIATION_LOG_INTERVAL: number
   /** T22.10B — the breach vortex's drawing radii; drawing only (the pull is `env_at`). */
@@ -496,7 +487,6 @@ export interface Constants {
   SOLAR_FLARE_BURN_SECONDS: number
   SOLAR_FLARE_CONFIRM_SECONDS: number
   EFFECT_TELEGRAPH: number
-  SMOKE_SHADER_POOL: number
   BULLET_LENGTH: number
   BULLET_WIDTH: number
   TRACER_WIDTH: number

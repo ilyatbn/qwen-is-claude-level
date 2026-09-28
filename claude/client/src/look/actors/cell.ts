@@ -45,6 +45,8 @@ export const CELL_PAD = 2
 /** `lit()`'s contact shadow radius and halo radius, per unit of `size`. */
 const SHADOW_R = 11
 const HALO_R = 30
+/** `lit()`'s halo opacity at its centre (F's `glow(…, 0.22)`), unless the actor says otherwise (`LitOpts.haloAlpha`). */
+export const HALO_A = 0.22
 
 export type Role = 'under' | 'mask' | 'ink'
 
@@ -132,9 +134,6 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
     case 'item':
       D.item(g, x, y, o)
       return
-    case 'label':
-      D.label(g, x, y, o)
-      return
     case 'figure':
       if (o.J) F.figure(g, x, y, o.J, { s: o.s ?? 1.15, face: o.face ?? 1, rot: o.rot ?? 0, accent: o.accent ?? '#e8482c', rim: o.accent?.startsWith('rgba(') ?? false, visor: o.visor ?? null })
       return
@@ -206,12 +205,6 @@ export function estimateBox(a: Actor): Box {
     // T23.19B: `draw.ts::bird` spans ±10 and flaps ±6 about its body (the metal one's fin 4 up), plus the rim passes.
     const m = 2 * 1.15 * size + 2
     b = [a.x - 11 * s - m, a.y - 8 * s - m, a.x + 11 * s + m, a.y + 8 * s + m]
-  }
-  if (a.kind === 'label') {
-    // T23.19: the plate, from the text's length at the label font (monospace: ~0.62 em a glyph) — generous.
-    const w = (a.opts.text ?? '').length * D.LABEL_FONT_PX * 0.7 + 2 * D.LABEL_PAD[0] + 4
-    const h = D.LABEL_FONT_PX + 2 * D.LABEL_PAD[1] + 4
-    b = [a.x - w / 2, a.y - h, a.x + w / 2, a.y + 1]
   }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size
@@ -297,7 +290,7 @@ export function drawRole(g: D.G, a: Actor, role: Role, off: [number, number] = [
   try {
     if (role === 'under') {
       if (!lit) return
-      if (lit.halo) D.glow(g, x, y - 14 * lit.size, HALO_R * lit.size, lit.halo, 0.22)
+      if (lit.halo) D.glow(g, x, y - 14 * lit.size, HALO_R * lit.size, lit.halo, lit.haloAlpha ?? HALO_A)
       if (lit.shadow) {
         const R = SHADOW_R * lit.size
         const gr = g.createRadialGradient(x, y, 0, x, y, R)

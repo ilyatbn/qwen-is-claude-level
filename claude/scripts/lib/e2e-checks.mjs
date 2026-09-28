@@ -161,6 +161,8 @@ export const CHECKS = [
   // T23.19: pickups + labels, a grave at night against dark rock, animals and crystals (glow + light) in the world
   // renderer, each on pixels with a control frame and a control region.
   { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337' },
+  // T23.19D F1: the same furniture with no world renderer (`?world=off` — the stub, as without WebGL2): Phaser's, on screen.
+  { name: 'furniture-world-off', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&world=off' },
   // T23.19C: solid rock hides the sky — deep-rock pixels do not move when the sky is swapped for flat magenta (open
   // air, the control, does), over four seeds × three views × night and noon; the full-tier leg is `rock-opaque-full`.
   { name: 'rock-opaque', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337' },

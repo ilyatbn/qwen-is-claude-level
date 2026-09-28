@@ -22,6 +22,7 @@ import { DEPTH } from './backdrop'
 import { BEETLE, bodyColor, bodySize, legPhase } from './animals-math'
 import type { AnimalView } from '../net/worldMirror'
 import { joinCast } from '../look/actors/cast'
+import { followWorldDraws, fxFeed } from '../look/fx/feed'
 import { VIEW_MARGIN, animalActor, nearView } from '../look/actors/furniture'
 
 interface Entry {
@@ -40,13 +41,16 @@ export class AnimalLayer {
   private readonly seen = new Set<number>()
   /** T23.19: the animals are the world renderer's — F4's beetle and spider, rim-lit, behind the figures (not in space). */
   private worldOn = false
+  /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
+  private readonly unfollow: () => void
 
   constructor(private readonly scene: Phaser.Scene) {
     this.container = scene.add.container(0, 0).setDepth(DEPTH.actors)
+    this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
   }
 
-  /** T23.19: draw the animals in the world renderer (`on`), or as Phaser's shapes (space, until T23.20). */
-  useWorld(on: boolean): void {
+  /** T23.19: draw the animals in the world renderer (`on`), or as Phaser's shapes — whatever the drawer says (T23.19D). */
+  private useWorld(on: boolean): void {
     this.worldOn = on
     for (const e of this.entries.values()) this.place(e)
   }
@@ -65,7 +69,7 @@ export class AnimalLayer {
         actor: () => {
           const { x, y } = e.root
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
-          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h)
+          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, fxFeed(this.scene).night)
         },
       })
     } else if (!this.worldOn && e.leave) {
@@ -163,6 +167,7 @@ export class AnimalLayer {
   }
 
   destroy(): void {
+    this.unfollow()
     for (const e of this.entries.values()) {
       e.root.destroy()
       e.leave?.()

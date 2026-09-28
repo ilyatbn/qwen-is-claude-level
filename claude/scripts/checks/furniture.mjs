@@ -8,6 +8,13 @@
  * **stand out from the rock round it** — the brightest pixels of its box against the rock's (`GRAVE_LIFT`).
  * The pickups, graves and animals are drawn by the world renderer, not Phaser (`drawsInWorld`), which is what retired
  * T23.19A's stopgap: a figure over one is not covered (`gunner-visible`).
+ *
+ * T23.19D: **F1** — with no world renderer (`?world=off`, the entry `furniture-world-off`; the same as no WebGL2) the
+ * pickups, graves and animals are Phaser's and on screen (they followed `!spaceMap`, not the drawer, and vanished).
+ * **F2** — the night halo is a night thing: its ring round the grave lifts the rock at night and not at noon (the
+ * night leg is the noon leg's control). **F3** — the pickup's label is Phaser text at screen resolution, outside the
+ * world's post chain: its glyph edges keep a contrast floor on the low tier, which the same crop blurred 3×3 (what
+ * the half-resolution world canvas did to it) does not.
  */
 import { comparePhotos, photo, toScreen, patchRGBA } from './pixels.mjs'
 
@@ -21,6 +28,20 @@ const NIGHT_T = 90
 const GRAVE_LIFT = 12
 /** Seeds tried for one carrying crystals (the generator stamps them on some maps only). */
 const SEEDS = ['31337', '7', '4242', '11', '9', '12', '21', '33', '64', '101']
+/** T23.19D F2: the halo's ring (world px round its centre, 14 up the stone: `cell.ts`), outside the stone grown by 3. */
+const HALO_RING = 22
+/**
+ * Mean luminance the ring gains with the grave shown, at night (min) and at noon (max). Measured (T23.19D, seed
+ * 31337, low tier): night +7.56, noon 0.00; the halo drawn at noon (the review's bug, planted) reads as night does.
+ */
+const HALO_NIGHT_MIN = 3.8
+const HALO_NOON_MAX = 0.3
+/**
+ * T23.19D F3: a label's glyph edge contrast — the 98th percentile of |Δ luminance| between neighbouring pixels across
+ * its box. Measured on the low tier (T23.19D): sharp 188.1 / 187.2 (bazooka / medkit), the same crops blurred 3×3
+ * 74.6 / 78.0; the floor sits between.
+ */
+const LABEL_EDGE_MIN = 130
 
 const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
 function p95(rgba) {
@@ -46,7 +67,125 @@ async function groundBelow(page, x, y, span = 200) {
   }, [x, y, span])
 }
 
-export default async function ({ page, shot, log }) {
+/** Luminance of `rgba` (flat 0..255) as a w×h array. */
+function lums(rgba) {
+  const out = new Float32Array(rgba.length / 4)
+  for (let i = 0; i < out.length; i++) out[i] = lum(rgba, i * 4)
+  return out
+}
+
+/** The p98 of |Δ luminance| between horizontal and vertical neighbours — how hard the edges in a crop are. */
+function edgeP98(L, w, h) {
+  const g = []
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x + 1 < w) g.push(Math.abs(L[y * w + x + 1] - L[y * w + x]))
+      if (y + 1 < h) g.push(Math.abs(L[(y + 1) * w + x] - L[y * w + x]))
+    }
+  }
+  g.sort((a, b) => a - b)
+  return g[Math.floor(g.length * 0.98)] ?? 0
+}
+
+/** The crop box-blurred 3×3 — the control: text drawn soft, as a half-resolution canvas upscaled draws it. */
+function blur3(L, w, h) {
+  const out = new Float32Array(L.length)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0
+      let n = 0
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx
+        const yy = y + dy
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue
+        s += L[yy * w + xx]
+        n++
+      }
+      out[y * w + x] = s / n
+    }
+  }
+  return out
+}
+
+/**
+ * T23.19D F1 (`furniture-world-off`): no world renderer — the stub, as without WebGL2. The furniture must be Phaser's
+ * (`inWorld` false) **and on screen**: each box changes with it hidden, beside a control box that does not.
+ */
+async function worldOff({ page, shot, log }) {
+  await page.waitForFunction(() => window.__game && window.__game.debug().player, null, { timeout: 120_000 })
+  const problems = []
+  const k = await page.evaluate(() => window.__game.constants())
+  const three = await page.evaluate(() => !!document.querySelector('canvas[data-world="three"]'))
+  if (three) problems.push('?world=off still put a three.js world canvas on the page — this is not the no-renderer leg')
+  const me = (await page.evaluate(() => window.__game.debug())).player
+  const gx = me.x + 60
+  const gy = await groundBelow(page, gx, me.y - 40)
+  const ax = me.x - 60
+  const ay = await groundBelow(page, ax, me.y - 40)
+  if (gy === null || ay === null) throw new Error(`no ground beside the player at ${Math.round(me.x)},${Math.round(me.y)}`)
+  const stage = (on) => page.evaluate(([g, a, v]) => window.__game.stageFurniture({ graves: [g], animals: a, visible: v }), [
+    { x: gx, y: gy - k.TOMBSTONE_H / 2 },
+    [{ kind: 1, x: ax - 14, y: ay - k.BEETLE_H / 2 }, { kind: 0, x: ax + 14, y: ay - k.SPIDER_H / 2 }],
+    on,
+  ])
+  const staged = await stage(true)
+  if (staged.inWorld !== false) problems.push(`with no world renderer the graves/animals still say they are the world's (inWorld ${staged.inWorld})`)
+  await page.waitForTimeout(600)
+  await page.evaluate(() => window.__game.freeze(true))
+  const onOff = makeOnOff(page, log, problems)
+  const grect = await rectOf(page, gx - k.TOMBSTONE_W / 2 - 2, gy - k.TOMBSTONE_H - 2, gx + k.TOMBSTONE_W / 2 + 2, gy + 1)
+  const arect = await rectOf(page, ax - 26, ay - 16, ax + 26, ay + 1)
+  if (!grect || !arect) problems.push('the staged graves/animals are off camera')
+  else {
+    await onOff('world off: a grave (Phaser)', (on) => stage(on), grect)
+    await onOff('world off: a beetle and a spider (Phaser)', (on) => stage(on), arect, -1)
+  }
+  await shot('furniture-world-off-grave')
+  await page.evaluate(() => window.__game.freeze(false))
+  await page.evaluate(() => window.__game.stageFurniture(null))
+  const px = me.x + 40
+  const py = (await groundBelow(page, px, me.y - 40)) - 10
+  const pickup = (on) => page.evaluate(([v, x, y]) => window.__game.stagePickup(v ? x : null, y, 'bazooka'), [on, px, py])
+  const got = await pickup(true)
+  if (got.drawn !== 1) problems.push(`world off: staged a pickup, the layer holds ${got.drawn}`)
+  await page.waitForTimeout(600)
+  await page.evaluate(() => window.__game.freeze(true))
+  const pr = await rectOf(page, px - 16, py - 30, px + 16, py + 10)
+  if (pr) await onOff('world off: the bazooka pickup and its label (Phaser)', pickup, pr)
+  else problems.push('world off: the pickup is off camera')
+  const inWorld = await page.evaluate(() => window.__game.debug().itemsInWorld)
+  if (inWorld !== false) problems.push(`world off: the pickups say they are the world renderer's (itemsInWorld ${inWorld})`)
+  await shot('furniture-world-off-pickup')
+  await page.evaluate(() => window.__game.freeze(false))
+  await page.evaluate(() => window.__game.stagePickup(null))
+  if (problems.length) throw new Error(`furniture (world off): ${problems.join('; ')}`)
+}
+
+/** One thing on and off on a frozen frame: its box's changed share and a control box's. */
+function makeOnOff(page, log, problems) {
+  return async function onOff(label, show, rect, side = 1) {
+    await show(true)
+    await page.waitForTimeout(300)
+    const withIt = await photo(page)
+    await show(false)
+    await page.waitForTimeout(300)
+    const without = await photo(page)
+    await show(true)
+    // The control region: as big, 140 px to one side (away from the other staged things), clamped to the page.
+    const cx = side > 0 ? rect.x + rect.w + 140 : rect.x - rect.w - 140
+    const control = { ...rect, x: Math.max(0, Math.min(1280 - rect.w, cx)) }
+    const moved = (await comparePhotos(page, withIt, without, { rect })).fraction
+    const c = (await comparePhotos(page, withIt, without, { rect: control })).fraction
+    log(`${label}: ${(moved * 100).toFixed(1)} % of its box changes with it hidden (min ${MIN_CHANGED * 100}); control ${(c * 100).toFixed(1)} %`)
+    if (!(moved >= MIN_CHANGED)) problems.push(`${label}: only ${(moved * 100).toFixed(1)} % of its box changes — not drawn`)
+    if (!(c <= MAX_CONTROL)) problems.push(`${label}: the control box moved ${(c * 100).toFixed(1)} %`)
+    return { withIt, without }
+  }
+}
+
+export default async function (ctx) {
+  const { page, shot, log } = ctx
+  if (new URL(page.url()).searchParams.get('world') === 'off') return worldOff(ctx)
   await page.waitForFunction(() => window.__game && window.__world && window.__world.litTerrain()?.drawn, null, { timeout: 120_000 })
   const problems = []
   const k = await page.evaluate(() => window.__game.constants())
@@ -69,25 +208,7 @@ export default async function ({ page, shot, log }) {
   const dark = (await page.evaluate(() => window.__game.debug())).darkness
   if (!(dark > 0.5)) problems.push(`setTime(${NIGHT_T}) is not night: darkness ${dark}`)
 
-  /** One thing on and off on a frozen frame: its box's changed share and a control box's. */
-  async function onOff(label, show, rect, side = 1) {
-    await show(true)
-    await page.waitForTimeout(300)
-    const withIt = await photo(page)
-    await show(false)
-    await page.waitForTimeout(300)
-    const without = await photo(page)
-    await show(true)
-    // The control region: as big, 140 px to one side (away from the other staged things), clamped to the page.
-    const cx = side > 0 ? rect.x + rect.w + 140 : rect.x - rect.w - 140
-    const control = { ...rect, x: Math.max(0, Math.min(1280 - rect.w, cx)) }
-    const moved = (await comparePhotos(page, withIt, without, { rect })).fraction
-    const c = (await comparePhotos(page, withIt, without, { rect: control })).fraction
-    log(`${label}: ${(moved * 100).toFixed(1)} % of its box changes with it hidden (min ${MIN_CHANGED * 100}); control ${(c * 100).toFixed(1)} %`)
-    if (!(moved >= MIN_CHANGED)) problems.push(`${label}: only ${(moved * 100).toFixed(1)} % of its box changes — not drawn`)
-    if (!(c <= MAX_CONTROL)) problems.push(`${label}: the control box moved ${(c * 100).toFixed(1)} %`)
-    return { withIt, without }
-  }
+  const onOff = makeOnOff(page, log, problems)
 
   // 1. A crystal stamp: the crystals toggled, and their light in the list.
   const cs = crystals.at[0]
@@ -140,6 +261,55 @@ export default async function ({ page, shot, log }) {
     const r95 = p95((await patchRGBA(page, rock)).rgba)
     log(`the grave at night: luminance p95 ${g95.toFixed(1)} against the rock beside it ${r95.toFixed(1)} (lift min ${GRAVE_LIFT})`)
     if (!(g95 - r95 >= GRAVE_LIFT)) problems.push(`the grave at night lifts only ${(g95 - r95).toFixed(1)} over the rock beside it — it does not read`)
+
+    // T23.19D F2: the halo's ring, at night (the control: it is there) and at noon (it is not).
+    const hc = { x: gx, y: gy - 14 }
+    const ring = await rectOf(page, hc.x - HALO_RING, hc.y - HALO_RING, hc.x + HALO_RING, hc.y + HALO_RING)
+    const stone = await rectOf(page, gx - k.TOMBSTONE_W / 2 - 3, gy - k.TOMBSTONE_H - 3, gx + k.TOMBSTONE_W / 2 + 3, gy + 3)
+    async function ringLift() {
+      await page.evaluate(() => window.__game.freeze(false))
+      await stage(true)
+      await page.waitForTimeout(400)
+      await page.evaluate(() => window.__game.freeze(true))
+      const a = lums((await patchRGBA(page, ring)).rgba)
+      await stage(false)
+      await page.waitForTimeout(300)
+      const b = lums((await patchRGBA(page, ring)).rgba)
+      await stage(true)
+      let s = 0
+      let n = 0
+      for (let y = 0; y < ring.h; y++) {
+        for (let x = 0; x < ring.w; x++) {
+          const sx = ring.x + x
+          const sy = ring.y + y
+          if (sx >= stone.x && sx < stone.x + stone.w && sy >= stone.y && sy < stone.y + stone.h) continue
+          s += a[y * ring.w + x] - b[y * ring.w + x]
+          n++
+        }
+      }
+      return n ? s / n : NaN
+    }
+    if (!ring || !stone) problems.push('the halo ring is off camera')
+    else {
+      const night = await ringLift()
+      let noonT = null
+      for (const t of [0, 10, 20, 30, 40, 50, 60]) {
+        await page.evaluate((v) => window.__game.setTime(v), t)
+        if ((await page.evaluate(() => window.__game.debug())).darkness === 0) {
+          noonT = t
+          break
+        }
+      }
+      if (noonT === null) problems.push('no setTime in 0..60 s gives darkness 0 — no noon to stage')
+      else {
+        const noon = await ringLift()
+        log(`the halo ring (${HALO_RING} px round its centre, stone excluded): night +${night.toFixed(2)} lum (min ${HALO_NIGHT_MIN}); noon (setTime ${noonT}) +${noon.toFixed(2)} (max ${HALO_NOON_MAX})`)
+        if (!(night >= HALO_NIGHT_MIN)) problems.push(`the night halo lifts its ring only ${night.toFixed(2)} at night — the control shows no halo`)
+        if (!(noon <= HALO_NOON_MAX)) problems.push(`the night halo is drawn at noon: its ring lifts ${noon.toFixed(2)}`)
+        await shot('furniture-grave-noon')
+      }
+      await page.evaluate((t) => window.__game.setTime(t), NIGHT_T)
+    }
   }
   await page.evaluate(() => window.__game.freeze(false))
   await page.evaluate(() => window.__game.stageFurniture(null))
@@ -156,6 +326,25 @@ export default async function ({ page, shot, log }) {
     const pr = await rectOf(page, px - 16, py - 30, px + 16, py + 10)
     if (pr) await onOff(`the ${key} pickup and its label`, pickup, pr)
     else problems.push(`${key}: the pickup is off camera`)
+    // T23.19D F3: the label — Phaser text at the camera's zoom, sharp on the low tier.
+    const dbg = await page.evaluate(() => ({ labels: window.__game.debug().labels, zoom: window.__game.constants().CAMERA_ZOOM, tier: window.__world.info().tier }))
+    if (dbg.labels?.length !== 1) problems.push(`${key}: ${dbg.labels?.length} labels up, want 1`)
+    else {
+      const l = dbg.labels[0]
+      if (l.resolution !== dbg.zoom) problems.push(`${key}: the label is rasterised at ${l.resolution}×, the camera draws it at ${dbg.zoom}×`)
+      const half = (l.text.length * 7) / 2
+      const lr = await rectOf(page, l.x - half, l.y - 13, l.x + half, l.y)
+      if (!lr) problems.push(`${key}: the label is off camera`)
+      else {
+        const crop = await patchRGBA(page, lr)
+        const L = lums(crop.rgba)
+        const sharp = edgeP98(L, crop.w, crop.h)
+        const soft = edgeP98(blur3(L, crop.w, crop.h), crop.w, crop.h)
+        log(`${key}'s label "${l.text}" (${dbg.tier} tier): glyph edge p98 ${sharp.toFixed(1)} (min ${LABEL_EDGE_MIN}); the same crop blurred 3×3 ${soft.toFixed(1)}`)
+        if (!(sharp >= LABEL_EDGE_MIN)) problems.push(`${key}'s label edges are soft: p98 ${sharp.toFixed(1)} < ${LABEL_EDGE_MIN}`)
+        if (!(soft < LABEL_EDGE_MIN)) problems.push(`the blurred control passes the label floor (${soft.toFixed(1)}) — the floor sees no blur`)
+      }
+    }
     await shot(`furniture-pickup-${key}`)
     await page.evaluate(() => window.__game.freeze(false))
   }

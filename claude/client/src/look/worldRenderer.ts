@@ -47,7 +47,7 @@ import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
-import { fxFeed, gameFrame, type FxFeed } from './fx/feed'
+import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
 import { castOf } from './actors/cast'
 import { applyPost, buildPost, type Post } from './post'
 import { F1 } from './scenes/F1'
@@ -497,7 +497,7 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   private syncFxDrawer(): void {
-    if (this.fxSource) this.fxSource.worldDraws = this.owns && !!this.desc && this.desc.look.bg !== null
+    if (this.fxSource) setWorldDraws(this.fxSource, this.owns && !!this.desc && this.desc.look.bg !== null)
   }
 
   /** This frame's effects into `fxFrame`: the game's, then the scene's (none while `fx` is hidden). Any of the game's? */
@@ -938,7 +938,7 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.dispose()
     this.fxLayer.dispose()
     if (this.fxSource) {
-      this.fxSource.worldDraws = false
+      setWorldDraws(this.fxSource, false)
       this.fxSource.readWorld = null
     }
     this.terrainMesh.geometry.dispose()

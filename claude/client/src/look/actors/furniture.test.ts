@@ -12,6 +12,8 @@ import {
   GRAVE_ART_H,
   ITEM_S,
   NIGHT_HALO,
+  NIGHT_HALO_STEPS,
+  nightHalo,
   SPIDER_ART_W,
   VIEW_MARGIN,
   BIRD_ART_W,
@@ -22,13 +24,12 @@ import {
   crystalLights,
   graveActor,
   isCrystal,
-  labelActor,
   nearView,
   pickupActor,
 } from './furniture'
 import { CRYSTAL_LIGHT } from '../effectLights'
 import { ICON_CENTRE_UNITS, ICON_RES, ICON_UNIT_PX, spriteOf } from './icons'
-import { estimateBox } from './cell'
+import { HALO_A, estimateBox } from './cell'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..')
 
@@ -63,12 +64,12 @@ describe('furniture (T23.19)', () => {
   it('an animal is drawn at its hit box: its body as wide as the box, standing on its bottom edge, facing its way', () => {
     const w = 16
     const h = 10
-    const b = animalActor(BEETLE_KIND, 50, 60, false, w, h)
+    const b = animalActor(BEETLE_KIND, 50, 60, false, w, h, 1)
     expect(b.kind).toBe('beetle')
     expect((b.opts.s ?? 0) * BEETLE_ART_W).toBeCloseTo(w)
     expect(b.y).toBe(60 + h / 2)
     expect(b.opts.face).toBe(-1)
-    const s = animalActor(0, 50, 60, true, 12, 8)
+    const s = animalActor(0, 50, 60, true, 12, 8, 1)
     expect(s.kind).toBe('spider')
     expect((s.opts.s ?? 0) * SPIDER_ART_W).toBeCloseTo(12)
     expect(s.lit?.halo).toBe(NIGHT_HALO)
@@ -76,12 +77,31 @@ describe('furniture (T23.19)', () => {
   })
 
   it('a grave is TOMBSTONE_H tall on its feet line, with the night halo and a box that holds it', () => {
-    const g = graveActor(10, 100, 18)
+    const g = graveActor(10, 100, 18, 1)
     expect((g.opts.s ?? 0) * GRAVE_ART_H).toBeCloseTo(18)
     expect(g.lit?.halo).toBe(NIGHT_HALO)
+    expect(g.lit?.haloAlpha).toBe(HALO_A)
     const box = estimateBox(g)
     expect(box[1]).toBeLessThanOrEqual(100 - 18)
     expect(box[3]).toBeGreaterThanOrEqual(100)
+  })
+
+  it('T23.19D F2: the night halo fades with the night — none at noon, F\'s at full night, whole steps between', () => {
+    // The control: the same grave and animal at full night wear it (above), so "none at noon" is not "never".
+    expect(graveActor(10, 100, 18, 0).lit?.halo).toBeNull()
+    expect(animalActor(0, 50, 60, true, 12, 8, 0).lit?.halo).toBeNull()
+    expect(nightHalo(-0.5).halo).toBeNull()
+    expect(nightHalo(2)).toEqual({ halo: NIGHT_HALO, haloAlpha: HALO_A })
+    const half = nightHalo(0.5)
+    expect(half.halo).toBe(NIGHT_HALO)
+    expect(half.haloAlpha).toBeCloseTo(HALO_A / 2)
+    // Stepped: every night within half a step of 0.5 is the same cell (one atlas drawing through dusk, not one a frame).
+    const eps = 0.4 / NIGHT_HALO_STEPS
+    expect(nightHalo(0.5 + eps)).toEqual(half)
+    expect(nightHalo(0.5 - eps)).toEqual(half)
+    const seen = new Set<number | undefined>()
+    for (let i = 0; i <= 100; i++) seen.add(nightHalo(i / 100).haloAlpha)
+    expect(seen.size).toBe(NIGHT_HALO_STEPS + 1)
   })
 
   it("a weapon pickup is its model at the icon's fitted scale, centred; anything else is an item drawing", () => {
@@ -97,14 +117,6 @@ describe('furniture (T23.19)', () => {
     expect(m.kind).toBe('item')
     expect(m.opts.key).toBe('item_medkit')
     expect(m.opts.s).toBe(ITEM_S)
-  })
-
-  it('a label is unlit text; its box holds its plate', () => {
-    const l = labelActor('BAZOOKA x1', 100, 50)
-    expect(l.lit).toBeNull()
-    const b = estimateBox(l)
-    expect(b[2] - b[0]).toBeGreaterThan(40)
-    expect(b[3]).toBeGreaterThanOrEqual(50)
   })
 
   it('only what is near the view is drawn', () => {

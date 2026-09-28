@@ -13,7 +13,8 @@ import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { ICON_RES, drawnIcon } from '../look/actors/icons'
 import { joinCast } from '../look/actors/cast'
-import { VIEW_MARGIN, labelActor, nearView, pickupActor } from '../look/actors/furniture'
+import { followWorldDraws } from '../look/fx/feed'
+import { VIEW_MARGIN, nearView, pickupActor } from '../look/actors/furniture'
 import { ensureItemTextures } from './itemTextures'
 import {
   beaconPulse,
@@ -35,6 +36,8 @@ import {
 /** The packed item atlas key. Exported so the inventory tile resolves art
  * through the same atlas the world does rather than naming it a second time. */
 export const ITEM_ATLAS = 'items'
+/** T23.19D F3: the labels' depth — over the lightmap, under the fog veil (which must still hide them). */
+export const LABEL_DEPTH = DEPTH.fog - 1
 const ATLAS = ITEM_ATLAS
 /** Tint for the fallback box, by item id — enough to tell them apart. */
 const FALLBACK_TINTS = [0xff5d5d, 0x5db4ff, 0xffe45d, 0xff9d3d, 0x9d7bff, 0x7bffb0]
@@ -45,13 +48,20 @@ interface Entry {
   item: WorldItemView
   /** The registry sprite (`ItemDef.sprite`) — what the world renderer draws it as (`furniture.ts::pickupActor`). */
   art: string
-  /** T23.19: its (and its label's) places in the world renderer's cast, while `useWorld` holds. */
+  /** T23.19: its place in the world renderer's cast, while it draws this scene. */
   leave: (() => void) | null
 }
 
 export class ItemLayer {
   private readonly scene: Phaser.Scene
   private readonly container: Phaser.GameObjects.Container
+  /**
+   * T23.19D F3: **the labels are Phaser's text, at the screen's own resolution, outside the world's post chain** —
+   * over the lightmap, under the fog veil (`DEPTH.fog`: fog still hides them). In the world renderer's actor atlas they
+   * were 10-px text through tone map, bloom and grade, and at half resolution on the low tier. A label is a sign, not a
+   * thing in the scene: it is not lit, and it reads over whatever stands behind it.
+   */
+  private readonly labels: Phaser.GameObjects.Container
   private readonly entries = new Map<number, Entry>()
   /**
    * One Graphics for every parachute and beacon on screen, redrawn each frame.
@@ -68,23 +78,28 @@ export class ItemLayer {
   private t = 0
   /** T23.19: the pickups and labels are the world renderer's (behind the figures), not Phaser's — off in space. */
   private worldOn = false
+  /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
+  private readonly unfollow: () => void
 
   constructor(scene: Phaser.Scene) {
     ensureItemTextures(scene.textures)
     this.scene = scene
     this.container = scene.add.container(0, 0).setDepth(DEPTH.worldItems)
+    this.labels = scene.add.container(0, 0).setDepth(LABEL_DEPTH)
     // Behind the item itself: a crate hangs *under* its canopy.
     this.chutes = scene.add.graphics().setDepth(DEPTH.worldItems - 1)
     // ADD, so the beam brightens whatever is behind it instead of laying a
     // translucent wash over it — over a bright sky a wash is invisible.
     this.chutes.setBlendMode(Phaser.BlendModes.ADD)
+    this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
   }
 
   /**
-   * T23.19: draw the pickups and their labels in the world renderer (`on`), behind every figure, or with Phaser's
-   * sprites (space, until T23.20). The Phaser objects stay built and placed either way, hidden — `drawn` reads them.
+   * T23.19: draw the pickups in the world renderer (`on`), behind every figure, or with Phaser's sprites — whatever
+   * the drawer says (T23.19D F1). The Phaser objects stay built and placed either way, hidden — `drawn` reads them.
+   * The labels are Phaser's either way (T23.19D F3).
    */
-  useWorld(on: boolean): void {
+  private useWorld(on: boolean): void {
     this.worldOn = on
     for (const e of this.entries.values()) this.place(e)
   }
@@ -96,29 +111,28 @@ export class ItemLayer {
 
   private place(e: Entry): void {
     e.sprite.setVisible(!this.worldOn)
-    e.label?.setVisible(!this.worldOn)
     if (this.worldOn && !e.leave) {
       const view = this.scene.cameras.main.worldView
-      const pickup = { actor: () => this.actorOf(e, view, false), back: true }
-      const label = { actor: () => this.actorOf(e, view, true), back: true }
-      const a = joinCast(this.scene, pickup)
-      const b = joinCast(this.scene, label)
-      e.leave = () => {
-        a()
-        b()
-      }
+      e.leave = joinCast(this.scene, { actor: () => this.actorOf(e, view), back: true })
     } else if (!this.worldOn && e.leave) {
       e.leave()
       e.leave = null
     }
   }
 
-  /** This frame's pickup (or its label) as an actor; null off view, hidden, or with no label up. */
-  private actorOf(e: Entry, view: Phaser.Geom.Rectangle, label: boolean): ReturnType<typeof pickupActor> | null {
+  /** This frame's pickup as an actor; null off view or hidden. */
+  private actorOf(e: Entry, view: Phaser.Geom.Rectangle): ReturnType<typeof pickupActor> | null {
     if (!this.container.visible || !nearView(view, e.sprite.x, e.sprite.y, VIEW_MARGIN)) return null
     // Whole px: a bob at a sub-pixel phase would be a new atlas cell every frame.
-    if (!label) return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
-    return e.label ? labelActor(e.label.text, e.label.x, Math.round(e.label.y)) : null
+    return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
+  }
+
+  /** T23.19D F3 (dev, checks): the labels up now — text and where each is drawn (world px, its bottom centre). */
+  get labelsDrawn(): { text: string; x: number; y: number; resolution: number }[] {
+    return this.labels.list.map((o) => {
+      const t = o as Phaser.GameObjects.Text
+      return { text: t.text, x: t.x, y: t.y, resolution: t.style.resolution }
+    })
   }
 
   /** From `Core.itemRegistryJson()`. Safe to call before any item exists. */
@@ -233,10 +247,11 @@ export class ItemLayer {
             color: '#e8f0ff',
             backgroundColor: '#0009',
             padding: { x: 3, y: 1 },
+            // Rasterised at the screen's pixels, not the world's: the camera zooms the text's texture.
+            resolution: Math.max(1, this.scene.cameras.main.zoom),
           })
           .setOrigin(0.5, 1)
-          .setVisible(!this.worldOn)
-        this.container.add(e.label)
+        this.labels.add(e.label)
       } else if (!near && e.label) {
         e.label.destroy()
         e.label = null
@@ -336,8 +351,10 @@ export class ItemLayer {
   }
 
   destroy(): void {
+    this.unfollow()
     this.clear()
     this.chutes.destroy()
+    this.labels.destroy()
     this.container.destroy()
   }
 }

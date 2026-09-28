@@ -38,8 +38,15 @@ export interface ZonesSource {
 export interface FxFeed {
   ordnance: OrdnanceSource | null
   zones: ZonesSource | null
-  /** The world renderer draws this scene's effects (see the file comment). */
+  /** The world renderer draws this scene's effects (see the file comment). Written only by `setWorldDraws`. */
   worldDraws: boolean
+  /** T23.19D F1: the layers that draw themselves in the world or with Phaser by `worldDraws` (`followWorldDraws`). */
+  readonly followers: Set<(on: boolean) => void>
+  /**
+   * T23.19D F2: the scene's night, R7's `t` = darkness / `NIGHT_DARKNESS` (0 noon … 1 night; 0 in space), set by the
+   * scene each frame from `sceneDarkness`. What the furniture's night halo fades with (`furniture.ts::nightHalo`).
+   */
+  night: number
   /**
    * e2e (`render/ordnanceWatch.ts`): the world canvas's pixels in a rect of **Phaser canvas px**, read from the frame
    * just drawn (call it after the scene's render, in the same task), at the world's own buffer resolution; null when
@@ -54,10 +61,30 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, worldDraws: false, readWorld: null }
+    f = { ordnance: null, zones: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0 }
     feeds.set(scene, f)
   }
   return f
+}
+
+/** The drawer (the world renderer) says whether it draws this scene; every follower hears a change. */
+export function setWorldDraws(feed: FxFeed, on: boolean): void {
+  if (feed.worldDraws === on) return
+  feed.worldDraws = on
+  for (const f of feed.followers) f(on)
+}
+
+/**
+ * T23.19D F1: **the furniture follows the same flag the effects do.** `use(on)` is called now with the current answer
+ * and again on every change — so pickups, labels, graves, animals, gates and turrets are the world renderer's exactly
+ * while it draws this scene, and Phaser's otherwise (space, `?world=off`, no WebGL2). Before, each scene told them
+ * `!spaceMap`, so with no world renderer they were hidden in Phaser *and* drawn by nobody. Returns the unfollow.
+ */
+export function followWorldDraws(scene: object, use: (on: boolean) => void): () => void {
+  const f = fxFeed(scene)
+  f.followers.add(use)
+  use(f.worldDraws)
+  return () => void f.followers.delete(use)
 }
 
 /** §B6: a mine reads at 40 px and is gone by 300 (`ordnanceFx.ts`'s numbers). */
