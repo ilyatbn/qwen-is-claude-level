@@ -292,9 +292,9 @@ export const CHECKS = [
   // clock — and green in both `--jobs 1` runs.
   { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345', serial: true },
   // T23.07 retired `decorations` with the `decor` atlas and `decorations.ts` (R15).
-  // `flaky` (parked, tasks/flaky-test.md): red once at `--jobs 4` in a full gate
-  // ("the mean moved only 2.2"), green alone.
-  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242', flaky: true },
+  // T23.19E: un-parked. It was red every run (the band's *mean* moved 6.4 < 8 over F's thin tripod); it now decides
+  // on the changed-pixel share (51 % vs a 15 % floor), as `furniture` does — tasks/flaky-test.md's row is closed.
+  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
   // `serial`: it fails on measured frame time (feel-layer ms/frame, fps p50,
   // p99 spikes), and those are exactly what a concurrent check steals.

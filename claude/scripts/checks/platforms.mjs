@@ -18,7 +18,21 @@
  * It also counts the thing at both ends: what generation produced against what
  * the layer drew. Either number alone passes against a layer wired to nothing.
  */
-import { samplePatch, assertChanged, toScreen } from './pixels.mjs'
+import { samplePatch, assertChanged, toScreen, photo, comparePhotos } from './pixels.mjs'
+
+/**
+ * T23.19E: the turret's band counts as drawn when this share of its pixels changes with the layer hidden.
+ *
+ * **Why not the mean any more.** Until T23.19A the turret was steel art — a dark block against pale daylit ground —
+ * and `assertChanged`'s mean colour delta (floor 8) measured it. F's turret is a thin ink tripod with a rim, over dark
+ * night rock: fully drawn, it moves the band's *mean* by 6.4 (red every run, alone), because most of the band is the
+ * gaps between its legs. The picture decides by *which pixels* change (`comparePhotos`), as `furniture` and
+ * `gunner-visible` do. Measured on 31337 medium (T23.19E): 51.1 % of the band; the floor is under a third of it,
+ * and the control frame (the layer hidden, photographed twice) and the control region both read 0.
+ */
+const MIN_TURRET_SHARE = 0.15
+/** The control region's allowance (a frozen frame: 0.000 measured). */
+const MAX_CONTROL_SHARE = 0.02
 
 export default async function ({ page, shot, log }) {
   const plats = () => page.evaluate(() => window.__game.platforms())
@@ -150,8 +164,7 @@ export default async function ({ page, shot, log }) {
 
   const shownAt = box(onPlatform)
   const controlAt = box(control)
-  const shownBefore = await samplePatch(page, shownAt)
-  const controlBefore = await samplePatch(page, controlAt)
+  const drawnFrame = await photo(page)
   await shot('platforms-visible')
 
   // --- the control frame ----------------------------------------------------
@@ -159,15 +172,17 @@ export default async function ({ page, shot, log }) {
   if (hidden.visible !== false) throw new Error('showPlatforms(false) did not hide the layer')
   await page.waitForTimeout(300)
 
-  const shownAfter = await samplePatch(page, shownAt)
-  const controlAfter = await samplePatch(page, controlAt)
+  const hiddenFrame = await photo(page)
+  const hiddenAgain = await photo(page)
   await shot('platforms-hidden')
 
-  const r = assertChanged(shownBefore, shownAfter, {
-    label: 'the platform region, with and without the turret layer',
-    control: { before: controlBefore, after: controlAfter },
-  })
-  log(`platform region moved ${r.delta.toFixed(1)}, control ${r.controlDelta.toFixed(1)}`)
+  const share = (await comparePhotos(page, drawnFrame, hiddenFrame, { rect: shownAt })).fraction
+  const ctlShare = (await comparePhotos(page, drawnFrame, hiddenFrame, { rect: controlAt })).fraction
+  const idle = (await comparePhotos(page, hiddenFrame, hiddenAgain, { rect: shownAt })).fraction
+  log(`the turret's band: ${(share * 100).toFixed(1)} % of its pixels change with the layer hidden (min ${MIN_TURRET_SHARE * 100}); control region ${(ctlShare * 100).toFixed(1)} %, the hidden frame twice ${(idle * 100).toFixed(1)} %`)
+  if (!(share >= MIN_TURRET_SHARE)) throw new Error(`the turret is not drawn: only ${(share * 100).toFixed(1)} % of its band changes with the layer hidden (min ${MIN_TURRET_SHARE * 100})`)
+  if (!(ctlShare <= MAX_CONTROL_SHARE)) throw new Error(`the control region changed ${(ctlShare * 100).toFixed(1)} % — the frame is not still`)
+  if (!(idle <= MAX_CONTROL_SHARE)) throw new Error(`two photographs of the hidden frame differ by ${(idle * 100).toFixed(1)} % in the band`)
 
   // --- T21.11B: the mounted state has to be visible ------------------------
   //
