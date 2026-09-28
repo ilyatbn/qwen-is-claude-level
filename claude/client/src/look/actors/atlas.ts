@@ -75,15 +75,15 @@ export class ActorAtlas {
    * The cell for `a`, drawn now if its key has none; `L` is its passes this frame (a lit actor's cell is drawn at
    * their offsets — `cell.ts`). `null` if it cannot fit even in an empty atlas.
    */
-  cellFor(actor: Actor, L: Lighting | null = null, pixelPhase = false): Cell | null {
-    const key = cellKey(actor, L, pixelPhase)
+  cellFor(actor: Actor, L: Lighting | null = null): Cell | null {
+    const key = cellKey(actor, L)
     const have = this.cells.get(key)
     if (have) {
       have.lastUsed = this.frame
       return have
     }
-    // T23.14D F13: drawn at the anchor (`cell.ts::atAnchor`); the layer places the quad where the actor is.
-    const a = atAnchor(actor, pixelPhase)
+    // Drawn at its cell position (`cell.ts::atAnchor`); the layer places the quad where the actor is.
+    const a = atAnchor(actor)
     const r = actorRect(a)
     const w = r[2] - r[0]
     const h = r[3] - r[1]

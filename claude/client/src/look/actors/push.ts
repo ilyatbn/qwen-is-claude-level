@@ -24,6 +24,18 @@ export class PushEstimate {
   private held: Vec | null = null
 
   /**
+   * T23.14E F6: **start afresh** — the next `step` has no previous velocity to difference against. For a body whose
+   * velocity jumped for a reason that is not a push (a relocation: `RemoteInterpolator.cut`) or whose frames went
+   * unstepped (culled from view: the velocity last stepped is stale). Either, differenced over one frame, read as a
+   * huge push, and the hold kept it.
+   */
+  reset(): void {
+    this.last = null
+    this.smooth = null
+    this.held = null
+  }
+
+  /**
    * One frame: the body's (interpolated) velocity, the pull on it, the frame's dt and the full flame's push. Returns
    * the push to draw, or null while not jetting (and the estimate starts afresh at the next burn).
    */

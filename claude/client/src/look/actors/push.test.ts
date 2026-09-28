@@ -45,4 +45,37 @@ describe('T23.14D F4: a remote\'s push, estimated from its motion', () => {
     expect(est.step(false, 200, 0, [0, 0], DT, FULL)).toBeNull()
     expect(est.step(true, 200, 0, [0, 0], DT, FULL)).toBeNull()
   })
+
+  it('T23.14E F6: holds with the pull on — a body at the speed cap hovering under gravity keeps its burn\'s direction, less the pull', () => {
+    const g = 1400 * 0.5
+    const est = new PushEstimate()
+    // Climbing and pushing right: velocity up-right growing, against gravity.
+    for (let i = 0; i < 10; i++) est.step(true, 50 + i * 15, -i * 5, [0, g], DT, FULL)
+    // At the cap, hovering: velocity constant, so the estimate is −pull (straight up) — clear, and held as that.
+    let p = null
+    for (let i = 0; i < 60; i++) p = est.step(true, 200, -45, [0, g], DT, FULL)
+    expect(p!.y).toBeCloseTo(-g, 0)
+    expect(Math.abs(p!.x)).toBeLessThan(PUSH_HOLD_FRACTION * FULL)
+    // Control: the same motion with the pull left out is under the hold fraction, and the rightward burn is held.
+    const flat = new PushEstimate()
+    for (let i = 0; i < 10; i++) flat.step(true, 50 + i * 15, -i * 5, [0, 0], DT, FULL)
+    let q = null
+    for (let i = 0; i < 60; i++) q = flat.step(true, 200, -45, [0, 0], DT, FULL)
+    expect(q!.x).toBeGreaterThan(PUSH_HOLD_FRACTION * FULL)
+  })
+
+  it('T23.14E F6: reset — a relocation\'s velocity jump, or frames unstepped while culled, is no push', () => {
+    const run = (reset: boolean): ReturnType<PushEstimate['step']> => {
+      const est = new PushEstimate()
+      for (let i = 0; i < 10; i++) est.step(true, 0, -100, [0, 0], DT, FULL) // a steady drift: nothing clear
+      // Culled for a second (not stepped) while the body turned round; or a pad sent it off at a new velocity.
+      if (reset) est.reset()
+      return est.step(true, 300, 200, [0, 0], DT, FULL)
+    }
+    // Without the reset the jump is differenced over one frame: a push of several full flames (smoothed), held.
+    const stale = run(false)
+    expect(Math.hypot(stale!.x, stale!.y)).toBeGreaterThan(4 * FULL)
+    // With it: no previous velocity, so nothing is drawn from the jump.
+    expect(run(true)).toBeNull()
+  })
 })

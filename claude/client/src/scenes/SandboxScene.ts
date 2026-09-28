@@ -45,6 +45,7 @@ import { loadIdentity } from '../ui/skins'
 import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
 import { overlapsAny, overlapsBoxes, turretGeometry } from '../look/actors/props'
 import type { WorldItemView } from '../render/itemSprites-math'
+import { RoundWatch } from '../render/ordnanceWatch'
 
 const SCALES: Record<string, MapScale> = {
   small: MapScale.Small,
@@ -140,6 +141,8 @@ export class SandboxScene extends Phaser.Scene {
   private stepAcc = 0
   /** T23.09D, e2e (`stepsPerFrame`): the fewest sim steps a frame runs. */
   private minSteps = 1
+  /** T23.14E F8, e2e (`watchRounds`): each round's pixels on the canvas. */
+  private roundWatch: RoundWatch | null = null
   /** T23.09D: the frame's landing, observed after every sim step (`LandingLatch`). */
   private readonly landing = new LandingLatch()
   private wasJetting = false
@@ -267,6 +270,8 @@ export class SandboxScene extends Phaser.Scene {
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.roundWatch?.stop()
+      this.roundWatch = null
       this.terrainFields?.dispose()
       this.terrainFields = null
       this.ui.remove()
@@ -1360,6 +1365,23 @@ export class SandboxScene extends Phaser.Scene {
        */
       stepsPerFrame(n: number) {
         self.minSteps = Math.max(1, Math.floor(n))
+      },
+      /**
+       * T23.14E F8, e2e only: the rounds the ordnance layer drew, **on the canvas** (`render/ordnanceWatch.ts`, the
+       * game's `watchRounds` too): `on` false stops and returns each round's pixel change against its control frame.
+       */
+      watchRounds(on: boolean) {
+        const seen = self.roundWatch?.stop() ?? []
+        self.roundWatch = on
+          ? new RoundWatch(self.game, self.cameras.main, {
+              state: () => self.world.ordnance.state,
+              centre: () => {
+                const st = self.core.playerState(0)
+                return st ? { x: st.x } : null
+              },
+            })
+          : null
+        return seen
       },
       /** T21.31: pause the scene's update so a frame can be photographed twice. Rendering goes on. */
       freeze(on: boolean) {

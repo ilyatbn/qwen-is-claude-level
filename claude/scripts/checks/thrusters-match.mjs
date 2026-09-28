@@ -286,13 +286,33 @@ try {
         'braking flame',
       )
       const at = await dbg(bo)
+      // T23.14E F6: **ana's drawing of bo's flame against bo's real thrust.** bo's own flame is his `thrustAt` (the
+      // push he is stepped with); ana has only his motion (`PushEstimate`). While ana still draws him moving the first
+      // way, his flame must be on that side too — pushing back — as bo's own is. Velocity alone put it on the other.
+      const remoteSaw = saw
+        ? await waitOn(
+            ana,
+            ([id, s]) => {
+              const p = window.__game.debug().flames?.[id]
+              return !!p && p.drawn && !!p.dir && !!p.vel && p.vel.x * s > 20 && p.dir.x * s > 0.5
+            },
+            [bo.id, sign],
+            3,
+            'remote braking flame',
+          )
+        : false
+      const anaAt = await flameOf(ana, bo)
       await bo.page.keyboard.up(brake)
-      braked = { saw, sign, at: { vx: at?.player?.vx, flame: at?.flames?.[bo.id] } }
+      braked = { saw, remoteSaw, sign, at: { vx: at?.player?.vx, flame: at?.flames?.[bo.id] }, ana: anaAt }
       break
     }
     if (!braked) fail('control: bo never drifted 150 px/s either way, so braking was never tried')
     else if (!braked.saw) fail(`bo braked (drifting ${braked.sign > 0 ? 'right' : 'left'}) and his own flame never pointed the way he was still going: ${JSON.stringify(braked.at)}`)
     else ok(`bo brakes (drifting ${braked.sign > 0 ? 'right' : 'left'}, pushing back): his own flame is on the side he is still travelling toward`)
+    if (braked?.saw) {
+      if (!braked.remoteSaw) fail(`bo braked and ana drew his flame on the wrong side (his real push is back, his own flame ${JSON.stringify(braked.at.flame?.dir)}): ana draws ${JSON.stringify(braked.ana)}`)
+      else ok('ana draws bo braking with his flame where his own client draws it — the remote push estimate agrees with the real thrust')
+    }
     await waitOn(bo, (id) => window.__game.debug().flames?.[id]?.drawn === false, bo.id, 5, 'local off')
   }
 

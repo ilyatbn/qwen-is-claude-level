@@ -47,28 +47,23 @@ describe('the actor atlas (T23.12)', () => {
     expect(p.uploads).toHaveLength(1)
   })
 
-  it('redraws when the drawing changes — aim, the key light turning — and not where it stands, nor below the 1/8 px key', () => {
+  it('redraws when the drawing changes — aim, the key light turning, its pixel phase — and not a whole cell grain along, nor below the 1/8 px key', () => {
     const atlas = new ActorAtlas(countingPainter())
     atlas.beginFrame()
     atlas.cellFor(standing, offs(1))
     atlas.cellFor({ ...standing, opts: { ...standing.opts, aim: 0.31 } }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
-    // T23.14D F13: the same drawing anywhere — a cell grain, a quarter px, one px, far off — is the same cell (the quad
-    // moves; `cell.ts::atAnchor`). It was a new cell per 1/8 px: a moving figure redrew every frame.
+    // T23.14E F5 (the game at the look-lab's pixel phase): a whole cell grain along is the same drawing (the quad moves
+    // by `CELL_ALIGN`); a step under the 1/8 px key is too; one whole px, or a sub-pixel step past the key, is another
+    // cell — the drawing carries the phase, as the mockup's canvas does (T23.16: F6 stands weapons at fractional x).
     atlas.cellFor({ ...standing, x: standing.x + CELL_ALIGN }, offs(1))
-    atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1))
-    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1))
-    atlas.cellFor({ ...standing, x: standing.x + 313.6, y: standing.y - 41.3 }, offs(1))
+    atlas.cellFor({ ...standing, x: standing.x + 0.05 }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
-    // The look-lab's pixel phase (the control that the anchor is what did it): one whole px along is another cell, and
-    // (T23.16) so is a sub-pixel step past the 1/8 px key — the lab draws the fraction, as the mockup's canvas does
-    // (F6 stands its weapons at fractional x); a step under the key is not.
-    atlas.cellFor(standing, offs(1), true)
-    atlas.cellFor({ ...standing, x: standing.x + 0.05 }, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1))
     expect(atlas.stats.redraws).toBe(3)
-    atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1))
     expect(atlas.stats.redraws).toBe(4)
-    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 313.6, y: standing.y - 41.3 }, offs(1))
     expect(atlas.stats.redraws).toBe(5)
     // The key light turned: the passes are drawn at new offsets.
     atlas.cellFor(standing, offs(2))

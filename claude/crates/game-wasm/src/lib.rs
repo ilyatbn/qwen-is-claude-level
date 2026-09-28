@@ -1195,6 +1195,29 @@ impl GameCore {
         self.set_player_state(id, x, y, vx, vy, grounded, fuel, health, alive, move_mods);
     }
 
+    /// **T23.14E F7: a landing found by a correction's replay.** Over this mirror's history
+    /// after `from_seq` (the ack a correction restored — [`GameCore::correct_player_state`] —
+    /// its steps then replayed), starting from `grounded_at_from` (the snapshot's word at the
+    /// ack): `[impact, grounded]` — the `landing_impact` of the first step that went from
+    /// airborne to grounded (`-1`: none), and whether the body is grounded now. The client's
+    /// landing cue observes every step it takes (`LandingLatch`); a replay's steps it never
+    /// saw, so a landing the correction moved into the past was heard late at the floor, or
+    /// not at all. `GameScene.onSnapshot` asks after each correction; empty for an unknown id.
+    pub fn landing_since(&self, id: u8, from_seq: u32, grounded_at_from: bool) -> Box<[f32]> {
+        let Some(p) = self.players.iter().find(|p| p.id == id) else {
+            return Box::new([]);
+        };
+        let mut was = grounded_at_from;
+        let mut impact = -1.0;
+        for (_, m) in p.history.iter().filter(|(s, _)| *s > from_seq) {
+            if impact < 0.0 && !was && m.body.grounded {
+                impact = m.body.landing_impact;
+            }
+            was = m.body.grounded;
+        }
+        Box::new([impact, if p.body.grounded { 1.0 } else { 0.0 }])
+    }
+
     /// `[x, y, vx, vy, grounded, fuel, move_state, landing_impact, health,
     /// alive, move_mods]`, or empty for an unknown id.
     ///
@@ -1416,6 +1439,108 @@ impl GameCore {
             })
             .collect();
         serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// **T23.14E F2: the local player's bag, as the server's `inventory` event states it** — slot-exact
+    /// (`items[i]` 0 / `counts[i]` 0: empty), and the selection. The mirror's copy is what
+    /// [`GameCore::predict_use`] validates against, so it must be the server's, slot for slot.
+    ///
+    /// `Inventory` has no slot setter (its slots are private, and `add` is the only way in, by design), so each
+    /// stack is `add`ed into the emptied bag and dragged (`move_stack`) to its index: filled in ascending order,
+    /// every slot at or past `i` is empty when stack `i` lands. A non-weapon stack that `add` merges into an
+    /// earlier stack of the same item with room (the server's `add` would have merged it too — only a drag leaves
+    /// two such stacks) keeps the merged count; weapons, the only stacks a use reads, are one slot ever (§C24).
+    pub fn set_bag(&mut self, id: u8, items: &[u16], counts: &[u8], selected: u8) {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id) else {
+            return;
+        };
+        let inv = &mut p.stats.inventory;
+        inv.clear();
+        for (i, (&item, &count)) in items.iter().zip(counts).enumerate() {
+            if item == 0 || count == 0 || i >= game_core::constants::INVENTORY_SLOTS {
+                continue;
+            }
+            let before: Vec<bool> = (0..game_core::constants::INVENTORY_SLOTS)
+                .map(|s| inv.slot(s as u8).is_some())
+                .collect();
+            let _ = inv.add(item as ItemId, count);
+            let landed = (0..game_core::constants::INVENTORY_SLOTS)
+                .find(|&s| !before[s] && inv.slot(s as u8).is_some());
+            if let Some(j) = landed {
+                if j != i {
+                    inv.move_stack(j as u8, i as u8);
+                }
+            }
+        }
+        inv.select(selected);
+    }
+
+    /// T23.14E F2: the suit battery off the snapshot — an energy weapon's use spends it
+    /// (`PlayerState::try_fire_slot`), so [`GameCore::predict_use`] must see the server's.
+    pub fn set_battery(&mut self, id: u8, battery: f32) {
+        if let Some(p) = self.players.iter_mut().find(|p| p.id == id) {
+            p.stats.battery = battery;
+        }
+    }
+
+    /// **T23.14E F2: does a use sent now take, and with what?** The registry key of the item used, or `""` for a
+    /// refused use (or a platform's gun: a rider fires the platform, not the bag). `quick`: §C11's `E`
+    /// (`World::quick_throw`), else a fire of the selection (`World::fire`).
+    ///
+    /// **The server's checks, in its order, through its functions** — `World::fire`: the phase
+    /// (`RoundPhase::accepts_input`, here the predicted bell too: `GameCore::past_bell` at the newest seq
+    /// stepped), then a living rider fires the platform; `World::inventory_actor`: alive, not mounted; then
+    /// `PlayerState::try_fire_slot` itself — kind, the one per-player cooldown (`fire_ready_at`), stock, energy —
+    /// on this mirror's `PlayerState`, which it updates as the server's (cooldown set, stack consumed, battery
+    /// spent). `quick` takes `PlayerState::quick_throw_slot` and keeps the selection, as `World::quick_throw`.
+    ///
+    /// `now` is the caller's clock (s): the mirror's `fire_ready_at` is its own, never read off the wire, so only
+    /// differences of `now` matter. The bag is the server's (`set_bag`), the battery too (`set_battery`).
+    /// `GameScene.useNow` is the production caller; the swing plays on a key (T23.09D's TS copy retired).
+    pub fn predict_use(&mut self, id: u8, quick: bool, now: f32) -> String {
+        self.predicted_use(id, quick, now)
+            .ok()
+            .and_then(|item| registry::def(item).map(|d| d.key.to_string()))
+            .unwrap_or_default()
+    }
+
+    fn predicted_use(
+        &mut self,
+        id: u8,
+        quick: bool,
+        now: f32,
+    ) -> Result<ItemId, game_core::player::state::UseError> {
+        use game_core::player::state::UseError;
+        let Some(idx) = self.players.iter().position(|p| p.id == id) else {
+            return Err(UseError::Dead);
+        };
+        // `World::fire`'s first question, and `inventory_actor`'s: the round takes input.
+        if self.past_bell(self.players[idx].prev_input.seq) {
+            return Err(UseError::RoundOver);
+        }
+        let p = &mut self.players[idx].stats;
+        // `World::fire`: a living rider fires the platform — no use of the bag, so no swing.
+        // `World::quick_throw` has no such branch: `inventory_actor` refuses a rider (`WrongKind`).
+        if p.alive && p.mount.is_mounted() {
+            return Err(UseError::WrongKind);
+        }
+        // `World::inventory_actor`.
+        if !p.alive {
+            return Err(UseError::Dead);
+        }
+        let slot = if quick {
+            p.quick_throw_slot().ok_or(UseError::NoAmmo)?
+        } else {
+            p.inventory.selected()
+        };
+        let item = p.inventory.slot(slot).map(|s| s.item);
+        let before = p.inventory.selected();
+        let r = p.try_fire_slot(slot, now);
+        if quick && p.inventory.slot(before).is_some() {
+            p.inventory.select(before);
+        }
+        r?;
+        item.ok_or(UseError::EmptySlot)
     }
 
     pub fn inventory_json(&self, id: u8) -> String {
@@ -7100,5 +7225,243 @@ mod t19_24_server_driven_lava {
         assert!(j0 > 0 && b0 == 0, "at t=0 every vent should be jetting");
         assert!(j1 == 0 && b1 > 0, "mid-burn every vent should be burning");
         assert!(j2 == 0 && b2 == 0, "past the burn nothing should be active");
+    }
+}
+
+/// T23.14E F2: the local swing's prediction (`GameCore::predict_use`) against the server's own verbs — the same
+/// script of uses run through `World::fire` / `World::quick_throw` and through the mirror, answer for answer and bag
+/// for bag. Every refusal a player can make with the keys: a second weapon inside the one per-player cooldown, a
+/// spent stack, an empty battery, the round over, dead, riding.
+#[cfg(test)]
+mod t23_14e_predicted_use {
+    use super::*;
+    use game_core::constants::{BATTERY_MAX, INVENTORY_SLOTS};
+    use game_core::items::registry::{BAZOOKA, GRENADE, LASER_PISTOL, MOLOTOV, SHOVEL};
+    use game_core::player::state::UseError;
+    use game_core::world::{RoundPhase, World};
+
+    const ID: u8 = 1;
+
+    fn bag(w: &World) -> (Vec<u16>, Vec<u8>, u8) {
+        let p = w.player(ID).expect("seated");
+        let (mut items, mut counts) = (vec![0u16; INVENTORY_SLOTS], vec![0u8; INVENTORY_SLOTS]);
+        for (i, s) in p.inventory.iter() {
+            items[i as usize] = s.item;
+            counts[i as usize] = s.count;
+        }
+        (items, counts, p.inventory.selected())
+    }
+
+    fn mirror_bag(core: &GameCore) -> (Vec<u16>, Vec<u8>, u8) {
+        let p = &core
+            .players
+            .iter()
+            .find(|p| p.id == ID)
+            .expect("seated")
+            .stats;
+        let (mut items, mut counts) = (vec![0u16; INVENTORY_SLOTS], vec![0u8; INVENTORY_SLOTS]);
+        for (i, s) in p.inventory.iter() {
+            items[i as usize] = s.item;
+            counts[i as usize] = s.count;
+        }
+        (items, counts, p.inventory.selected())
+    }
+
+    fn slot_of(w: &World, item: ItemId) -> u8 {
+        w.player(ID)
+            .expect("seated")
+            .inventory
+            .iter()
+            .find(|(_, s)| s.item == item)
+            .map(|(i, _)| i)
+            .expect("held")
+    }
+
+    fn pair() -> (World, GameCore) {
+        let mut w = World::new(4242, MapScale::Small);
+        w.add_player(ID, 0, String::new());
+        w.set_phase(RoundPhase::Playing);
+        for (item, n) in [(BAZOOKA, 4), (GRENADE, 1), (MOLOTOV, 2), (LASER_PISTOL, 1)] {
+            game_core::world::give(&mut w, ID, item, n);
+        }
+        w.player_mut(ID).expect("seated").battery = BATTERY_MAX;
+        let mut core = GameCore::new();
+        let pos = w.player(ID).expect("seated").body.pos;
+        core.add_player(ID, pos.x, pos.y);
+        assert!(core.set_phase("playing"));
+        let (items, counts, sel) = bag(&w);
+        core.set_bag(ID, &items, &counts, sel);
+        core.set_battery(ID, BATTERY_MAX);
+        assert_eq!(
+            mirror_bag(&core),
+            bag(&w),
+            "set_bag installs the server's bag slot for slot"
+        );
+        (w, core)
+    }
+
+    /// One use through both; the answers must agree, and the bags after it.
+    fn both(w: &mut World, core: &mut GameCore, quick: bool, now: f32) -> Result<ItemId, UseError> {
+        let (_, _, sel) = bag(w);
+        let slot = if quick {
+            w.player(ID).and_then(|p| p.quick_throw_slot())
+        } else {
+            Some(sel)
+        };
+        let item = slot.and_then(|s| {
+            w.player(ID)
+                .and_then(|p| p.inventory.slot(s))
+                .map(|s| s.item)
+        });
+        let server = if quick {
+            w.quick_throw(ID, now)
+        } else {
+            w.fire(ID, now)
+        };
+        let mirror = core.predicted_use(ID, quick, now);
+        assert_eq!(
+            mirror.map(|_| ()),
+            server,
+            "the mirror's answer is the server's (quick {quick}, now {now})"
+        );
+        assert_eq!(mirror_bag(core), bag(w), "the bags agree after the use");
+        if let Ok(used) = mirror {
+            assert_eq!(Some(used), item, "the mirror used the item the server used");
+        }
+        mirror
+    }
+
+    fn select(w: &mut World, core: &mut GameCore, item: ItemId) {
+        let s = slot_of(w, item);
+        w.select_slot(ID, s);
+        core.select_slot(ID, s);
+    }
+
+    #[test]
+    fn the_mirror_takes_and_refuses_the_uses_the_server_does() {
+        let (mut w, mut core) = pair();
+        let cd = |item: ItemId| -> f32 {
+            let ItemKind::Weapon(wid) = registry::def(item).expect("def").kind else {
+                panic!("a weapon")
+            };
+            defs::def(wid).expect("weapon").cooldown
+        };
+        let mut now = 10.0;
+        // A bazooka, then the shovel inside the bazooka's cooldown: one per-player clock — refused.
+        select(&mut w, &mut core, BAZOOKA);
+        assert_eq!(both(&mut w, &mut core, false, now), Ok(BAZOOKA));
+        select(&mut w, &mut core, SHOVEL);
+        assert_eq!(
+            both(&mut w, &mut core, false, now + cd(BAZOOKA) * 0.5),
+            Err(UseError::OnCooldown)
+        );
+        // ... and `E` inside it too.
+        assert_eq!(
+            both(&mut w, &mut core, true, now + cd(BAZOOKA) * 0.5),
+            Err(UseError::OnCooldown)
+        );
+        now += cd(BAZOOKA) + 0.01;
+        assert_eq!(both(&mut w, &mut core, false, now), Ok(SHOVEL));
+        // `E`: the grenade first (§C11's order), the selection kept; its one stack spent, then the molotov.
+        now += cd(SHOVEL) + 0.01;
+        assert_eq!(both(&mut w, &mut core, true, now), Ok(GRENADE));
+        assert_eq!(
+            mirror_bag(&core).2,
+            slot_of(&w, SHOVEL),
+            "a quick throw keeps the selection"
+        );
+        now += cd(GRENADE) + 0.01;
+        assert_eq!(both(&mut w, &mut core, true, now), Ok(MOLOTOV));
+        // Energy: an empty battery refuses the laser and starts no cooldown — the shovel at once takes.
+        now += cd(MOLOTOV) + 0.01;
+        w.player_mut(ID).expect("seated").battery = 0.0;
+        core.set_battery(ID, 0.0);
+        select(&mut w, &mut core, LASER_PISTOL);
+        assert_eq!(both(&mut w, &mut core, false, now), Err(UseError::NoAmmo));
+        select(&mut w, &mut core, SHOVEL);
+        assert_eq!(both(&mut w, &mut core, false, now), Ok(SHOVEL));
+        // The round over: refused, the cooldown long past.
+        now += 100.0;
+        w.set_phase(RoundPhase::Ended);
+        assert!(core.set_phase("ended"));
+        assert_eq!(
+            both(&mut w, &mut core, false, now),
+            Err(UseError::RoundOver)
+        );
+        assert_eq!(both(&mut w, &mut core, true, now), Err(UseError::RoundOver));
+        // Control: the same use in a playing round takes.
+        w.set_phase(RoundPhase::Playing);
+        assert!(core.set_phase("playing"));
+        assert_eq!(both(&mut w, &mut core, false, now), Ok(SHOVEL));
+        // Dead.
+        now += 100.0;
+        w.player_mut(ID).expect("seated").alive = false;
+        let p = w.player(ID).expect("seated").body;
+        core.set_player_state(ID, p.pos.x, p.pos.y, 0.0, 0.0, false, 0.0, 0.0, false, 0);
+        assert_eq!(both(&mut w, &mut core, false, now), Err(UseError::Dead));
+        assert_eq!(both(&mut w, &mut core, true, now), Err(UseError::Dead));
+    }
+
+    #[test]
+    fn the_bell_and_a_platform_swing_nothing_and_the_export_names_the_item() {
+        let (_w, mut core) = pair();
+        core.apply_input(ID, 50, 0, 0, SIM_DT);
+        // The predicted bell (`set_bell`), before the `ended` phase is heard: past it, nothing takes.
+        core.set_bell(40);
+        assert_eq!(core.predict_use(ID, false, 10.0), "");
+        core.set_bell(60);
+        assert_eq!(
+            core.predict_use(ID, false, 10.0),
+            "shovel",
+            "control: before the bell the shovel swings"
+        );
+        // A rider fires the platform (`World::fire`), and `E` is refused (`inventory_actor`): no swing either way.
+        assert!(core.set_mounted(ID, true));
+        assert_eq!(core.predict_use(ID, false, 100.0), "");
+        assert_eq!(core.predict_use(ID, true, 100.0), "");
+        assert!(!core.set_mounted(ID, false));
+        assert_eq!(
+            core.predict_use(ID, true, 100.0),
+            "grenade",
+            "control: off the platform `E` throws"
+        );
+    }
+
+    /// T23.14E F7: a correction's replay that lands is seen — the impact of the step that
+    /// landed; a replay that stays airborne reports none (the control).
+    #[test]
+    fn a_landing_inside_a_replay_is_found_with_its_impact() {
+        let (w, mut core) = pair();
+        core.map = w.map.clone();
+        let pos = w.player(ID).expect("seated").body.pos;
+        // Dropped from well above the spawn, stepped until it lands: the history holds the fall.
+        core.set_player_state(
+            ID,
+            pos.x,
+            pos.y - 120.0,
+            0.0,
+            0.0,
+            false,
+            0.0,
+            100.0,
+            true,
+            0,
+        );
+        let mut landed_at = None;
+        for seq in 1..=240u32 {
+            core.apply_input(ID, seq, 0, 0, SIM_DT);
+            let st = core.player_state(ID);
+            if st[4] > 0.5 {
+                landed_at = Some((seq, st[7]));
+                break;
+            }
+        }
+        let (seq, impact) = landed_at.expect("the body landed");
+        assert!(impact > 0.0, "the landing step carries its impact");
+        let found = core.landing_since(ID, seq - 5, false);
+        assert_eq!(found[0], impact, "the replayed landing's impact");
+        assert_eq!(found[1], 1.0, "grounded now");
+        // Control: from an ack after the landing, nothing lands.
+        assert_eq!(core.landing_since(ID, seq, true)[0], -1.0);
     }
 }

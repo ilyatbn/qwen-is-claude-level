@@ -374,12 +374,6 @@ export interface SceneDescription {
   caveWall?: boolean
   /** T23.13: draw `lit()`'s two rim passes on the actors (absent: drawn; the look-lab's `knob=actor-rim-off` is the control). */
   actorRim?: boolean
-  /**
-   * T23.14D F13: draw each actor's atlas cell at the whole-pixel phase it stands at, as the mockup's one canvas did
-   * (`actors/cell.ts::atAnchor`) — the look-lab, so Level A compares like with like. Absent (the game): every cell at
-   * one anchor, so where an actor stands is not part of its drawing. A known lab/game difference, measured there.
-   */
-  actorPixelPhase?: boolean
   id: string
   camera: ViewRect
   /** The mask's size in px — known even while `masks` is null; the renderer's y flip reads `h`. */
@@ -409,7 +403,6 @@ export function describeScene(d: SceneData): SceneDescription {
     look: d.look,
     palette: d.palette,
     actors: d.actors,
-    actorPixelPhase: true,
     fx: d.fx,
     labels: d.labels,
     hud: d.hud,

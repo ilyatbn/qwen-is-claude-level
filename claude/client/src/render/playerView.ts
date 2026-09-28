@@ -316,7 +316,8 @@ export class PlayerView {
     s.img.setVisible(true)
     const ps = passes([], SPACE_MOON, a.x, a.y, a.lit?.size ?? 1)
     const L: Lighting = { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: true }
-    // `cellKey` leaves out where the actor stands (T23.14D F13: the atlas places its quad); this canvas does not move.
+    // `cellKey` holds only the phase within a cell grain (`cell.ts::atAnchor`: the atlas moves its quad by whole grains);
+    // this canvas does not move, so the whole position is part of its key.
     const key = `${cellKey(a, L)}@${a.x},${a.y}`
     if (key === s.key) return
     s.key = key
@@ -383,9 +384,17 @@ export class PlayerView {
   }
 
   /** T23.14B, e2e: `flame` as the checks read it (`debug().flame` / `debug().flames`) — `drawn` false when there is none. */
-  get flameState(): { drawn: boolean; dir: { x: number; y: number } | null; jet: number; at: { x: number; y: number } | null } {
+  get flameState(): {
+    drawn: boolean
+    dir: { x: number; y: number } | null
+    jet: number
+    at: { x: number; y: number } | null
+    /** T23.14E F6: the velocity the view was last drawn with (a remote's: interpolated) — what the flame is judged against. */
+    vel: { x: number; y: number } | null
+  } {
     const f = this.flameNow
-    return { drawn: !!f && this.container.visible, dir: f?.dir ?? null, jet: f?.jet ?? 0, at: f ? { x: f.x, y: f.y } : null }
+    const l = this.last
+    return { drawn: !!f && this.container.visible, dir: f?.dir ?? null, jet: f?.jet ?? 0, at: f ? { x: f.x, y: f.y } : null, vel: l ? { x: l[2], y: l[3] } : null }
   }
 
   /** T23.14B, e2e: draw the figure without its flame, glow and light (a check's control frame); redraws at once. */

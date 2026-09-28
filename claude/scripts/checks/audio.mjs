@@ -16,8 +16,12 @@
  * build that plays sounds unconditionally, including ones that should have been
  * silent (§A26 — a test asserting a presence needs its opposite).
  */
+import { startStack, freePort, enterBattle, sleep } from './harness.mjs'
+
 /** T23.09D: sim steps per frame in the slow-frame landing leg. */
 const SLOW_STEPS = 4
+/** T23.14E F7: ms each frame of the match's slow-frame leg is held (`slowFrames`): ~6 predicted steps a frame. */
+const MATCH_SLOW_MS = 100
 
 export default async function ({ page, shot, log }) {
   const audio = () => page.evaluate(() => window.__game.audio())
@@ -246,6 +250,45 @@ export default async function ({ page, shot, log }) {
   if (slowGain === null) throw new Error('on slow frames the fall produced no `land` cue')
   if (Math.abs(slowGain - predicted(drop)) > 0.06) {
     throw new Error(`on slow frames the fall from ${drop} px played at ${slowGain.toFixed(3)} against a predicted ${predicted(drop).toFixed(3)} — the landing tick's impact was lost between sim steps`)
+  }
+
+  // --- T23.14E F7: the same fall on slow frames, in a match ----------------------
+  // `GameScene` steps its predicted body as many times as a frame's wall time holds (the fixed step on
+  // `performance.now()`), and T23.09D's latch observes each step there too — no check had driven it. A networked
+  // client (`DEV_PROBE`: `debug_place` drops the body `drop` px), every frame held `MATCH_SLOW_MS`: the landing's
+  // volume is the fall's, not the floor. The volume is the scene's decision (`observed.landVolumes`); the mixer's
+  // applied gain is the sandbox legs' above.
+  {
+    const stack = await startStack({
+      port: await freePort(),
+      label: 'audio-match',
+      env: { FIXED_SEED: '4242', BOT_COUNT: '0', DEV_PROBE: '1', WEATHER: 'off', ROUND_SECONDS: '180' },
+    })
+    try {
+      const { page: mp } = await stack.openClient({ name: 'ana' })
+      await enterBattle(mp, { waitPlaying: true, label: 'audio-match' })
+      await mp.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: 10_000 })
+      const me = await mp.evaluate(() => window.__game.debug().player)
+      const heard0 = (await mp.evaluate(() => window.__game.debug().observed.landVolumes)).length
+      await mp.evaluate((ms) => window.__game.slowFrames(ms), MATCH_SLOW_MS)
+      await mp.evaluate(([x, y]) => window.__game.debugPlace(x, y), [me.x, me.y - drop])
+      await mp.waitForFunction(() => window.__game.debug().player?.grounded === false, null, { timeout: 10_000 })
+      const fallMs = Math.ceil(Math.sqrt((2 * drop) / k.GRAVITY) * 1000)
+      await mp.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: Math.max(4000, fallMs * 6) })
+      await sleep(4 * MATCH_SLOW_MS)
+      const o = (await mp.evaluate(() => window.__game.debug())).observed
+      await mp.evaluate(() => window.__game.slowFrames(0))
+      const heard = o.landVolumes.slice(heard0)
+      const got = heard.length ? Math.max(...heard) : null
+      const want = Math.min(1, Math.min(k.MAX_FALL_SPEED, Math.sqrt(2 * k.GRAVITY * drop)) / k.MAX_FALL_SPEED + o.landingFloor)
+      log(`match, slow frames (${MATCH_SLOW_MS} ms, ${o.slowFrames} held): ${drop} px -> ${got === null ? 'none' : got.toFixed(3)} (predicted ${want.toFixed(3)}; replay landings ${o.replayLandings})`)
+      if (got === null) throw new Error('in a match on slow frames the fall played no landing')
+      if (Math.abs(got - want) > 0.06) {
+        throw new Error(`in a match on slow frames the fall from ${drop} px played at ${got.toFixed(3)} against a predicted ${want.toFixed(3)} — the landing step's impact was lost between predicted steps`)
+      }
+    } finally {
+      await stack.close()
+    }
   }
 
   // --- the control: silence must actually be silent --------------------------

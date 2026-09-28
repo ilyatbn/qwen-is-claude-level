@@ -280,6 +280,9 @@ export class OrdnanceState {
   addProjectile(id: number, kind: ProjectileKind, x: number, y: number): void {
     this.projectiles.set(id, { id, kind, x, y, trail: [{ x, y }] })
     this.unshown.add(id)
+    // T23.14E F8: a round added under an id still leaving (removed before its one draw) is a live round: it must not
+    // be taken off by the old one's pending removal at the next `update`.
+    this.leaving.delete(id)
   }
 
   /** T23.09D: rounds added since the last `update` (the layer's draw), and rounds removed before one was drawn. */

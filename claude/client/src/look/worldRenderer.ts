@@ -382,7 +382,6 @@ export class WorldRenderer implements SceneRenderer {
     this.placeTerrain(view)
     this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
     this.actorLayer.rimOn = this.desc.actorRim !== false
-    this.actorLayer.pixelPhase = this.desc.actorPixelPhase === true
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     applyPost(this.post, this.desc.look, this.hidden)

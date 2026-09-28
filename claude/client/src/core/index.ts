@@ -1391,6 +1391,42 @@ export class Core {
   }
 
   /**
+   * T23.14E F2: the local player's bag as the server's `inventory` event states it — `items[i]`/`counts[i]` per slot
+   * (0 empty) and the selection — the bag `predictUse` validates against.
+   */
+  setBag(id: number, items: readonly number[], counts: readonly number[], selected: number): void {
+    this.inner.set_bag(id, Uint16Array.from(items), Uint8Array.from(counts), selected)
+  }
+
+  /**
+   * T23.14E F7: a landing a correction's replay found — the mirror's history after `fromSeq` (the ack), starting from
+   * `groundedAtFrom` (the snapshot's word there): the first airborne → grounded step's impact (null: none), and whether
+   * the body is grounded now.
+   */
+  landingSince(id: number, fromSeq: number, groundedAtFrom: boolean): { impact: number | null; grounded: boolean } {
+    const a = this.inner.landing_since(id, fromSeq, groundedAtFrom)
+    const impact = a[0] ?? -1
+    return { impact: impact >= 0 ? impact : null, grounded: (a[1] ?? 0) > 0.5 }
+  }
+
+  /** T23.14E F2: the suit battery off the snapshot — an energy weapon's use spends it (`predictUse`). */
+  setBattery(id: number, battery: number): void {
+    this.inner.set_battery(id, battery)
+  }
+
+  /**
+   * T23.14E F2: **does a use sent now take?** The registry key of the item used, or `null` — the server's checks in
+   * its order through its functions (`World::fire` / `World::quick_throw`, `PlayerState::try_fire_slot`: the round,
+   * a rider's platform, alive, kind, the one per-player cooldown, stock, energy), on the predicted player, which it
+   * updates as the server would. `quick`: §C11's `E`. `now`: any monotonic clock in seconds (the cooldown is the
+   * mirror's own). The local figure swings on the answer — no TypeScript copy of the rules.
+   */
+  predictUse(id: number, quick: boolean, now: number): string | null {
+    const key = this.inner.predict_use(id, quick, now)
+    return key === '' ? null : key
+  }
+
+  /**
    * The item registry as JSON — id, key, name, sprite, max stack.
    *
    * The wire carries only a numeric `item_id`, so without this the client cannot

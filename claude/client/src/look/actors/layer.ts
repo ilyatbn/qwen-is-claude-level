@@ -195,9 +195,9 @@ export class ActorLayer {
   }
 
   /**
-   * Lay this frame's actors out, lit by `lights`/`moon`; `maskH` for the y flip. T23.14D F13: each cell is drawn with
-   * its actor at the cell anchor (`cell.ts::atAnchor`), so the quad is that rect moved to where the actor is — whole
-   * px, and the sub-pixel fraction, the cell's texels sampled bilinearly. Written straight into the attributes.
+   * Lay this frame's actors out, lit by `lights`/`moon`; `maskH` for the y flip. Each cell is drawn with its actor at
+   * its cell position (`cell.ts::atAnchor`: the position mod `CELL_ALIGN`, fraction included), so the quad is that rect
+   * moved by whole `CELL_ALIGN`s to where the actor is. Written straight into the attributes.
    */
   place(actors: readonly Actor[], lights: readonly Light[], moon: Moon, maskH: number): void {
     if (actors.length > this.capacity) this.grow(Math.max(actors.length, this.capacity * 2))
@@ -212,9 +212,9 @@ export class ActorLayer {
     for (const a of actors) {
       const ps = a.lit ? passes(lights, moon, a.x, a.y, a.lit.size) : null
       const L: Lighting | null = ps ? { offs: [ps.fillOff, ps.off, [ps.off[0] * 1.7, ps.off[1] * 1.7]], rgb: ps.rimRgb, a: ps.a, fill: ps.fillRgb, rim: this.rim } : null
-      const cell = this.atlas.cellFor(a, L, this.pixelPhase)
+      const cell = this.atlas.cellFor(a, L)
       if (!cell) continue
-      const c = atAnchor(a, this.pixelPhase)
+      const c = atAnchor(a)
       const r = actorRect(c)
       const dx = a.x - c.x
       const dy = a.y - c.y
@@ -250,9 +250,6 @@ export class ActorLayer {
     this.drawn = n
     this.mesh.visible = n > 0
   }
-
-  /** T23.14D F13: draw cells at each actor's own pixel phase — the look-lab (`SceneDescription.actorPixelPhase`). */
-  pixelPhase = false
 
   private rim = true
   /** T23.13: draw `lit()`'s two rim passes (a baked cell keys on it). */

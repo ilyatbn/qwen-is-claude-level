@@ -355,4 +355,22 @@ describe('T23.09D: a round is drawn on at least one frame', () => {
     s.removeProjectile(2)
     expect(s.projectiles.has(2)).toBe(false)
   })
+
+  it('T23.14E F8: a round re-added under a leaving id is live — the old removal does not take it', () => {
+    const s = new OrdnanceState(0.35, 12)
+    s.addProjectile(7, 'bullet', 0, 0)
+    s.removeProjectile(7) // before its draw: leaving
+    s.update(1 / 60) // its one draw
+    s.addProjectile(7, 'bazooka', 50, 50) // a new round, the same id, before the removal ran
+    s.update(1 / 60)
+    s.update(1 / 60)
+    expect(s.projectiles.get(7)).toMatchObject({ kind: 'bazooka', x: 50 })
+    // Control: without the re-add, the leaving round is gone after its draw.
+    const c = new OrdnanceState(0.35, 12)
+    c.addProjectile(7, 'bullet', 0, 0)
+    c.removeProjectile(7)
+    c.update(1 / 60)
+    c.update(1 / 60)
+    expect(c.projectiles.has(7)).toBe(false)
+  })
 })

@@ -17,7 +17,7 @@ import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
 import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
-import { LandingLatch, landingVolume } from '../render/feel-math'
+import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
 import { GATE_KEY, padUnderfoot, type PadView } from '../render/pads'
 import { occupiedPlatforms, platformUnderfoot } from '../render/platforms'
 import type { MapObject } from '../net/codec'
@@ -78,12 +78,11 @@ import { setGroundProbe } from '../look/actors/cast'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
-import { LocalSwing } from '../input/localSwing'
-import { WEAPONS } from '../look/actors/weapons'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SpaceSky } from '../render/spaceSky'
 import { Lightmap, fovRadius, type LightSource } from '../render/lightmap'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
+import { RoundWatch } from '../render/ordnanceWatch'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { sceneDarkness } from '../render/sky-math'
 import { phaseBanner, rankScores, type Phase } from '../ui/scoreboard'
@@ -148,6 +147,15 @@ interface RemoteView {
  */
 function freshObserved() {
   return {
+    /** T23.14E: uses sent (`useNow`), and the last one's predicted answer (`key` null: refused). */
+    uses: 0,
+    /** T23.14E F4: frames held by `slowFrames`. */
+    slowFrames: 0,
+    /** T23.14E F7: landings a correction's replay found (`Core.landingSince`). */
+    replayLandings: 0,
+    /** T23.14E F7: the volume each `land` cue was played at, newest last (the last 8). */
+    landVolumes: [] as number[],
+    lastUse: null as { quick: boolean; key: string | null } | null,
     phases: new Set<string>(),
     dayPhases: new Set<string>(),
     /** effect id -> the lifecycle phases seen for it, so "ran start to finish" is checkable. */
@@ -387,6 +395,10 @@ export class GameScene extends Phaser.Scene {
   }
   /** The last frame's `dt`, s — the remotes' tilt steps by it too. */
   private frameDt = 0
+  /** T23.14E F4, e2e (`slowFrames`): ms every frame busy-waits — a slow frame on demand, as a loaded box has. */
+  private slowFrameMs = 0
+  /** T23.14E F4, e2e (`watchRounds`): each round's pixels on the canvas (`render/ordnanceWatch.ts`). */
+  private roundWatch: RoundWatch | null = null
   /**
    * T22.04: the match's gravity spelling, off `lobby_state` — the same value the
    * mirror is handed there. Drawn with, and nothing else: the helmet, the space pose and its
@@ -438,15 +450,13 @@ export class GameScene extends Phaser.Scene {
    * lost.
    */
   private readonly repeatFire = new RepeatFire()
-  /** T23.09D: the local figure's swing, predicted on the frame the use is sent (`input/localSwing.ts`). */
-  private readonly localSwing = new LocalSwing()
   /**
    * The whole inventory, quick bar then backpack (§C10).
    *
    * Sized from the constant on the first `inventory` event; the initial length
    * only has to be non-empty, because every read is bounds-checked.
    */
-  private slots: Array<{ key: string; count: number } | null> = []
+  private slots: Array<{ item: number; key: string; count: number } | null> = []
   /** Set from `BASE_HEALTH` in `resetForNewRound`; 0 until the scene starts. */
   private health = 0
   private rttSamples = 0
@@ -704,7 +714,6 @@ export class GameScene extends Phaser.Scene {
     // than a literal 100 — the field's own initializer is 0 for this reason.
     this.health = C().BASE_HEALTH
     this.meAlive = true
-    this.localSwing.reset()
     this.battery = 0
     this.heals = 0
     this.batteries = 0
@@ -720,6 +729,10 @@ export class GameScene extends Phaser.Scene {
     this.remotePushes.clear()
     this.roundOrigins.clear()
     this.frameDt = 0
+    // T23.14E F4: the e2e hooks' state is the round's too.
+    this.slowFrameMs = 0
+    this.roundWatch?.stop()
+    this.roundWatch = null
     this.fuel = 0
     this.fuelShown = 0
     this.teleportCharge = 0
@@ -1053,10 +1066,11 @@ export class GameScene extends Phaser.Scene {
         const sl = arr[i]
         if (!sl || typeof sl !== 'object') return null
         const r = sl as Record<string, unknown>
-        return { key: String(r['key'] ?? '?'), count: Number(r['count'] ?? 0) }
+        return { item: Number(r['item'] ?? 0), key: String(r['key'] ?? '?'), count: Number(r['count'] ?? 0) }
       })
       const sel = p['selected']
       if (typeof sel === 'number') this.selectedSlot = sel
+      this.pushBag()
       this.inventory?.update(
         this.slots.map((sl, i) => ({
           slot: i,
@@ -1146,6 +1160,11 @@ export class GameScene extends Phaser.Scene {
         if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'])
         // T23.09C F2: where each round left the gun, for its muzzle flash (`WorldView.syncProjectiles`'s `origin`).
         if (ev === 'projectile_spawn') this.roundOrigins.set(Number(p['id'] ?? -1), { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) })
+        // T23.14E F4: **the round goes into the ordnance layer as it spawns**, as the sandbox's `noteOrigin` does — not at
+        // the next frame's sync. A round that spawns and despawns between two frames (an smg round into rock ~3 ticks;
+        // a slow frame holds more) was in the mirror at no sync and never drawn; added now, the layer keeps it for one
+        // draw (`OrdnanceState.removeProjectile`).
+        if (ev === 'projectile_spawn') this.world?.syncProjectiles(this.withOrigins())
         if (ev === 'projectile_despawn') this.roundOrigins.delete(Number(p['id'] ?? -1))
         if (ev === 'carve' || ev === 'carve_capsule') {
           this.minimap?.setTerrainDirty()
@@ -1414,10 +1433,10 @@ export class GameScene extends Phaser.Scene {
         this.toggleBackpack()
         return
       }
-      this.fireNow()
+      this.useNow(false)
     })
     this.input.keyboard?.on('keydown-F', () => {
-      this.fireNow()
+      this.useNow(false)
     })
 
     // Slot selection and item use. `Connection` has had `sendSelectSlot` and
@@ -1430,16 +1449,14 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < C().QUICK_SLOTS; i++) {
       const key = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'][i] as string
       this.input.keyboard?.on(`keydown-${key}`, () => {
-        this.selectedSlot = i
-        this.conn.sendSelectSlot(i)
+        this.selectLocal(i)
         this.audio.play('ui_click', { volume: 0.4 })
         this.refreshHud()
       })
     }
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const n = C().QUICK_SLOTS
-      this.selectedSlot = (this.selectedSlot + (dy > 0 ? 1 : n - 1)) % n
-      this.conn.sendSelectSlot(this.selectedSlot)
+      this.selectLocal((this.selectedSlot + (dy > 0 ? 1 : n - 1)) % n)
       this.refreshHud()
     })
     // §C11: `E` is quick-throw now. `use_item` on the selection moves to `G`.
@@ -1450,7 +1467,8 @@ export class GameScene extends Phaser.Scene {
     // batteries left the inventory with §C9, so `use_item` now has exactly one
     // remaining target and no key. `G` is next to it and unbound.
     this.input.keyboard?.on('keydown-G', () => this.conn.sendUseItem(this.selectedSlot))
-    this.input.keyboard?.on('keydown-E', () => this.conn.sendQuickThrow())
+    // T23.14E F1: through the same predicted path as a fire, so your own throw animates on the frame you press.
+    this.input.keyboard?.on('keydown-E', () => this.useNow(true))
     // §C9: `Q` heals, `R` charges. Both slotless and both refused server-side at
     // zero, so the client sends unconditionally — a client-side "do you have
     // one?" would be a second copy of a rule the server already owns, and the
@@ -1464,6 +1482,8 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.roundWatch?.stop()
+      this.roundWatch = null
       this.terrainFields?.dispose()
       this.terrainFields = null
       this.conn.close()
@@ -1699,6 +1719,8 @@ export class GameScene extends Phaser.Scene {
     this.core.removePlayer(this.me)
     this.core.addPlayer(this.me, spawn.x, spawn.y - C().PLAYER_H / 2)
     this.predictor = new Predictor(this.core, this.me)
+    // T23.14E F2: the predicted player's bag is the server's (an `inventory` event may have beaten the map).
+    this.pushBag()
 
     this.buildLocalView()
 
@@ -1784,6 +1806,8 @@ export class GameScene extends Phaser.Scene {
       this.fuel = mine.jetpackFuel
       // Also already dequantised by `codec.ts`, for the same reason (§A24).
       this.battery = mine.battery
+      // T23.14E F2: an energy weapon's use spends it — the predicted use (`Core.predictUse`) must see the server's.
+      this.core?.setBattery(this.me, mine.battery)
       this.heals = mine.heals
       this.batteries = mine.batteries
       // §C5. The server's number, not a clock this scene runs — see `pads.ts`.
@@ -1829,6 +1853,7 @@ export class GameScene extends Phaser.Scene {
         this.core.setBell(this.bellSeq)
       }
       this.mirror.anchorSeqs(this.core.acceptsInput() && s.lastInputSeq > 0 ? anchor : null)
+      const corrections = this.predictor.stats.corrections
       this.predictor.reconcile({
         // T22.10E F-3: the results screen's reconciliation keys on the tick.
         tick: s.tick,
@@ -1871,6 +1896,14 @@ export class GameScene extends Phaser.Scene {
           moveMods: mine.moveMods,
         },
       })
+      if (this.predictor.stats.corrections !== corrections) {
+        // T23.14E F7: **the replay's steps, observed.** The landing cue watches every step this client takes
+        // (`LandingLatch`), but a correction re-steps from the ack unseen — a landing it moves into the past was heard
+        // late at the floor, or not at all. The replay's first landing (with its impact) and where the body now is.
+        const r = this.core.landingSince(this.me, s.lastInputSeq, flag(mine.flags, FLAG.grounded))
+        this.landing.observe(r.grounded, r.impact ?? 0)
+        if (r.impact !== null) this.observed.replayLandings += 1
+      }
     }
   }
 
@@ -1897,47 +1930,66 @@ export class GameScene extends Phaser.Scene {
       if (ev === 'vortex_trip') this.observed.myTrips.push({ x, y, snapped })
     } else {
       this.interp.cut(id, Number(p['tick'] ?? this.lastServerTick))
+      // T23.14E F6: the jump is no push — the estimate starts afresh after it.
+      this.remotePushes.get(id)?.reset()
     }
   }
 
-  /**
-   * T23.14D F8: the figure of `owner` swings or throws `weapon` (`WEAPON_KEYS` id) — driven by the server's `melee`
-   * and `projectile_spawn`, which every client receives, so a remote's swing plays and your own plays only for a
-   * swing the server accepted (it played on the click, refused or not). A gun changes nothing (`firedWith`).
-   */
   /** The mirror's live rounds, each with its `roundOrigins` entry — or `null`: this client never heard it spawn. */
   private *withOrigins(): Iterable<{ id: number; x: number; y: number; weapon: number; origin: { x: number; y: number } | null }> {
     for (const p of this.mirror.projectiles.values()) yield { id: p.id, x: p.x, y: p.y, weapon: p.weapon, origin: this.roundOrigins.get(p.id) ?? null }
   }
 
+  /**
+   * T23.14D F8: a **remote's** figure swings or throws `weapon` (`WEAPON_KEYS` id) on the server's `melee` and
+   * `projectile_spawn`, which every client receives. Your own is not driven from here: it plays when your predicted
+   * use takes (`useNow`, T23.14E) — the echo is a round trip late and would restart it. A gun changes nothing
+   * (`firedWith`).
+   */
   private swingOf(owner: unknown, weapon: unknown): void {
     if (typeof owner !== 'number' || typeof weapon !== 'number') return
-    // T23.09D: your own swing was predicted when you fired (`fireNow`); the echo would restart it a round trip late.
     if (owner === this.me) return
     this.remotes.get(owner)?.view.firedWith(WEAPON_KEYS[weapon])
   }
 
   /**
-   * Send one fire request — the click, `F`, a held weapon's repeat, the e2e hook — and, T23.09D, swing the local figure
-   * on this frame if the use is one the server will take (`LocalSwing`: alive, not riding, a melee/thrown weapon in
-   * stock, off cooldown). Not on the server's echo: that is a round trip late.
+   * The server's bag, installed in the predicted player (`Core.setBag`) — on every `inventory` event and when the
+   * map seats the local body (an event can beat the map).
    */
-  private fireNow(): void {
-    this.conn.sendFire()
-    const sel = this.slots[this.selectedSlot] ?? null
-    const key = sel?.key ?? null
-    const mine = this.mirror.players.get(this.me)
-    const W = key ? WEAPONS[key] : undefined
-    const swung = this.localSwing.use({
-      now: performance.now() / 1000,
-      alive: this.meAlive,
-      mounted: mine ? flag(mine.moveMods, MOVE_MOD.mounted) : false,
-      key,
-      count: sel?.count ?? 0,
-      swings: !!(W?.melee || W?.thrown),
-      cooldown: this.world?.items.fireProfileForKey(key)?.cooldown ?? null,
-    })
-    if (swung) this.localView?.firedWith(key)
+  private pushBag(): void {
+    if (!this.core || this.slots.length === 0) return
+    this.core.setBag(
+      this.me,
+      this.slots.map((sl) => sl?.item ?? 0),
+      this.slots.map((sl) => sl?.count ?? 0),
+      this.selectedSlot,
+    )
+  }
+
+  /**
+   * Send one use — a fire (the click, `F`, a held weapon's repeat, the e2e hook) or §C11's quick-throw (`E`) — and,
+   * T23.14E F2, swing the local figure **on this frame when the predicted player takes it**: `Core.predictUse` runs the
+   * server's own checks in its order (`World::fire` / `World::quick_throw` → `PlayerState::try_fire_slot`) on the
+   * predicted `PlayerState` — round, rider, alive, kind, the one per-player cooldown, stock, energy — and returns the
+   * item it used. No round trip, and no TypeScript copy of the rules (T23.09D's `input/localSwing.ts`, retired).
+   */
+  /**
+   * Select a quick-bar slot: sent, and (T23.14E F2) selected in the predicted player at once — the server runs
+   * `select_slot` then a following `fire` in arrival order, so a use right after this is of the new selection.
+   */
+  private selectLocal(slot: number): void {
+    this.selectedSlot = slot
+    this.conn.sendSelectSlot(slot)
+    this.core?.selectSlot(this.me, slot)
+  }
+
+  private useNow(quick: boolean): void {
+    if (quick) this.conn.sendQuickThrow()
+    else this.conn.sendFire()
+    const key = this.core?.predictUse(this.me, quick, performance.now() / 1000) ?? null
+    this.observed.uses += 1
+    this.observed.lastUse = { quick, key }
+    if (key) this.localView?.firedWith(key)
   }
 
   private dropRemote(id: number): void {
@@ -1982,6 +2034,8 @@ export class GameScene extends Phaser.Scene {
       // T23.09D: the impact of the step that landed (`LandingLatch`), not the frame's last step's.
       const force = landingVolume(landed, C().MAX_FALL_SPEED)
       this.audio.play('land', { volume: force })
+      this.observed.landVolumes.push(force)
+      if (this.observed.landVolumes.length > 8) this.observed.landVolumes.shift()
       this.stepAcc = 0
     }
 
@@ -2148,7 +2202,7 @@ export class GameScene extends Phaser.Scene {
       C().GUN_PLATFORM_FIRE_INTERVAL,
     )
     const shots = this.repeatFire.update({ dt, held, ...source })
-    for (let i = 0; i < shots; i++) this.fireNow()
+    for (let i = 0; i < shots; i++) this.useNow(false)
   }
 
   override update(_time: number, delta: number): void {
@@ -2157,6 +2211,14 @@ export class GameScene extends Phaser.Scene {
     // so switching it on reports the rate you already had rather than starting a
     // fresh window that reads 0 for half a second.
     this.debugMode?.update(_time)
+    if (this.slowFrameMs > 0) {
+      // T23.14E F4, e2e only: hold this frame — the server's events queue behind it, as behind a loaded box's frame.
+      const end = performance.now() + this.slowFrameMs
+      while (performance.now() < end) {
+        // spin: the frame is held
+      }
+      this.observed.slowFrames += 1
+    }
     // T21.24's player-facing counter. **Sampled every frame, written four times
     // a second** (`FPS_READOUT_INTERVAL`). Sampling unconditionally is what makes
     // switching it on report the rate you already had, rather than a fresh empty
@@ -2718,7 +2780,11 @@ export class GameScene extends Phaser.Scene {
         this.frameDt,
       )
       this.remoteTilts.set(id, rtrack)
-      if (!visible) continue
+      if (!visible) {
+        // T23.14E F6: a culled frame is not stepped, so the velocity the estimate holds goes stale: start afresh.
+        this.remotePushes.get(id)?.reset()
+        continue
+      }
       const k = C()
       this.flareBodies.push({
         id,
@@ -2852,8 +2918,7 @@ export class GameScene extends Phaser.Scene {
         // canvas's does — one action, not a second copy of it.
         toggleBackpack: () => this.toggleBackpack(),
         selectSlot: (slot) => {
-          this.selectedSlot = slot
-          this.conn.sendSelectSlot(slot)
+          this.selectLocal(slot)
         },
         // The tile draws what the world draws. `artFor` is the world's own
         // fallback order and `ItemLayer` already registered the procedural
@@ -3407,6 +3472,26 @@ export class GameScene extends Phaser.Scene {
       holdHazards(on: boolean) {
         self.fx?.holdHazards(on)
         return { held: self.fx?.hazardsAreHeld ?? false }
+      },
+      /** T23.14E F4, e2e only: every frame busy-waits `ms` (0: off) — a slow frame on demand. */
+      slowFrames(ms: number) {
+        self.slowFrameMs = Math.max(0, ms)
+      },
+      /**
+       * T23.14E F4, e2e only: watch the ordnance layer's rounds **on the canvas** — for each, the Phaser canvas's pixels
+       * around it on the frame it is first drawn, against the same patch on the first frame after it is gone (the
+       * control frame), and a patch as far on the other side of the player (the control region). `on` false returns
+       * the results and stops.
+       */
+      watchRounds(on: boolean) {
+        const seen = self.roundWatch?.stop() ?? []
+        self.roundWatch = on
+          ? new RoundWatch(self.game, self.cameras.main, {
+              state: () => self.world?.ordnance.state ?? null,
+              centre: () => self.mirror.players.get(self.me) ?? null,
+            })
+          : null
+        return seen
       },
       /** e2e only (§C2, T21.18): hide the ordnance layer for a same-instant control frame. */
       showOrdnance(on: boolean) {
@@ -4083,6 +4168,12 @@ export class GameScene extends Phaser.Scene {
             respawns: self.observed.respawns,
             itemSpawns: self.observed.itemSpawns,
             itemPickups: self.observed.itemPickups,
+            uses: self.observed.uses,
+            slowFrames: self.observed.slowFrames,
+            replayLandings: self.observed.replayLandings,
+            landVolumes: [...self.observed.landVolumes],
+            landingFloor: LANDING_VOLUME_FLOOR,
+            lastUse: self.observed.lastUse,
             hitscans: self.observed.hitscans,
             explosions: self.observed.explosions,
             projectileSpawns: self.observed.projectileSpawns,
@@ -4095,7 +4186,15 @@ export class GameScene extends Phaser.Scene {
         }
       },
       fire() {
-        self.fireNow()
+        self.useNow(false)
+      },
+      /** T23.14E F1: §C11's `E`, as the key sends it (the predicted throw included). */
+      quickThrow() {
+        self.useNow(true)
+      },
+      /** T23.14E: select quick-bar `slot` as its number key does (sent, and in the predicted player). */
+      selectSlot(slot: number) {
+        self.selectLocal(slot)
       },
       /** T23.09C F6: the last effect-light list handed to the world renderer, each with its source's kind (as the sandbox's). */
       effectLights() {

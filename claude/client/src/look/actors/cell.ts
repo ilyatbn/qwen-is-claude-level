@@ -189,29 +189,18 @@ export function estimateBox(a: Actor): Box {
 }
 
 /**
- * T23.14D F13: **where an actor stands is not part of its drawing.** A cell is drawn with its actor's anchor at
- * `CELL_ANCHOR` (a multiple of `CELL_ALIGN`), and the layer moves the quad to where the actor is (`layer.ts`), the
- * sub-pixel fraction sampled bilinearly. The key held the position to 1/8 px, so a figure rising on its jet or falling
- * in one pose was a new cell every frame: 120 frames of a jet climb were 120 cells for 39 drawings, now 39.
+ * **Where an actor stands is part of its drawing, at the mockup's pixel phase — in the game as in the look-lab**
+ * (T23.14E F5, reverting T23.14D F13's single cell anchor for the game). A cell is drawn with its actor at the actor's
+ * own position mod `CELL_ALIGN` — the sub-pixel fraction included (T23.16: F6 stands its weapons at fractional x, and
+ * the mockup's canvas draws them there) — and the layer moves the quad by whole `CELL_ALIGN`s (`layer.ts`).
  *
- * **The look-lab keeps the mockup's pixel phase** (`pixelPhase`, `SceneDescription.actorPixelPhase`): the cell is
- * drawn at the actor's whole-pixel position mod `CELL_ALIGN`, as before. Measured: at one anchor, F4's cast went from
- * 0.1187 to 0.2834 mean ΔE on its actor boxes (max 0.1761) — Chrome dithers a Canvas2D gradient (a halo, a contact
- * shadow, a flame) on a pattern fixed to the canvas's pixel grid, and the mockup's canvas is the screen. With the
- * phase kept, the same climb is 114 cells of 120 frames, so the game does not keep it: its gradients dither on
- * another phase than the mockup's would, 1–4 levels at alternate pixels, which no player compares.
- * `atAnchor(a, pixelPhase)` is `a` moved to its cell anchor; its `box` and a smoke's points move with it.
+ * Why one path: at one anchor F4's cast measured 0.2834 mean ΔE on its actor boxes against a gate of 0.1761 (0.1187 at
+ * the pixel phase) — Chrome dithers a Canvas2D gradient on a pattern fixed to the canvas's pixel grid — and the anchor
+ * bought no measured fps (T23.14D: redraws are pose-driven). So the game draws what the gate measured.
+ * `atAnchor(a)` is `a` moved to its cell position; its `box` and a smoke's points move with it.
  */
-export const CELL_ANCHOR = 0
-export function atAnchor(a: Actor, pixelPhase = false): Actor {
-  const at = (v: number): number => {
-    if (!pixelPhase) return CELL_ANCHOR
-    // T23.16: the sub-pixel fraction stays in the drawing and the quad moves by whole `CELL_ALIGN`s. F6 places its
-    // weapons and its 1× row at fractional x (`cw / 2 − 20 − cx·K`, `W / 22.5`): rounding here and letting the layer
-    // sample the fraction bilinearly blurred every edge (F6 boxes 0.3–2.2 mean ΔE; the canvas draws them at the
-    // fraction). An actor at a whole pixel (F1–F5, F7) is drawn exactly as before.
-    return CELL_ANCHOR + v - Math.floor(v / CELL_ALIGN) * CELL_ALIGN
-  }
+export function atAnchor(a: Actor): Actor {
+  const at = (v: number): number => v - Math.floor(v / CELL_ALIGN) * CELL_ALIGN
   const dx = at(a.x) - a.x
   const dy = at(a.y) - a.y
   if (dx === 0 && dy === 0) return a
@@ -221,11 +210,11 @@ export function atAnchor(a: Actor, pixelPhase = false): Actor {
 }
 
 /**
- * Everything the drawing depends on — and nothing the light does, nor (T23.14D F13) where the actor stands: the
- * key is `a`'s at the anchor (`atAnchor`). The pass offsets are part of it at 1/8 px (the masks are drawn at them).
+ * Everything the drawing depends on — and nothing the light does. The key is `a`'s at its cell position
+ * (`atAnchor`): the sub-pixel phase to 1/8 px is part of it. The pass offsets are too (the masks are drawn at them).
  */
-export function cellKey(actor: Actor, L: Lighting | null, pixelPhase = false): string {
-  const a = atAnchor(actor, pixelPhase)
+export function cellKey(actor: Actor, L: Lighting | null): string {
+  const a = atAnchor(actor)
   const r = actorRect(a)
   const q = (v: number): number => Math.round(v * 8) / 8
   const offs = a.lit && L ? L.offs.map(([x, y]) => [q(x), q(y)]) : null

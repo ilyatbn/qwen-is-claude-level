@@ -71,6 +71,68 @@ const stack = await startStack({
 const { page, dbg, pageErrors } = await stack.openClient({ name: 'ana' })
 await enterBattle(page, { waitPlaying: true, label: 'ordnance' })
 
+// ------------------------------------------- T23.14E F4/F8: rounds on slow frames
+//
+// **A round shorter than a frame is still painted, in a match.** An smg round into rock a few dozen px away lives a
+// few sim ticks; on a slow frame its `projectile_spawn` and `projectile_despawn` land between two draws, the mirror
+// holds it at no frame's sync, and the layer never drew it (the sandbox had this fixed by T23.09D; the match did not).
+// Asserted on the **canvas** (`watchRounds`: the Phaser canvas's pixels around the round on the frame it is first
+// drawn, against the same patch on the first frame after — the control frame — and a patch as far on the other side
+// of the player — the control region), counted against the rounds the **server** spawned for this player.
+// First, while the player is whole and the rock untouched.
+{
+  const SLOW_MS = 150
+  const SHOTS = 6
+  /** A painted round moves its patch by more than this, mean per pixel (0–255); the control region by less than a fifth. */
+  const PAINT_MIN = 1.5
+  const SMG_COOLDOWN_MS = (await page.evaluate(() => window.__game.constants())).SMG_COOLDOWN * 1000
+  await selectWeapon(page, 'smg')
+  await standStill(page)
+  // Rock 30–150 px out along a line from the body: the round lives a few ticks.
+  const aim = await page.evaluate(() => {
+    const g = window.__game.debug()
+    const core = window.__game.core
+    const p = g.player
+    const v = g.worldView
+    for (const [ux, uy] of [[1, 0.5], [-1, 0.5], [1, 1], [-1, 1], [1, 0], [-1, 0]]) {
+      const n = Math.hypot(ux, uy)
+      for (let t = 0; t <= 150; t += 2) {
+        if (!core.solidAt(Math.round(p.x + (ux / n) * t), Math.round(p.y + (uy / n) * t))) continue
+        if (t < 30) break
+        return { sx: (p.x + (ux / n) * t - v.x) * g.zoom, sy: (p.y + (uy / n) * t - v.y) * g.zoom, t, dir: [ux, uy] }
+      }
+    }
+    return null
+  })
+  if (!aim) fail('slow frames: no rock 30–150 px from the body to shoot into (a map fact)')
+  else {
+    await page.mouse.move(aim.sx, aim.sy)
+    await sleep(200)
+    const spawns0 = (await dbg()).observed.ownProjectileSpawns
+    await page.evaluate(() => {
+      window.__game.holdImpacts(true)
+      window.__game.watchRounds(true)
+    })
+    await page.evaluate((ms) => window.__game.slowFrames(ms), SLOW_MS)
+    for (let i = 0; i < SHOTS; i++) {
+      await page.evaluate('window.__game.fire()')
+      await sleep(Math.max(400, SMG_COOLDOWN_MS + 250))
+    }
+    await sleep(1000)
+    await page.evaluate(() => window.__game.slowFrames(0))
+    await sleep(300)
+    const rounds = await page.evaluate(() => window.__game.watchRounds(false))
+    await page.evaluate(() => window.__game.holdImpacts(false))
+    const d = await dbg()
+    const spawned = d.observed.ownProjectileSpawns - spawns0
+    const painted = rounds.filter((r) => r.diff !== null && r.diff > PAINT_MIN && r.farDiff < r.diff / 5)
+    console.log(`  slow frames (${SLOW_MS} ms, ${d.observed.slowFrames} held): aim ${aim.t} px along (${aim.dir}); server spawned ${spawned}, layer drew ${rounds.length}, painted ${painted.length}: ${JSON.stringify(rounds.map((r) => ({ f: r.frames, d: r.diff?.toFixed(2), far: r.farDiff?.toFixed(2) })))}`)
+    if (spawned < 2) fail(`slow frames: the server spawned ${spawned} smg rounds for ${SHOTS} shots — nothing to measure`)
+    else if (painted.length !== spawned) fail(`slow frames: ${spawned} rounds spawned, ${painted.length} painted on the canvas (${rounds.length} drawn by the layer) — a round shorter than a frame is invisible`)
+    else ok(`slow frames: every one of ${spawned} smg rounds was painted on the canvas (patch vs control frame > ${PAINT_MIN}, control region under a fifth of it)`)
+  }
+}
+
 // ---------------------------------------------------------------- §F3: hold
 //
 // **First, before anything destructive.** This check later sets fire to the

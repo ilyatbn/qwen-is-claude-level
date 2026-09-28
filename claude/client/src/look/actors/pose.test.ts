@@ -338,11 +338,10 @@ describe('the stick figure animation (T23.14)', () => {
     expect(stepFigure(newFigureState(), inp({ alive: false, jetpack: true })).rot).toBe(-1.5)
   })
 
-  it('T23.14D F13: a figure climbing on its jet is as many cells as it has drawings, wherever it goes', () => {
+  it('T23.14D F13: a figure climbing on its jet is few drawings (rounded pose); T23.14E F5: its cells carry the pixel phase', () => {
     for (const [vy, jetpack] of [[-200, true], [400, false]] as const) {
       const st = newFigureState()
       const keys = new Set<string>()
-      const phased = new Set<string>()
       const drawings = new Set<string>()
       let y = 500
       for (let i = 0; i < 120; i++) {
@@ -350,13 +349,12 @@ describe('the stick figure animation (T23.14)', () => {
         const d = stepFigure(st, inp({ vy, jetpack, grounded: false, thrust: UP, aim: 0.2 }))
         const a: Actor = { kind: 'figure', x: 300.4 + i * 0.7, y, opts: { J: d.J, s: FIGURE_SCALE, face: d.face, rot: d.rot }, lit: { size: 1, halo: null, shadow: false }, box: null }
         keys.add(cellKey(a, null))
-        phased.add(cellKey(a, null, true))
         drawings.add(JSON.stringify(d.J))
       }
-      expect(keys.size).toBe(drawings.size)
       expect(drawings.size).toBeLessThan(60)
-      // Control: keyed on its pixel phase (the look-lab's rule) nearly every frame is a new cell.
-      expect(phased.size).toBeGreaterThan(2 * drawings.size)
+      // The game keys on the pixel phase as the look-lab does (one path, `cell.ts::atAnchor`): moving, nearly every
+      // frame is a new cell — the price T23.14E F5 accepted (T23.14D measured no fps from the single anchor).
+      expect(keys.size).toBeGreaterThan(2 * drawings.size)
     }
   })
 })

@@ -15,6 +15,8 @@ import { simClock } from './sim-clock.mjs'
 
 /** T23.09D: sim steps per frame in the slow-frame smg leg (a round here lives ~3). */
 const SLOW_STEPS = 4
+/** T23.14E F8: a painted round changes its square by more than this, mean per pixel (0–255), against its control frame. */
+const PAINT_MIN = 1.5
 
 export default async function ({ page, shot, log }) {
   const inv = () => page.evaluate(() => window.__game.inventory())
@@ -238,24 +240,35 @@ export default async function ({ page, shot, log }) {
   // frame long enough to hold all of them — a loaded box; the batch gate — spawned, flew and removed it before any
   // frame drew it (traced: peak 0, the core listing it on no frame). `stepsPerFrame` makes every frame that long on
   // demand. The round must still be drawn on at least one frame.
+  // T23.14E F8: **painted**, on the canvas — not the layer's record count (`ordnance().drawn` counted a round the
+  // layer held, not one it painted). `watchRounds` reads the canvas around each round on its first drawn frame against
+  // the same square on the frame after it is gone (the control frame) and a square the other side of the player (the
+  // control region); impacts held, so the blast's fade is not read as the round.
   await page.evaluate((n) => window.__game.stepsPerFrame(n), SLOW_STEPS)
   try {
-    const slowPeak = await page.evaluate(async () => {
+    const slow = await page.evaluate(async () => {
       const w = window
       const raf = () => new Promise((r) => requestAnimationFrame(r))
       for (let i = 0; i < 30; i++) await raf() // the smg's cooldown, in (long) frames
-      let peak = 0
+      w.__game.holdImpacts?.(true)
+      w.__game.watchRounds(true)
       const shot = w.__game.fire()
-      if (!shot.projectile) return { error: JSON.stringify(shot) }
-      for (let i = 0; i < 20; i++) {
-        await raf()
-        peak = Math.max(peak, w.__game.ordnance().drawn)
+      if (!shot.projectile) {
+        w.__game.watchRounds(false)
+        return { error: JSON.stringify(shot) }
       }
-      return { peak }
+      for (let i = 0; i < 20; i++) await raf()
+      const rounds = w.__game.watchRounds(false)
+      w.__game.holdImpacts?.(false)
+      return { id: shot.projectile.id, rounds }
     })
-    log(`slow frames (${SLOW_STEPS} sim steps each): ${JSON.stringify(slowPeak)} round(s) painted by the layer's draw at peak`)
-    if (slowPeak.error) throw new Error(`the smg did not fire on slow frames: ${slowPeak.error}`)
-    if (!(slowPeak.peak >= 1)) throw new Error('on slow frames the smg round was never drawn — a round shorter than a frame is invisible')
+    log(`slow frames (${SLOW_STEPS} sim steps each): ${JSON.stringify(slow)}`)
+    if (slow.error) throw new Error(`the smg did not fire on slow frames: ${slow.error}`)
+    const r = slow.rounds.find((x) => x.id === slow.id)
+    if (!r) throw new Error('on slow frames the smg round was never drawn — a round shorter than a frame is invisible')
+    if (!(r.diff > PAINT_MIN && r.farDiff < r.diff / 5)) {
+      throw new Error(`on slow frames the smg round was drawn but not painted: change ${r.diff} against its control frame (> ${PAINT_MIN}), control region ${r.farDiff}`)
+    }
   } finally {
     await page.evaluate(() => window.__game.stepsPerFrame(1))
   }

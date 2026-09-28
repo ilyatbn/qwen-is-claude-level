@@ -1,21 +1,37 @@
 /**
- * `melee-swing` — T23.09D: your own swing plays on the frame you swing, predicted — no round trip — and a use the
- * server would refuse does not swing.
+ * `melee-swing` — your own swing and throw play on the frame you use them, predicted — no round trip — and a use the
+ * server would refuse plays nothing.
  *
- * A networked match (one human, `DEV_LOADOUT`: a shovel in slot 1, a melee weapon). In one page turn — no server message can arrive
- * inside it — the fire request is sent and the local figure's action read: it is a melee swing at t 0 (T23.14D played
- * it only on the server's `melee` echo, a round trip later; before that, on the raw click, refused or not).
- * Then, still inside the shovel's cooldown, a second request: the swing is not restarted (a refused use swings nothing).
- * The server's `melee` for the first arrives (counted): the swing is not restarted by it either. Controls: with a gun
- * selected, a request swings nothing; after the cooldown, the shovel swings again.
+ * T23.14E: the prediction is the predicted sim's (`Core.predictUse`: the server's `World::fire` / `World::quick_throw`
+ * checks through `PlayerState::try_fire_slot`, on the predicted player), not T23.09D's TypeScript copy of the rules.
+ *
+ * A networked match (one human, `DEV_LOADOUT`: a shovel, a bazooka, an smg, molotovs …), a short round. Each use is
+ * sent and the local figure's action read **in one page turn** — no server message can arrive inside it:
+ * 1. the shovel: a melee swing at t 0 — the swing latency is zero frames (the server's `melee` echo, what T23.14D
+ *    swung on, is measured and reported as the round trip it would have cost);
+ * 2. again inside its cooldown: not restarted;  3. the server's `melee` arrives: not restarted by it;
+ * 4. after the cooldown: swings again;
+ * 5. the bazooka, then at once the shovel — inside the **one per-player cooldown** the bazooka started: no swing;
+ * 6. `E` (§C11 quick-throw) after that cooldown: a throw at t 0, of the molotov; again at once: not restarted;
+ * 7. the round over (`ended`): the shovel swings nothing.
+ * Control: firing the smg swings nothing.
  */
 import { startStack, freePort, enterBattle, selectWeapon, tally, sleep } from './harness.mjs'
 
+const ROUND_S = 45
 const t = tally('melee-swing')
 const stack = await startStack({
   port: await freePort(),
   label: 'melee-swing',
-  env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', DEV_START_HEALTH: '100000', WEATHER: 'off' },
+  env: {
+    FIXED_SEED: '4242',
+    ROUND_SECONDS: String(ROUND_S),
+    DEV_WARMUP_SECONDS: '2',
+    BOT_COUNT: '0',
+    DEV_LOADOUT: '1',
+    DEV_START_HEALTH: '100000',
+    WEATHER: 'off',
+  },
 })
 try {
   const { page, pageErrors } = await stack.openClient({ name: 'ana' })
@@ -29,34 +45,46 @@ try {
     const f = () => (++i >= k ? r() : requestAnimationFrame(f))
     requestAnimationFrame(f)
   }), n)
-  // The shovel's cooldown from the registry the client reads (`item_registry_json`), not a copy.
-  const cooldown = await page.evaluate(() => JSON.parse(window.__game.core.itemRegistryJson()).find((d) => d.key === 'shovel')?.cooldown)
-  if (typeof cooldown !== 'number' || !(cooldown > 0)) throw new Error(`the registry gives the shovel no cooldown (${cooldown})`)
+  // Cooldowns from the registry the client reads (`item_registry_json`), not copies.
+  const registry = await page.evaluate(() => JSON.parse(window.__game.core.itemRegistryJson()))
+  const cd = (key) => {
+    const c = registry.find((d) => d.key === key)?.cooldown
+    if (typeof c !== 'number' || !(c > 0)) throw new Error(`the registry gives ${key} no cooldown (${c})`)
+    return c
+  }
+  const slotOf = async (key) => {
+    const slots = await page.evaluate(() => window.__game.debug().slots)
+    const s = slots.find((x) => x.key === key)
+    if (!s) throw new Error(`${key} is not in the bag: ${slots.filter((x) => x.key).map((x) => x.key).join(' ')}`)
+    return s.slot
+  }
+  const use = (quick) => page.evaluate((q) => {
+    const g = window.__game
+    if (q) g.quickThrow()
+    else g.fire()
+    const d = g.debug()
+    return { action: d.localAction, lastUse: d.observed.lastUse }
+  }, quick)
 
   // Control: a gun swings nothing.
   await selectWeapon(page, 'smg')
   await frames(3)
-  const gun = await page.evaluate(() => {
-    window.__game.fire()
-    return window.__game.debug().localAction
-  })
-  if (gun === null) t.ok('control: firing the smg swings nothing')
+  const gun = await use(false)
+  if (gun.action === null) t.ok(`control: firing the smg swings nothing (predicted use ${JSON.stringify(gun.lastUse)})`)
   else t.fail(`control: the smg swung the figure: ${JSON.stringify(gun)}`)
 
   await selectWeapon(page, 'shovel')
-  await frames(3)
+  await sleep(Math.ceil(cd('smg') * 1000) + 100)
   const before = await swingsHeard()
   // 1. Predicted: the swing is on the figure in the same page turn the request was sent in.
-  const first = await page.evaluate(() => {
-    window.__game.fire()
-    return window.__game.debug().localAction
-  })
+  const sentAt = await page.evaluate(() => performance.now())
+  const first = await use(false)
   const heardYet = await swingsHeard()
-  if (first?.kind === 'melee' && first.t === 0) t.ok(`the swing starts in the turn the request is sent (${JSON.stringify(first)}; server melee heard ${heardYet - before} so far)`)
-  else t.fail(`no swing on the frame of the use: ${JSON.stringify(first)}`)
+  if (first.action?.kind === 'melee' && first.action.t === 0 && first.lastUse?.key === 'shovel') {
+    t.ok(`the swing starts in the turn the request is sent: latency 0 frames (${JSON.stringify(first)}; server melee heard ${heardYet - before} so far)`)
+  } else t.fail(`no swing on the frame of the use: ${JSON.stringify(first)}`)
   // 2. Inside the cooldown: a second request does not restart it.
   await frames(4)
-  // Read and fired in one page turn, so no frame advances the swing in between.
   const { mid, again } = await page.evaluate(() => {
     const mid = window.__game.debug().localAction
     window.__game.fire()
@@ -64,23 +92,66 @@ try {
   })
   if (mid && again && again.t === mid.t && again.t > 0) t.ok(`a use inside the cooldown swings nothing (t ${mid.t.toFixed(3)} kept)`)
   else t.fail(`a use inside the cooldown restarted the swing: ${JSON.stringify(mid)} -> ${JSON.stringify(again)}`)
-  // 3. The echo: once the server's melee is heard, the swing was not restarted by it.
-  const echoed = await page.waitForFunction((n) => {
+  // 3. The echo: once the server's melee is heard, the swing was not restarted by it. Its arrival is the round trip
+  // the swing would have waited for (T23.14D's echo-driven swing).
+  const echoAt = await page.waitForFunction((n) => {
     const d = window.__game.debug()
-    return (d.swings ?? d.observed?.swings ?? 0) > n
-  }, before, { timeout: 10_000 }).then(() => true).catch(() => false)
+    return (d.swings ?? d.observed?.swings ?? 0) > n ? performance.now() : false
+  }, before, { timeout: 10_000 }).then((h) => h.jsonValue()).catch(() => null)
   const afterEcho = await page.evaluate(() => window.__game.debug().localAction)
-  if (!echoed) t.fail('the server never sent the melee (the swing was not a real use)')
-  else if (afterEcho === null || afterEcho.t > 0) t.ok(`the server's melee arrived; the swing was not restarted by it (${JSON.stringify(afterEcho)})`)
+  if (echoAt === null) t.fail('the server never sent the melee (the swing was not a real use)')
+  else if (afterEcho === null || afterEcho.t > 0) t.ok(`the server's melee arrived ${(echoAt - sentAt).toFixed(0)} ms after the use (the round trip an echo-driven swing waits); the swing was not restarted by it (${JSON.stringify(afterEcho)})`)
   else t.fail(`the server's melee restarted the swing: ${JSON.stringify(afterEcho)}`)
-  // Control: after the cooldown, the shovel swings again.
-  await sleep(Math.ceil(cooldown * 1000) + 200)
-  const later = await page.evaluate(() => {
-    window.__game.fire()
-    return window.__game.debug().localAction
-  })
-  if (later?.kind === 'melee' && later.t === 0) t.ok('after the cooldown the shovel swings again')
+  // 4. Control: after the cooldown, the shovel swings again.
+  await sleep(Math.ceil(cd('shovel') * 1000) + 200)
+  const later = await use(false)
+  if (later.action?.kind === 'melee' && later.action.t === 0) t.ok('after the cooldown the shovel swings again')
   else t.fail(`after the cooldown the shovel did not swing: ${JSON.stringify(later)}`)
+
+  // 5. One per-player cooldown: the bazooka, then at once the shovel — refused, no swing. All in one page turn, so the
+  // shovel's use is inside the bazooka's cooldown however slow the box.
+  await sleep(Math.ceil(cd('shovel') * 1000) + 200)
+  const [bz, sh] = [await slotOf('bazooka'), await slotOf('shovel')]
+  const shared = await page.evaluate(([b, s]) => {
+    const g = window.__game
+    g.selectSlot(b)
+    g.fire()
+    const bazooka = g.debug().observed.lastUse
+    const bazookaAction = g.debug().localAction
+    g.selectSlot(s)
+    g.fire()
+    return { bazooka, bazookaAction, shovel: g.debug().observed.lastUse, action: g.debug().localAction }
+  }, [bz, sh])
+  if (shared.bazooka?.key === 'bazooka' && shared.shovel?.key === null && !(shared.action?.t === 0 && shared.action?.kind === 'melee')) {
+    t.ok(`the shovel inside the bazooka's cooldown swings nothing (bazooka ${JSON.stringify(shared.bazooka)}, shovel ${JSON.stringify(shared.shovel)}, action ${JSON.stringify(shared.action)})`)
+  } else t.fail(`the shared cooldown did not refuse the shovel: ${JSON.stringify(shared)}`)
+
+  // 6. `E`: the quick-throw animates your own figure through the same predicted path.
+  await sleep(Math.ceil(cd('bazooka') * 1000) + 200)
+  const thrown = await use(true)
+  if (thrown.action?.kind === 'throw' && thrown.action.t === 0 && thrown.lastUse?.key === 'molotov') {
+    t.ok(`E throws on the frame it is pressed (${JSON.stringify(thrown)})`)
+  } else t.fail(`E did not throw on its frame: ${JSON.stringify(thrown)}`)
+  await frames(3)
+  const { m2, e2 } = await page.evaluate(() => {
+    const m2 = window.__game.debug().localAction
+    window.__game.quickThrow()
+    return { m2, e2: window.__game.debug().localAction }
+  })
+  if (m2 && e2 && e2.t === m2.t && e2.t > 0) t.ok(`E inside the cooldown throws nothing (t ${m2.t.toFixed(3)} kept)`)
+  else t.fail(`E inside the cooldown restarted the throw: ${JSON.stringify(m2)} -> ${JSON.stringify(e2)}`)
+
+  // 7. After the bell: nothing swings.
+  const ended = await page.waitForFunction(() => window.__game.debug().phase === 'ended', null, { timeout: (ROUND_S + 30) * 1000 })
+    .then(() => true).catch(() => false)
+  if (!ended) t.fail('the round never ended')
+  else {
+    await sleep(Math.ceil(cd('molotov') * 1000) + 200)
+    await page.evaluate((s) => window.__game.selectSlot(s), sh)
+    const over = await use(false)
+    if (over.lastUse?.key === null && !(over.action?.kind === 'melee' && over.action.t === 0)) t.ok(`after the round bell the shovel swings nothing (${JSON.stringify(over)})`)
+    else t.fail(`the shovel swung after the round ended: ${JSON.stringify(over)}`)
+  }
   if (pageErrors.length) t.fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 } catch (e) {
   t.fail(`threw: ${e?.stack ?? e}`)
