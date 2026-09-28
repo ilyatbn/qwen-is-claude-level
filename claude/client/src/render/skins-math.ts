@@ -30,8 +30,7 @@ export interface WeaponSkinDef {
   /** `null` means procedural — drawn at runtime rather than packed. */
   atlas: string | null
   frame: string
-  muzzle: { x: number; y: number }
-  pivot: { x: number; y: number }
+  // T23.16: `muzzle`/`pivot` removed — read by nothing; a weapon's muzzle and grips live in `look/actors/weapons.ts`.
 }
 
 export interface SkinRegistry {

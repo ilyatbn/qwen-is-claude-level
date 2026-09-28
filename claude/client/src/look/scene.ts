@@ -236,7 +236,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -257,6 +257,16 @@ export interface ActorOpts {
   seed?: number
   eye?: string
   flap?: number
+  /**
+   * T23.16 (F6): `weapon` — a weapon alone, `actors/weapons.ts::WEAPONS[key]` drawn in its shoulder frame at (x, y)
+   * scaled by `s` (F6's sheet, a pickup, an icon). `stick` — `held` is a weapon in the hands (`weapons.js::held`,
+   * F6's 1× row) in place of `weapon`, its accents in `heldAccent`.
+   */
+  key?: string
+  /** `weapon`: where its shoulder frame's origin is, px from the actor's anchor (F6 lights it at its visual centre). */
+  origin?: [number, number]
+  held?: string
+  heldAccent?: string
   /** T23.14 figure: its pose (`actors/figure.ts::Pose`, `poses.js`'s J) and visor colour (space). */
   J?: Pose
   visor?: string

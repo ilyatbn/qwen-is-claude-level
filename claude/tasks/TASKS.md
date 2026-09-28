@@ -838,7 +838,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.14D](M23/T23.14D-what-the-character-review-found.md) — What the character review found — remote space flames, one flame length for everyone, feet that don't pop, remote swings, per-box flame gate, atlas cells reused (fps)
 - [ ] [T23.14E](M23/T23.14E-what-the-fix-review-found.md) — What the fix review found — own swing/throw from the predicted sim (no TS fire rules), E throw animates, rounds drawn in matches on slow frames, one cell anchor reverted, remote flame resets
 - [ ] [T23.15](M23/T23.15-no-themes-no-wearables.md) — No themes, no wearables — client only: the theme stamps collision and the join JSON still carries skins
-- [ ] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — **21 of 24 holdable weapons draw nothing in the hand today**; one design per weapon for hand, ground and inventory
+- [x] [T23.16](M23/T23.16-firearms-remodelled.md) — The firearms remodelled — one design per weapon for hand, ground and inventory — 2026-09-28: F6 in the look-lab (grid Level A 0.1677, each box ≤ 0.937), IoU gate 0.72 (laser_pistol/pistol 0.679), firearm pickups + tiles drawn from the models; `weapons-held`
 - [ ] [T23.17](M23/T23.17-melee-and-thrown-remodelled.md) — Melee and thrown weapons remodelled — all 23 holdables, silhouettes measured apart
 - [ ] [T23.18](M23/T23.18-effects-in-the-new-renderer.md) — Effects in the new renderer — HDR tracers, beams, blasts, fire, smoke, plumes; the simulation halves keep their coverage assertions
   - [ ] Owed by T23.18 (T23.09C F4): `explosion-shader`'s lit ring — the blast with its own effect light on is reported, not gated ("KNOWN RED" in its log while under the floor); gate it when the blast is redrawn

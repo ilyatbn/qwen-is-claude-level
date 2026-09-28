@@ -285,6 +285,57 @@ if (!bar) {
   }
 }
 
+// --- the firearms' tiles are their remodelled models (T23.16, R12) -------------
+//
+// DEV_LOADOUT carries the bazooka and the SMG. Their tiles must show the drawing the hand and the ground use
+// (`look/actors/icons.ts`: the model in ink, rim-lit by F6's moon, at `ICON_RES`), not the 16-px Kenney tiles the
+// `items` atlas packed for them until T23.16: decoded, the image is wider than tall and larger than 16 px, most of
+// what it paints is ink, and the tile draws it smoothed. The shovel above is the control — still the old pixel art
+// (T23.17), so still `pixelated`.
+{
+  const slots = await page.evaluate('window.__game.debug().slots')
+  for (const key of ['bazooka', 'smg']) {
+    const held = Array.isArray(slots) ? slots.find((x) => x.key === key) : null
+    if (!held) {
+      fail(`no slot holds a ${key} — DEV_LOADOUT issues one`)
+      continue
+    }
+    const got = await page.evaluate(async (slot) => {
+      const art = document.querySelector(`[data-slot="${slot}"] [data-art]`)
+      const m = /^url\("(data:image\/png;base64,[^"]+)"\)$/.exec(art?.style.backgroundImage ?? '')
+      if (!m) return null
+      const img = new Image()
+      img.src = m[1]
+      await img.decode()
+      const c = document.createElement('canvas')
+      c.width = img.width
+      c.height = img.height
+      const g = c.getContext('2d')
+      g.drawImage(img, 0, 0)
+      const d = g.getImageData(0, 0, c.width, c.height).data
+      let opaque = 0
+      let ink = 0
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 200) continue
+        opaque++
+        if (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2] < 20) ink++
+      }
+      return { w: img.width, h: img.height, ink: opaque ? ink / opaque : 0, rendering: art.style.imageRendering }
+    }, held.slot)
+    if (!got) {
+      fail(`the ${key}'s tile has no art`)
+      continue
+    }
+    const good = got.w > 16 && got.w > got.h * 1.4 && got.ink >= 0.3 && got.rendering === 'auto'
+    if (good) ok(`the ${key}'s tile is its model: ${got.w}×${got.h}, ${(got.ink * 100).toFixed(0)} % ink, ${got.rendering}`)
+    else fail(`the ${key}'s tile is not its remodelled icon: ${JSON.stringify(got)} (want wider than tall, > 16 px, ≥ 30 % ink, smoothed)`)
+  }
+  const shovel = Array.isArray(slots) ? slots.find((x) => x.key === 'shovel') : null
+  const rendering = shovel ? await page.evaluate((s) => document.querySelector(`[data-slot="${s}"] [data-art]`)?.style.imageRendering, shovel.slot) : null
+  if (rendering === 'pixelated') ok('control: the shovel (old art until T23.17) is still drawn pixelated')
+  else fail(`control: the shovel's tile renders ${JSON.stringify(rendering)}, not pixelated`)
+}
+
 // --- and a backpack slot cannot be selected (§C10) -----------------------
   const selBefore = (await dbg()).selectedSlot
   await page.click(`[data-slot="${TOTAL - 1}"]`)

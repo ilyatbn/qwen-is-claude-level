@@ -15,9 +15,7 @@
     "item_medkit": "pixel-platformer/Tiles/tile_0044.png",
     "item_shield": "pixel-platformer/Tiles/tile_0067.png",
     "item_flashlight": "pixel-platformer/Tiles/tile_0129.png",
-    "weapon_bazooka": "pixel-platformer/Tiles/tile_0065.png",
     "weapon_grenade": "pixel-platformer/Tiles/tile_0151.png",
-    "weapon_smg": "pixel-platformer/Tiles/tile_0066.png",
     "crate": "pixel-platformer/Tiles/tile_0026.png",
     "crate_open": "pixel-platformer/Tiles/tile_0028.png"
   },

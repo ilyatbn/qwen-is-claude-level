@@ -19,8 +19,8 @@
  */
 import { actorBoxes } from '../lib/look-compare.mjs'
 
-// T23.14: F7, the pose sheet (the stick figure's Level A, `stick-figure`).
-const SCENES = ['F1', 'F2', 'F3', 'F4', 'F5', 'F7']
+// T23.14: F7, the pose sheet (the stick figure's Level A, `stick-figure`). T23.16: F6, the arsenal (`weapons-held`).
+const SCENES = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7']
 const STUB_REASON = (b) => `the world renderer is "${b}", not three.js — the stub draws nothing`
 
 /** The first thing wrong with scene `id`'s handle `h`, or `null`. */

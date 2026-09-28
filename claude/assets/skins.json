@@ -250,46 +250,22 @@
       "id": 0,
       "weaponKey": "bazooka",
       "atlas": null,
-      "frame": "bazooka_default",
-      "muzzle": {
-        "x": 26,
-        "y": -1
-      },
-      "pivot": {
-        "x": 0.18,
-        "y": 0.5
-      }
+      "frame": "bazooka_default"
     },
     {
       "id": 1,
       "weaponKey": "grenade",
       "atlas": null,
-      "frame": "grenade_default",
-      "muzzle": {
-        "x": 12,
-        "y": -2
-      },
-      "pivot": {
-        "x": 0.3,
-        "y": 0.5
-      }
+      "frame": "grenade_default"
     },
     {
       "id": 2,
       "weaponKey": "smg",
       "atlas": null,
-      "frame": "smg_default",
-      "muzzle": {
-        "x": 22,
-        "y": -1
-      },
-      "pivot": {
-        "x": 0.22,
-        "y": 0.5
-      }
+      "frame": "smg_default"
     }
   ],
-  "_weapons_comment": "atlas null means procedural: these are drawn by client/src/render/weaponTextures.ts rather than packed, because Kenney's packs carry no side-view bazooka, grenade or SMG at a usable size, and docs/51 \u00a75's procedural fallback is the shipping path for anything the packs do not cover. muzzle and pivot are still authoritative and still independent of the server's MUZZLE_OFFSET (docs/50 \u00a74).",
+  "_weapons_comment": "T23.16: a weapon's shape, grips and muzzle have one home, client/src/look/actors/weapons.ts (F6's models, drawn by code in the hand, on the ground and in the bag); the muzzle and pivot these entries carried were read by nothing and are gone. The entries remain only for the skins screen's weapon list, which T23.15 retires with the screen (and client/src/render/weaponTextures.ts, its last reader).",
   "tombstones": [
     {
       "id": 0,

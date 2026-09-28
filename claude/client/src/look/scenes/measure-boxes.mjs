@@ -45,7 +45,7 @@ export function frame(o) { void frame0; o.draw2d(globalThis.__scratch().g) }
 `)
 patch('e_style.js', 'export function smoke(', 'function smoke0(')
 writeFileSync(join(tmp, 'e_style.js'), readFileSync(join(tmp, 'e_style.js'), 'utf8') + `
-export function smoke(g, ...a) { globalThis.__measure(m => smoke0(m, ...a)) }
+export function smoke(g, ...a) { if (globalThis.__litOnly) return smoke0(g, ...a); globalThis.__measure(m => smoke0(m, ...a)) }
 `)
 writeFileSync(join(tmp, 'measure.html'), `<!doctype html><html><body>
 <script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
@@ -61,6 +61,8 @@ globalThis.__measure = draw => {
   __boxes.push(x1 < 0 ? null : [x0, y0, x1 + 1, y1 + 1])
 }
 const v = new URLSearchParams(location.search).get('v')
+// T23.16: F6's effects are T23.18's — only its lit() actors are measured (\`dump-mockup.mjs\`'s litOnly).
+globalThis.__litOnly = v === 'F6'
 import('./variant_' + v + '.js').then(m => m.default()).then(() => { window.__done = true }, e => { window.__err = String(e.stack || e); window.__done = true })
 </script></body></html>`)
 
@@ -75,7 +77,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r))
 const browser = await chromium.launch({ headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] })
 const out = {}
 try {
-  for (const id of ['F1', 'F2', 'F3', 'F4', 'F5', 'F7']) {
+  for (const id of ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7']) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
     page.on('pageerror', e => console.log(`[${id}] PAGEERROR`, e.message))
     await page.goto(`http://127.0.0.1:${server.address().port}/measure.html?v=${id}`)

@@ -60,7 +60,7 @@
         "h": 18
       }
     },
-    "weapon_bazooka": {
+    "weapon_grenade": {
       "frame": {
         "x": 60,
         "y": 0,
@@ -80,7 +80,7 @@
         "h": 18
       }
     },
-    "weapon_grenade": {
+    "crate": {
       "frame": {
         "x": 80,
         "y": 0,
@@ -100,49 +100,9 @@
         "h": 18
       }
     },
-    "weapon_smg": {
-      "frame": {
-        "x": 100,
-        "y": 0,
-        "w": 18,
-        "h": 18
-      },
-      "rotated": false,
-      "trimmed": false,
-      "spriteSourceSize": {
-        "x": 0,
-        "y": 0,
-        "w": 18,
-        "h": 18
-      },
-      "sourceSize": {
-        "w": 18,
-        "h": 18
-      }
-    },
-    "crate": {
-      "frame": {
-        "x": 120,
-        "y": 0,
-        "w": 18,
-        "h": 18
-      },
-      "rotated": false,
-      "trimmed": false,
-      "spriteSourceSize": {
-        "x": 0,
-        "y": 0,
-        "w": 18,
-        "h": 18
-      },
-      "sourceSize": {
-        "w": 18,
-        "h": 18
-      }
-    },
     "crate_open": {
       "frame": {
-        "x": 140,
+        "x": 100,
         "y": 0,
         "w": 18,
         "h": 18
@@ -167,7 +127,7 @@
     "image": "items.png",
     "format": "RGBA8888",
     "size": {
-      "w": 256,
+      "w": 128,
       "h": 32
     },
     "scale": "1"

@@ -68,10 +68,19 @@ const EXPECTED: Record<string, Expected & { file: string }> = {
     labels: 24,
     file: 'variant_F7.js',
   },
+  // T23.16: F6, the arsenal — its lit() actors only (its effects are T23.18's): the 21 weapons of
+  // `weapons.js::WEAPON_ORDER` alone, the platform gun's turret, then the 1× row — 21 figures holding them and the
+  // turret again. Labels: 22 names + the meteor line + '1× game scale' + the caption = 25.
+  F6: {
+    actors: { weapon: 21, turret: 2, stick: 21 },
+    fx: {},
+    labels: 25,
+    file: 'variant_F6.js',
+  },
 }
 
 describe('the ported reference scenes', () => {
-  it('ports exactly F1–F5 and F7', () => {
+  it('ports exactly F1–F7', () => {
     expect(Object.keys(SCENES).sort()).toEqual(Object.keys(EXPECTED).sort())
   })
 
@@ -86,14 +95,17 @@ describe('the ported reference scenes', () => {
       it('has as many lights as the mockup’s source declares', () => {
         // Every `L(` call in the file (the helper's definition, `const L = (`, has a space).
         // F7's run() names its leg helper L too (`L(f)`, twice): its light calls are the ones with a number first.
-        const declared = (src(want.file).match(id === 'F7' ? /\bL\(\d/g : /\bL\(/g) ?? []).length
+        // F6 calls L once per weapon in a loop over WEAPON_ORDER + the platform gun (two call sites, one per branch).
+        const order = (src('weapons.js').match(/WEAPON_ORDER = \[([^\]]*)\]/)?.[1] ?? '').split(',').length
+        const declared = id === 'F6' ? order + 1 : (src(want.file).match(id === 'F7' ? /\bL\(\d/g : /\bL\(/g) ?? []).length
         expect(s.look.lights.length).toBe(declared)
         expect(declared).toBeGreaterThan(0)
       })
       it('decodes to a 1280×720 mask with rock', () => {
         const m = decodeMask(s.mask)
         expect([m.w, m.h]).toEqual([1280, 720])
-        expect(m.solid.reduce((a, b) => a + b, 0)).toBeGreaterThan(1280 * 100)
+        // F6's is a strip of flat ground 28 rows deep (`variant_F6.js`: ground at 692); every other map has ≥ 100 rows' worth.
+        expect(m.solid.reduce((a, b) => a + b, 0)).toBeGreaterThan(1280 * (id === 'F6' ? 20 : 100))
       })
       it('stands its standing figures on the mask they came with', () => {
         // The mockup placed them with `groundAt`: rock under the feet, air above them.
@@ -101,8 +113,10 @@ describe('the ported reference scenes', () => {
         const standing = s.actors.filter(a => (a.kind === 'stick' || a.kind === 'figure') && !a.opts.jet && !a.opts.rot && a.lit?.shadow)
         expect(standing.length).toBeGreaterThan(0)
         for (const a of standing) {
-          expect(m.solid[a.y * m.w + a.x], `${id} stick at ${a.x},${a.y}`).toBe(1)
-          expect(m.solid[(a.y - 1) * m.w + a.x], `${id} stick at ${a.x},${a.y}`).toBe(0)
+          // F6 spaces its row by W / 22.5, so its figures stand at fractional x: the column `groundAt` rounds to.
+          const x = Math.round(a.x)
+          expect(m.solid[a.y * m.w + x], `${id} stick at ${a.x},${a.y}`).toBe(1)
+          expect(m.solid[(a.y - 1) * m.w + x], `${id} stick at ${a.x},${a.y}`).toBe(0)
         }
       })
     })

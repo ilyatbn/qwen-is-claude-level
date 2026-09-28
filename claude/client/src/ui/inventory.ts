@@ -10,6 +10,7 @@
  * a state the server never had for as long as the round trip takes.
  */
 
+import { iconWeapon } from '../look/actors/icons'
 import {
   backpackGrid,
   isDragWorthSending,
@@ -286,6 +287,9 @@ export class InventoryPanel {
       const url = this.cachedArtUrl(slot)
       const art = this.arts[i]!
       art.style.backgroundImage = url ? `url("${url}")` : ''
+      // T23.16: a remodelled weapon's icon is a drawing at tile size (`look/actors/icons.ts`), smoothed; the 16-px
+      // pixel art the rest of the bag still shows stays pixelated.
+      art.style.imageRendering = url && slot?.sprite && iconWeapon(slot.sprite) ? 'auto' : 'pixelated'
       art.dataset['art'] = url ? '1' : '0'
       // The picture says which item it is, so the text is only the count. With
       // no art the key comes back — that is the fallback, not a second style.

@@ -11,6 +11,7 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
+import { ICON_RES, iconWeapon } from '../look/actors/icons'
 import { ensureItemTextures } from './itemTextures'
 import {
   beaconPulse,
@@ -123,13 +124,17 @@ export class ItemLayer {
    * check comparing this against the server's item list is comparing two ends
    * that were arrived at independently.
    */
-  get drawn(): Array<{ id: number; x: number; y: number; source: string; grounded: boolean }> {
+  get drawn(): Array<{ id: number; x: number; y: number; source: string; grounded: boolean; art: string | null; w: number; h: number }> {
     return [...this.entries.entries()].map(([id, e]) => ({
       id,
       x: e.sprite.x,
       y: e.sprite.y,
       source: e.item.source,
       grounded: e.item.grounded,
+      // T23.16: what it is drawn with (the texture, or the atlas frame) and how big, world px — read off the object.
+      art: e.sprite instanceof Phaser.GameObjects.Image ? (e.sprite.frame.name === '__BASE' ? e.sprite.texture.key : e.sprite.frame.name) : null,
+      w: e.sprite.displayWidth,
+      h: e.sprite.displayHeight,
     }))
   }
 
@@ -266,6 +271,8 @@ export class ItemLayer {
       sprite = this.scene.add.image(item.x, item.y, ATLAS, art.frame).setOrigin(0.5, 0.5)
     } else if (art?.kind === 'texture') {
       sprite = this.scene.add.image(item.x, item.y, art.key).setOrigin(0.5, 0.5)
+      // T23.16: a remodelled weapon's icon is drawn at ICON_RES texture px per world px (the tile shows it whole).
+      if (iconWeapon(art.key)) sprite.setScale(1 / ICON_RES)
     } else {
       // docs/50 §8: the game starts with no art, and every fallback logs once.
       const key = `item:${item.item ?? 'unknown'}`

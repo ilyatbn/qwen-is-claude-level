@@ -4,8 +4,15 @@
  * y down), so the same drawing is the held weapon (`figure.ts`) and, scaled up, its icon. `grips` are where the two
  * hands hold it, `muzzle` where a shot leaves, `cx` its visual centre.
  *
- * T23.16/T23.17 remodel the weapons against F6; this is the set F4/F7 draw. The item registry's keys are these
- * keys (`items/registry.rs`); `platform_gun` and the internal sub-munitions have none, and are held as nothing.
+ * **These are F6's models** (`variant_F6.js` draws the arsenal from this same table): T23.16 put F6 in the look-lab and
+ * holds the firearms to it at Level A (`weapons-held`), and draws the pickups and inventory icons from these same
+ * functions (`icons.ts`, R12). The item registry's keys are these keys (`items/registry.rs`, counted both ends by
+ * `weapons.test.ts`); `platform_gun` is the turret prop and the sub-munitions are never held — neither has a model.
+ *
+ * **Glow parts** (the laser cells, a molotov's rag, a mine's lamp) are the mockup's: drawn in the accent colour in the
+ * ink pass only — a rim or fill pass passes an `rgba(` colour and `accentOK` drops them, so the cell's silhouette
+ * masks never hold them and the rim never tints them (T23.16: the "B channel" the task named does not exist; the
+ * cell has R ink / G accent strokes, `cell.ts`). A shot's light is an effect light at the muzzle (T23.09).
  */
 import { INK, glow, type G } from './draw'
 
@@ -94,4 +101,63 @@ export const WEAPONS: Record<string, WeaponDef> = {
   airburst: { grips: [[8, -2]], muzzle: [9.5, -4], cx: 9.8, thrown: true, draw: (g) => { rr(g, 8, -5.2, 3.8, 4.4, 0.8); poly(g, [[8.4, -5.2], [9.9, -8.2], [11.4, -5.2]]); poly(g, [[8, -1], [6.6, 0.6], [8, 0.2]]); poly(g, [[11.8, -1], [13.2, 0.6], [11.8, 0.2]]) } },
   mine: { grips: [[8, -1]], muzzle: [9.5, -2.5], cx: 9.8, thrown: true, draw: (g, a) => {
     rr(g, 6.5, -3, 6.6, 2.4, 1.1); for (const x of [7.6, 9.8, 12]) ln(g, [x, -3], [x, -4.4], 0.6); if (a !== undefined && !String(a).startsWith('rgba(')) { glow(g, 9.8, -3.4, 3, '255,40,30', 0.9); dot(g, 9.8, -3.3, 0.6, '#ff5040') } } },
+}
+
+/**
+ * T23.16: the registry keys by class (`items/registry.rs`, `weapons/defs.rs`): the **firearms** T23.16 remodels and
+ * the **melee and thrown** T23.17 does. Every key has a model above; `weapons-held` and `weapons.test.ts` count both
+ * ends. `platform_gun` (26) is the turret (`draw.ts::turret`, a prop since T23.19A) and is never held; `meteor` (3) is a
+ * world event F6 skips ("never held"); the sub-munitions (4 meteor_fragment, 22 airburst_pellet, 23 toxic_drop,
+ * 25 flame) are never held and have no model.
+ */
+export const FIREARMS = ['bazooka', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver', 'deagle', 'machinegun', 'flamethrower'] as const
+export const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel'] as const
+
+/**
+ * `weapons.js::held(key, accent)` — the weapon and the two arms to its grips, drawn in the stick's shoulder frame
+ * (`draw.ts::stick`'s `weapon` drawing, F6's 1× row). Null for a key with no model.
+ */
+export function held(key: string, accent?: string): ((g: G) => void) | null {
+  const W = WEAPONS[key]
+  if (!W) return null
+  return (g) => {
+    W.draw(g, accent)
+    const arm = (h: P, bend: number): void => {
+      const mx = h[0] * 0.45
+      const my = h[1] * 0.45 + bend
+      g.strokeStyle = INK
+      g.lineWidth = 1.8
+      g.lineCap = 'round'
+      g.lineJoin = 'round'
+      g.beginPath()
+      g.moveTo(0, 0)
+      g.lineTo(mx, my)
+      g.lineTo(...h)
+      g.stroke()
+    }
+    arm(W.grips[0]!, 2.8)
+    arm(W.grips[1] ?? [4, 5], W.grips[1] ? 2.2 : 1)
+  }
+}
+
+/** F6's lambda: weapon `key` alone, its shoulder frame's origin at (x, y), scaled by `s` (`variant_F6.js`). */
+export function drawWeapon(g: G, key: string, x: number, y: number, s: number, accent?: string): void {
+  const W = WEAPONS[key]
+  if (!W) return
+  g.save()
+  g.translate(x, y)
+  g.scale(s, s)
+  W.draw(g, accent)
+  g.restore()
+}
+
+/**
+ * A box (shoulder-frame units) no weapon's drawing leaves: back to the bazooka's rear flare (−10), up to the
+ * molotov's glow (−9.6 − 4.5), down to the flamethrower's tank (4 + 2.6); forward, `muzzle + 3` or 15 (a thrown
+ * weapon's glow and fins reach past its muzzle). A bound for the atlas cell, not a measurement — icons are measured.
+ */
+export function weaponReach(key: string): [number, number, number, number] {
+  const W = WEAPONS[key]
+  const fwd = Math.max((W?.muzzle[0] ?? 12) + 3, 15)
+  return [-11, -14.5, fwd, 7]
 }

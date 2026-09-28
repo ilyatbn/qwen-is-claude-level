@@ -151,6 +151,9 @@ export const CHECKS = [
   // T23.14D F12: and §3, identity — two seats side by side wear their own scarf colours on screen (control: two of
   // seat 0 read as seat 0). This is the scarf check `skins-ingame`'s retirement note points at.
   { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.16: the firearms are F6's models — Level A on F6's weapon boxes (must fail: knob=actor-rim-off), no two alike
+  // at game scale (IoU), each changes the hand when selected (legs the control), and the pickup draws the same model.
+  { name: 'weapons-held', file: 'scripts/checks/weapons-held.mjs', url: '?sandbox=1&seed=4242' },
   // T23.09D: your own swing is predicted on the frame of the use (no round trip), a use inside the cooldown or with a
   // gun swings nothing, and the server's echo does not restart it.
   { name: 'melee-swing', file: 'scripts/checks/melee-swing.mjs', standalone: true },

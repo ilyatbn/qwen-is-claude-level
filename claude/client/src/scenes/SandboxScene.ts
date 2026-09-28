@@ -1062,11 +1062,14 @@ export class SandboxScene extends Phaser.Scene {
        * uses. Returns what the layer drew, read back.
        */
       stagePickup(x: number | null, y = 0, key = 'bazooka') {
-        const defs = JSON.parse(self.core.itemRegistryJson()) as { id: number; key: string }[]
+        const json = self.core.itemRegistryJson()
+        const defs = JSON.parse(json) as { id: number; key: string }[]
         const item = defs.find((d) => d.key === key)?.id ?? null
+        // T23.16: the layer resolves art through the registry, as the match's does (it drew a fallback box without it).
+        self.world.items.setRegistry(json)
         self.staged = x === null ? [] : [{ id: 1, item, count: 1, x, y, source: 'Periodic', grounded: true }]
         self.world.items.update(0, self.staged, { x: x ?? 0, y })
-        return { staged: self.staged.length, drawn: self.world.items.count }
+        return { staged: self.staged.length, drawn: self.world.items.count, items: self.world.items.drawn }
       },
       /** T23.19A: hide or show the local figure (both paths: the world renderer's cast and the Phaser stopgap). */
       showPlayer(on: boolean) {
@@ -1447,6 +1450,21 @@ export class SandboxScene extends Phaser.Scene {
         self.core.addBattery(0, C().BATTERY_MAX)
         const inv = self.core.inventory(0)
         return inv?.slots.findIndex((s) => s && s.key === 'laser_pistol') ?? -1
+      },
+      /**
+       * T23.16, e2e only: registry item `key` in the bag, by key (`weapons-held` holds each weapon in turn through
+       * the same inventory and selection the HUD uses), `count` or a full stack. Returns its slot, -1 if the bag
+       * refused it or the key is unknown.
+       */
+      giveItem(key: string, count?: number) {
+        const defs = JSON.parse(self.core.itemRegistryJson()) as { id: number; key: string; max_stack: number }[]
+        const def = defs.find((d) => d.key === key)
+        if (!def) return -1
+        // A weapon's stack is its ammo: a full one by default, so a check's shot does not empty the slot.
+        self.core.give(0, def.id, count ?? def.max_stack)
+        self.core.addBattery(0, C().BATTERY_MAX)
+        self.refreshHud()
+        return self.core.inventory(0)?.slots.findIndex((s) => s && s.key === key) ?? -1
       },
       giveBoots() {
         self.core.give(0, 26 /* IRONMAN_BOOTS */, 1)

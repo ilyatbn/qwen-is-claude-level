@@ -55,13 +55,32 @@ export function frame(o) {
 export function lit(g, lights, moon, x, y, draw, opts = {}) {
   rec.moon ??= moon
   rec.lit = { size: opts.size ?? 1, halo: opts.halo ?? null, shadow: opts.shadow ?? true }
+  rec.litAt = [x, y]
   draw(g, 0, 0, null) // the ink pass: the actor exactly as it is, no rim offset
   rec.lit = null
 }
 function fakeG() {
   const store = {}
+  // T23.16: F6 draws each weapon alone under a translate + scale (\`gg.translate(x0, y0); gg.scale(K, K); Wd.draw(gg, …)\`),
+  // so the transform is tracked and a weapon's draw (weapons.js, patched below) records where it landed.
+  const st = { tx: 0, ty: 0, s: 1, stack: [] }
+  const ops = {
+    fillText: (t) => (text, x, y) => rec.labels.push({ text, x, y, font: t.font, fill: t.fillStyle, align: t.textAlign }),
+    save: () => () => st.stack.push([st.tx, st.ty, st.s]),
+    restore: () => () => { const p = st.stack.pop(); if (p) [st.tx, st.ty, st.s] = p },
+    translate: () => (x, y) => { st.tx += x * st.s; st.ty += y * st.s },
+    scale: () => (a, b) => { if (a !== b) throw new Error('fakeG: anisotropic scale'); st.s *= a },
+    // Only inside lit(): a weapon drawn bare on the page is a prop or an effect (F7's thrown grenade and dropped smg,
+    // which posesonly.js leaves out), not an actor — as before weapons were recorded.
+    // The actor stands where lit() was called (its light is probed there); the weapon's origin is an offset from it.
+    __weapon: () => (key, accent) => {
+      if (!rec.lit) return
+      const [x, y] = rec.litAt
+      rec.actors.push({ kind: 'weapon', x, y, opts: { key, s: st.s, accent, origin: [st.tx - x, st.ty - y] }, lit: rec.lit })
+    },
+  }
   return new Proxy(store, {
-    get: (t, k) => (k === 'fillText' ? (text, x, y) => rec.labels.push({ text, x, y, font: t.font, fill: t.fillStyle, align: t.textAlign }) : k in t ? t[k] : () => {}),
+    get: (t, k) => (k in ops ? ops[k](t) : k in t ? t[k] : () => {}),
     set: (t, k, v) => { t[k] = v; return true },
   })
 }
@@ -69,6 +88,8 @@ function fakeG() {
 writeFileSync(join(tmp, 'e_style.js'), `import { rec } from './rec.js'
 const put = (kind, x, y, o = {}) => {
   const opts = { ...o }
+  // T23.16: F6's 1× row holds \`weapons.js::held(k, accent)\` (patched below to say which): recorded as \`held\`.
+  if (opts.weapon && typeof opts.weapon === 'object') { opts.held = opts.weapon.held; opts.heldAccent = opts.weapon.accent; delete opts.weapon }
   if (typeof opts.flame === 'function') { rec.glows = []; opts.flame(null); opts.flame = rec.glows; rec.glows = null }
   rec.actors.push({ kind, x, y, opts, lit: rec.lit })
 }
@@ -84,6 +105,15 @@ export const bird = (g, x, y, o) => put('bird', x, y, o)
 export const rocket = (g, x, y, ang, o = {}) => put('rocket', x, y, { ang, ...o })
 export const smoke = (g, pts, o = {}) => rec.actors.push({ kind: 'smoke', x: pts[0][0], y: pts[0][1], opts: { pts, ...o }, lit: null })
 export const hudE = o => { rec.hud = o }
+// T23.16: F6's effects (tracers, beams) — T23.18's, not the lab's; F6's scene keeps only its lit() actors (below).
+export const tracer = () => {}
+export const beam = () => {}
+export const INK = '#16110d'
+`)
+// T23.16: F6's weapons — each draw records itself through fakeG's transform; held() says which weapon a stick holds.
+patch('weapons.js', 'export function held(key, accent) {', 'export function held(key, accent) { return { held: key, accent }\n')
+writeFileSync(join(tmp, 'weapons.js'), readFileSync(join(tmp, 'weapons.js'), 'utf8') + `
+for (const [k, d] of Object.entries(WEAPONS)) d.draw = (g, accent) => g.__weapon(k, accent)
 `)
 // T23.14: F7's figures (poses.js::figure), recorded like the rest of the cast; its pass flag rim is the renderer's.
 writeFileSync(join(tmp, 'poses.js'), `import { rec } from './rec.js'
@@ -103,6 +133,8 @@ const SCENES = [
   { id: 'F4', file: 'variant_F4.js', map: 'cast', title: 'cast sheet' },
   { id: 'F5', file: 'variant_F5.js', map: 'arenaE', title: 'moonlit day' },
   { id: 'F7', file: 'variant_F7.js', map: 'poses', title: 'pose sheet' },
+  // T23.16: F6, the arsenal — its lit() actors only (the weapons, the turret, the 1× row): its effects are T23.18's.
+  { id: 'F6', file: 'variant_F6.js', map: 'arsenal', title: 'weapon sheet', litOnly: true },
 ]
 const masks = {}
 // T23.02: each actor's screen box, measured from the mockup's drawing by `measure-boxes.mjs`
@@ -117,6 +149,7 @@ for (const s of SCENES) {
   const mask = { w: 1280, h: 720, solid: runs(world.solid), back: runs(world.back) }
   if (masks[s.map] && JSON.stringify(masks[s.map]) !== JSON.stringify(mask)) throw new Error(`${s.id}: map ${s.map} differs`)
   masks[s.map] = mask
+  if (s.litOnly) rec.actors = rec.actors.filter(a => a.lit)
   const measured = boxes[s.id]
   if (!measured || measured.length !== rec.actors.length) {
     throw new Error(`${s.id}: actor-boxes.json has ${measured?.length} boxes for ${rec.actors.length} actors — re-run measure-boxes.mjs`)

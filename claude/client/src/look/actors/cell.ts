@@ -33,7 +33,7 @@
 import type { Actor, ActorOpts, Box } from '../scene'
 import * as D from './draw'
 import * as F from './figure'
-import { WEAPONS } from './weapons'
+import { WEAPONS, drawWeapon, held, weaponReach } from './weapons'
 
 /** `f_kit.js::DARK_INK` — the ink pass's colour. */
 export const DARK_INK = '#07060a'
@@ -72,8 +72,13 @@ function rimOpts(a: Actor, accent: string): ActorOpts {
     case 'stick': {
       const r: ActorOpts = { ...o, accent, marker: false }
       delete r.flame
+      // T23.16: F6's row draws `held(k, rc ?? '#e8482c')` — the rim colour for the weapon's accents too.
+      if (o.held) r.heldAccent = accent
       return r
     }
+    case 'weapon':
+      // `variant_F6.js`: `Wd.draw(gg, rc ?? '#e8482c')` — a pass's colour drops the accents (`weapons.ts::accentOK`).
+      return { ...o, accent }
     case 'turret':
       return { ...o, muzzle: false }
     case 'gate':
@@ -89,8 +94,13 @@ function rimOpts(a: Actor, accent: string): ActorOpts {
 /** One `e_style.js` call for `a` with `o`, drawn at (x, y). */
 function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
   switch (a.kind) {
-    case 'stick':
-      D.stick(g, x, y, { ...o, flame: o.flame ?? null })
+    case 'stick': {
+      const w = o.held ? held(o.held, o.heldAccent) : null
+      D.stick(g, x, y, { ...o, ...(w ? { weapon: w } : {}), flame: o.flame ?? null })
+      return
+    }
+    case 'weapon':
+      if (o.key) drawWeapon(g, o.key, x + (o.origin?.[0] ?? 0), y + (o.origin?.[1] ?? 0), o.s ?? 1, o.accent)
       return
     case 'turret':
       D.turret(g, x, y, o)
@@ -161,6 +171,14 @@ export function estimateBox(a: Actor): Box {
     const cy = a.y - 13 * s * Math.cos(rot)
     b = [cx - R, cy - R, cx + R, cy + R]
   }
+  if (a.kind === 'weapon') {
+    // T23.16: a weapon alone, from its shoulder-frame origin (`weapons.ts::weaponReach`), plus the rim passes' reach.
+    const [x0, y0, x1, y1] = weaponReach(a.opts.key ?? '')
+    const m = 2 * 1.15 * size + 2
+    const ox = a.x + (a.opts.origin?.[0] ?? 0)
+    const oy = a.y + (a.opts.origin?.[1] ?? 0)
+    b = [ox + x0 * s - m, oy + y0 * s - m, ox + x1 * s + m, oy + y1 * s + m]
+  }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size
     const r = HALO_R * size
@@ -188,8 +206,11 @@ export const CELL_ANCHOR = 0
 export function atAnchor(a: Actor, pixelPhase = false): Actor {
   const at = (v: number): number => {
     if (!pixelPhase) return CELL_ANCHOR
-    const w = Math.round(v)
-    return CELL_ANCHOR + w - Math.floor(w / CELL_ALIGN) * CELL_ALIGN
+    // T23.16: the sub-pixel fraction stays in the drawing and the quad moves by whole `CELL_ALIGN`s. F6 places its
+    // weapons and its 1× row at fractional x (`cw / 2 − 20 − cx·K`, `W / 22.5`): rounding here and letting the layer
+    // sample the fraction bilinearly blurred every edge (F6 boxes 0.3–2.2 mean ΔE; the canvas draws them at the
+    // fraction). An actor at a whole pixel (F1–F5, F7) is drawn exactly as before.
+    return CELL_ANCHOR + v - Math.floor(v / CELL_ALIGN) * CELL_ALIGN
   }
   const dx = at(a.x) - a.x
   const dy = at(a.y) - a.y

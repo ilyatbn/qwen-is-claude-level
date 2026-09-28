@@ -2,6 +2,7 @@
  * T23.01: the look-lab's hand-over — the description built from a ported scene, and what a
  * renderer receives of it, counted at both ends.
  */
+import { WEAPONS } from './actors/weapons'
 import { describe, expect, it } from 'vitest'
 import { actorBoxes, decodeMask, describeScene } from './scene'
 import { SCENES } from './scenes'
@@ -58,7 +59,14 @@ describe('actor boxes (T23.02)', () => {
         // T23.14: F7's figures stand on their feet line, and an airborne pose (jump, fall) tucks its feet above it —
         // the anchor is then under the box, by less than a leg (TH + SH = 13.8 figure units at F7's 3.45).
         const below = a.kind === 'figure' ? 13.8 * 3.45 : 0
-        expect(x0 <= a.x && a.x <= x1 && y0 <= a.y && a.y <= y1 + below, `${id} ${a.kind} at ${a.x},${a.y} box ${a.box}`).toBe(true)
+        // T23.16: a weapon alone is drawn from its shoulder frame's origin, which a one-handed or thrown weapon's
+        // drawing does not reach (the grenade sits 8–13 units out): the point checked is the visual centre `cx`
+        // along from the origin, at its muzzle's height (a thrown weapon is held above the hand line).
+        const W = a.kind === 'weapon' ? WEAPONS[a.opts.key ?? ''] : undefined
+        const [ox, oy] = [a.x + (a.opts.origin?.[0] ?? 0), a.y + (a.opts.origin?.[1] ?? 0)]
+        const ax = W ? ox + W.cx * (a.opts.s ?? 1) : a.x
+        const ay = W ? oy + W.muzzle[1] * (a.opts.s ?? 1) : a.y
+        expect(x0 <= ax && ax <= x1 && y0 <= ay && ay <= y1 + below, `${id} ${a.kind} at ${ax},${ay} box ${a.box}`).toBe(true)
         expect(x1 > x0 && y1 > y0).toBe(true)
       }
     })

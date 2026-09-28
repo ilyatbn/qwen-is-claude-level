@@ -17,6 +17,7 @@
  */
 
 import Phaser from 'phaser'
+import { ICON_RES, ICON_SPRITES, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
 
 type Ctx = CanvasRenderingContext2D
 const S = 16
@@ -33,51 +34,8 @@ const ART: Record<string, (c: Ctx) => void> = {
     c.fillRect(4, 9, 8, 3) // charge bar
   },
 
-  // --- ballistic: silhouettes differ by barrel length and grip --------------
-  weapon_pistol: (c) => {
-    c.fillStyle = '#3a424e'
-    c.fillRect(3, 5, 8, 3) // short slide
-    c.fillRect(4, 8, 3, 5) // grip
-  },
-  weapon_revolver: (c) => {
-    c.fillStyle = '#4a525e'
-    c.fillRect(3, 5, 9, 3)
-    c.fillRect(4, 8, 3, 5)
-    c.fillStyle = '#8a939e'
-    c.beginPath() // the cylinder is the tell
-    c.arc(7, 7, 2.6, 0, Math.PI * 2)
-    c.fill()
-  },
-  weapon_deagle: (c) => {
-    c.fillStyle = '#c8a24a' // heavier, and longer than a pistol
-    c.fillRect(2, 4, 12, 4)
-    c.fillStyle = '#5a4a24'
-    c.fillRect(4, 8, 3, 6)
-  },
-  weapon_machinegun: (c) => {
-    c.fillStyle = '#333a44'
-    c.fillRect(1, 6, 13, 3) // long barrel
-    c.fillRect(5, 9, 3, 4)
-    c.fillStyle = '#6a7382'
-    c.fillRect(8, 3, 4, 3) // box magazine on top
-  },
+  // T23.16: the firearms' icons are their held drawings (`look/actors/icons.ts`), drawn below — not painted here.
 
-  // --- energy: rounded, emissive, unmistakably not ballistic ----------------
-  weapon_laser_pistol: (c) => {
-    c.fillStyle = '#2a3a52'
-    c.fillRect(3, 5, 8, 4)
-    c.fillRect(4, 9, 3, 4)
-    c.fillStyle = '#57d6ff'
-    c.fillRect(10, 6, 4, 2) // emitter
-  },
-  weapon_laser_smg: (c) => {
-    c.fillStyle = '#2a3a52'
-    c.fillRect(2, 6, 11, 3)
-    c.fillRect(5, 9, 3, 4)
-    c.fillStyle = '#57d6ff'
-    c.fillRect(12, 6, 3, 3)
-    c.fillRect(4, 4, 5, 2) // coil
-  },
 
   // --- melee ----------------------------------------------------------------
   //
@@ -152,14 +110,6 @@ const ART: Record<string, (c: Ctx) => void> = {
   },
 
   // --- the rest -------------------------------------------------------------
-  weapon_flamethrower: (c) => {
-    c.fillStyle = '#4a3a2a'
-    c.fillRect(2, 5, 9, 4)
-    c.fillStyle = '#8a4a2a'
-    c.fillRect(1, 3, 4, 8) // tank
-    c.fillStyle = '#ff9a3a'
-    c.fillRect(11, 6, 4, 2) // nozzle flame
-  },
   weapon_mine: (c) => {
     c.fillStyle = '#333a44'
     c.beginPath() // squat dome, unlike any grenade
@@ -272,9 +222,56 @@ const ART: Record<string, (c: Ctx) => void> = {
   },
 }
 
-/** Sprite keys this module can draw. The check asserts against the registry. */
+/** Sprite keys this module can draw — the painters and the remodelled weapons' icons. The check asserts against the registry. */
 export function proceduralItemKeys(): string[] {
-  return Object.keys(ART)
+  return [...Object.keys(ART), ...Object.keys(ICON_SPRITES)]
+}
+
+/**
+ * T23.16 (R12): a remodelled weapon's icon — its held drawing, lit by F6's moon (`icons.ts::litWeapon`), at the
+ * pickup's world size × `ICON_RES`. Measured, then drawn: the drawing is laid down once at `PICKUP_S` on a scratch
+ * canvas to find its extent (every weapon's differs — the whip is 36 units, a pistol 6), then fitted to the box.
+ */
+function weaponIcon(textures: Phaser.Textures.TextureManager, sprite: string, key: string): void {
+  const R = ICON_RES
+  const size = R
+  const scratch = document.createElement('canvas')
+  const SW = 256
+  const SH = 160
+  scratch.width = SW
+  scratch.height = SH
+  const sg = scratch.getContext('2d')
+  if (!sg) return
+  const s0 = PICKUP_S * R
+  const ox = SW / 4
+  const oy = SH / 2
+  litWeapon(sg, key, ox, oy, s0, size)
+  const d = sg.getImageData(0, 0, SW, SH).data
+  let x0 = SW
+  let y0 = SH
+  let x1 = -1
+  let y1 = -1
+  for (let y = 0; y < SH; y++) {
+    for (let x = 0; x < SW; x++) {
+      if (!d[(y * SW + x) * 4 + 3]) continue
+      if (x < x0) x0 = x
+      if (x > x1) x1 = x
+      if (y < y0) y0 = y
+      if (y > y1) y1 = y
+    }
+  }
+  if (x1 < 0) return
+  // The extent at PICKUP_S, in world px (÷ R), gives the fitted scale; the texture holds it at R px per world px.
+  const k = pickupScale((x1 + 1 - x0) / R, (y1 + 1 - y0) / R) / PICKUP_S
+  const PAD = 2
+  const w = Math.ceil((x1 + 1 - x0) * k) + 2 * PAD
+  const h = Math.ceil((y1 + 1 - y0) * k) + 2 * PAD
+  const tex = textures.createCanvas(sprite, w, h)
+  const ctx = tex?.getContext()
+  if (!ctx) return
+  ctx.clearRect(0, 0, w, h)
+  litWeapon(ctx, key, PAD + (ox - x0) * k, PAD + (oy - y0) * k, s0 * k, size * k)
+  tex?.refresh()
 }
 
 /**
@@ -283,6 +280,9 @@ export function proceduralItemKeys(): string[] {
  * describes.
  */
 export function ensureItemTextures(textures: Phaser.Textures.TextureManager): void {
+  for (const [sprite, key] of Object.entries(ICON_SPRITES)) {
+    if (!textures.exists(sprite)) weaponIcon(textures, sprite, key)
+  }
   for (const [key, paint] of Object.entries(ART)) {
     if (textures.exists(key)) continue
     const tex = textures.createCanvas(key, S, S)

@@ -60,17 +60,21 @@ describe('the actor atlas (T23.12)', () => {
     atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1))
     atlas.cellFor({ ...standing, x: standing.x + 313.6, y: standing.y - 41.3 }, offs(1))
     expect(atlas.stats.redraws).toBe(2)
-    // The look-lab's pixel phase (the control that the anchor is what did it): one whole px along is another cell.
+    // The look-lab's pixel phase (the control that the anchor is what did it): one whole px along is another cell, and
+    // (T23.16) so is a sub-pixel step past the 1/8 px key — the lab draws the fraction, as the mockup's canvas does
+    // (F6 stands its weapons at fractional x); a step under the key is not.
     atlas.cellFor(standing, offs(1), true)
-    atlas.cellFor({ ...standing, x: standing.x + 0.2 }, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 0.05 }, offs(1), true)
     expect(atlas.stats.redraws).toBe(3)
-    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1), true)
+    atlas.cellFor({ ...standing, x: standing.x + 0.25 }, offs(1), true)
     expect(atlas.stats.redraws).toBe(4)
+    atlas.cellFor({ ...standing, x: standing.x + 1 }, offs(1), true)
+    expect(atlas.stats.redraws).toBe(5)
     // The key light turned: the passes are drawn at new offsets.
     atlas.cellFor(standing, offs(2))
-    expect(atlas.stats.redraws).toBe(5)
+    expect(atlas.stats.redraws).toBe(6)
     atlas.cellFor(standing, offs(2.01))
-    expect(atlas.stats.redraws).toBe(5)
+    expect(atlas.stats.redraws).toBe(6)
   })
 
   it('an actor with extras is baked: it keys on the light\'s colour and alpha too, one without does not', () => {

@@ -74,7 +74,8 @@ export interface StickOpts {
   face?: number
   rot?: number
   aim?: number
-  weapon?: string
+  /** `e_style.js::stick`'s `weapon`: one of its three names, or (T23.16, F6's 1× row) a drawing in the shoulder frame. */
+  weapon?: string | ((g: G) => void)
   accent?: string
   jet?: boolean
   pose?: string
@@ -154,6 +155,8 @@ export function stick(g: G, x: number, y: number, o: StickOpts = {}): void {
       line(g, [[0, 0], [3, 3], [5, 1]], 1.7)
       line(g, [[0, 0], [7, 3], [9, 1]], 1.7)
       if (flame) for (const f of flame) glow(g, f.x, f.y, f.r, f.rgb, f.a)
+    } else if (typeof weapon === 'function') {
+      weapon(g)
     } else {
       line(g, [[0, 0], [4, 5], [7, 3]], 1.8)
     }
