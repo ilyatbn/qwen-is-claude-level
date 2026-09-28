@@ -1,23 +1,14 @@
 /**
- * Ground icons for the v3 arsenal (§B20).
+ * Ground and inventory icons (§B20).
  *
- * Eighteen registry entries referenced sprite keys that existed nowhere, fell
- * back to placeholders per `docs/50` §8 — correct behaviour, and exactly why
- * nobody noticed — and so **every new weapon looked identical on the ground**.
- * In a game whose pitch is "tons of weapons", a pickup you cannot identify is
- * the feature not working.
- *
- * Drawn procedurally, following the precedent `weaponTextures.ts` set: Kenney's
- * packs have no side-view laser SMG or whip at 16 px, and `docs/51` §5 makes the
- * procedural path the shipping one for anything the packs do not cover.
- *
- * **Distinct by silhouette, not by palette.** At 16 px on the ground the outline
- * is all a player can read — the same conclusion T10.05 reached for tombstones.
- * Two icons that differ only in hue are two icons nobody can tell apart.
+ * **T23.16/T23.17 (R12): every weapon's icon is its held model** — `look/actors/icons.ts` draws it, lit by F6's
+ * moon; one design per weapon for the hand, the ground and the bag. What is still painted here is the non-weapon
+ * items that have no model yet (battery, fangs, boots, wings — T23.19's furniture), at 16 px, **distinct by
+ * silhouette, not by palette**: at 16 px on the ground the outline is all a player can read.
  */
 
 import Phaser from 'phaser'
-import { ICON_RES, ICON_SPRITES, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
+import { ICON_RES, ICON_SPRITES, ICON_UNIT_PX, PICKUP_S, litWeapon, pickupScale } from '../look/actors/icons'
 
 type Ctx = CanvasRenderingContext2D
 const S = 16
@@ -34,147 +25,15 @@ const ART: Record<string, (c: Ctx) => void> = {
     c.fillRect(4, 9, 8, 3) // charge bar
   },
 
-  // T23.16: the firearms' icons are their held drawings (`look/actors/icons.ts`), drawn below — not painted here.
-
-
-  // --- melee ----------------------------------------------------------------
-  //
-  // §F5 retired knife, bat, whip, axe and hammer, and their painters **stay**:
-  // the registry keeps them as placeholders (removing an `ItemDef` renumbers
-  // every id above it, which is §B16), and `itemSprites-math.test.ts`'s "the
-  // live registry has art for everything" reads that registry, so deleting the
-  // art here fails on five entries that still resolve. They are unobtainable,
-  // not absent.
-  //
-  // The shovel is the one anybody sees: everyone spawns holding it.
-  weapon_shovel: (c) => {
-    c.fillStyle = '#6b4a2c'
-    c.fillRect(7, 2, 2, 8) // haft
-    c.fillRect(5, 1, 6, 2) // T-grip — no other melee icon has one
-    c.fillStyle = '#b9c2cc'
-    c.beginPath() // a wide scoop, where the axe has a bit off one side
-    c.moveTo(4, 9)
-    c.lineTo(12, 9)
-    c.lineTo(10, 15)
-    c.lineTo(6, 15)
-    c.closePath()
-    c.fill()
-  },
-  weapon_knife: (c) => {
-    c.fillStyle = '#d6dde6'
-    c.beginPath()
-    c.moveTo(3, 12)
-    c.lineTo(11, 4)
-    c.lineTo(13, 6)
-    c.lineTo(5, 13)
-    c.closePath()
-    c.fill()
-    c.fillStyle = '#5a4632'
-    c.fillRect(2, 11, 4, 3)
-  },
-  weapon_bat: (c) => {
-    c.fillStyle = '#c79a5c'
-    c.beginPath() // tapered club
-    c.moveTo(3, 13)
-    c.lineTo(10, 3)
-    c.lineTo(13, 5)
-    c.lineTo(5, 14)
-    c.closePath()
-    c.fill()
-  },
-  weapon_whip: (c) => {
-    c.strokeStyle = '#6b4a2c' // a curve, which nothing else here is
-    c.lineWidth = 2
-    c.beginPath()
-    c.moveTo(2, 12)
-    c.quadraticCurveTo(9, 12, 8, 6)
-    c.quadraticCurveTo(7, 2, 13, 3)
-    c.stroke()
-  },
-  weapon_axe: (c) => {
-    c.fillStyle = '#6b4a2c'
-    c.fillRect(7, 3, 2, 11) // haft
-    c.fillStyle = '#b9c2cc'
-    c.beginPath() // single bit
-    c.moveTo(9, 3)
-    c.lineTo(14, 5)
-    c.lineTo(9, 9)
-    c.closePath()
-    c.fill()
-  },
-  weapon_hammer: (c) => {
-    c.fillStyle = '#6b4a2c'
-    c.fillRect(7, 5, 2, 10)
-    c.fillStyle = '#8f98a4'
-    c.fillRect(3, 2, 10, 4) // wide flat head
-  },
-
-  // --- the rest -------------------------------------------------------------
-  weapon_mine: (c) => {
-    c.fillStyle = '#333a44'
-    c.beginPath() // squat dome, unlike any grenade
-    c.arc(8, 11, 5.5, Math.PI, 0)
-    c.fill()
-    c.fillRect(2, 11, 12, 2)
-    c.fillStyle = '#ff4040'
-    c.fillRect(7, 4, 2, 2) // sensor
-  },
-  weapon_airburst: (c) => {
-    c.fillStyle = '#3a4a3a'
-    c.beginPath()
-    c.arc(8, 9, 4.5, 0, Math.PI * 2)
-    c.fill()
-    c.strokeStyle = '#57d6ff' // downward fan, its whole behaviour
-    c.lineWidth = 1
-    for (const dx of [-3, 0, 3]) {
-      c.beginPath()
-      c.moveTo(8, 13)
-      c.lineTo(8 + dx, 15)
-      c.stroke()
-    }
-  },
-  weapon_smoke: (c) => {
-    c.fillStyle = '#4a5058'
-    c.fillRect(6, 8, 4, 6) // canister
-    c.fillStyle = '#b9c0c8'
-    for (const [x, y, r] of [
-      [6, 5, 2.4],
-      [10, 4, 2],
-      [8, 3, 1.8],
-    ] as const) {
-      c.beginPath()
-      c.arc(x, y, r, 0, Math.PI * 2)
-      c.fill()
-    }
-  },
-  weapon_molotov: (c) => {
-    c.fillStyle = '#7a5a2a' // bottle: a neck, which no other icon has
-    c.fillRect(6, 6, 5, 8)
-    c.fillRect(7, 3, 3, 3)
-    c.fillStyle = '#ff9a3a'
-    c.fillRect(7, 1, 3, 2) // rag alight
-  },
-  weapon_toxic: (c) => {
-    c.fillStyle = '#3a4a2a'
-    c.beginPath()
-    c.arc(8, 9, 4.5, 0, Math.PI * 2)
-    c.fill()
-    c.fillStyle = '#7fe04a'
-    for (const a of [0, 2.1, 4.2]) {
-      c.beginPath() // trefoil
-      c.moveTo(8, 9)
-      c.arc(8, 9, 4, a, a + 0.9)
-      c.closePath()
-      c.fill()
-    }
-  },
+  // T23.16/T23.17: every weapon's icon is its held drawing (`look/actors/icons.ts`), drawn below — not painted here
+  // (the retired melee weapons too: the registry keeps them, so they keep art).
 
   // --- M21's effect items: silhouette first, colour second -----------------
   //
   // A pair of fangs, drawn as two downward tapers under a dark upper lip. No
   // other icon here is two thin vertical spikes, which is the property that
   // makes it readable at 16 px on the ground — the same rule `tombstoneTextures`
-  // states and `weapon_molotov`'s neck follows.
+  // states.
   item_vampire_fangs: (c) => {
     c.fillStyle = '#2a1016'
     c.fillRect(3, 3, 10, 4) // the gum line
@@ -272,6 +131,7 @@ function weaponIcon(textures: Phaser.Textures.TextureManager, sprite: string, ke
   ctx.clearRect(0, 0, w, h)
   litWeapon(ctx, key, PAD + (ox - x0) * k, PAD + (oy - y0) * k, s0 * k, size * k)
   tex?.refresh()
+  ICON_UNIT_PX.set(sprite, s0 * k)
 }
 
 /**

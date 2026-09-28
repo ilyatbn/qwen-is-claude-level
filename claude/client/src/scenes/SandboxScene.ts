@@ -1158,7 +1158,8 @@ export class SandboxScene extends Phaser.Scene {
         // The ordnance layer's records, and only those. T23.09C F1: it also carried `lights` (T23.09: the effect lights
         // the records made) — two things in one field; the lights are `effectLights()`, by kind.
         // T23.09D: and how many rounds the layer's last draw painted (the effect, beside the record count).
-        return { ...self.world.ordnance.state.counts, drawn: self.world.ordnance.drawnProjectilesLastFrame }
+        // T23.17: and the thrown weapons it drew as themselves (their icon, where).
+        return { ...self.world.ordnance.state.counts, drawn: self.world.ordnance.drawnProjectilesLastFrame, thrown: self.world.ordnance.thrownDrawn }
       },
       /** T23.09A: the cave wall on or off (the "Cave bg" button's switch); returns what the renderer now holds. */
       setCaveWall(on: boolean) {

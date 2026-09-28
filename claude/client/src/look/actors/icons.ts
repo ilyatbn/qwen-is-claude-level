@@ -8,7 +8,7 @@
  */
 import { DARK_INK } from './cell'
 import { INK, setInk, type G } from './draw'
-import { FIREARMS, WEAPONS, drawWeapon } from './weapons'
+import { FIREARMS, MELEE_THROWN, WEAPONS, drawWeapon } from './weapons'
 
 /** `variant_F6.js`'s moon — the icons' only light. */
 export const ICON_MOON = { dx: 0.6, dy: -0.8, rgb: '185,195,245', w: 0.75, fill: '90,80,110' } as const
@@ -28,11 +28,22 @@ export const ICON_RES = 2
 
 /**
  * The registry's sprite key (`ItemDef.sprite`, what the item layer and the inventory look art up by) for each
- * remodelled weapon: the icons T23.16 draws (firearms) and T23.17 adds (melee and thrown).
+ * weapon: `weapon_<key>`, except the toxic grenade's, which the registry names `weapon_toxic`
+ * (`weapons.test.ts` reads both off `items/registry.rs`). T23.16 drew the firearms' icons, T23.17 the rest.
  */
+const SPRITE_NAMES: Readonly<Record<string, string>> = { toxic_grenade: 'weapon_toxic' }
+export function spriteOf(key: string): string {
+  return SPRITE_NAMES[key] ?? `weapon_${key}`
+}
 export const ICON_SPRITES: Readonly<Record<string, string>> = Object.fromEntries(
-  (FIREARMS as readonly string[]).map((k) => [`weapon_${k}`, k]),
+  [...FIREARMS, ...MELEE_THROWN].map((k) => [spriteOf(k), k]),
 )
+
+/**
+ * T23.17: texture px per figure unit each icon was drawn at (`itemTextures.ts` fills it as it draws them) — what a
+ * thrown weapon in flight is scaled by to be the size it is in the hand (`ordnance.ts`).
+ */
+export const ICON_UNIT_PX = new Map<string, number>()
 
 /** The weapon key a registry sprite draws, or null for art that is not a remodelled weapon. */
 export function iconWeapon(sprite: string): string | null {

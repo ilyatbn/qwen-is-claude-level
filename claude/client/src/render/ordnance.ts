@@ -17,6 +17,9 @@ import {
   type ProjectileKind,
 } from './ordnance-state'
 import { DEPTH } from './backdrop'
+import { ensureItemTextures } from './itemTextures'
+import { ICON_UNIT_PX, spriteOf } from '../look/actors/icons'
+import { FIGURE_SCALE } from '../look/actors/pose'
 import { BEAM_FRAGMENT, BLAST_FRAGMENT, FLAME_FRAGMENT, hasWebGL } from './shaders'
 import { isHighQuality, onHighQualityChange } from '../ui/settings'
 
@@ -37,6 +40,23 @@ import { isHighQuality, onHighQualityChange } from '../ui/settings'
  */
 const FLAME_EDGE = 0xc0350a
 const FLAME_HEART = 0xffd23c
+
+/**
+ * T23.17 (R12): a thrown weapon in flight is **the weapon** — its held model's icon (`look/actors/icons.ts`), at the
+ * size it has in the hand (`FIGURE_SCALE` figure units), tumbling — not a dot. By projectile kind, the weapon key.
+ */
+const THROWN_KEY: Partial<Record<ProjectileKind, string>> = {
+  grenade: 'grenade',
+  airburst: 'airburst',
+  smoke: 'smoke',
+  molotov: 'molotov',
+  toxic: 'toxic_grenade',
+}
+/**
+ * How far a thrown weapon turns per px it travels (rad/px): about a turn every 60 px, so a lob reads as thrown, not
+ * fired — and one that has come to rest on the ground lies still (the turn is travel, not time).
+ */
+const TUMBLE_RAD_PER_PX = 0.1
 
 export class OrdnanceLayer {
   private readonly gfx: Phaser.GameObjects.Graphics
@@ -62,6 +82,12 @@ export class OrdnanceLayer {
   blastShadersDrawn = 0
   /** Hidden for a check's control frame; `render` honours it for the shader quads too. */
   private hidden = false
+  /** T23.17: the thrown weapons in flight, one image each, pooled (hidden when unused). */
+  private readonly thrown: Phaser.GameObjects.Image[] = []
+  /** How many thrown weapons the last render drew, and as which icon — for the checks. */
+  thrownDrawn: { id: number; sprite: string; x: number; y: number }[] = []
+  /** T23.17: each thrown weapon's turn so far and where it was last drawn (its travel turns it). */
+  private readonly tumble = new Map<number, { x: number; y: number; a: number }>()
 
   constructor(scene: Phaser.Scene) {
     const c = C()
@@ -96,6 +122,8 @@ export class OrdnanceLayer {
     this.gfx.setBlendMode(Phaser.BlendModes.ADD)
     this.scene = scene
     this.webgl = hasWebGL(scene)
+    // The icons a thrown weapon flies as (idempotent: the item layer draws the same set).
+    ensureItemTextures(scene.textures)
     // **Repaint on the change, not on the next update.** A check freezes the scene
     // to photograph one beam in both modes; a frozen scene runs no `update`, so a
     // toggle that waited for one would photograph the old picture twice.
@@ -226,6 +254,7 @@ export class OrdnanceLayer {
 
     // Trails: a tapering polyline, oldest thinnest.
     let flamesPainted = 0
+    const thrown: { id: number; sprite: string; x: number; y: number }[] = []
     for (const p of this.state.projectiles.values()) {
       const look = LOOK[p.kind]
       // §F10.3: **a flame at rest draws no trail.** A tail behind something that
@@ -296,6 +325,26 @@ export class OrdnanceLayer {
         continue
       }
 
+      // T23.17: a thrown weapon flies as itself (`THROWN_KEY`), after its trail.
+      const key = THROWN_KEY[p.kind]
+      const sprite = key ? spriteOf(key) : null
+      const unit = sprite ? ICON_UNIT_PX.get(sprite) : undefined
+      if (sprite && unit && this.scene.textures.exists(sprite)) {
+        const im = this.thrownImage(thrown.length)
+        const t = this.tumble.get(p.id) ?? { x: p.x, y: p.y, a: p.id * 2.39 }
+        t.a += Math.hypot(p.x - t.x, p.y - t.y) * TUMBLE_RAD_PER_PX
+        t.x = p.x
+        t.y = p.y
+        this.tumble.set(p.id, t)
+        im.setTexture(sprite)
+          .setScale(FIGURE_SCALE / unit)
+          .setPosition(p.x, p.y)
+          .setRotation(t.a)
+          .setVisible(!this.hidden)
+        thrown.push({ id: p.id, sprite, x: p.x, y: p.y })
+        continue
+      }
+
       g.fillStyle(look.colour, 1)
       g.fillCircle(p.x, p.y, look.r)
       // A hot core, so a dot reads as ordnance rather than as a decal — except
@@ -306,6 +355,9 @@ export class OrdnanceLayer {
       }
     }
 
+    for (let i = thrown.length; i < this.thrown.length; i++) this.thrown[i]!.setVisible(false)
+    this.thrownDrawn = thrown
+    if (this.tumble.size > thrown.length) for (const id of this.tumble.keys()) if (!thrown.some((d) => d.id === id)) this.tumble.delete(id)
     for (let i = flamesPainted; i < this.flameShaders.length; i++) this.flameShaders[i]!.setVisible(false)
     this.flameShadersDrawn = flamesPainted
 
@@ -438,7 +490,15 @@ export class OrdnanceLayer {
     return this.flameShaders[i] ?? null
   }
 
+  /** T23.17: image `i` of the thrown-weapon pool, built on first use (normal blend: ink is not light). */
+  private thrownImage(i: number): Phaser.GameObjects.Image {
+    while (this.thrown.length <= i) this.thrown.push(this.scene.add.image(0, 0, '__DEFAULT').setDepth(DEPTH.particles).setVisible(false))
+    return this.thrown[i]!
+  }
+
   destroy(): void {
+    for (const im of this.thrown) im.destroy()
+    this.thrown.length = 0
     this.flameGfx.destroy()
     this.gfx.destroy()
     for (const s of this.beamShaders) s.destroy()

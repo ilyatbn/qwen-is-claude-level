@@ -80,13 +80,20 @@ describe('the arsenal (T23.16)', () => {
     expect(held('platform_gun')).toBeNull()
   })
 
-  it('draws an icon for every firearm from its model, keyed by the registry sprite', () => {
-    const firearmSprites = reg.filter((r) => (FIREARMS as readonly string[]).includes(r.key)).map((r) => r.sprite)
-    expect(Object.keys(ICON_SPRITES).sort()).toEqual(firearmSprites.sort())
-    for (const r of reg) {
-      if ((FIREARMS as readonly string[]).includes(r.key)) expect(iconWeapon(r.sprite)).toBe(r.key)
-      else expect(iconWeapon(r.sprite), r.key).toBeNull()
-    }
+  it('draws an icon for every weapon from its model, keyed by the registry sprite (T23.17: all 21)', () => {
+    expect(Object.keys(ICON_SPRITES).sort()).toEqual(reg.map((r) => r.sprite).sort())
+    for (const r of reg) expect(iconWeapon(r.sprite), r.key).toBe(r.key)
+    // The control: a non-weapon item's sprite draws no weapon.
+    expect(iconWeapon('item_battery')).toBeNull()
+  })
+
+  it('leaves the four sub-munitions, the meteor and the platform gun without a model — and names them (T23.17)', () => {
+    // `weapons/defs.rs` holds every WeaponId; each is a held model or one of these, never both, never neither.
+    const d = [...deliveries().keys()]
+    expect(d.length).toBe(27)
+    const unheld = d.filter((k) => !WEAPONS[k]).sort()
+    expect(unheld).toEqual(['airburst_pellet', 'flame', 'meteor', 'meteor_fragment', 'platform_gun', 'toxic_drop'])
+    expect(d.filter((k) => WEAPONS[k]).sort()).toEqual(Object.keys(WEAPONS).sort())
   })
 
   it('fits a pickup to its box by length, and keeps a small one at full scale', () => {

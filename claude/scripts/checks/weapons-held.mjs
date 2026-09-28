@@ -1,5 +1,6 @@
 /**
- * `weapons-held` — T23.16: every firearm is F6's model, in the hand, on the ground and in the bag.
+ * `weapons-held` — T23.16/T23.17: every weapon is F6's model (R26's three remodels included), in the hand, on the
+ * ground, in the bag and — thrown — in flight.
  *
  * ## 1. Level A on F6's weapon boxes (gating)
  *
@@ -14,22 +15,27 @@
  * where the grid is 0.168; baking the row whole (the mockup's own canvas composite) still left 0.25, so it is
  * anti-aliasing at a sub-pixel phase, not the drawing. The hand is gated live instead (§3).
  *
- * ## 2. Readability: no two firearms' silhouettes too alike at game scale
+ * ## 2. Readability: no two weapons' silhouettes too alike at game scale
  *
- * Each firearm's ink mask (alpha > ½) drawn by its model at the figure's scale (1.15, aim 0, one origin), zoom 1;
+ * Each of the 21 weapons' ink mask (alpha > ½) drawn by its model at the figure's scale (1.15, aim 0, one origin), zoom 1;
  * IoU of every pair. The most similar pair is stated; the gate is `IOU_MAX`, picked from the data (below).
  *
- * ## 3. Live: selecting each firearm changes the hand, and nothing else (the sandbox, the game's renderer)
+ * ## 3. Live: selecting each weapon changes the hand, and nothing else (the sandbox, the game's renderer)
  *
- * Each firearm given (`__game.giveItem`) and selected through the inventory, the scene frozen still, the world
+ * Each of the 21 given (`__game.giveItem`) and selected through the inventory, the scene frozen still, the world
  * canvas read: the **hand patch** (shoulder to muzzle) changes from the previous weapon's by `HAND_MIN`; the **legs**
  * (the control region) do not change at all; and the figure handed to the renderer holds that weapon (both ends).
  *
  * ## 4. The pickup is the same drawing (R12)
  *
- * Each firearm staged as a pickup through the match's item layer: the layer draws the weapon's icon texture
- * (`weapon_<key>`, `look/actors/icons.ts`) at its fitted world size, and the page shows it (pixels at the pickup
+ * Each weapon staged as a pickup through the match's item layer: the layer draws the weapon's icon texture
+ * (its registry sprite, `look/actors/icons.ts`) at its fitted world size, and the page shows it (pixels at the pickup
  * against no pickup).
+ *
+ * ## 5. A thrown weapon flies as itself (T23.17)
+ *
+ * A grenade and a toxic grenade thrown: the ordnance layer draws each as its icon (read back off the layer), and the
+ * spot it flew through changes once it has moved on. Control: an SMG round is not drawn as a weapon.
  */
 import { writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -52,15 +58,19 @@ const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'script
 const F6_ACTORS = 44
 const GRID = 22
 /**
- * One grid box's own gate (mean ΔE2000). Measured 2026-09-28 (SwiftShader): the lab's worst matching box is 0.578
- * (the toxic grenade: 19 × 34 px, its green rim's edge pixels flip — no visible difference, looked at 12×), and the
- * smallest a box moves under `actor-rim-off` is 1.296 (the molotov, whose flame the knob leaves). Their midpoint.
+ * One grid box's own gate (mean ΔE2000). Measured 2026-09-28 (SwiftShader), after R26: the lab's worst matching box
+ * is 0.468 (the knife: 39 × 14 px, its edge pixels flip — no visible difference; before R26 the old toxic grenade's
+ * 0.578), and the smallest a box moves under `actor-rim-off` is 1.296 (the molotov, whose flame the knob leaves).
+ * Their midpoint.
  */
-const PER_BOX = 0.937
+const PER_BOX = 0.882
 /**
- * §2's gate: no two firearms' silhouettes may overlap more than this (IoU). From the data (2026-09-28, 1.15, zoom 1):
- * the most similar firearms are laser_pistol / pistol at 0.679; the collision the milestone names as the likely one
- * (`T23.17`: axe / hammer) is 0.760. The gate is their midpoint: two guns may not be as alike as axe and hammer.
+ * §2's gate: no two weapons' silhouettes may overlap more than this (IoU). From the data (T23.16, 1.15, zoom 1): the
+ * most similar firearms, laser_pistol / pistol, were 0.679; the collision the milestone named, axe / hammer, 0.760 —
+ * the gate is their midpoint. **R26 (T23.17): every pair, thrown and melee included, no exceptions** — F6's
+ * airburst / toxic grenade (0.828), smoke / toxic grenade (0.774), airburst / smoke (0.765), axe / hammer and grenade /
+ * toxic grenade (0.759) were remodelled apart (`weapons.ts`, `weapons.js`); the most similar pair is now
+ * airburst / toxic_grenade at 0.688.
  */
 const IOU_MAX = 0.72
 /**
@@ -75,6 +85,9 @@ const LEGS_MAX = 0.5
 const PICKUP_MIN = 3
 
 const FIREARMS = ['bazooka', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver', 'deagle', 'machinegun', 'flamethrower']
+/** T23.17: the melee and thrown weapons — with the firearms, all 21 holdables (`weapons.test.ts` counts them). */
+const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel']
+const ALL = [...FIREARMS, ...MELEE_THROWN]
 
 async function lab(page, origin, extra) {
   await page.goto(`${origin}/?look=F6&e2e=1${extra}`, { waitUntil: 'load' })
@@ -88,8 +101,8 @@ async function lab(page, origin, extra) {
 export default async function ({ page, shot, log }) {
   const origin = new URL(page.url()).origin
   const problems = []
-  const firearms = await page.evaluate(async () => [...(await import('/src/look/actors/weapons.ts')).FIREARMS])
-  if (JSON.stringify(firearms) !== JSON.stringify(FIREARMS)) problems.push(`the model's firearms ${JSON.stringify(firearms)} are not this check's ${JSON.stringify(FIREARMS)}`)
+  const model = await page.evaluate(async () => { const W = await import('/src/look/actors/weapons.ts'); return [...W.FIREARMS, ...W.MELEE_THROWN] })
+  if (JSON.stringify(model) !== JSON.stringify(ALL)) problems.push(`the model's weapons ${JSON.stringify(model)} are not this check's ${JSON.stringify(ALL)}`)
 
   // ------------------------------------------------------------ 1. Level A on the arsenal
   const boxes = actorBoxes('F6')
@@ -165,10 +178,10 @@ export default async function ({ page, shot, log }) {
       }
     }
     return { px, pairs: pairs.sort((a, b) => b[2] - a[2]) }
-  }, FIREARMS)
-  log(`2. ink px at 1×: ${FIREARMS.map((k, i) => `${k} ${r.px[i]}`).join(', ')}`)
-  log(`2. most similar firearm pairs (IoU): ${r.pairs.slice(0, 4).map(([a, b, v]) => `${a}/${b} ${v.toFixed(3)}`).join(', ')} (max ${IOU_MAX})`)
-  if (r.px.some((n) => n < 10)) problems.push(`a firearm draws under 10 px at 1×: ${JSON.stringify(r.px)}`)
+  }, ALL)
+  log(`2. ink px at 1×: ${ALL.map((k, i) => `${k} ${r.px[i]}`).join(', ')}`)
+  log(`2. most similar pairs (IoU): ${r.pairs.slice(0, 6).map(([a, b, v]) => `${a}/${b} ${v.toFixed(3)}`).join(', ')} (max ${IOU_MAX})`)
+  if (r.px.some((n) => n < 10)) problems.push(`a weapon draws under 10 px at 1×: ${JSON.stringify(r.px)}`)
   const [a0, b0, v0] = r.pairs[0]
   if (v0 > IOU_MAX) problems.push(`${a0} and ${b0} are too alike at game scale: IoU ${v0.toFixed(3)} > ${IOU_MAX}`)
 
@@ -176,8 +189,11 @@ export default async function ({ page, shot, log }) {
   // The sandbox bag has four quick slots free after its own loadout (shovel, bazooka, grenade, smg); the backpack
   // cannot be selected (§C10), so the rest come in a second visit.
   const batches = [
-    ['bazooka', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver'],
-    ['deagle', 'machinegun', 'flamethrower', 'bazooka'],
+    ['shovel', 'bazooka', 'grenade', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver'],
+    ['deagle', 'machinegun', 'flamethrower', 'knife'],
+    ['bat', 'whip', 'axe', 'hammer'],
+    ['mine', 'airburst', 'smoke', 'molotov'],
+    ['toxic_grenade', 'bazooka'],
   ]
   let prev = null
   const lineup = []
@@ -225,7 +241,7 @@ export default async function ({ page, shot, log }) {
       await page.evaluate(() => window.__game.freeze(false))
     }
   }
-  if (lineup.length !== FIREARMS.length) problems.push(`the live leg held ${lineup.length} of ${FIREARMS.length} firearms`)
+  if (lineup.length !== ALL.length) problems.push(`the live leg held ${lineup.length} of ${ALL.length} weapons`)
   writeFileSync(join(root, 'shots/weapons-held-live.png'), PNG.sync.write(strip(lineup)))
 
   // ------------------------------------------------------------ 4. the pickup is the icon
@@ -234,7 +250,8 @@ export default async function ({ page, shot, log }) {
   const at = [px0 + 60, py0 - 12]
   const scr = await toScreen(page, ...at)
   if (!scr?.onScreen) problems.push(`the pickup spot ${JSON.stringify(at)} is off screen`)
-  for (const key of FIREARMS) {
+  const sprites = await page.evaluate(async (keys) => { const I = await import('/src/look/actors/icons.ts'); return Object.fromEntries(keys.map((k) => [k, I.spriteOf(k)])) }, ALL)
+  for (const key of ALL) {
     await page.evaluate(() => window.__game.stagePickup(null))
     const clip = scr && { x: Math.round(scr.x - 16 * scr.scale), y: Math.round(scr.y - 10 * scr.scale), w: Math.round(32 * scr.scale), h: Math.round(20 * scr.scale) }
     const none = clip ? (await patchRGBA(page, clip)).rgba : null
@@ -242,7 +259,7 @@ export default async function ({ page, shot, log }) {
     await page.waitForTimeout(100)
     const drawn = got.items
     const art = drawn?.[0]?.art ?? null
-    if (art !== `weapon_${key}`) problems.push(`${key}: the pickup drew ${JSON.stringify(art)}, not the icon weapon_${key}`)
+    if (art !== sprites[key]) problems.push(`${key}: the pickup drew ${JSON.stringify(art)}, not its icon ${sprites[key]}`)
     let moved = null
     if (clip && none) {
       const withIt = (await patchRGBA(page, clip)).rgba
@@ -252,6 +269,59 @@ export default async function ({ page, shot, log }) {
     log(`4. ${key}: staged ${got.staged}, drawn ${JSON.stringify(drawn?.[0] ?? null)}${moved === null ? '' : `, page Δ ${moved.toFixed(2)} (min ${PICKUP_MIN})`}`)
   }
   await page.evaluate(() => window.__game.stagePickup(null))
+
+  // ------------------------------------------------------------ 5. a thrown weapon flies as itself (T23.17)
+  // Thrown up and away, the layer draws it as its icon; a moment later the spot it was at no longer shows it (the
+  // pixels there change as it leaves). Control: an SMG round is not drawn as a weapon.
+  for (const key of ['grenade', 'toxic_grenade', 'smg']) {
+    const slot = await page.evaluate((k) => {
+      const i = window.__game.inventory().slots.findIndex((s) => s && s.key === k)
+      return i >= 0 ? i : window.__game.giveItem(k)
+    }, key)
+    await page.evaluate((s) => window.__game.selectSlot(s), slot)
+    const me = (await page.evaluate(() => window.__game.debug())).player
+    const aim = await toScreen(page, me.x + 120, me.y - 160)
+    await page.mouse.move(aim.x, aim.y)
+    await page.waitForTimeout(250)
+    // This throw's weapon: the newest drawn (an earlier grenade may still lie on the ground, waiting on its fuse).
+    const before = new Set(((await page.evaluate(() => window.__game.ordnance().thrown)) ?? []).map((t) => t.id))
+    await page.evaluate(() => window.__game.fire())
+    const fresh = async () => ((await page.evaluate(() => window.__game.ordnance().thrown)) ?? []).find((t) => !before.has(t.id)) ?? null
+    let seen = null
+    for (let i = 0; i < 20 && !seen; i++) {
+      await page.waitForTimeout(30)
+      seen = await fresh()
+    }
+    if (key === 'smg') {
+      log(`5. control: an smg shot draws ${seen ? JSON.stringify(seen) : 'no thrown weapon'}`)
+      if (seen) problems.push(`an smg round was drawn as a thrown weapon: ${JSON.stringify(seen)}`)
+      continue
+    }
+    if (!seen) {
+      problems.push(`${key}: thrown, and no weapon was drawn in flight`)
+      continue
+    }
+    await page.evaluate(() => window.__game.freeze(true))
+    const id = seen.id
+    const byId = async () => ((await page.evaluate(() => window.__game.ordnance().thrown)) ?? []).find((t) => t.id === id) ?? null
+    seen = (await byId()) ?? seen
+    const at = await toScreen(page, seen.x, seen.y)
+    const clip = { x: Math.round(at.x - 8 * at.scale), y: Math.round(at.y - 8 * at.scale), w: Math.round(16 * at.scale), h: Math.round(16 * at.scale) }
+    const withIt = (await patchRGBA(page, clip)).rgba
+    await page.evaluate(() => window.__game.freeze(false))
+    await page.waitForTimeout(400)
+    await page.evaluate(() => window.__game.freeze(true))
+    const later = await byId()
+    const gone = (await patchRGBA(page, clip)).rgba
+    await page.evaluate(() => window.__game.freeze(false))
+    const moved = meanDelta(withIt, gone)
+    const away = later ? Math.hypot(later.x - seen.x, later.y - seen.y) : Infinity
+    log(`5. ${key}: in flight as ${seen.sprite} at (${seen.x.toFixed(0)}, ${seen.y.toFixed(0)}); the spot changes by ${moved.toFixed(2)} once it has flown ${away.toFixed(0)} px on (min ${PICKUP_MIN})`)
+    if (seen.sprite !== sprites[key]) problems.push(`${key}: flew as ${seen.sprite}, not ${sprites[key]}`)
+    if (away > 16 && !(moved >= PICKUP_MIN)) problems.push(`${key}: the spot it flew through changed by only ${moved.toFixed(2)}`)
+    if (!(away > 16)) problems.push(`${key}: did not fly on (${away.toFixed(0)} px) — nothing to compare against`)
+    await page.waitForTimeout(1500)
+  }
   await shot('weapons-held-end')
   if (problems.length) throw new Error(`weapons-held: ${problems.join('; ')}`)
 }

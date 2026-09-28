@@ -15,31 +15,7 @@
     "item_medkit": "pixel-platformer/Tiles/tile_0044.png",
     "item_shield": "pixel-platformer/Tiles/tile_0067.png",
     "item_flashlight": "pixel-platformer/Tiles/tile_0129.png",
-    "weapon_grenade": "pixel-platformer/Tiles/tile_0151.png",
     "crate": "pixel-platformer/Tiles/tile_0026.png",
     "crate_open": "pixel-platformer/Tiles/tile_0028.png"
-  },
-  "fx": {
-    "_note": "Transparent variants, not the black-background ones: the lightmap multiplies and additive blending both want real alpha.",
-    "explosion_a": "particle-pack/PNG (Transparent)/flame_01.png",
-    "explosion_b": "particle-pack/PNG (Transparent)/flame_04.png",
-    "explosion_c": "particle-pack/PNG (Transparent)/flame_06.png",
-    "fire_a": "particle-pack/PNG (Transparent)/fire_01.png",
-    "fire_b": "particle-pack/PNG (Transparent)/fire_02.png",
-    "smoke_a": "particle-pack/PNG (Transparent)/smoke_01.png",
-    "smoke_b": "particle-pack/PNG (Transparent)/smoke_05.png",
-    "smoke_c": "particle-pack/PNG (Transparent)/smoke_09.png",
-    "spark_a": "particle-pack/PNG (Transparent)/spark_01.png",
-    "spark_b": "particle-pack/PNG (Transparent)/spark_04.png",
-    "muzzle_a": "particle-pack/PNG (Transparent)/muzzle_01.png",
-    "muzzle_b": "particle-pack/PNG (Transparent)/muzzle_04.png",
-    "star_a": "particle-pack/PNG (Transparent)/star_01.png",
-    "circle_soft": "particle-pack/PNG (Transparent)/circle_05.png",
-    "dirt_a": "particle-pack/PNG (Transparent)/dirt_01.png",
-    "dirt_b": "particle-pack/PNG (Transparent)/dirt_03.png",
-    "trace_a": "particle-pack/PNG (Transparent)/trace_01.png",
-    "light_a": "particle-pack/PNG (Transparent)/light_01.png",
-    "flare_a": "particle-pack/PNG (Transparent)/flare_01.png",
-    "scorch_a": "particle-pack/PNG (Transparent)/scorch_01.png"
   }
 }

@@ -80,16 +80,12 @@ if (existsSync(skinsPath) && manifest) {
 
   // (T23.07: the `decor` atlas retired with its reader, and its "a prop, not a tile" check with it.)
 
-  // T23.16 (R12, R15): a remodelled weapon's pickup and inventory icon is its held drawing
-  // (client/src/look/actors/icons.ts). A packed frame under the same sprite key would win over it
-  // (`itemSprites-math.ts::artFor` tries the atlas first) and the ground would show the old art: no atlas may carry one.
-  const weaponsTs = readFileSync(join(root, 'client/src/look/actors/weapons.ts'), 'utf8')
-  const remodelled = [...(weaponsTs.match(/export const FIREARMS = \[([^\]]*)\]/)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1])
-  if (remodelled.length === 0) problems.push('client/src/look/actors/weapons.ts: no FIREARMS list found to check the atlases against')
-  for (const k of remodelled) {
-    for (const [atlas, names] of atlasFrames) {
-      if (names.has(`weapon_${k}`)) problems.push(`atlas "${atlas}" still packs weapon_${k}, which would hide its remodelled icon (T23.16)`)
-    }
+  // T23.16/T23.17 (R12, R15): every weapon's pickup and inventory icon is its held drawing
+  // (client/src/look/actors/icons.ts). A packed frame under a weapon's sprite key would win over it
+  // (`itemSprites-math.ts::artFor` tries the atlas first) and the ground would show the old art: no atlas may pack a
+  // `weapon_*` frame. The registry's weapon sprites are all `weapon_*` (`weapons.test.ts` reads them).
+  for (const [atlas, names] of atlasFrames) {
+    for (const n of names) if (n.startsWith('weapon_')) problems.push(`atlas "${atlas}" still packs ${n}, which would hide its remodelled icon (T23.16/T23.17)`)
   }
 
   const seenWeaponIds = new Set()
