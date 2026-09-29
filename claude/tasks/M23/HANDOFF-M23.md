@@ -1,8 +1,8 @@
 # M23 handoff — paused 2026-09-29 at the owner's request
 
-**Where it stands.** HEAD `bcc5b30` (T23.11) on `claude_builds`; 12 commits not pushed at pause (the owner asked for a
-push once, earlier). Nothing running. Last green batch gate: `e3d5064^`… precisely the tree after T23.10 (ba5466c +
-9548528 + task files) — **93/93 browser, vitest 1162**, 2011 s. **T23.19F (e3d5064) and T23.11 (bcc5b30) landed after
+**Where it stands.** Code HEAD `bcc5b30` (T23.11) on `claude_builds`, plus this handoff commit; not pushed at pause.
+Nothing running. Last green batch gate: the tree after T23.10 (9548528 + the T23.19F task-file commit) —
+**93/93 browser, vitest 1162**, 2011 s. **T23.19F (e3d5064) and T23.11 (bcc5b30) landed after
 it and have not had a batch gate** — run the full `./scripts/check.sh` first thing (launcher:
 `scratchpad/coordinator-full-gate.sh` style, detached with setsid, wait on the PID, check the log's mtime).
 
