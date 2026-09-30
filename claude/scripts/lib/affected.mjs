@@ -56,6 +56,8 @@ export const NOTHING = [
   [/^[^/]+\.md$/, 'root prose'],
   [/^(Makefile|\.gitignore)$/, 'not read by any test'],
   [/^(shots|recordings|replays)\//, 'run output'],
+  // M99: the trailer toolkit. No test imports it; it drives the game from outside, like `play.mjs`.
+  [/^promo\//, 'trailer toolkit (M99) — no test reads it'],
   [/^scripts\/check\.sh$/, 'the gate itself — `check.sh --changed` exercises it'],
   [/^scripts\/(affected\.mjs|lib\/affected(\.test)?\.mjs)$/, 'its own test runs in every gate mode'],
   [/^scripts\/lib\/stack-router\.test\.mjs$/, 'runs in every gate mode; the router itself maps through its importers'],

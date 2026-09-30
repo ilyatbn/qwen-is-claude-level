@@ -1,0 +1,9 @@
+{
+  "name": "shred-promo",
+  "private": true,
+  "type": "module",
+  "description": "M99: the SHRED trailer — footage capture, intro render, music synth, edit.",
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  }
+}

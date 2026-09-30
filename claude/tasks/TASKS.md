@@ -863,3 +863,11 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.24](M23/T23.24-fireflies.md) — Fireflies at night — small drifting lights that glow and light the rock nearby (owner ask, after T23.11)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
+
+## M99 — Promotional (2)
+
+Not the game: material to show it. Nothing here changes a real round.
+
+- [x] [T99.01](M99/T99.01-frenzied-bots.md) — Frenzied bots for trailer footage — `DEV_BOT_FRENZY=1`: the whole map is in sight, nobody flees; off by default
+- [x] [T99.02](M99/T99.02-trailer.md) — The SHRED trailer (~59 s) — 3D prequel (the landing, the breath, the turn), real match footage cut to a synthesised industrial-metal score, SHRED / COMING SOON (`promo/`)
+

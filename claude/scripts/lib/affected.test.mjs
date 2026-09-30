@@ -63,6 +63,11 @@ test('prose runs nothing', () => {
   assert.deepEqual([r.everything, r.crates, r.client, r.e2e], [false, [], false, []])
 })
 
+test('the trailer toolkit runs nothing', () => {
+  const r = affected(['promo/assemble.mjs', 'promo/intro/intro.js', 'promo/package.json'], fixture())
+  assert.deepEqual([r.everything, r.crates, r.client, r.e2e], [false, [], false, []])
+})
+
 test('a check file selects that check and nothing else', () => {
   const r = affected(['scripts/checks/sky.mjs'], fixture())
   assert.deepEqual([r.crates, r.client, r.e2e], [[], false, ['sky']])

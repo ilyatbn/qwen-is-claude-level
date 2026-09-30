@@ -1431,8 +1431,10 @@ impl Room {
             // single-player with no deaths and nothing in the log but
             // "dropping: never sent ready".
             self.seats.mark_ready(id);
-            self.bots
-                .push(Bot::new(id, seed, index, self.config.bot_skill));
+            self.bots.push(
+                Bot::new(id, seed, index, self.config.bot_skill)
+                    .frenzied(self.config.dev_bot_frenzy),
+            );
             self.grant_dev_loadout(id);
             self.grant_start_kit(id);
             self.apply_dev_battery(id);

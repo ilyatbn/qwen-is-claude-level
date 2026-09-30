@@ -136,6 +136,12 @@ pub struct Config {
     /// adding it to `DEV_LOADOUT` would change the bag every other check selects
     /// from. Not in the replay header, for `dev_flashlight`'s reason.
     pub dev_smoke: bool,
+    /// Promo only (`DEV_BOT_FRENZY=1`, T99.01): every bot hunts the nearest living
+    /// enemy wherever it is on the map and never breaks contact, so a trailer's
+    /// footage is all fighting. Off by default — a bot that knows where you are
+    /// through a mountain is a cheat in a real round. Not in the replay header, for
+    /// `dev_flashlight`'s reason.
+    pub dev_bot_frenzy: bool,
     /// Development only (`DEV_PROBE=1`): answer `debug_effects` with the server's
     /// own flare clock (T22.08D F1), so `solar-flare-match` can compare the
     /// client's elapsed against the server's rather than against itself. Off by
@@ -313,6 +319,7 @@ impl Default for Config {
             dev_poisoned: false,
             dev_flashlight: false,
             dev_smoke: false,
+            dev_bot_frenzy: false,
             dev_probe: false,
             dev_start_battery: None,
             weather_mode: WeatherMode::Auto,
@@ -489,6 +496,7 @@ impl Config {
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
             dev_flashlight: matches!(get("DEV_FLASHLIGHT").as_deref(), Some("1") | Some("true")),
             dev_smoke: matches!(get("DEV_SMOKE").as_deref(), Some("1") | Some("true")),
+            dev_bot_frenzy: matches!(get("DEV_BOT_FRENZY").as_deref(), Some("1") | Some("true")),
             dev_probe: matches!(get("DEV_PROBE").as_deref(), Some("1") | Some("true")),
             dev_start_battery: get("DEV_START_BATTERY")
                 .and_then(|v| v.parse::<f32>().ok())
@@ -557,7 +565,7 @@ impl Config {
         format!(
             "bind={} scale={} generator={} max_players={} round_seconds={} \
              room_empty_ttl={} lobby_bot_timeout={} fixed_seed={} record_replay={} replay_dir={} debug_dump={} bots={} \
-             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} dev_probe={} dev_start_battery={:?} weather={:?} \
+             bot_skill={} dev_start_health={} dev_poisoned={} dev_flashlight={} dev_smoke={} dev_bot_frenzy={} dev_probe={} dev_start_battery={:?} weather={:?} \
              dev_round_clock={} ready_timeout={} warmup_seconds={}",
             self.bind_addr,
             self.map_scale.as_str(),
@@ -578,6 +586,7 @@ impl Config {
             self.dev_poisoned,
             self.dev_flashlight,
             self.dev_smoke,
+            self.dev_bot_frenzy,
             self.dev_probe,
             self.dev_start_battery,
             self.weather_mode,
@@ -813,6 +822,21 @@ mod tests {
             .expect("ok")
             .summary()
             .contains("dev_smoke=true"));
+    }
+
+    /// T99.01's switch: frenzied bots are a trailer's, never a default round's.
+    #[test]
+    fn dev_bot_frenzy_is_off_unless_asked_for_and_shows_in_the_summary() {
+        assert!(
+            !Config::from_source(empty).expect("ok").dev_bot_frenzy,
+            "an unset DEV_BOT_FRENZY gave every bot the whole map's positions"
+        );
+        assert!(from(&[("DEV_BOT_FRENZY", "1")]).expect("ok").dev_bot_frenzy);
+        assert!(!from(&[("DEV_BOT_FRENZY", "0")]).expect("ok").dev_bot_frenzy);
+        assert!(from(&[("DEV_BOT_FRENZY", "1")])
+            .expect("ok")
+            .summary()
+            .contains("dev_bot_frenzy=true"));
     }
 
     /// T22.08D F1's switch: the `debug_effects` probe is a dev server's only.

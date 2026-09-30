@@ -3228,6 +3228,15 @@ export class GameScene extends Phaser.Scene {
         // for a crate that was on screen a moment earlier.
         if (self.watchPoint) self.world?.rig.snapTo(self.watchPoint)
       },
+      /** e2e only (T99.02): a trailer's close-up — the live zoom, which the world renderer reads. */
+      setZoom(z: number) {
+        self.cameras.main.setZoom(z)
+        return self.cameras.main.zoom
+      },
+      /** e2e only (T99.02): the trailer's shots carry no crosshair. */
+      setCrosshairVisible(on: boolean) {
+        self.crosshair.setVisible(on)
+      },
       /**
        * Show or hide the teleport pads — **for the pixel check's control
        * frame** (`docs/72` §C2, T21.12).

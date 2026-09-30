@@ -7646,3 +7646,8 @@ Busy-fight fps (5 bots, seed 320, bazooka every 250 ms, 8 s), SwiftShader low: 4
 HEAD bcc5b30. Last batch gate green 93/93 on the T23.10 tree; T23.19F + T23.11 landed after it, un-gated. Filed
 T23.10B (review of T23.18B–T23.10: night light pools reveal hidden players — fairness, docs/14 §5; space moon inside
 the earth). Handoff with open tasks, owner decisions and run method: tasks/M23/HANDOFF-M23.md. Nothing running.
+
+## 2026-09-30 — M99 (promotional): T99.01 frenzied bots, T99.02 the SHRED trailer (owner request)
+T99.01: `DEV_BOT_FRENZY=1` — `Bot::frenzied`: enemy search unranged, no fleeing; off by default. Tests: frenzied-bot (control: unfrenzied bot, same world; planted `INFINITY`→`BOT_ENGAGE_RANGE` red) + config switch. Client: e2e-only `__game.setZoom`, `setCrosshairVisible`.
+T99.02: `promo/` (README) — headed-GPU capture with a director camera, three.js prequel, synthesised score, beat-grid cut, canvas compositor; out `promo/build/SHRED-trailer{,-web}.mp4` (59 s, 1080p60; gitignored). `affected.mjs`: `promo/` → nothing (test; red without the rule).
+check.sh --changed: fmt, clippy, cargo (1240 core + server), client all green; e2e 90/97. The 7 reds are NOT this change — same checks on the tree with my 4 source files stashed: platforms, crates, lava-lights, debug-mode red on baseline; swing-mine-fx red on baseline 2 of 3 runs (1 of 5 arc points unpainted), red 4/4 on mine and 1/1 with the client edit reverted; thrusters, bullets-visible (both on flaky-test.md) green alone on both trees. Logs: gate-promo-*.txt. Not parked — the owner's call.

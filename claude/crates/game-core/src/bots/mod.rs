@@ -149,6 +149,9 @@ pub struct Bot {
     want_use: Option<u8>,
     want_select: Option<u8>,
     stats: BotStats,
+    /// T99.01 (promo only): the enemy search has no range and nobody flees — the
+    /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
+    frenzy: bool,
 }
 
 impl Bot {
@@ -175,7 +178,16 @@ impl Bot {
             want_use: None,
             want_select: None,
             stats: BotStats::default(),
+            frenzy: false,
         }
+    }
+
+    /// T99.01: a bot that always knows where the nearest living enemy is, and
+    /// never breaks contact. For a trailer's footage (`DEV_BOT_FRENZY`), never a
+    /// real round's default.
+    pub fn frenzied(mut self, on: bool) -> Self {
+        self.frenzy = on;
+        self
     }
 
     /// Where the kill chain broke. Read by the lethality harness; free otherwise.
@@ -365,14 +377,20 @@ impl Bot {
         // movement code so `Goal` stays the single answer to "which way", and so
         // `target_pos` and the aim keep working — a retreating bot still faces
         // the thing it is retreating from.
-        let flee = health > 0.0 && health < BOT_FLEE_HEALTH;
+        let flee = !self.frenzy && health > 0.0 && health < BOT_FLEE_HEALTH;
+        // T99.01: a frenzied bot sees the whole map.
+        let sight = if self.frenzy {
+            f32::INFINITY
+        } else {
+            BOT_ENGAGE_RANGE
+        };
 
         for p in &world.players {
             if p.id == self.player || !p.alive {
                 continue;
             }
             let d = (p.body.pos - pos).len();
-            if d <= BOT_ENGAGE_RANGE && best.is_none_or(|(bd, _)| d < bd) {
+            if d <= sight && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((
                     d,
                     if flee {
@@ -681,6 +699,55 @@ mod tests {
             crate::items::world::SpawnSource::Initial,
             0.0,
         )
+    }
+
+    /// T99.01: a frenzied bot hunts an enemy it could not see, and does not flee
+    /// when hurt. Control: the same bot unfrenzied, in the same world, wanders and
+    /// flees — so the assertion is about the switch, not the fixture.
+    #[test]
+    fn a_frenzied_bot_hunts_an_enemy_out_of_sight_and_never_flees() {
+        let mut w = world_with(&[1, 2]);
+        let far = BOT_ENGAGE_RANGE * 3.0;
+        let a = clear_line(&w);
+        let b = Vec2::new(a.x + far, a.y);
+        assert!(
+            (w.map.mask.w as f32) > b.x,
+            "map too narrow for the fixture"
+        );
+        w.player_mut(1).expect("p1").body.pos = a;
+        w.player_mut(2).expect("p2").body.pos = b;
+        // Armed: an unarmed bot drops every enemy to go shopping (§E10), frenzied or not.
+        give(&mut w, 1, PISTOL, 1);
+        wield(&mut w, 1, PISTOL);
+
+        let mut calm = Bot::new(1, SEED, 0, 1.0);
+        calm.choose_goal(&w, a, SIM_DT);
+        assert!(
+            !matches!(calm.goal, Goal::Enemy(_)),
+            "control: an ordinary bot engaged an enemy {far} px away (sight {BOT_ENGAGE_RANGE})"
+        );
+        let mut mad = Bot::new(1, SEED, 0, 1.0).frenzied(true);
+        mad.choose_goal(&w, a, SIM_DT);
+        assert_eq!(
+            mad.goal,
+            Goal::Enemy(2),
+            "a frenzied bot did not hunt the enemy"
+        );
+
+        w.player_mut(1).expect("p1").health = BOT_FLEE_HEALTH * 0.5;
+        w.player_mut(2).expect("p2").body.pos = a + Vec2::new(BOT_ENGAGE_RANGE * 0.1, 0.0);
+        calm.choose_goal(&w, a, SIM_DT);
+        assert_eq!(
+            calm.goal,
+            Goal::Flee(2),
+            "control: a hurt ordinary bot did not flee"
+        );
+        mad.choose_goal(&w, a, SIM_DT);
+        assert_eq!(
+            mad.goal,
+            Goal::Enemy(2),
+            "a hurt frenzied bot broke contact"
+        );
     }
 
     /// §E10: arming yourself outranks the nearest thing on the floor.
