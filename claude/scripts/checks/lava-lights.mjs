@@ -146,7 +146,11 @@ export default async function ({ page, shot, log }) {
     else {
       const litG = await patchLuminance(page, rect(g))
       const litF = await patchLuminance(page, rect(far))
-      await stage(null)
+      // T23.25: **no vents, with the drawing still hidden** — not `stage(null)`, which shows the hazards layer again.
+      // The embers the vents threw are still in flight then (their life is sim time; at 3 fps under load it outlasts
+      // this wait by seconds), so the "unlit" rock wore the embers: 31.7–58.5 against a lit 29.4, red at −2 to −29,
+      // and 22.6 once they had died 1.5 s later. Alone, the embers are gone within the wait; the claim is the light.
+      await stage([], false)
       await page.waitForTimeout(400)
       const darkG = await patchLuminance(page, rect(g))
       const darkF = await patchLuminance(page, rect(far))

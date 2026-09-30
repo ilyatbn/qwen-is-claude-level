@@ -201,11 +201,23 @@ export default async function ({ page, shot, log }) {
   const truth = await sample('steady state ', 3)
   const realFps = 1000 / truth.p50
   log(`measured frame time: p50 ${truth.p50.toFixed(2)}ms (${realFps.toFixed(1)} fps), p99 ${truth.p99.toFixed(2)}ms`)
-  if (realFps < 55) {
-    throw new Error(`measured ${realFps.toFixed(1)} fps — that is a real frame-rate problem`)
-  }
-  if (truth.p99 > 40) {
-    throw new Error(`frame p99 ${truth.p99.toFixed(1)}ms — the frame time is spiking`)
+  // D-76 (owner, 2026-09-30; T23.25): a software rasteriser's frame rate is **reported, not gated** — the browser checks
+  // run on SwiftShader, and these two floors were what parked this check (51.3 fps in the serial tail). On a GPU the
+  // floors still hold. The renderer is read from the page (`ui/settings.ts`'s software pattern), not assumed.
+  const renderer = await page.evaluate(() => {
+    const gl = document.createElement('canvas').getContext('webgl2')
+    if (!gl) return 'none'
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    return String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER))
+  })
+  const software = /swiftshader|llvmpipe|softpipe|software/i.test(renderer)
+  const fpsLow = realFps < 55
+  const spiking = truth.p99 > 40
+  if (software) {
+    log(`D-76: ${renderer} is a software rasteriser — ${realFps.toFixed(1)} fps (floor 55 ${fpsLow ? 'MISSED' : 'met'}), p99 ${truth.p99.toFixed(1)} ms (ceiling 40 ${spiking ? 'MISSED' : 'met'}) reported, not gated`)
+  } else {
+    if (fpsLow) throw new Error(`measured ${realFps.toFixed(1)} fps on ${renderer} — that is a real frame-rate problem`)
+    if (spiking) throw new Error(`frame p99 ${truth.p99.toFixed(1)}ms on ${renderer} — the frame time is spiking`)
   }
 
   await shot('perf')

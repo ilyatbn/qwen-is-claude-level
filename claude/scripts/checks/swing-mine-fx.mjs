@@ -33,7 +33,10 @@ const stack = await startStack({
   label: 'swing-mine-fx',
   env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', DEV_START_HEALTH: '150', FIXED_SEED: '4242', WEATHER: 'off' },
 })
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+// T23.25: `&hour=1` holds F1's night sky, which this check was calibrated on. Unpinned, a round opens in moonlit day
+// with the moons on their arcs, and the arc's first point (the fading tail) read 23 one run and 50 the next over the
+// moving sky, the other four within 4 of each other — red 2 runs in 3 at `VISIBLE` 24.
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
 await enterBattle(page, { waitPlaying: true, label: 'swing-mine-fx' })
 const freeze = (on) => page.evaluate((v) => window.__game.freeze(v), on)
 const hideFx = (on) => page.evaluate((v) => window.__world.hideLayers(v ? ['fx'] : []), on)
@@ -54,6 +57,18 @@ await standStill(page)
 await sleep(200)
 const swingsHeard = (d) => d.swings ?? d.observed?.swings ?? 0
 const heard0 = swingsHeard(await dbg())
+// T23.25: **the swing is measured at a known age.** A swing lives `SWING_LIFE` (0.15 s) and is drawn at `ttl / life`
+// of its brightness (`fx/game.ts::swingFx`). The scene used to be frozen one round trip after the layer first held
+// the swing, so its age at the photograph was whatever the box allowed: on a loaded box (3 fps) the frame that added it
+// also aged it by 0.1 s, and it was caught at 8–31 % of its life in twelve tries (peaks 8 36 14 22 87 against
+// `VISIBLE`, or gone before the poll saw it). So the ordnance layer's clock is held for the swing's leg — its state's
+// `update` runs with dt 0, the check's instrument only, given back below — and the swing is photographed as it arrived.
+await page.evaluate(() => {
+  const st = window.__world.fxFeed().zones.state
+  const age = st.update
+  st.update = (dt) => age.call(st, 0)
+  window.__swingAge = age
+})
 await page.evaluate(() => window.__game.fire())
 let swing = null
 try {
@@ -61,8 +76,9 @@ try {
   await freeze(true)
   swing = await page.evaluate(() => {
     const s = window.__world.fxFeed().zones.state.swings.at(-1)
-    return { x: s.x, y: s.y, aim: s.aim, reach: s.reach, arc: s.arc }
+    return { x: s.x, y: s.y, aim: s.aim, reach: s.reach, arc: s.arc, k: s.life > 0 ? s.ttl / s.life : 0 }
   })
+  console.log(`  the swing is photographed with ${(swing.k * 100).toFixed(0)} % of its life left (the layer's clock held)`)
 } catch {
   fail('no swing reached the layer within 5 s of the use')
 }
@@ -104,6 +120,11 @@ if (swing) {
   else ok(`the old arc is gone from Phaser's layer (${moved.toFixed(1)})`)
   await freeze(false)
 }
+// The layer's clock given back (T23.25): the mine below, and the swing's own fade, run on it.
+await page.evaluate(() => {
+  window.__world.fxFeed().zones.state.update = window.__swingAge
+  delete window.__swingAge
+})
 
 // --- the mine ---------------------------------------------------------------------------------
 await selectWeapon(page, 'mine')

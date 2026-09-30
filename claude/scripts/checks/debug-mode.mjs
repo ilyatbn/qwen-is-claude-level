@@ -31,7 +31,11 @@ const stack = await startStack({
 // was right; the map was the problem.
   env: { FIXED_SEED: '4242', ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1' },
 })
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+// T23.25: the sky moves with the clock since T23.11 (the palettes' blend, the moons on their arcs), so the player
+// patch below — the control that proves the frame held still — changed between two photographs 400 ms apart with
+// nothing else moving (red on both runs measured). `&hour=0` holds the sky at the picture a round opens on (moonlit day,
+// `worldRenderer-math.ts::hourFromUrl`); the ring and its control are unchanged.
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=0' })
 await enterBattle(page, { waitPlaying: true, label: 'debug-mode' })
 await standStill(page)
 

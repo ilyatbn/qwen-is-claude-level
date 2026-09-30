@@ -184,7 +184,11 @@ const stack = await startStack({
     WEATHER: 'off',
   },
 })
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+// T23.25: `&hour=1` holds F1's night sky, the sky the canopy floor below was calibrated on. Since T23.11 a round
+// opens in moonlit day, and the parachute (additive, `itemSprites.ts`) over that pale haze moved its rect 39.7-40.2
+// against the floor of 45 (red on every run measured); held at night it moves 70.8, and with the canopy's draw
+// calls deleted 0.0 (planted, red). The daytime contrast is reported in T23.25, not gated here.
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
 await enterBattle(page, { waitPlaying: true, label: 'crates' })
 console.log(`  round ${ROUND_SECONDS}s`)
 

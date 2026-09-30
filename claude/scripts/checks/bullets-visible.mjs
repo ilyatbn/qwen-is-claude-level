@@ -57,7 +57,11 @@ const stack = await startStack({
   label: 'bullets-visible',
   env: { ROUND_SECONDS: '180', BOT_COUNT: '0', DEV_LOADOUT: '1', FIXED_SEED: '4242' },
 })
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana' })
+// T23.25: `&hour=1` holds F1's still night sky. Since T23.11 a round opens in moonlit day with the moons moving on their
+// arcs, and a moon crossing the lane's strip was a bright column creeping 276 → 360 px over two seconds — "a round
+// lit the lane" and "no bright column travelled" at once, red 3 runs in 3 alone and under load; pinned, the fired-away
+// control reads 0.0–1.9 where it read 73–77.
+const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
 await enterBattle(page, { waitPlaying: true, label: 'bullets-visible' })
 // **The DOM HUD is taken off the photograph** (T23.19F). The round timer (`ui/hud.ts`, `#hud-timer`,
 // top-centre) sits over the lane whenever the lane climbs to the top of the screen, as it does here
@@ -89,7 +93,7 @@ for (const [name, v] of Object.entries({
  */
 async function columnProfile(clip) {
   const b64 = (await page.screenshot({ clip })).toString('base64')
-  return page.evaluate(async ([src, clip]) => {
+  return page.evaluate(async ([src, clip, pickupRadius]) => {
     // The live count rides along in this call. It used to be a second
     // `page.evaluate`, and a second round-trip per sample is a third of the
     // sampling budget spent on a diagnostic — which directly cost catches of the
@@ -97,7 +101,15 @@ async function columnProfile(clip) {
     const dbg = window.__game.debug()
     const live = dbg.projectilesLive ?? 0
     // T23.19F: where the pickups lie in this strip, in strip columns (see `mostChanged`).
-    const items = (dbg.itemPositions ?? []).map((i) => (i.x - dbg.worldView.x) * dbg.zoom - clip.x)
+    // T23.25 (T23.19G F3): only pickups **in** the strip — `itemPositions` is every item on the map, and one above or
+    // below the lane at a lane x used to blank its columns in both the lane and the control.
+    const reach = pickupRadius * dbg.zoom
+    const items = (dbg.itemPositions ?? [])
+      .filter((i) => {
+        const sy = (i.y - dbg.worldView.y) * dbg.zoom
+        return sy >= clip.y - reach && sy <= clip.y + clip.height + reach
+      })
+      .map((i) => (i.x - dbg.worldView.x) * dbg.zoom - clip.x)
     const img = new Image()
     img.src = `data:image/png;base64,${src}`
     await img.decode()
@@ -120,7 +132,7 @@ async function columnProfile(clip) {
       cols[x] = peak
     }
     return { cols, live, items }
-  }, [b64, clip])
+  }, [b64, clip, K.PICKUP_RADIUS])
 }
 
 /**
@@ -143,17 +155,21 @@ async function columnProfile(clip) {
  * covers the measured ±7.
  */
 function mostChanged(profile, baseline, items = []) {
+  let masked = 0
   let bestX = -1
   let best = 0
   for (let x = 0; x < profile.length; x++) {
-    if (items.some((ix) => Math.abs(x - ix) <= ITEM_MASK)) continue
+    if (items.some((ix) => Math.abs(x - ix) <= ITEM_MASK)) {
+      masked++
+      continue
+    }
     const d = profile[x] - (baseline[x] ?? 0)
     if (d > best) {
       best = d
       bestX = x
     }
   }
-  return { x: bestX, peak: best }
+  return { x: bestX, peak: best, masked }
 }
 
 const ITEM_MASK = K.PICKUP_RADIUS * (await dbg()).zoom
@@ -294,6 +310,7 @@ async function trackOneShot(label, baseline) {
   // either "not drawn" or "not fired".
   let liveSeen = 0
   let peakSeen = 0
+  let maskedMost = 0
   const gaps = []
   // The time a round needs to cross the strip, with slack — so a round that
   // never arrives ends the loop rather than hanging it.
@@ -303,6 +320,7 @@ async function trackOneShot(label, baseline) {
     const raw = await columnProfile(STRIP)
     const s = { ...mostChanged(raw.cols, baseline, raw.items), live: raw.live }
     gaps.push(Date.now() - before)
+    maskedMost = Math.max(maskedMost, s.masked)
     // Comfortably above the control frame's own peak, so terrain and sky cannot
     // supply it.
     if (s.peak > peakSeen) peakSeen = s.peak
@@ -314,7 +332,7 @@ async function trackOneShot(label, baseline) {
   console.log(
     `  ${label}: ${seen.length} bright sample(s), layer held a round in ${liveSeen} ` +
       `sample(s), ${gaps.length} samples at ~${Math.round(gaps.reduce((a, b) => a + b, 0) / Math.max(1, gaps.length))} ms each, ` +
-      `biggest column delta ${peakSeen.toFixed(1)} (threshold 40) ` +
+      `biggest column delta ${peakSeen.toFixed(1)} (threshold 40), at most ${maskedMost} column(s) masked for pickups ` +
       JSON.stringify(seen.slice(0, 8)),
   )
   return { seen, liveSeen, peakSeen }

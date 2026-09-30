@@ -34,6 +34,26 @@ const MIN_TURRET_SHARE = 0.15
 /** The control region's allowance (a frozen frame: 0.000 measured). */
 const MAX_CONTROL_SHARE = 0.02
 
+/**
+ * T23.25: wait until the camera has held one place for a few samples (or give up after `timeoutMs` and let the
+ * frozen-frame geometry below cope). The player `place`d beside a platform falls onto the ground; the camera follows.
+ */
+async function waitForStillCamera(page, timeoutMs = 4000) {
+  const view = () => page.evaluate(() => {
+    const v = window.__game.debug().worldView
+    return `${Math.round(v.x)},${Math.round(v.y)}`
+  })
+  const end = Date.now() + timeoutMs
+  let last = await view()
+  let still = 0
+  while (still < 3 && Date.now() < end) {
+    await page.waitForTimeout(100)
+    const now = await view()
+    still = now === last ? still + 1 : 0
+    last = now
+  }
+}
+
 export default async function ({ page, shot, log }) {
   const plats = () => page.evaluate(() => window.__game.platforms())
 
@@ -98,6 +118,16 @@ export default async function ({ page, shot, log }) {
     window.__game.setTime(0)
   })
   await page.waitForTimeout(250)
+
+  // T23.10: one frozen frame for the pair — at zoom 1 the player placed beside the highest platform can still be
+  // falling, and the camera following it moved the whole frame between the two photographs (control 89.5 %).
+  // T23.25: **and freeze before any screen geometry is taken, once the camera has stopped.** The rects below are
+  // screen clips derived through the camera; taken while it was still following the fall and photographed after it
+  // moved on, they sampled rock beside the turret: under load (16 fps) the platform projected to (975,179) before the
+  // freeze and (953,189) after it, and the band read 0.0 % / 20.6 % with the turret plainly in the shot.
+  await waitForStillCamera(page)
+  await page.evaluate(() => window.__game.freeze(true))
+  await page.waitForTimeout(200)
 
   // **Sample where the change is** (§A15), not over the whole art box.
   //
@@ -166,10 +196,6 @@ export default async function ({ page, shot, log }) {
 
   const shownAt = box(onPlatform)
   const controlAt = box(control)
-  // T23.10: one frozen frame for the pair — at zoom 1 the player placed beside the highest platform can still be
-  // falling, and the camera following it moved the whole frame between the two photographs (control 89.5 %).
-  await page.evaluate(() => window.__game.freeze(true))
-  await page.waitForTimeout(200)
   const drawnFrame = await photo(page)
   await shot('platforms-visible')
 
@@ -216,6 +242,8 @@ export default async function ({ page, shot, log }) {
   // occluded by putting them where a rider really is.
   await page.evaluate(([x, y]) => window.__game.place(x, y - 30), [target.x, target.y])
   await page.waitForTimeout(500)
+  // T23.25: and wait for the camera to arrive (see `waitForStillCamera`) — the batch read the control 29.0 here.
+  await waitForStillCamera(page)
   // **Recompute the rects: `place` moved the camera.**
   //
   // `shownAt` and `controlAt` are *screen-space* clips derived from a world
@@ -271,9 +299,13 @@ export default async function ({ page, shot, log }) {
     throw new Error(`derived ${rode.lit} occupied but ${rode.lamps} lamps are lit`)
   }
   await page.waitForTimeout(300)
-
-  const mountedPatch = await samplePatch(page, lampAt)
-  const controlMounted = await samplePatch(page, lampCtrlAt)
+  // T23.25: mounting seats the rider and the camera follows; the same *world* rects are re-derived through the
+  // camera as it now stands, so a camera that moved samples the same rock rather than its neighbour.
+  await waitForStillCamera(page)
+  const lampAtMounted = await rectAround(target.x + lamp.dx, target.y + lamp.dy, lamp.w * 0.55, lamp.h * 1.4)
+  const lampCtrlAtMounted = await rectAround(controlX + lamp.dx, target.y + lamp.dy, lamp.w * 0.55, lamp.h * 1.4)
+  const mountedPatch = await samplePatch(page, lampAtMounted)
+  const controlMounted = await samplePatch(page, lampCtrlAtMounted)
   await shot('platforms-mounted')
 
   const m = assertChanged(unmountedOnPad, mountedPatch, {
