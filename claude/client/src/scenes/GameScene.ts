@@ -81,6 +81,7 @@ import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SpaceSky } from '../render/spaceSky'
 import { fovRadius, nightView } from '../render/lightmap-math'
+import { NIGHT_CIRCLES, seenAt, sightLights } from '../look/worldRenderer-math'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
@@ -557,6 +558,13 @@ export class GameScene extends Phaser.Scene {
   /** T23.10: the sight radius the last frame's night view was drawn with (`debug().sight`). */
   private sightFov = 0
   private readonly sightSeen = new Map<number, { x: number; y: number; visible: boolean }>()
+  /**
+   * T23.10B F1: the circles this frame's remotes were judged against (`renderRemotes`) — the player's sight, then the
+   * lights they see in (`sightLights`) — handed on unchanged to the night view and the minimap, so neither can draw a
+   * pool or a dot the rule did not.
+   */
+  private sight: { x: number; y: number; r: number }[] = []
+  private sightLit: { x: number; y: number; r: number }[] = []
   private phase: Phase = 'lobby'
   private timeLeft = 0
   /**
@@ -693,6 +701,8 @@ export class GameScene extends Phaser.Scene {
     this.meAlive = true
     this.sightFov = 0
     this.sightSeen.clear()
+    this.sight = []
+    this.sightLit = []
     this.battery = 0
     this.heals = 0
     this.batteries = 0
@@ -2521,11 +2531,12 @@ export class GameScene extends Phaser.Scene {
       hasFlashlight: this.hasFlashlight,
     })
     if (this.minimap) {
-      const dots = [...this.remotes.entries()].map(([id, r]) => ({
-        id,
-        x: r.view.container.x,
-        y: r.view.container.y,
-      }))
+      // T23.10B F1: where the rule measured each remote this frame (`sightSeen`) — a hidden container is not moved, and
+      // its stale place could sit in a light the remote has left.
+      const dots = [...this.remotes.keys()].flatMap((id) => {
+        const at = this.sightSeen.get(id)
+        return at ? [{ id, x: at.x, y: at.y }] : []
+      })
       // The *same* fov the night view and the renderer cull with — computed once,
       // above, rather than recomputed here. Two copies of this number would let
       // the minimap and the screen disagree about who is visible (§A6).
@@ -2534,7 +2545,7 @@ export class GameScene extends Phaser.Scene {
       // T22.12C R93: and the black hole, once it is here — hidden with its layer, so
       // the check's hidden frame is a control for the minimap too.
       const hole = this.blackHoleFx.state.hidden ? null : this.mirror.blackHole
-      this.minimap.update(dt, rp, dots, fov, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
+      this.minimap.update(dt, rp, dots, this.sight, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
     }
 
     // T23.10 (R7): the player's field of view is drawn as F1 draws night — a soft falloff into the night palette
@@ -2564,7 +2575,8 @@ export class GameScene extends Phaser.Scene {
       fps: this.game.loop.actualFps,
     })
     this.sightFov = fov
-    this.worldRenderer?.setNightView(nightView(darkness, [{ x: rp.x, y: rp.y, r: fov }]))
+    // T23.10B F1: the sight circle and the lights the remotes were judged by (`renderRemotes`), not a second choice.
+    this.worldRenderer?.setNightView(nightView(darkness, [{ x: rp.x, y: rp.y, r: fov }], this.sightLit))
     // T23.09C F7: built every frame whether or not the world renderer is up — its bookkeeping (which rounds have
     // flashed) must not go stale while the renderer loads: a round first listed then would flash late, mid-air.
     const effectLights = this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView))
@@ -2665,6 +2677,12 @@ export class GameScene extends Phaser.Scene {
       health: C().BASE_HEALTH,
       hasFlashlight: this.hasFlashlight,
     })
+    // T23.10B F1: one list of circles for the rule, the night view's pools and the minimap. The lights are the last
+    // list handed to the renderer (this frame's is built after the bodies, which its jets depend on) — so a pool opens,
+    // and a player in it appears, one frame after its light; both together.
+    const own = { x: localPos.x, y: localPos.y, r: fov }
+    this.sightLit = sightLights(this.effectLights.last, viewRect(this.cameras.main.worldView), NIGHT_CIRCLES - 1)
+    this.sight = [own, ...this.sightLit]
 
     for (const [id, p] of sampled) {
       let r = this.remotes.get(id)
@@ -2677,9 +2695,9 @@ export class GameScene extends Phaser.Scene {
       r.lastSeen = now
       // Cull outside your field of view (`docs/14` §5): at night you do not see
       // someone standing in the dark, and drawing them anyway is the whole
-      // see-in-the-dark hole.
-      const d = Math.hypot(p.x - localPos.x, p.y - localPos.y)
-      const visible = darkness <= 0.01 || d <= fov
+      // see-in-the-dark hole. T23.10B F1: "…outside your FoV **and not inside any
+      // light**" — the lights' circles are the night view's own (`this.sight`).
+      const visible = darkness <= 0.01 || seenAt(this.sight, p.x, p.y)
       r.view.container.setVisible(visible && flag(p.flags, FLAG.alive))
       // T23.10: where the rule measured this remote (its sampled place — a hidden container is not moved) and the verdict.
       this.sightSeen.set(id, { x: p.x, y: p.y, visible: r.view.container.visible })
@@ -3597,6 +3615,10 @@ export class GameScene extends Phaser.Scene {
           // `pads` alone would pass for a scene that decoded them and drew
           // nothing, which is the §A39 shape this list exists to catch.
           pads: self.padViews.length,
+          // T23.10B F1: where the gates stand (their light is a gate's, `gateLights`) — night-view-match's light leg.
+          padsAt: self.padViews.map((p) => ({ x: p.x, y: p.y })),
+          // T23.10B F1: every standing light on the map (gates, crystals) — a check's stand outside all of them.
+          staticLights: self.effectLights.statics.query({ x: 0, y: 0, w: self.core.width, h: self.core.height }).map((l) => ({ x: l.x, y: l.y, r: l.r })),
           padsDrawn: self.world?.pads.count ?? 0,
           // T21.12, both ends once more: a pad can be drawn as the fallback
           // ring with no gate art loaded, and that is a legal state
@@ -4026,6 +4048,8 @@ export class GameScene extends Phaser.Scene {
           // remote's drawn place and whether it is drawn (`renderRemotes` hides one beyond it at night).
           sight: {
             fov: self.sightFov,
+            // T23.10B F1: the lights' circles the remotes were judged against (and the night view drew).
+            lit: self.sightLit.map((c) => ({ ...c })),
             remotes: [...self.sightSeen].filter(([id]) => self.remotes.has(id)).map(([id, r]) => ({ id, ...r })),
           },
           // T23.06B (F3/F9): why this map's terrain fields are not the full picture — the worker

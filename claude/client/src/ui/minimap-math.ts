@@ -14,6 +14,8 @@
  * looking at the corner of the screen.
  */
 
+import { seenAt } from '../look/worldRenderer-math'
+
 /** One byte per minimap cell: 0 unexplored, 255 fully explored. */
 export class ExploredMask {
   readonly w: number
@@ -99,20 +101,16 @@ export function radiusToCells(worldR: number, g: MinimapGeometry): number {
 /**
  * Which remote players may be drawn.
  *
- * The FoV test is the same one the renderer uses to decide whether to draw the
+ * The test is the same one the renderer uses to decide whether to draw the
  * player at all, so the minimap can never show someone the screen is hiding.
+ * T23.10B F1: that test is `seenAt` over the scene's sight circles — the
+ * player's own sight and the lights they see in (docs/14 §5) — not a radius.
  */
 export function visibleRemotes<T extends { x: number; y: number }>(
-  me: { x: number; y: number },
   others: readonly T[],
-  fovRadius: number,
+  sight: readonly { x: number; y: number; r: number }[],
 ): T[] {
-  const r2 = fovRadius * fovRadius
-  return others.filter((o) => {
-    const dx = o.x - me.x
-    const dy = o.y - me.y
-    return dx * dx + dy * dy <= r2
-  })
+  return others.filter((o) => seenAt(sight, o.x, o.y))
 }
 
 /**

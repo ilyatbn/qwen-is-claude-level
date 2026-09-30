@@ -324,6 +324,10 @@ export default async function ({ page, shot, log }) {
       for (let y = bx.y; y <= bx.y + bx.h; y += 4) for (let x = bx.x; x <= bx.x + bx.w; x += 4) if (c.solidAt(Math.round(v.x + x / d.zoom), Math.round(v.y + y / d.zoom))) return true
       return false
     }, bx)
+  // T23.10B F3: the moon's widest clearance of the earth's disc over the search (screen px, rim to rim). At zoom 1 the
+  // earth's radius doubled and the orbit did not, so the moon circled inside the earth, and this check's moon leg went
+  // quiet ("behind the earth") instead of red.
+  let moonClear = -Infinity
   const searchMoments = async () => {
     const clearAt = new Map()
     for (let t = 0; t <= SEARCH_SPAN + DT; t += SEARCH_STEP) {
@@ -331,6 +335,7 @@ export default async function ({ page, shot, log }) {
       await frames(2)
       const sky = (await dbg()).spaceSky
       if (!sky) throw new Error('debug().spaceSky is null at ?gravity=space — the space sky never came up')
+      moonClear = Math.max(moonClear, Math.hypot(sky.moon.screenX - sky.earth.screenX, sky.moon.screenY - sky.earth.screenY) - sky.earth.screenR - sky.moon.screenR)
       const clear = []
       for (const n of ['sun', 'earth', 'moon']) {
         const box = bodyBox(sky[n], REACH[n])
@@ -387,6 +392,10 @@ export default async function ({ page, shot, log }) {
   const { T0, best } = found
   log(`control rock at ${rock.x},${rock.y} r ${rock.r}: patch ${rockRect.x},${rockRect.y} ${rockRect.w}×${rockRect.h}${tried.length ? ` (passed over ${tried.join('; ')})` : ''}`)
   log(`moments: t0 = ${T0} s, t1 = ${T0 + DT} s (${best} bodies clear at both)`)
+  // T23.10B F3: over the search's span (several `SPACE_MOON_PERIOD`s) the moon has to clear the earth at some moment —
+  // an orbit inside the earth's disc is a moon nobody sees.
+  log(`the moon's widest clearance of the earth's disc over ${SEARCH_SPAN + DT} s: ${moonClear.toFixed(1)} px, rim to rim (must be > 0)`)
+  if (!(moonClear > 0)) throw new Error(`the moon never clears the earth's disc (best ${moonClear.toFixed(1)} px, rim to rim) — its orbit sits inside the earth`)
 
   const a = await moment(T0, 't0')
   const b = await moment(T0 + DT, 't1')

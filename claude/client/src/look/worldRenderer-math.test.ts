@@ -3,7 +3,7 @@
  * tiers, and the CPU copy of the output transform `world-canvas` compares the screen against.
  */
 import { describe, expect, it } from 'vitest'
-import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP, hourFromUrl } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP, hourFromUrl, sightLights, seenAt, NIGHT_CIRCLES } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -95,17 +95,44 @@ describe('nightUniforms (T23.10, R7)', () => {
   })
 })
 
-describe('nightUniforms lit by effect lights (T23.10, R7)', () => {
-  it('after the sight circles, the brightest lights see their own radius, as many as fit', () => {
-    const v = { darkness: 0.82, nightDarkness: 0.82, soft: 0.35, circles: [{ x: 0, y: 0, r: 220 }] }
-    const L = (i: number, r: number) => ({ x: 10, y: 10, z: 0, r, rgb: '255,0,0', i })
-    const u = nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 }, [L(0.5, 40), L(2, 150), L(0, 99), L(1, 60)], 3)!
+describe('nightUniforms lit by effect lights (T23.10, R7; T23.10B F1)', () => {
+  it("after the sight circles, the scene's lit circles, each fading over its whole radius", () => {
+    const v = { darkness: 0.82, nightDarkness: 0.82, soft: 0.35, circles: [{ x: 0, y: 0, r: 220 }], lit: [{ x: 10, y: 10, r: 150 }, { x: 10, y: 10, r: 60 }] }
+    const u = nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 }, NIGHT_CIRCLES)!
     expect(u.circles.length).toBe(3)
     expect(u.circles[1]!.outer).toBeCloseTo(150)
     expect(u.circles[1]!.inner).toBe(0)
     expect(u.circles[2]!.outer).toBeCloseTo(60)
-    // Control: with no lights, the sight alone.
-    expect(nightUniforms(v, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 })!.circles.length).toBe(1)
+    // Control: with no lit circles, the sight alone — this pass no longer picks lights of its own.
+    expect(nightUniforms({ ...v, lit: [] }, { x: 0, y: 0, w: 100, h: 100 }, { w: 100, h: 100 }, NIGHT_CIRCLES)!.circles.length).toBe(1)
+  })
+})
+
+describe('sightLights and seenAt (T23.10B F1/F2: the seeing rule, one list)', () => {
+  const view = { x: 0, y: 0, w: 1000, h: 1000 }
+  const L = (x: number, i: number, r: number, extra: object = {}) => ({ x, y: 500, z: 0, r, rgb: '255,0,0', i, ...extra })
+
+  it("keeps lit lights in view, leaves out a body's own jet, the dark ones and the ones off view", () => {
+    const got = sightLights([L(100, 1, 50), L(300, 1, 50, { body: true }), L(500, 0, 50), L(-500, 1, 50)], view, NIGHT_CIRCLES)
+    expect(got).toEqual([{ x: 100, y: 500, r: 50 }])
+  })
+
+  it('ranks by pickLights when they do not fit: combat before the map’s standing lights (F2)', () => {
+    // A gate (fixed) brighter and wider than the blast: by raw intensity it would win the one slot.
+    const gate = L(100, 3, 150, { fixed: true })
+    const blast = L(700, 1, 40)
+    expect(sightLights([gate, blast], view, 1)).toEqual([{ x: 700, y: 500, r: 40 }])
+    // Control: with room for both, both.
+    expect(sightLights([gate, blast], view, 2)).toHaveLength(2)
+    expect(sightLights([gate, blast], view, 0)).toEqual([])
+  })
+
+  it('seenAt is inside any circle, the edge included', () => {
+    const circles = [{ x: 0, y: 0, r: 100 }, { x: 500, y: 0, r: 50 }]
+    expect(seenAt(circles, 100, 0)).toBe(true)
+    expect(seenAt(circles, 540, 0)).toBe(true)
+    expect(seenAt(circles, 300, 0)).toBe(false)
+    expect(seenAt([], 0, 0)).toBe(false)
   })
 })
 

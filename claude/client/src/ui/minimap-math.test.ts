@@ -91,9 +91,11 @@ describe('ExploredMask', () => {
 
 describe('visibleRemotes', () => {
   const me = { x: 1000, y: 1000 }
+  /** The player's own sight circle alone. */
+  const own = (r: number) => [{ ...me, r }]
 
   it('shows a player inside the FoV', () => {
-    expect(visibleRemotes(me, [{ x: 1100, y: 1000 }], 220)).toHaveLength(1)
+    expect(visibleRemotes([{ x: 1100, y: 1000 }], own(220))).toHaveLength(1)
   })
 
   /**
@@ -101,12 +103,12 @@ describe('visibleRemotes', () => {
    * position the screen is not already giving you.
    */
   it('hides a player outside the FoV', () => {
-    expect(visibleRemotes(me, [{ x: 1400, y: 1000 }], 220)).toHaveLength(0)
+    expect(visibleRemotes([{ x: 1400, y: 1000 }], own(220))).toHaveLength(0)
   })
 
   it('is exact at the boundary', () => {
-    expect(visibleRemotes(me, [{ x: 1220, y: 1000 }], 220)).toHaveLength(1)
-    expect(visibleRemotes(me, [{ x: 1221, y: 1000 }], 220)).toHaveLength(0)
+    expect(visibleRemotes([{ x: 1220, y: 1000 }], own(220))).toHaveLength(1)
+    expect(visibleRemotes([{ x: 1221, y: 1000 }], own(220))).toHaveLength(0)
   })
 
   it('shrinks what it shows when the FoV shrinks, which is what night does', () => {
@@ -115,7 +117,16 @@ describe('visibleRemotes', () => {
       { x: 1300, y: 1000 },
       { x: 1600, y: 1000 },
     ]
-    expect(visibleRemotes(me, others, 640)).toHaveLength(3)
-    expect(visibleRemotes(me, others, 220)).toHaveLength(1)
+    expect(visibleRemotes(others, own(640))).toHaveLength(3)
+    expect(visibleRemotes(others, own(220))).toHaveLength(1)
+  })
+
+  // T23.10B F1: docs/14 §5 — "outside your FoV **and not inside any light**". The same circles the screen's rule uses.
+  it('shows a player outside the sight who stands inside a light, and not one outside both', () => {
+    const lit = [{ x: 1600, y: 1000, r: 150 }]
+    const out = [{ x: 1600, y: 1000 }, { x: 1300, y: 1000 }]
+    expect(visibleRemotes(out, [...own(220), ...lit])).toEqual([{ x: 1600, y: 1000 }])
+    // Control: the light taken away, neither is shown.
+    expect(visibleRemotes(out, own(220))).toHaveLength(0)
   })
 })

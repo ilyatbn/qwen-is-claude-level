@@ -5,6 +5,8 @@
  * night: `FOV_NIGHT`), cy at 1.1 ×. In ana's one frame bo is drawn and cy is not (`renderRemotes`: hidden beyond `fov`
  * at night) — counted at both ends (`debug().sight`: what the scene decided) and on pixels: each one's box against
  * the same box after both walk off (`debugPlace` far away) — bo's box changes, cy's does not, a control box does not.
+ * T23.10B F1: then cy beside a gate, outside her sight but inside its light — drawn (docs/14 §5: "outside your FoV
+ * **and not inside any light**"), counted at both ends (the verdict, the light circle it used, the night view's).
  *
  *   node scripts/checks/night-view-match.mjs
  */
@@ -23,6 +25,8 @@ const BLANK_MAX = 0.01
 const NEAR = 0.9
 const FAR = 1.1
 const TOL = 0.035
+/** T23.10B F1: the light leg's stand, as a range of shares of the sight — outside it, inside the view at zoom 1. */
+const LIT_FAR = [1.3, 2.2]
 
 const stack = await startStack({
   port: await freePort(),
@@ -44,7 +48,10 @@ try {
   // Ground to stand on: ana at a column x, bo on the ground to her right whose body centre is NEAR·F from hers, cy on
   // the ground to her left at FAR·F — the distance in 2-D (the ground need not be level), air above each.
   const F = k.FOV_NIGHT
-  const spot = await ana.evaluate(([F, near, far, h]) => {
+  // T23.10B F1: cy's stand is outside every standing light as well as outside the sight, or the rule rightly draws him
+  // (the first stand this used to find, (218, 598), is 83 px from a gate's light at (256, 524), r 150).
+  const statics = await ana.evaluate(() => window.__game.debug().staticLights ?? [])
+  const spot = await ana.evaluate(([F, near, far, h, startX, statics]) => {
     const c = window.__game.core
     const ground = (x) => {
       for (let y = 40; y < c.height - 4; y++) if (c.solidAt(Math.round(x), y)) return y
@@ -68,16 +75,16 @@ try {
       }
       return best && best.e < 0.005 ? best : null
     }
-    for (let x = 300; x < c.width - 300; x += 16) {
+    for (let x = startX; x < c.width - 300; x += 16) {
       const a = centre(x)
       if (!a) continue
       const b = at(a, near, 1)
       const cc = b && at(a, far, -1)
-      if (b && cc) return { a, b, c: cc }
+      if (b && cc && !statics.some((l) => Math.hypot(cc.x - l.x, cc.y - l.y) <= l.r + h)) return { a, b, c: cc }
     }
     return null
-  }, [F, NEAR, FAR, k.PLAYER_H])
-  if (!spot) throw new Error('no ground on seed 4242 with a stand at both distances')
+  }, [F, NEAR, FAR, k.PLAYER_H, 300, statics])
+  if (!spot) throw new Error('no ground on seed 4242 with a stand at both distances, cy\'s clear of every light')
   const place = async (page, p) => {
     await page.evaluate(([x, y]) => window.__game.debugPlace(x, y), [p.x, p.y])
     await page.waitForFunction(() => window.__game.debug().stand.lastPlace !== null, null, { timeout: 10_000 }).catch(() => {})
@@ -126,6 +133,75 @@ try {
   const m = `pixels in ana's frame: bo's box ${(pB * 100).toFixed(1)} % changes when he leaves (min ${DRAWN_MIN * 100}), cy's ${(pC * 100).toFixed(1)} % (max ${BLANK_MAX * 100}), control ${(pK * 100).toFixed(1)} %`
   if (pB >= DRAWN_MIN && pC <= BLANK_MAX && pK <= BLANK_MAX) ok(m)
   else fail(m)
+
+  // --- T23.10B F1: a player outside the sight but **inside a light** is drawn (docs/14 §5) --------------------------
+  // cy beside a gate (its light: `gateLights`, a map's standing light), ana on the ground LIT_FAR × her sight away — so
+  // the sight alone hides him (the leg above is that control) and only the light can show him. Both ends: the scene's
+  // verdict and the circle it judged him by (`debug().sight.lit`, what the night view drew), then the pixels.
+  const pads = await ana.evaluate(() => window.__game.debug().padsAt ?? [])
+  const litSpot = await ana.evaluate(([pads, F, h, lo, hi]) => {
+    const c = window.__game.core
+    const ground = (x, y0 = 40) => {
+      for (let y = Math.max(4, y0); y < c.height - 4; y++) if (c.solidAt(Math.round(x), y)) return y
+      return null
+    }
+    const clear = (x, g) => {
+      for (let y = g - h * 2; y < g; y += 2) if (c.solidAt(Math.round(x), y)) return false
+      return true
+    }
+    const centreNear = (x, y) => {
+      const g = ground(x, y - h * 3)
+      return g !== null && g < y + h * 3 && clear(x, g) ? { x, y: g - h / 2 - 1 } : null
+    }
+    for (const p of pads) {
+      // Beside the gate, not on it (a pad is a teleport): 40–70 px to one side, inside the light's radius.
+      for (const dx of [50, -50, 65, -65, 40, -40]) {
+        const cy = centreNear(p.x + dx, p.y)
+        if (!cy) continue
+        for (const dir of [1, -1]) {
+          for (let ax = cy.x + dir * lo * F; Math.abs(ax - cy.x) <= hi * F; ax += dir * 8) {
+            const a = centreNear(ax, cy.y)
+            if (!a) continue
+            const d = Math.hypot(a.x - cy.x, a.y - cy.y) / F
+            if (d >= lo && d <= hi && Math.abs(a.y - cy.y) < 200) return { pad: p, cy, a }
+          }
+        }
+      }
+    }
+    return null
+  }, [pads, F, k.PLAYER_H, LIT_FAR[0], LIT_FAR[1]])
+  if (!litSpot) fail(`no gate on seed 4242 with ground beside it and a stand ${LIT_FAR.join('–')} × the sight away (${pads.length} gates)`)
+  else {
+    await place(ana, litSpot.a)
+    await place(cy, litSpot.cy)
+    await sleep(1500)
+    await drawnFrames(ana, 10)
+    const s2 = await ana.evaluate(() => {
+      const d = window.__game.debug()
+      return { fov: d.sight.fov, me: d.renderPos, lit: d.sight.lit, remotes: d.sight.remotes, drawn: window.__world.nightDrawn() }
+    })
+    const r = s2.remotes.find((x) => x.id === cyId)
+    const d = r ? Math.hypot(r.x - s2.me.x, r.y - s2.me.y) / s2.fov : NaN
+    const inLit = r ? s2.lit.filter((c) => Math.hypot(r.x - c.x, r.y - c.y) <= c.r) : []
+    const l2 = `cy beside the gate at ${JSON.stringify(litSpot.pad)}, ${d.toFixed(2)} × ana's sight away, inside ${inLit.length} of the ${s2.lit.length} lights she sees in; drawn ${r?.visible}; the night view drew ${s2.drawn?.circles.length ?? 0} circles`
+    if (!r || !(d > 1)) fail(`${l2} — the stand is not outside her sight`)
+    else if (inLit.length === 0) fail(`${l2} — no light's circle covers him (the gate's light not seen in)`)
+    else if (!(s2.drawn && s2.drawn.circles.length >= 1 + s2.lit.length)) fail(`${l2} — the night view did not draw the lights the rule used`)
+    else if (r.visible !== true) fail(`${l2} — standing in a light, and not drawn (docs/14 §5)`)
+    else ok(`both ends, a light: ${l2}`)
+    if (r) {
+      const bL = await box(r)
+      const lit1 = await photo(ana)
+      await place(cy, { x: spot.a.x - 2 * F * 2.2, y: spot.a.y - 400 })
+      await sleep(1200)
+      await drawnFrames(ana, 10)
+      const lit0 = await photo(ana)
+      const pL = (await comparePhotos(ana, lit1, lit0, { rect: bL })).fraction
+      const m2 = `pixels: cy's box in the gate's light ${(pL * 100).toFixed(1)} % changes when he leaves (min ${DRAWN_MIN * 100})`
+      if (pL >= DRAWN_MIN) ok(m2)
+      else fail(m2)
+    }
+  }
 } finally {
   await stack.close()
 }

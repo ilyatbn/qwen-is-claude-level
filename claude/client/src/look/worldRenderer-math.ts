@@ -6,6 +6,7 @@
  * scene description are y down; this is the one place the flip happens.
  */
 import type { Light, ViewRect } from './scene'
+import { pickLights } from './terrainLights'
 
 /** R14: the full tier is the pictures; the low tier renders the world canvas and its target at half resolution without MSAA (the mockup's `scale 2`). */
 export type QualityTier = 'full' | 'low'
@@ -108,6 +109,40 @@ export interface NightView {
   nightDarkness: number
   soft: number
   circles: readonly { x: number; y: number; r: number }[]
+  /**
+   * T23.10B F1: the effect lights' circles the scene **sees in** (`sightLights`) — the same list its remotes and its
+   * minimap were judged against, so a pool the night view opens is a pool a player standing in is drawn in. Drawn after
+   * `circles`, fading over the whole radius. Absent: none.
+   */
+  lit?: readonly { x: number; y: number; r: number }[]
+}
+
+/** T23.10: the night view's circles, at most — the player's sight, then the effect lights (`sightLights`). */
+export const NIGHT_CIRCLES = 8
+
+/**
+ * T23.10B F1/F2: the effect lights a player sees in at night, as circles (world px) — at most `slots`, chosen as the
+ * terrain chooses its lights (`terrainLights.ts::pickLights`: culled to `view`, combat before a map's standing ones,
+ * the strongest by intensity × coverage). docs/14 §5: "a remote player whose position is outside your FoV **and not
+ * inside any light** is simply not rendered" — so this one list is what `nightUniforms` opens, what `GameScene`'s
+ * remotes are drawn by and what the minimap's dots are filtered by (`seenAt`).
+ *
+ * **A body's own jet light is left out** (`Light.body`): it exists only for a body already drawn (`jetFlames`), so
+ * counting it would let a remote keep itself visible by its own flame once seen, and never when not — the rule would
+ * depend on the verdict it decides. It still lights the rock.
+ */
+export function sightLights(lights: readonly Light[], view: ViewRect, slots: number): { x: number; y: number; r: number }[] {
+  if (!(slots > 0)) return []
+  return pickLights(
+    lights.filter((l) => !l.body && l.i > 0 && l.r > 0),
+    view,
+    slots,
+  ).map((l) => ({ x: l.x, y: l.y, r: l.r }))
+}
+
+/** T23.10B F1: is world point (x, y) inside any of `circles` (a sight circle or a light's) — the seeing rule. */
+export function seenAt(circles: readonly { x: number; y: number; r: number }[], x: number, y: number): boolean {
+  return circles.some((c) => Math.hypot(x - c.x, y - c.y) <= c.r)
 }
 
 /**
@@ -128,15 +163,15 @@ export const NIGHT_VIEW_FLOOR: [number, number, number] = hexLinear(0x080a12).ma
 
 /**
  * The night view's uniforms for a frame drawn of `view` (world px) into a `buf`-sized drawing buffer. Null: none.
- * **Lit by effect lights** (R7): after the sight circles, the frame's effect lights (`lights`, the brightest first, as
- * many as fit `maxCircles`) each see their own radius, fading over the whole of it — a blast, a burning vent, a gate
- * lights what is round it out there in the dark, as F1's lights do.
+ * **Lit by effect lights** (R7): after the sight circles, the lights the scene sees in (`v.lit`, `sightLights`) each
+ * see their own radius, fading over the whole of it — a blast, a burning vent, a gate lights what is round it out there
+ * in the dark, as F1's lights do. T23.10B F1: the scene chooses them, not this — so a pool drawn here is a pool its
+ * remotes were judged against.
  */
 export function nightUniforms(
   v: NightView | null,
   view: ViewRect,
   buf: { w: number; h: number },
-  lights: readonly Light[] = [],
   maxCircles = Infinity,
 ): { k: number; floor: [number, number, number]; circles: { x: number; y: number; inner: number; outer: number }[] } | null {
   if (!v || !(v.nightDarkness > 0)) return null
@@ -153,10 +188,6 @@ export function nightUniforms(
     outer: outer * sx,
   })
   const circles = v.circles.map((c) => at(c.x, c.y, c.r * (1 - v.soft), c.r))
-  const lit = [...lights].filter((l) => l.i > 0 && l.r > 0).sort((a, b) => b.i - a.i)
-  for (const l of lit) {
-    if (circles.length >= maxCircles) break
-    circles.push(at(l.x, l.y, 0, l.r))
-  }
+  for (const l of v.lit ?? []) circles.push(at(l.x, l.y, 0, l.r))
   return { k, floor: NIGHT_VIEW_FLOOR, circles: circles.slice(0, maxCircles) }
 }

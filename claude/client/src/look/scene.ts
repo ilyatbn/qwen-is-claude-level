@@ -66,6 +66,11 @@ export interface Light {
    * than the terrain has slots, `pickLights` keeps every combat light before any of these. Absent in the look-lab.
    */
   fixed?: true
+  /**
+   * T23.10B F1: a body's own light (its jet, `effectLights.ts`'s `jet` kind) — it lights the rock, but a player is not
+   * *seen* by it (`worldRenderer-math.ts::sightLights`): it exists only for a body already drawn. Absent otherwise.
+   */
+  body?: true
 }
 
 /** The key light `lit()` falls back to, and the cool fill from the sky. */

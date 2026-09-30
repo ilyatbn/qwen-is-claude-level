@@ -177,7 +177,8 @@ describe('beams, muzzles, rockets, fire, jets, vents, gates', () => {
     expect(jetFlames(null)).toEqual([])
     const fx = new EffectLights()
     const l = fx.frame(sources(new OrdnanceState(LIFE, TRAIL), { jets: [flame] }), view)
-    expect(l).toEqual([{ x: 1296, y: 706, ...JET_PLUME_LIGHT }])
+    // T23.10B F1: marked as a body's own light — it lights the rock, and sees no one (`sightLights`).
+    expect(l).toEqual([{ x: 1296, y: 706, ...JET_PLUME_LIGHT, body: true }])
   })
 
   it('a jetting vent lights its column, a burning one its mouth, a quiet one nothing', () => {

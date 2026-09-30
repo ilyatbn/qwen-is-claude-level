@@ -73,15 +73,22 @@ export function fovRadius(o: FovOpts): number {
  * circle is a body the player sees from and its `fovRadius` (fog, health and a flashlight already in it). The
  * lightmap this replaces (`render/lightmap.ts`, retired) drew the same circles as holes in a black MULTIPLY layer.
  */
-export function nightView(darkness: number, circles: readonly { x: number; y: number; r: number }[]): {
+export function nightView(
+  darkness: number,
+  circles: readonly { x: number; y: number; r: number }[],
+  // T23.10B F1: the lights' circles the scene saw in (`worldRenderer-math.ts::sightLights`). Required, not defaulted:
+  // a scene that forgot them would draw no light pools at night and still typecheck.
+  lit: readonly { x: number; y: number; r: number }[],
+): {
   darkness: number
   nightDarkness: number
   soft: number
   circles: { x: number; y: number; r: number }[]
+  lit: { x: number; y: number; r: number }[]
 } | null {
   if (!(darkness > 0.001)) return null
   const c = C()
-  return { darkness, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: circles.map((x) => ({ ...x })) }
+  return { darkness, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: circles.map((x) => ({ ...x })), lit: lit.map((x) => ({ ...x })) }
 }
 
 // ---------------------------------------------------------------------------

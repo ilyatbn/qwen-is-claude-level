@@ -2168,15 +2168,24 @@ pub const SPACE_EARTH_PATH_RY: f32 = 0.08;
 /// Seconds per lap of each body's path. **The owner asked that they move**, so each
 /// is sized against a round (`ROUND_SECONDS` 240): the moon laps the earth twice,
 /// the earth crosses a good third of its path — at `SPACE_EARTH_PATH_RX`/`_RY` of the
-/// view, ~3 camera px/s, ~6 on screen, which is slow enough to be scenery and fast
-/// enough that a player sees it has moved.
+/// view, ~3.5 px/s on screen (T23.10B: measured off the path at zoom 1, where a camera
+/// px is a screen px; the "~3 camera px/s, ~6 on screen" this said was 1.8 / 3.5 at
+/// zoom 2), which is slow enough to be scenery and fast enough that a player sees it
+/// has moved.
 pub const SPACE_SUN_PERIOD: f32 = 900.0;
 pub const SPACE_EARTH_PERIOD: f32 = 420.0;
 pub const SPACE_MOON_PERIOD: f32 = 120.0;
 /// The moon's orbit about the earth's centre, camera px. Squashed vertically by
 /// `SPACE_MOON_TILT` so the orbit reads as a ring seen edge-on and the moon passes
 /// in front of the earth and behind it.
-pub const SPACE_MOON_ORBIT: f32 = 118.0;
+///
+/// T23.10B F3: **236, doubled with the bodies' radii at zoom 1** (R6: 118 at zoom 2, when
+/// the earth was 64). T23.10 doubled `SPACE_EARTH_RADIUS` and `SPACE_MOON_RADIUS` and not
+/// this, so the whole orbit lay inside the earth's disc (118 < 128) and the moon was
+/// never seen. Its basis: the orbit's reach clears the earth by the moon's diameter
+/// and more (`236 > 128 + 30`), as `118 > 64 + 15` did — pinned in `spaceSky-math.test.ts`
+/// and on the pixels by `space-sky`'s clearance line.
+pub const SPACE_MOON_ORBIT: f32 = 236.0;
 pub const SPACE_MOON_TILT: f32 = 0.32;
 /// The star field's sideways drift, camera px/s — the whole sky turning slowly.
 pub const SPACE_STAR_DRIFT: f32 = 2.0;

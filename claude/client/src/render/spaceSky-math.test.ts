@@ -86,10 +86,22 @@ describe('the constants against what the owner asked for — "should move"', () 
 
   it('the earth crosses the screen at a pace a player sees and does not mistake for play', () => {
     const v = lapSpeed((t) => ({ x: at(t).earth.fx * viewW, y: at(t).earth.fy * viewH }), c.SPACE_EARTH_PERIOD)
-    // ~6 px/s is the doc comment's claim; a pace under 2 is a still picture over a
+    // ~3.5 px/s is the doc comment's claim (T23.10B); a pace under 2 is a still picture over a
     // fight, over 20 is a thing flying past rather than a planet.
     expect(v).toBeGreaterThan(2)
     expect(v).toBeLessThan(20)
+  })
+
+  // T23.10B F3: T23.10 doubled the earth's radius and not the orbit, and the moon circled inside the earth.
+  it("the moon's orbit reaches past the earth's rim — a moon that is ever seen", () => {
+    expect(c.SPACE_MOON_ORBIT).toBeGreaterThan(c.SPACE_EARTH_RADIUS + c.SPACE_MOON_RADIUS)
+    // And off the function: at the orbit's widest the moon's centre is clear of the earth's disc by its own radius.
+    let widest = 0
+    for (let i = 0; i < 360; i++) {
+      const m = at((c.SPACE_MOON_PERIOD * i) / 360).moon
+      widest = Math.max(widest, Math.hypot(m.dx, m.dy))
+    }
+    expect(widest).toBeGreaterThan(c.SPACE_EARTH_RADIUS + c.SPACE_MOON_RADIUS)
   })
 
   it('the moon laps the earth at least once in the shortest round', () => {

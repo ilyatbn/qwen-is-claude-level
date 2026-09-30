@@ -37,6 +37,7 @@ import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLig
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
 import { fovRadius, nightView } from '../render/lightmap-math'
+import { NIGHT_CIRCLES, sightLights } from '../look/worldRenderer-math'
 import { DebugOverlay } from '../render/debugOverlay'
 import { cycleU, sceneDarkness, skyPhase } from '../render/sky-math'
 import { nightShare } from '../look/daylight'
@@ -1860,12 +1861,15 @@ export class SandboxScene extends Phaser.Scene {
       // two of them would let the minimap and the screen disagree (§A6).
       // No crates: the sandbox has no world items to beacon (T21.19).
       // No black hole either: it is a networked round's (T22.12C R93).
-      this.minimap?.update(dt, { x: body.x, y: body.y }, [], fov, [], this.roundTime, null)
+      this.minimap?.update(dt, { x: body.x, y: body.y }, [], [{ x: body.x, y: body.y, r: fov }], [], this.roundTime, null)
     }
     // T23.10 (R7): the field of view above, drawn as F1's night (`nightView` — the same derivation the match uses;
     // the lightmap's call here passed a fog flag the match's left out). Ordnance and lava light the lit terrain, as
     // F's point lights (`effectLights.ts`).
-    this.lastNightView = nightView(darkness, sight)
+    // T23.10B F1: the lights seen in are the scene's choice (`sightLights`, the match's rule), from the last list handed
+    // to the renderer — this frame's is built below.
+    const lit = sightLights(this.effectLights.last, viewRect(this.cameras.main.worldView), NIGHT_CIRCLES - sight.length)
+    this.lastNightView = nightView(darkness, sight, lit)
     this.nightViewOn = this.lastNightView !== null
     this.worldRenderer?.setNightView(this.lastNightView)
     const o = this.world.ordnance.state

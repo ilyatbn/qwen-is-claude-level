@@ -7658,3 +7658,10 @@ Races under load: platforms took screen rects before the camera stopped (wait st
 Coordinator scope: bullets-visible owned (T23.19G F3 mask → strip only, not the cause); perf fps/p99 floors report on SwiftShader, throw on a GPU (D-76).
 Done-when EXIT 0 twice (5/5, 5/5); under 20-loop load platforms/lava-lights/swing-mine-fx 2/2; check.sh --changed HEAD 7/7 EXIT 0.
 Report: by day the parachute and the swing's tail are fainter (40 vs 71; 23–50 vs 29–33) — pinned per T23.11's practice, not gated.
+
+## T23.10B — the seeing rule is one list; the space moon clears the earth (builder, 2026-10-01)
+F1 (docs/14 §5 "…and not inside any light"): `sightLights` (pickLights' ranking — F2) + `seenAt`; renderRemotes, the night view (`NightView.lit`, nightUniforms picks nothing itself) and the minimap (`visibleRemotes(others, sight)`, dots at the rule's place) share one list. A body's own jet light (`Light.body`) sees no one. Lights are last frame's list: pool and player appear together, one frame late.
+night-view-match: control stand clear of every standing light (`debug().staticLights`; the old one was in a gate's light); new leg cy beside a gate at 1.68× sight → drawn, both ends + pixels 93 %; plant (sight only) red.
+F3: SPACE_MOON_ORBIT 118→236 (radii doubled at zoom 1, orbit not); vitest basis; space-sky asserts rim-to-rim clearance (−42.9 red → 72.3), moon leg measured again. Earth-pace comment restated (3.5 px/s measured).
+Done-when EXIT 0: vitest 1177/1177, cargo 1721/0, e2e 4/4. check.sh --changed HEAD: 95/97 — effect-lights red (also red alone 2/2 on the untouched baseline: "laser impact: control … changed by 24", not this change), audio red in batch, green alone.
+F4–F11 split to T23.10C. `ui/minimap*.ts` touched outside Touch-only (the task named visibleRemotes).

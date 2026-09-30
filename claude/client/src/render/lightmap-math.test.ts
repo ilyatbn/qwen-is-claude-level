@@ -101,9 +101,10 @@ describe('fovRadius', () => {
 describe('nightView (T23.10)', () => {
   it('none by day; at night the darkness, the night, the soft edge and the circles it was given', () => {
     const c = C()
-    expect(nightView(0, [{ x: 1, y: 2, r: 3 }])).toBeNull()
-    const v = nightView(c.NIGHT_DARKNESS, [{ x: 1, y: 2, r: c.FOV_NIGHT }])
-    expect(v).toEqual({ darkness: c.NIGHT_DARKNESS, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: [{ x: 1, y: 2, r: c.FOV_NIGHT }] })
+    expect(nightView(0, [{ x: 1, y: 2, r: 3 }], [])).toBeNull()
+    const lit = [{ x: 5, y: 6, r: 7 }]
+    const v = nightView(c.NIGHT_DARKNESS, [{ x: 1, y: 2, r: c.FOV_NIGHT }], lit)
+    expect(v).toEqual({ darkness: c.NIGHT_DARKNESS, nightDarkness: c.NIGHT_DARKNESS, soft: c.FOV_EDGE_SOFTNESS, circles: [{ x: 1, y: 2, r: c.FOV_NIGHT }], lit })
   })
 })
 

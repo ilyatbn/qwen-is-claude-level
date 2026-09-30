@@ -18,11 +18,11 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import type { FrameLook, Rgb } from './scene'
-import { TIER_SAMPLES, type QualityTier } from './worldRenderer-math'
+import { NIGHT_CIRCLES, TIER_SAMPLES, type QualityTier } from './worldRenderer-math'
 import { NOISE_GLSL } from './skyMaterial'
 
-/** T23.10: the night view's circles, at most — the player's sight, then the brightest effect lights. */
-export const NIGHT_CIRCLES = 8
+/** T23.10: the night view's circles, at most (T23.10B: defined beside `sightLights`, which fills them). */
+export { NIGHT_CIRCLES }
 
 /**
  * `kit.js::post`'s grade, verbatim, as the tail of three's `OutputShader` — one full-screen pass, not two.

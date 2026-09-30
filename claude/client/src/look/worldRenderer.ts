@@ -478,7 +478,7 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
-    this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, this.desc.look.lights, NIGHT_CIRCLES)
+    this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, NIGHT_CIRCLES)
     applyNight(this.post, this.nightLast)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)

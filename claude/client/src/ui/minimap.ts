@@ -127,7 +127,9 @@ export class Minimap {
     dt: number,
     me: { x: number; y: number },
     others: readonly RemoteDot[],
-    fov: number,
+    // T23.10B F1: the circles the screen's seeing rule used (the player's sight, then the lights they see in) — the
+    // dots are the same verdict, not a second radius.
+    sight: readonly { x: number; y: number; r: number }[],
     // T21.19: dropped crates (`beaconCrates`) and the round clock the blink runs on.
     // Required, not defaulted: an empty default is a scene that forgot to pass its
     // crates and still typechecks — the minimap drew no items for this whole game.
@@ -152,7 +154,7 @@ export class Minimap {
       this.resampleTerrain()
       this.terrainAge = 0
     }
-    this.draw(me, others, fov, crates, hole)
+    this.draw(me, others, sight, crates, hole)
   }
 
   /**
@@ -190,7 +192,7 @@ export class Minimap {
   private draw(
     me: { x: number; y: number },
     others: readonly RemoteDot[],
-    fov: number,
+    sight: readonly { x: number; y: number; r: number }[],
     crates: readonly { x: number; y: number }[],
     hole: { x: number; y: number } | null,
   ): void {
@@ -226,7 +228,7 @@ export class Minimap {
 
     // Remote players, filtered by FoV *before* they are drawn (§A6).
     this.ctx.fillStyle = '#ff5a5a'
-    for (const o of visibleRemotes(me, others, fov)) {
+    for (const o of visibleRemotes(others, sight)) {
       const p = worldToMinimap(o.x, o.y, this.geo)
       this.ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3)
     }
