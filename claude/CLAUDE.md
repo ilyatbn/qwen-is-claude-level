@@ -7,9 +7,9 @@ Read this file first, every session. It is short on purpose.
 ## The specification
 
 - `docs/00`–`62` are the original spec.
-- **`docs/70`–`77` are amendments and they override the originals**
+- **`docs/70`–`78` are amendments and they override the originals**
   where they disagree. Read the sections a task names.
-- **`docs/00`–`62` are the original spec; `docs/70`–`77` are the amendments.**
+- **`docs/00`–`62` are the original spec; `docs/70`–`78` are the amendments.**
 - **Builders still never edit `docs/`.** If a doc is wrong or missing something, report the
   gap — that is a valued outcome, and a dozen real errors have been found this way.
   **The coordinator now writes the amendments** (authorised 2026-09-08), as a new
