@@ -1535,3 +1535,16 @@ and `two_live_kinds_alternate` **silently asserts nothing** once a table has thr
 run over 8 seeds and must move them if it disagrees.
 **Reverse it by:** four constants and the space arm of the spawn-weight table.
 **Full text:** `R24`-`R28` in [M22/M22-RULINGS.md](M22/M22-RULINGS.md).
+
+## D-75 — The cave back wall stays off, for good  ·  M23 (T23.09A)
+**Decided by:** Ilya, 2026-09-30: *"leave it off and forget about it. looks fine to me."*
+**Chosen:** off (the current default). The `?cavewall=` toggle and the sandbox button may stay as dev tools; no task
+spends time on the wall's look again.
+**Reverse it by:** the default in T23.09A's switch.
+
+## D-76 — Low-end frame rate is no longer a gate  ·  M23 (T23.18B, T23.23)
+**Decided by:** Ilya, 2026-09-30: *"honestly i dont care about it … i suggest we stop caring about it too much."*
+**Chosen:** the SwiftShader (low-tier) frame-rate floors are **reported, not gated**. No task re-measures or tunes the
+low tier for speed; T23.23's "low-tier fps re-measure" is dropped. The GPU tier's 60 fps still matters.
+**Consequence:** a check that fails only on a low-tier fps number is converted to a logged report when it is next touched.
+**Reverse it by:** restoring the floors in `perf.mjs` / T23.18B's checks.
