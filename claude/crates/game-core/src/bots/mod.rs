@@ -18,6 +18,8 @@ use rand_chacha::ChaCha8Rng;
 mod arms;
 mod dodge;
 mod explore;
+#[cfg(test)]
+mod fights;
 pub mod movement;
 mod nav;
 mod route;
@@ -287,6 +289,9 @@ pub struct Bot {
     juke_at: f32,
     juke_phase: f32,
     juke_off: bool,
+    /// Tests only: T23.26E's open-ground-first planted out — a fight routes with dig
+    /// steps from the start, as before (`with_dig_first`).
+    dig_first: bool,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -330,6 +335,7 @@ impl Bot {
             juke_at: 0.0,
             juke_phase: index as f32 * 0.618_034 % 1.0,
             juke_off: false,
+            dig_first: false,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -347,6 +353,14 @@ impl Bot {
     #[cfg(test)]
     pub(crate) fn without_juke(mut self) -> Self {
         self.juke_off = true;
+        self
+    }
+
+    /// T23.26E: the same bot routing to a fight through rock from the start — the
+    /// open-ground test's control.
+    #[cfg(test)]
+    pub(crate) fn with_dig_first(mut self) -> Self {
+        self.dig_first = true;
         self
     }
 
@@ -677,8 +691,15 @@ impl Bot {
             // within the weapon's hold with a clear line. The shot rule still fires
             // through soft cover meanwhile (`reachable`, every weapon digs, §A3), but a bot
             // standing at a pillar plinking at it is what watching it showed (T23.26).
+            // T23.26E: **over open ground first** — a route with no dig step; the tunnel
+            // only once the planner has refused every open one (cornered, sealed in).
             Goal::Enemy(_) if !nav::Grid::new(&world.map).clear(pos, aim_at) => {
-                route::enemy_target(aim_at, self.hold_off(world))
+                let open = route::enemy_target(aim_at, self.hold_off(world), self.dig_first);
+                if self.route.refused(&open, now) {
+                    route::enemy_target(aim_at, self.hold_off(world), true)
+                } else {
+                    open
+                }
             }
             // T23.26C item 7: a hurt bot **runs first** — on its legs and its pack, to
             // somewhere out of its enemy's sight and further off — and digs in near where

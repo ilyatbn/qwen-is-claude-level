@@ -45,6 +45,9 @@ pub(super) struct NavStep {
 pub(super) struct Target {
     pub want: Want,
     pub at: Vec2,
+    /// T23.26E: may the route dig? `false` asks for an **open** route only — walking,
+    /// hopping, falling, the pack and pads — which a fight asks for first (`enemy_target`).
+    pub dig: bool,
 }
 
 /// Where the planner runs: under gravity, not riding a platform — on legs or (T23.26C
@@ -76,6 +79,7 @@ pub(super) fn item_target(at: Vec2) -> Target {
             sight: None,
         },
         at,
+        dig: true,
     }
 }
 
@@ -90,6 +94,7 @@ pub(super) fn wander_target(at: Vec2) -> Target {
             sight: None,
         },
         at,
+        dig: true,
     }
 }
 
@@ -98,6 +103,7 @@ pub(super) fn hide_target(from: Vec2) -> Target {
     Target {
         want: Want::Hide { from },
         at: from,
+        dig: true,
     }
 }
 
@@ -111,12 +117,15 @@ pub(super) fn away_target(from: Vec2, pos: Vec2) -> Target {
             beyond: (pos - from).len() + BOT_FLEE_GAIN,
         },
         at: from,
+        dig: false,
     }
 }
 
 /// An enemy behind rock: a node within `hold` of it with a clear line to it — where the
-/// fight can start.
-pub(super) fn enemy_target(at: Vec2, hold: f32) -> Target {
+/// fight can start. T23.26E (owner: *"they should always prefer open grounds"*): asked
+/// with `dig` false first — a bot regains its line **over open ground** and tunnels at an
+/// enemy only when no open route exists (`Bot::navigate`).
+pub(super) fn enemy_target(at: Vec2, hold: f32, dig: bool) -> Target {
     let (x, y) = cell_of(at);
     Target {
         want: Want::Near {
@@ -126,6 +135,7 @@ pub(super) fn enemy_target(at: Vec2, hold: f32) -> Target {
             sight: Some(at),
         },
         at,
+        dig,
     }
 }
 
@@ -242,7 +252,7 @@ impl Route {
             if me.move_mods().flying {
                 s.flying();
             }
-            s.dig = can_dig && !matches!(target.want, Want::Away { .. });
+            s.dig = can_dig && target.dig;
             if let Want::Hide { from: p } | Want::Away { from: p, .. } = target.want {
                 s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
             }
@@ -550,6 +560,9 @@ fn arrived(s: &Step, me: &PlayerState) -> bool {
 /// Two targets name the same goal when they ask the same kind of question about points
 /// within the goal's own radius (a cell at least) of each other.
 fn same_target(a: &Target, b: &Target) -> bool {
+    if a.dig != b.dig {
+        return false;
+    }
     match (a.want, b.want) {
         (Want::Near { r: ra, .. }, Want::Near { r: rb, .. }) => {
             ra == rb && (a.at - b.at).len() <= (ra.max(1) as f32) * BOT_NAV_CELL
