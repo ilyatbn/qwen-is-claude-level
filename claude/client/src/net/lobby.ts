@@ -204,7 +204,7 @@ export type Gravity = (typeof GRAVITIES)[number]
  * `MapShape::ALL` through `constants_json`'s `MAP_SHAPES` the way `GRAVITIES` is
  * (`lobby.test.ts` asserts the two lists are equal).
  */
-export const MAP_SHAPES = ['random', 'hill', 'flat', 'multilevel'] as const
+export const MAP_SHAPES = ['random', 'hill', 'flat', 'multilevel', 'islands'] as const
 export type MapShapeName = (typeof MAP_SHAPES)[number]
 
 export interface LobbyStateMsg {
@@ -444,6 +444,7 @@ const MAP_SHAPE_LABELS: Record<MapShapeName, string> = {
   hill: 'Hill',
   flat: 'Mostly flat',
   multilevel: 'Multilevel',
+  islands: 'Islands',
 }
 
 /** The bounds the round-length stepper moves between, from `Constants`. */

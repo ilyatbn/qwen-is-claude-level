@@ -420,6 +420,8 @@ export interface SceneDescription {
    * (`WorldRenderer.setTerrain`), once they are whole. The fields — not `masks` — are what it reads.
    */
   litTerrain: boolean
+  /** T23.30: the Islands shape's cloud sea — its tops' world y (mask px); absent / null: none. */
+  cloudSea?: number | null
   look: FrameLook
   palette: CombatPalette | null
   actors: Actor[]

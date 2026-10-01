@@ -431,7 +431,8 @@ export class SandboxScene extends Phaser.Scene {
    */
   private gameMap(): GameMap {
     const core = this.core
-    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap() }
+    const cloudSea = core.meta.shape === 'Islands' ? core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
+    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea }
   }
 
   private isSpaceMap(): boolean {

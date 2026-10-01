@@ -14865,4 +14865,51 @@ mod multilevel_tests {
             }
         }
     }
+
+    /// T23.30 C: on the Islands shape, stepping off an island is a fall to the void —
+    /// a body dropped in open air over a column with no rock under it dies with
+    /// `DeathCause::Void`. Control: on Mostly flat the same drop lands on the ground.
+    #[test]
+    fn falling_off_an_island_is_a_death_in_the_void() {
+        let fall = |shape: MapShape| -> Vec<DeathCause> {
+            let mut w = world(4242, shape);
+            w.add_player(0, 0, "ana".into());
+            let (mw, mh) = (w.map.mask.w as i32, w.map.mask.h as i32);
+            let x = (64..mw - 64)
+                .step_by(16)
+                .find(|&x| {
+                    (0..mh).all(|y| {
+                        !w.map.mask.get(x, y)
+                            && !w.map.mask.get(x + 12, y)
+                            && !w.map.mask.get(x - 12, y)
+                    })
+                })
+                .unwrap_or(mw / 2);
+            {
+                let p = w.player_mut(0).expect("there");
+                p.body = crate::physics::body::Body::new(Vec2::new(
+                    x as f32,
+                    crate::constants::SKY_MARGIN as f32,
+                ));
+            }
+            let mut deaths = Vec::new();
+            for _ in 0..(12.0 / SIM_DT) as u32 {
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if let GameEvent::Death { cause, .. } = e {
+                        deaths.push(cause);
+                    }
+                }
+                if !deaths.is_empty() {
+                    break;
+                }
+            }
+            deaths
+        };
+        assert_eq!(fall(MapShape::Islands), vec![DeathCause::Void]);
+        assert!(
+            fall(MapShape::Flat).is_empty(),
+            "control: a drop on Mostly flat died"
+        );
+    }
 }

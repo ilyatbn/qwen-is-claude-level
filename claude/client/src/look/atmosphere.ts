@@ -77,6 +77,28 @@ const FOG_FS =
     float a = k * ramp * smoothstep(0.3, 0.75, n);
     gl_FragColor = vec4(c, a); }`
 
+/**
+ * T23.30 (`docs/78` §A5, Islands): **the cloud sea** — "high up in the clouds". World-anchored: below `top` (mask
+ * px, y down) the world is cloud, its upper edge billowing (two fBm octaves of the world x), lit on top and
+ * shading into the fog's colour with depth and with the billows' own noise, so it reads as heaped cloud rather
+ * than a band. In the fog's style: the same noise (`NOISE_GLSL`), the look's front-fog colour (so it follows the
+ * daylight blend), drawn just after the front fog. Not animated (no clock: the redraw skip stands).
+ */
+const SEA_FS =
+  NOISE_GLSL +
+  FRAG_P +
+  /* glsl */ `
+  uniform vec3 c; uniform float top;
+  void main(){ vec2 p = worldP();
+    float edge = top - 70. * fbm(vec2(p.x*0.0045, 3.1), 3) - 34. * fbm(vec2(p.x*0.017, 7.7), 3);
+    float a = smoothstep(edge - 6., edge + 26., p.y);
+    if (a <= 0.) discard;
+    float depth = clamp((p.y - edge) / 260., 0., 1.);
+    float billow = fbm(vec2(p.x*0.008, p.y*0.016), 4);
+    vec3 lit = mix(c, vec3(1.), 0.62);
+    vec3 col = mix(lit, c * 0.85, clamp(depth*0.8 + (0.55 - billow)*0.9, 0., 1.));
+    gl_FragColor = vec4(col, a * 0.97); }`
+
 /** `kit.js::foregroundDoF`, verbatim, plus the player fade (`occ`). */
 const FG_FS =
   NOISE_GLSL +
@@ -151,6 +173,18 @@ export class Atmosphere {
     }),
     10,
   )
+  /** T23.30: the Islands shape's cloud sea, after the front fog and before the leaves. */
+  readonly cloudSea = quad(
+    new ShaderMaterial({
+      uniforms: { ...common(), c: { value: new Vector3() }, top: { value: 0 } },
+      vertexShader: VS,
+      fragmentShader: SEA_FS,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+    }),
+    6,
+  )
   /** Dev (`look-gate-f1`): the occluder boxes the last frame faded the leaves over. */
   drawnOccluders: Box[] = []
 
@@ -167,7 +201,7 @@ export class Atmosphere {
   }
 
   get meshes(): Mesh[] {
-    return [this.fogBack, this.fogFront, this.fg]
+    return [this.fogBack, this.fogFront, this.cloudSea, this.fg]
   }
 
   /** T23.18B: the tier's fog noise (`FOG_OCTAVES_LOW` on the low tier); a change recompiles the two fog programs. */
@@ -185,7 +219,14 @@ export class Atmosphere {
    * Lay the layers out for this frame: `view` (mask px) drawn into a `res` buffer. `hidden`: dev
    * switches (the per-pass cost, `look-gate-f1`'s layer hunt). `occluders`: every player box, mask px.
    */
-  place(look: { fogBack: Fog | null; fogFront: Fog | null; fg: Foreground | null }, view: ViewRect, res: [number, number], occluders: Box[], hidden: ReadonlySet<string>): void {
+  place(
+    look: { fogBack: Fog | null; fogFront: Fog | null; fg: Foreground | null },
+    view: ViewRect,
+    res: [number, number],
+    occluders: Box[],
+    hidden: ReadonlySet<string>,
+    cloudSea: number | null = null,
+  ): void {
     const set = (m: Mesh, on: boolean): ShaderMaterial | null => {
       m.visible = on
       if (!on) return null
@@ -207,6 +248,12 @@ export class Atmosphere {
       // The mockup splices `scale * 3.5` computed in JS (a double) into the source; so here.
       u['scaleY']!.value = (f.scale ?? 0.004) * 3.5
       u['seed']!.value = f.seed ?? 0
+    }
+    // T23.30: the cloud sea, in the front fog's colour (or the back's, or a pale lilac when a look has neither).
+    const sea = set(this.cloudSea, cloudSea !== null && !hidden.has('cloudSea'))
+    if (sea && cloudSea !== null) {
+      ;(sea.uniforms['c']!.value as Vector3).set(...(look.fogFront?.color ?? look.fogBack?.color ?? [0.62, 0.6, 0.78]))
+      sea.uniforms['top']!.value = cloudSea
     }
     const mat = set(this.fg, !!look.fg && !hidden.has('fg'))
     this.drawnOccluders = []

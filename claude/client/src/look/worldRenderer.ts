@@ -474,7 +474,7 @@ export class WorldRenderer implements SceneRenderer {
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
     this.placeTerrain(view)
-    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
+    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null)
     this.actorLayer.rimOn = this.desc.actorRim !== false
     // **Two light lists, and it is a known disagreement** (T23.27C F10, filed for the coordinator): the terrain above
     // draws `pickedLights` — culled to the view and capped to the tier's slots (`pickLights`: 12 gates + a muzzle + an
@@ -667,12 +667,13 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /** Dev (T23.08): what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
-  atmosphereDrawn(): { fogBack: boolean; fogFront: boolean; fg: boolean; bloom: boolean; grade: boolean; occluders: Box[]; bloomTarget: [number, number] } {
+  atmosphereDrawn(): { fogBack: boolean; fogFront: boolean; cloudSea: boolean; fg: boolean; bloom: boolean; grade: boolean; occluders: Box[]; bloomTarget: [number, number] } {
     const bright = this.post.bloom.renderTargetBright
     return {
       bloomTarget: [bright.width, bright.height],
       fogBack: this.atmos.fogBack.visible,
       fogFront: this.atmos.fogFront.visible,
+      cloudSea: this.atmos.cloudSea.visible,
       fg: this.atmos.fg.visible,
       bloom: this.post.bloom.enabled,
       grade: (this.post.output.uniforms as Record<string, { value: unknown }>)['gradeOn']!.value === 1,
@@ -1098,6 +1099,11 @@ export interface GameMap {
   seed: number
   /** A space map (`MapGenerator.Space`): no sky is drawn; T22.06's backdrop is (until T23.20). */
   space: boolean
+  /**
+   * T23.30: the Islands shape — the tops of a sea of cloud below the islands (world y, mask px), and a sky with
+   * no far mountains (nothing stands that low, high in the clouds). Absent / null: an ordinary ground map.
+   */
+  cloudSea?: number | null
 }
 
 /**
@@ -1113,7 +1119,7 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
   // `gameSky` lays both out alike); `setDaylight` blends them. F1's lights are the mockup scene's, not this map's.
   const end = (look: FrameLook, bg: Background): FrameLook => ({
     ...look,
-    bg: map.space ? null : gameSky(map.seed, bg),
+    bg: map.space ? null : gameSky(map.seed, map.cloudSea != null ? { ...bg, layers: [] } : bg),
     lights: [],
     fg: null,
     ...(map.space ? { fogBack: null, fogFront: null } : {}),
@@ -1133,6 +1139,7 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
     // this map's: none here — the scenes hand over their effect lights each frame (T23.09, `setLights`).
     litTerrain: !map.space,
+    cloudSea: map.space ? null : (map.cloudSea ?? null),
     // T23.09A: off by default pending the owner's verdict (`CAVE_WALL_DEFAULT`); the lab's scenes keep F1's walls.
     caveWall,
     // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two

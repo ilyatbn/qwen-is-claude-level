@@ -142,7 +142,7 @@ export interface MapMeta {
   /** Which generator made the map (`MapMeta::generator`, serde's spelling). T22.14A B3. */
   generator: 'V1' | 'V2' | 'Space'
   /** T23.30: the map shape (`MapMeta::shape`, serde's spelling). */
-  shape: 'Random' | 'Hill' | 'Flat' | 'Multilevel'
+  shape: 'Random' | 'Hill' | 'Flat' | 'Multilevel' | 'Islands'
 }
 
 /** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
@@ -280,6 +280,8 @@ export interface Constants {
   GRAVITY_MODES: readonly string[]
   /** T23.30: `MapShape::ALL`'s spellings, lobby order — the index is the wire byte. */
   MAP_SHAPES: readonly string[]
+  /** T23.30: the Islands shape's cloud-sea tops, fraction of the map's height. */
+  ISLANDS_CLOUD_SEA_FRAC: number
   MINE_ARM_TIME: number
   /** T20.10's ground animals — drawn size **is** the hit box. */
   SPIDER_W: number

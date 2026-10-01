@@ -2845,6 +2845,7 @@ pub fn constants_json() -> String {
         // T23.30: the map shapes' spellings, `MapShape::ALL` in lobby order — pinned
         // to `lobby.ts`'s `MAP_SHAPES` the way `GRAVITY_MODES` pins `GRAVITIES`.
         MAP_SHAPES => c::MapShape::ALL.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+        ISLANDS_CLOUD_SEA_FRAC => c::ISLANDS_CLOUD_SEA_FRAC,
         // §F7. The private-lobby panel draws its own bounds and its own step;
         // a stepper carrying a local 240/600/60 would keep offering the old
         // range after any of them was tuned (§A19).

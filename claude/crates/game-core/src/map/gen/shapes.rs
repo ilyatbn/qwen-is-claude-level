@@ -68,6 +68,7 @@ pub fn generate_once(seed: u64, params: &V2Params, shape: MapShape) -> GenOutcom
             v2::generate_from_profile(seed, params, &profile)
         }
         MapShape::Multilevel => super::multilevel::generate_once(seed, params),
+        MapShape::Islands => super::islands::generate_once(seed, params),
     };
     o.shape = shape;
     o
@@ -494,6 +495,68 @@ mod tests {
                     map.meta.theme,
                 );
                 assert_eq!(r.mask, map.mask, "{shape:?} seed {seed}");
+            }
+        }
+    }
+
+    /// Islands, over seeds and scales: **no ground** — nothing solid in the bottom rows,
+    /// no rock column reaching the bottom edge, no walls — several islands, spawns and
+    /// pads on them, the gate passed (every island reachable from the others by the
+    /// traversal model's jetpack), and the map is a different one from seed to seed.
+    /// Control: Mostly flat's bottom row is solid.
+    #[test]
+    fn islands_have_no_ground() {
+        use crate::constants::{FLOOR_CRUST, ISLANDS_CLOUD_SEA_FRAC};
+        for scale in MapScale::ALL {
+            for seed in SEEDS {
+                let at = format!("{scale:?} seed {seed}");
+                let map = crate::map::generate_full_shaped(
+                    seed,
+                    scale,
+                    0,
+                    MapGenerator::V2,
+                    MapShape::Islands,
+                );
+                let (w, h) = (map.mask.w as i32, map.mask.h as i32);
+                assert_eq!(map.meta.shape, MapShape::Islands, "{at}");
+                assert!(!map.meta.used_safe_preset, "{at}: safe preset");
+                let sea = (h as f32 * ISLANDS_CLOUD_SEA_FRAC) as i32;
+                for y in sea..h {
+                    assert_eq!(
+                        map.mask.count_run(y, 0, w - 1),
+                        0,
+                        "{at}: rock in row {y}, under the cloud sea"
+                    );
+                }
+                assert_eq!(
+                    map.mask.count_run(h / 2, 0, WALL_W as i32 - 1),
+                    0,
+                    "{at}: a left wall"
+                );
+                assert!(
+                    map.meta.spawn_points.len() >= crate::constants::SPAWN_COUNT_MIN,
+                    "{at}: spawns"
+                );
+                assert!(
+                    map.meta.spawn_points.iter().all(|p| p.y < sea),
+                    "{at}: a spawn below the islands"
+                );
+                assert!(
+                    map.meta.traversable_fraction >= crate::constants::MIN_TRAVERSABLE_FRACTION,
+                    "{at}"
+                );
+                assert!(!map.meta.teleport_pads.is_empty(), "{at}: no pads");
+                let flat = crate::map::generate_full_shaped(
+                    seed,
+                    scale,
+                    0,
+                    MapGenerator::V2,
+                    MapShape::Flat,
+                );
+                assert!(
+                    flat.mask.count_run(h - FLOOR_CRUST as i32 / 2, 0, w - 1) > 0,
+                    "{at}: control"
+                );
             }
         }
     }

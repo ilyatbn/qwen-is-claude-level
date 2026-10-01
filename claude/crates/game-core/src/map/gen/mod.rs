@@ -15,6 +15,7 @@ pub mod bridges;
 pub mod carvings;
 pub mod caves;
 pub mod components;
+pub mod islands;
 pub mod multilevel;
 pub mod network;
 pub mod objects;

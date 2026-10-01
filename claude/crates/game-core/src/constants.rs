@@ -629,15 +629,19 @@ pub enum MapShape {
     /// lower ground. No islands. Pads pair across the levels; meteors hit the top
     /// level only; toxic clouds drift through the gap.
     Multilevel,
+    /// No ground: only floating islands, high in the clouds — fall off and you die
+    /// (the void under the map). No meteor showers.
+    Islands,
 }
 
 impl MapShape {
     /// Lobby order — the order the panel steps through.
-    pub const ALL: [MapShape; 4] = [
+    pub const ALL: [MapShape; 5] = [
         MapShape::Random,
         MapShape::Hill,
         MapShape::Flat,
         MapShape::Multilevel,
+        MapShape::Islands,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -646,6 +650,7 @@ impl MapShape {
             MapShape::Hill => "hill",
             MapShape::Flat => "flat",
             MapShape::Multilevel => "multilevel",
+            MapShape::Islands => "islands",
         }
     }
 
@@ -659,6 +664,7 @@ impl MapShape {
             MapShape::Hill => 1,
             MapShape::Flat => 2,
             MapShape::Multilevel => 3,
+            MapShape::Islands => 4,
         }
     }
 
@@ -668,6 +674,7 @@ impl MapShape {
             1 => Some(MapShape::Hill),
             2 => Some(MapShape::Flat),
             3 => Some(MapShape::Multilevel),
+            4 => Some(MapShape::Islands),
             _ => None,
         }
     }
@@ -763,6 +770,31 @@ pub const TOXIC_DRIFT_PATCH_LIFE: f32 = 1.0;
 /// Each patch's dps — half the grenade's, so the ~2 overlapping patches are the
 /// grenade's `TOXIC_GRENADE_DPS` inside a cloud.
 pub const TOXIC_DRIFT_DPS: f32 = TOXIC_GRENADE_DPS * TOXIC_DRIFT_EVERY / TOXIC_DRIFT_PATCH_LIFE;
+
+/// Islands: the band the islands hang in — from the sky margin plus
+/// `ISLANDS_TOP_CLEARANCE` down to `ISLANDS_LOWEST_FRAC` of the height; below is the
+/// cloud sea the client draws (tops at `ISLANDS_CLOUD_SEA_FRAC`) and then the void.
+pub const ISLANDS_TOP_CLEARANCE: i32 = 160;
+pub const ISLANDS_LOWEST_FRAC: f32 = 0.84;
+/// Where the client's cloud sea's tops sit, fraction of height — under the lowest
+/// island's slab, so no island stands in it.
+pub const ISLANDS_CLOUD_SEA_FRAC: f32 = 0.9;
+/// Islands are laid one per cell of a jittered grid this many px wide and tall — the
+/// reference has ~4 across and ~3 down on its frame. Whether every island can be
+/// reached from another is the traversal gate's verdict (`JETPACK_CLIMB_BUDGET`).
+pub const ISLANDS_CELL_W: i32 = 520;
+pub const ISLANDS_CELL_H: i32 = 300;
+/// A cell's chance of holding an island at all, so the grid does not read as a grid.
+pub const ISLANDS_FILL_CHANCE: f32 = 0.85;
+/// An island's slab half-width and half-height ranges, px — wider than Random's sky
+/// islands (`ISLAND2_*`), because here they are the ground: the reference's run
+/// ~90–270 px across a 1318-px frame.
+pub const ISLANDS_HALF_W_MIN: i32 = 110;
+pub const ISLANDS_HALF_W_MAX: i32 = 250;
+pub const ISLANDS_HALF_H_MIN: i32 = 48;
+pub const ISLANDS_HALF_H_MAX: i32 = 90;
+/// Chance an island gets a second, offset lobe (the reference's hooks and bananas).
+pub const ISLANDS_LOBE_CHANCE: f32 = 0.5;
 
 /// Mostly flat: the mean ground line, as a fraction of map height (reference ~0.81).
 pub const FLAT_BASE_FRAC: f32 = 0.80;

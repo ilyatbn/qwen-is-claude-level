@@ -56,6 +56,9 @@ pub enum WeatherTable {
     Ground,
     /// Solar flares and meteor showers only (R43): no ground to open, no air to fog.
     Space,
+    /// T23.30 (`docs/78` §A5): the Islands map shape — the ground table **without
+    /// meteor showers** ("the owner will choose a replacement").
+    Islands,
 }
 
 impl WeatherTable {
@@ -63,6 +66,8 @@ impl WeatherTable {
     pub fn of(map: &Map) -> Self {
         if map.space_geometry().is_some() {
             Self::Space
+        } else if map.meta.shape == crate::constants::MapShape::Islands {
+            Self::Islands
         } else {
             Self::Ground
         }
@@ -73,6 +78,7 @@ impl WeatherTable {
         match self {
             Self::Space => matches!(kind, EffectKind::MeteorShower | EffectKind::SolarFlare),
             Self::Ground => kind != EffectKind::SolarFlare,
+            Self::Islands => !matches!(kind, EffectKind::SolarFlare | EffectKind::MeteorShower),
         }
     }
 }
@@ -646,6 +652,36 @@ mod tests {
     ///
     /// **Per table** (T22.08A, `R28`'s space arm): the live set is the switches
     /// *and* the map's table, so space is measured as its own run.
+    /// T23.30 (`docs/78` §A5): the Islands table never rolls a meteor shower — over a
+    /// long schedule — while the ground table on the same seed does (the control), and
+    /// the islands still get weather.
+    #[test]
+    fn the_islands_table_rolls_no_meteor_shower() {
+        let m = KINDS
+            .iter()
+            .position(|k| *k == EffectKind::MeteorShower)
+            .expect("meteors");
+        let islands = kind_counts_on(
+            EffectScheduler::new(31337, 0.0),
+            100_000.0,
+            WeatherTable::Islands,
+        );
+        let ground = kind_counts_on(
+            EffectScheduler::new(31337, 0.0),
+            100_000.0,
+            WeatherTable::Ground,
+        );
+        assert_eq!(islands[m], 0, "a meteor shower on the islands: {islands:?}");
+        assert!(
+            ground[m] > 0,
+            "control: the ground never rolled one: {ground:?}"
+        );
+        assert!(
+            islands.iter().sum::<usize>() > 100,
+            "no weather at all on the islands"
+        );
+    }
+
     #[test]
     fn the_live_distribution_matches_the_live_switches() {
         for table in [WeatherTable::Ground, WeatherTable::Space] {

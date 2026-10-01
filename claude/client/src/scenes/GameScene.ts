@@ -1747,7 +1747,9 @@ export class GameScene extends Phaser.Scene {
 
   /** T23.04: what the world renderer's sky needs of the map in force: size, seed, space-ness. */
   private gameMap(): GameMap {
-    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap }
+    // T23.30: the Islands shape's cloud sea, off the map `map_init` installed (`setMapShape`).
+    const cloudSea = this.core.meta.shape === 'Islands' ? this.core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
+    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea }
   }
 
   /**
