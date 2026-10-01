@@ -392,3 +392,73 @@ fn a_hurt_bot_digs_in_out_of_its_enemys_sight() {
         "it hid without digging — the fixture has cover"
     );
 }
+
+/// **D7 (T23.26C item 7): a hurt bot runs first, and digs in only when cornered.** A long
+/// corridor, the hurt bot in it and an enemy six cells off; at the corridor's far end a
+/// shaft up into a gallery out of the enemy's sight. With the shaft, the bot gets out of
+/// sight **without a swing** and further from its enemy than it began by at least
+/// `BOT_FLEE_GAIN`. The control is the same corridor with the shaft filled — cornered:
+/// it digs (presence of the fallback, and the proof the run is what made the first arm
+/// swing-free). Planted red by hand: Flee straight to `hide_target` → the open arm digs.
+#[test]
+fn a_hurt_bot_runs_out_of_sight_and_digs_in_only_when_cornered() {
+    use crate::constants::{BOT_FLEE_GAIN, BOT_FLEE_HEALTH};
+    let run = |shaft: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 40, 20);
+        let feet = oy + 17;
+        fill(&mut w, ox + 1, feet - 3, ox + 38, feet, false);
+        if shaft {
+            fill(&mut w, ox + 2, oy + 3, ox + 3, feet - 4, false);
+            fill(&mut w, ox + 2, oy + 3, ox + 14, oy + 5, false);
+        }
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        w.add_player(2, 0, "enemy".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        let start = stand_at(ox + 20, feet);
+        let enemy = stand_at(ox + 26, feet);
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(start);
+        }
+        give(&mut w, 1, PISTOL, 10);
+        let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+        // Swings while fleeing: once out of range the goal is a wander, and a wander may
+        // dig — that is not the run's doing.
+        let mut digs = 0;
+        for t in 0..((SCENARIO_S * SIM_HZ as f32) as u32) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = enemy;
+                p.health = 100.0;
+            }
+            if let Some(p) = w.player_mut(1) {
+                p.health = BOT_FLEE_HEALTH - 5.0;
+            }
+            let before = bots[0].stats().dig_swings;
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            if matches!(bots[0].goal, Goal::Flee(_)) {
+                digs += bots[0].stats().dig_swings - before;
+            }
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let at = w.player(1).expect("bot").body.pos;
+        let seen = super::nav::Grid::new(&w.map).clear(at, enemy);
+        (seen, (at - enemy).len() - (start - enemy).len(), digs)
+    };
+    let (seen, gained, digs) = run(true);
+    assert!(
+        !seen && gained >= BOT_FLEE_GAIN && digs == 0,
+        "with a way out: in sight {seen}, gained {gained:.0} px (wants {BOT_FLEE_GAIN}), \
+         {digs} swings — it should run, not dig"
+    );
+    let (seen, _, digs) = run(false);
+    assert!(
+        !seen && digs > 0,
+        "control, cornered: in sight {seen}, {digs} swings — it should dig in"
+    );
+}

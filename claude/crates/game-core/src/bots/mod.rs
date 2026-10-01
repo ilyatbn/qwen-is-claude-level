@@ -254,6 +254,8 @@ pub struct Bot {
     /// body was when it opened (`count_pressing_still`).
     press_window: f32,
     press_from: Vec2,
+    /// T23.26C: seconds an item's route has stood finished without the pickup.
+    ended_for: f32,
     /// T23.26C's still counter: seconds into the current window, where it opened.
     still_window: f32,
     still_from: Vec2,
@@ -296,6 +298,7 @@ impl Bot {
             want_select: None,
             press_window: 0.0,
             press_from: Vec2::ZERO,
+            ended_for: 0.0,
             still_window: 0.0,
             still_from: Vec2::ZERO,
             route: route::Route::default(),
@@ -454,8 +457,12 @@ impl Bot {
         // (`world::mount`). Nothing did this, and a bot that routes stands on platforms
         // more often: one rode an empty gun for 30 s refusing every shot as unarmed
         // (`a_bot_stuck_on_a_flat_laser_still_fights`, seed 99).
+        //
+        // T23.26C: **and so does one with nobody to shoot** — a mounted bot shopping or
+        // wandering stood on its platform with an item two cells under it (0.3 s still
+        // per bot-minute, measured): the gun is for a fight, and the goal is elsewhere.
         if let Some(plat) = me.mount.mounted {
-            if world.platform_ammo(plat).unwrap_or(0) == 0 {
+            if world.platform_ammo(plat).unwrap_or(0) == 0 || !matches!(self.goal, Goal::Enemy(_)) {
                 buttons |= button::JUMP;
             }
         }
@@ -566,16 +573,37 @@ impl Bot {
             Goal::Enemy(_) if !nav::Grid::new(&world.map).clear(pos, aim_at) => {
                 route::enemy_target(aim_at, self.hold_off(world))
             }
-            // T23.26 C: a hurt bot breaks contact to somewhere out of its enemy's sight
-            // (digging in if nothing is near), and §E10's retreat stands where no such
-            // place is reachable (`refused`).
-            Goal::Flee(_) => route::hide_target(aim_at),
+            // T23.26C item 7: a hurt bot **runs first** — on its legs and its pack, to
+            // somewhere out of its enemy's sight and further off — and digs in near where
+            // it is only when no such run exists (cornered). §E10's retreat stands where
+            // neither is reachable (`refused`).
+            Goal::Flee(_) => {
+                let run = route::away_target(aim_at, pos);
+                if self.route.refused(&run, now) {
+                    route::hide_target(aim_at)
+                } else {
+                    run
+                }
+            }
             Goal::Enemy(_) => {
                 self.route.clear();
                 return None;
             }
         };
         let dig = route::shovel_slot(me).is_some();
+        // T23.26C: **a route that ended short of its item is given up**, as a refused one
+        // is — the node beside an item sunk a cell under the floor was "arrived at", and
+        // the bot stood over it for the rest of the round (the largest still cause).
+        if matches!(self.goal, Goal::Item(_)) && self.route.finished(&target) {
+            self.ended_for += dt;
+            if self.ended_for > 2.0 * crate::constants::BOT_STUCK_WINDOW {
+                self.ended_for = 0.0;
+                self.route.refuse(target, now);
+                return None;
+            }
+        } else {
+            self.ended_for = 0.0;
+        }
         self.route
             .step(world, me, target, dig, now, dt, &mut self.stats.nav_plans)
     }

@@ -121,6 +121,9 @@ pub(super) enum Want {
     },
     /// A standing node with no clear line to `from` (§A2's cover from an enemy).
     Hide { from: Vec2 },
+    /// T23.26C item 7: a node a body **stands** on, out of `from`'s line of sight and at
+    /// least `beyond` px from it — where a hurt bot runs to before it digs in.
+    Away { from: Vec2, beyond: f32 },
 }
 
 /// The live terrain as the planner sees it. Borrowed per call, never stored: the map
@@ -327,6 +330,10 @@ pub(super) struct Search {
     /// A point the route keeps this far from (px): a hurt bot hiding from an enemy is not
     /// routed past it (T23.26 C).
     pub avoid: Option<(Vec2, f32)>,
+    /// `(from, dir)`: only nodes on `dir`'s side of `from` — a run from an enemy never
+    /// goes past it (T23.26C: an arc over its head stayed outside `avoid` and ended
+    /// behind it, 44 px off).
+    pub side: Option<(Vec2, Vec2)>,
 }
 
 impl Search {
@@ -353,6 +360,7 @@ impl Search {
             max_cost,
             dig: true,
             avoid: None,
+            side: None,
         };
         let fuel = fuel.clamp(0.0, JETPACK_MAX_FUEL);
         let k = s.key(x, y, fuel);
@@ -396,7 +404,7 @@ impl Search {
                 let (lo, hi) = (dx.min(dy), dx.max(dy));
                 (hi + (SQRT2 - 1.0) * lo) * cheapest_cell_s()
             }
-            Want::Hide { .. } => 0.0,
+            Want::Hide { .. } | Want::Away { .. } => 0.0,
         }
     }
 
@@ -436,9 +444,9 @@ impl Search {
             edges.clear();
             successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
             for &(nx, ny, how, secs, fuel) in &edges {
-                if self
-                    .avoid
-                    .is_some_and(|(p, r)| (Grid::centre(nx, ny) - p).len() < r)
+                let c = Grid::centre(nx, ny);
+                if self.avoid.is_some_and(|(p, r)| (c - p).len() < r)
+                    || self.side.is_some_and(|(p, d)| (c - p).dot(d) < 0.0)
                 {
                     continue;
                 }
@@ -518,6 +526,11 @@ pub(super) fn satisfies(grid: &Grid, want: Want, x: i32, y: i32) -> bool {
         // digging is exactly the one a bot with nothing near digs (measured: the foxhole
         // two cells down was never a goal, so a hurt bot found none).
         Want::Hide { from } => grid.solid(x, y + 1) && !grid.clear(Grid::centre(x, y), from),
+        Want::Away { from, beyond } => {
+            grid.stands(x, y)
+                && (Grid::centre(x, y) - from).len() >= beyond
+                && !grid.clear(Grid::centre(x, y), from)
+        }
     }
 }
 

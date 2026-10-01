@@ -12,10 +12,10 @@
 
 use super::nav::{Grid, Move, Progress, Search, Step, Want};
 use crate::constants::{
-    GravityMode, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF, BOT_NAV_CELL, BOT_NAV_COST_MAX,
-    BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY,
-    BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED, JETPACK_MAX_SPEED,
-    JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
+    GravityMode, BOT_FLEE_COST_MAX, BOT_FLEE_GAIN, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF,
+    BOT_NAV_CELL, BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK,
+    BOT_NAV_RETRY, BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED,
+    JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
 };
 use crate::items::registry::SHOVEL;
 use crate::math::Vec2;
@@ -61,7 +61,10 @@ fn cell_of(p: Vec2) -> (i32, i32) {
     )
 }
 
-/// An item on the ground: a node beside its cell (`PICKUP_RADIUS` is over a cell).
+/// An item on the ground: a node beside its cell (`PICKUP_RADIUS` is over a cell). One
+/// sunk a cell under the floor is "arrived at" and not picked up; `Bot::navigate` gives
+/// such an item up (T23.26C — asking for a node within the pickup's reach instead, so the
+/// route dug down to it, measured more void deaths: 0.45 a bot a round against 0.32).
 pub(super) fn item_target(at: Vec2) -> Target {
     let (x, y) = cell_of(at);
     Target {
@@ -93,6 +96,19 @@ pub(super) fn wander_target(at: Vec2) -> Target {
 pub(super) fn hide_target(from: Vec2) -> Target {
     Target {
         want: Want::Hide { from },
+        at: from,
+    }
+}
+
+/// T23.26C item 7: somewhere standing, out of `from`'s sight and `BOT_FLEE_GAIN` further
+/// from it than `pos` is — where a hurt bot runs (or flies) to first. Never dug to: a
+/// bot that has to dig to get away is cornered, and digs in (`hide_target`) instead.
+pub(super) fn away_target(from: Vec2, pos: Vec2) -> Target {
+    Target {
+        want: Want::Away {
+            from,
+            beyond: (pos - from).len() + BOT_FLEE_GAIN,
+        },
         at: from,
     }
 }
@@ -204,13 +220,17 @@ impl Route {
             // a hurt bot under fire does not cross the map to hide.
             let bound = match target.want {
                 Want::Hide { .. } => BOT_HIDE_COST_MAX,
+                Want::Away { .. } => BOT_FLEE_COST_MAX,
                 _ => BOT_NAV_COST_MAX,
             };
             let s = Search::new(&world.map, pos, fuel, target.want, BOT_NAV_NODES_MAX, bound);
             let mut s = s?;
-            s.dig = can_dig;
-            if let Want::Hide { from: p } = target.want {
+            s.dig = can_dig && !matches!(target.want, Want::Away { .. });
+            if let Want::Hide { from: p } | Want::Away { from: p, .. } = target.want {
                 s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
+            }
+            if let Want::Away { from: p, .. } = target.want {
+                s.side = Some((p, pos - p));
             }
             self.search = Some((s, target));
             *replans += 1;
@@ -221,12 +241,8 @@ impl Route {
             match s.run(&world.map, BOT_NAV_NODES_PER_TICK) {
                 Progress::Searching => return None,
                 Progress::NoRoute => {
-                    self.failed.retain(|(_, until)| now < *until);
-                    if self.failed.len() >= REFUSED_KEPT {
-                        self.failed.remove(0);
-                    }
-                    self.failed.push((*t, now + BOT_NAV_RETRY));
-                    self.search = None;
+                    let t = *t;
+                    self.refuse(t, now);
                     return None;
                 }
                 Progress::Found(path) => {
@@ -241,11 +257,17 @@ impl Route {
         }
         if !self.following() {
             // In cover, and still? A hiding place the enemy has walked round is not cover
-            // any more: plan again (`nav::satisfies`).
+            // any more: plan again (`nav::satisfies`). And a run that got away is run
+            // again while the enemy is still in sight range: each leg wants
+            // `BOT_FLEE_GAIN` more, so a hurt bot keeps going until contact is broken
+            // rather than standing at the end of its first leg (T23.26C item 7).
             if let (Some(t), Some((x, y))) = (self.target, grid.locate(pos)) {
-                if matches!(t.want, Want::Hide { .. })
-                    && !super::nav::satisfies(&grid, target.want, x, y)
-                {
+                let stale = match t.want {
+                    Want::Hide { .. } => !super::nav::satisfies(&grid, target.want, x, y),
+                    Want::Away { .. } => true,
+                    Want::Near { .. } => false,
+                };
+                if stale {
                     self.clear();
                 }
             }
@@ -321,6 +343,17 @@ impl Route {
         out.fire &= held;
         self.last_aim = out.aim;
         Some(out)
+    }
+
+    /// Refuse `t` for `BOT_NAV_RETRY`, as a search that found nothing does — for a route
+    /// that ended without its goal (T23.26C: an item a node's reach short).
+    pub fn refuse(&mut self, t: Target, now: f32) {
+        self.failed.retain(|(_, until)| now < *until);
+        if self.failed.len() >= REFUSED_KEPT {
+            self.failed.remove(0);
+        }
+        self.failed.push((t, now + BOT_NAV_RETRY));
+        self.clear();
     }
 
     fn searching_for(&self, t: &Target) -> bool {
@@ -459,7 +492,7 @@ fn same_target(a: &Target, b: &Target) -> bool {
         (Want::Near { r: ra, .. }, Want::Near { r: rb, .. }) => {
             ra == rb && (a.at - b.at).len() <= (ra.max(1) as f32) * BOT_NAV_CELL
         }
-        (Want::Hide { .. }, Want::Hide { .. }) => true,
+        (Want::Hide { .. }, Want::Hide { .. }) | (Want::Away { .. }, Want::Away { .. }) => true,
         _ => false,
     }
 }

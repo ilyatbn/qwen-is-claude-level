@@ -4121,6 +4121,14 @@ pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.
 pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
+/// T23.26C item 7: how much further from its enemy each leg of a hurt bot's run takes it,
+/// px: half an exploration cell. A leg that ends still inside `BOT_ENGAGE_RANGE` (320)
+/// is followed by another, so two or three legs break contact from a fight's range.
+pub const BOT_FLEE_GAIN: f32 = BOT_EXPLORE_CELL as f32 / 2.0;
+/// The dearest run a hurt bot plans, s: `BOT_FLEE_GAIN` and the 320 px of a fight's range
+/// at a walk is ~3 s; twice that buys a climb and a refuel on the way. Dearer, it is
+/// cornered and digs in.
+pub const BOT_FLEE_COST_MAX: f32 = 6.0;
 /// T23.26C (`docs/78` §A3, which struck T23.26 C's meteor cover): how far ahead a bot
 /// reads a meteor's fall, s. A meteor spawns 32 px over the map at `METEOR_SPEED` and
 /// gains `GRAVITY` a second, so it reaches the usual standing heights (300–800 px down)
