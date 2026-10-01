@@ -19,6 +19,7 @@
  * `sky-math.ts::cycleU`), each through its picture's place at its picture's moment.
  */
 import type { Background, CombatPalette, FrameLook, SkyMoon } from './scene'
+import { DAWN_START, DUSK_START, NIGHT_START } from '../render/sky-math'
 
 /** Number fields that hold a `0xRRGGBB` colour (`e_style.js::bgMaterial`'s options and `P.plume`). */
 export const HEX_KEYS: ReadonlySet<string> = new Set(['skyTop', 'skyBottom', 'haze', 'glowColor', 'rayColor', 'color', 'plume'])
@@ -132,8 +133,8 @@ export function nightShare(darkness: number, nightDarkness: number): number {
  * `world/cycle.rs::DUSK_START`), F1's at the middle of full night (0.76 — 0.62 → 0.90). At that `u` a moon is at
  * its picture's place; the wrap (half a cycle away) falls where its end's visibility is 0.
  */
-export const DAY_MOON_U = 0.25
-export const NIGHT_MOON_U = 0.76
+export const DAY_MOON_U = DUSK_START / 2
+export const NIGHT_MOON_U = (NIGHT_START + DAWN_START) / 2
 /**
  * Screen px the moons travel per whole cycle — **composition, not tuning**: over the half-cycle a set is seen (60 s)
  * it drifts ±400 px either side of its picture's place, a third of the frame, slow enough to read as the sky
@@ -153,11 +154,21 @@ export function arcOffset(u: number, uRef: number): [number, number] {
 }
 
 /**
- * How far from its picture's place a set can be while any of it shows (px, x either way and y down): the day moons
- * show until night is whole (`t` < 1: u 0.90 → 0.62 through the day — `world/cycle.rs`), `k` within ±0.37; the
- * night moon while `t` > 0 (0.50 → 1.0), within ±0.26. The sky bakes each set this far past the frame.
+ * How far from its moment (in cycle positions) a set is while any of it shows — derived from the
+ * darkness curve's bounds (T23.19G F7; `sky-math.ts`, `world/cycle.rs`). The day moons show until night is whole
+ * (`t` < 1: u `DAWN_START` → 1 → `NIGHT_START`), the night moon while `t` > 0 (`DUSK_START` → 1). Today 0.37 and 0.26.
  */
-export const MOON_REACH: [number, number] = [0.37 * MOON_TRAVEL, MOON_SAG * 0.74 * 0.74]
+export const MOON_SHOWN_K: { day: number; night: number } = {
+  day: Math.max(NIGHT_START - DAY_MOON_U, DAY_MOON_U - (DAWN_START - 1)),
+  night: Math.max(NIGHT_MOON_U - DUSK_START, 1 - NIGHT_MOON_U),
+}
+const REACH_K = Math.max(MOON_SHOWN_K.day, MOON_SHOWN_K.night)
+
+/**
+ * How far from its picture's place a set can be while any of it shows (px, x either way and y down): `arcOffset` at
+ * the farther of the two `MOON_SHOWN_K`. The sky bakes each set this far past the frame.
+ */
+export const MOON_REACH: [number, number] = [REACH_K * MOON_TRAVEL, MOON_SAG * (2 * REACH_K) * (2 * REACH_K)]
 
 /**
  * `bg` with its moons moved to cycle position `u`: the day moons along `DAY_MOON_U`'s arc, the night moon

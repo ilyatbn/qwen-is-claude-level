@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { actorBoxes, compare, failures, loadPng, thresholdsFor, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
@@ -61,8 +62,12 @@ const PAN = 200
 const TOL_PX = 3
 /** A band pixel differs from the all-hidden frame by more than this (max channel). */
 const BAND_DIFF = 6
-/** T23.11: the sandbox second the live legs hold the clock at — `NIGHT_MOON_U` 0.76 of the 120 s cycle. */
-const NIGHT_MOON_T = 0.76 * 120
+/**
+ * T23.11: the sandbox second the live legs hold the clock at — `daylight.ts::NIGHT_MOON_U` of the cycle. T23.19G F8:
+ * both read, not typed in: the cycle from `constants.rs` (`DAY_DURATION + NIGHT_DURATION`), the anchor from the page.
+ */
+const CYCLE = rustConstants().get('DAY_DURATION') + rustConstants().get('NIGHT_DURATION')
+const nightMoonT = (page) => page.evaluate(async () => (await import('/src/look/daylight.ts')).NIGHT_MOON_U).then((u) => u * CYCLE)
 /** T23.04C F6: steps of the slow pan, one world px each. */
 const SLOW_STEPS = 16
 
@@ -202,7 +207,7 @@ export default async function ({ page, shot, log }) {
   // hold it — at the night moon's moment (`daylight.ts::NIGHT_MOON_U` of the 120 s cycle): F1's look, its moon
   // disc at its place, which the control below locates. The night view (T23.10: outside your sight the scene fades)
   // is hidden: it would dim the bands the legs isolate.
-  await page.evaluate((t) => window.__game.setTime(t), NIGHT_MOON_T)
+  await page.evaluate((t) => window.__game.setTime(t), await nightMoonT(page))
   await page.evaluate(() => window.__world.hideLayers(['night']))
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
   const sky = await page.evaluate(() => window.__world.sky())

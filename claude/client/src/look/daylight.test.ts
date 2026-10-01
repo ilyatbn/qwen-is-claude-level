@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import { arcOffset, blendLook, blendPalette, DAY_MOON_U, HEX_KEYS, mixValue, MOON_TRAVEL, moonArcs, NIGHT_MOON_U, nightShare } from './daylight'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { C, Core } from '../core'
+import { darknessAt } from '../render/sky-math'
+import { arcOffset, blendLook, blendPalette, DAY_MOON_U, HEX_KEYS, mixValue, MOON_REACH, MOON_TRAVEL, moonArcs, NIGHT_MOON_U, nightShare } from './daylight'
 import type { Background } from './scene'
 import { F1 } from './scenes/F1'
 import { F5 } from './scenes/F5'
@@ -27,6 +32,13 @@ function channels(v: unknown, key: string): number[] {
   }
   return []
 }
+
+const here = dirname(fileURLToPath(import.meta.url))
+let ND = NaN
+beforeAll(async () => {
+  await Core.init(readFileSync(join(here, '../core/pkg/game_wasm_bg.wasm')))
+  ND = C().NIGHT_DARKNESS
+})
 
 const DAY = { look: F5.look, palette: F5.palette }
 const NIGHT = { look: F1.look, palette: F1.palette }
@@ -107,9 +119,51 @@ describe('T23.11: night and moonlit day, one blend', () => {
   })
 
   it('t is darkness over NIGHT_DARKNESS, clamped', () => {
-    expect(nightShare(0, 0.82)).toBe(0)
-    expect(nightShare(0.41, 0.82)).toBeCloseTo(0.5)
-    expect(nightShare(0.9, 0.82)).toBe(1)
+    // T23.19G F8: the constant, not its value typed in.
+    expect(ND).toBeGreaterThan(0)
+    expect(nightShare(0, ND)).toBe(0)
+    expect(nightShare(ND / 2, ND)).toBeCloseTo(0.5)
+    expect(nightShare(ND * 1.1, ND)).toBe(1)
+  })
+
+  /**
+   * T23.19G F9: the continuity test above compares a field only where it exists on both sides of a step, so a field
+   * that snaps — null against an object, arrays of unequal length, a shape string — is compared nowhere, and a pop at
+   * mid-dusk would pass it. Here every path whose presence or type changes between adjacent steps, or whose non-colour
+   * string changes, is collected, and the list must be exactly the fades the blend means: what one end alone has
+   * (`daylight.ts::FADED`, the rays with the disc), appearing or leaving at the ends (the first and last step) only.
+   */
+  it('snaps nothing but the one-ended fades, and those only at the ends', () => {
+    const STEPS = 100
+    const ALLOWED = ['bg.moons', 'bg.rayColor', 'bg.rays', 'bg.sun']
+    const COLOUR = /^(\s*[\d.]+\s*,|#|rgba\()/i
+    const kind = (v: unknown): string => (v === null ? 'null' : typeof v)
+    for (const [what, at] of [
+      ['look', (t: number) => blendLook(DAY.look, NIGHT.look, t)],
+      ['palette', (t: number) => blendPalette(DAY.palette, NIGHT.palette, t)],
+    ] as const) {
+      const s = Array.from({ length: STEPS + 1 }, (_, i) => leaves(at(i / STEPS)))
+      const snapped = new Set<string>()
+      const mid: string[] = []
+      for (let i = 1; i <= STEPS; i++) {
+        const a = s[i - 1]!
+        const b = s[i]!
+        for (const k of new Set([...a.keys(), ...b.keys()])) {
+          const va = a.get(k)
+          const vb = b.get(k)
+          const snap =
+            a.has(k) !== b.has(k) ||
+            kind(va) !== kind(vb) ||
+            (typeof va === 'string' && va !== vb && !COLOUR.test(va))
+          if (!snap) continue
+          const top = k.split('.').slice(0, 2).join('.')
+          snapped.add(top)
+          if (i !== 1 && i !== STEPS) mid.push(`${k} between t ${(i - 1) / STEPS} and ${i / STEPS}`)
+        }
+      }
+      expect(mid, `${what}: fields that snap mid-blend`).toEqual([])
+      expect([...snapped].sort(), `${what}: the fields that appear or leave`).toEqual(ALLOWED)
+    }
   })
 })
 
@@ -129,6 +183,36 @@ describe('T23.11: the moons move with the cycle', () => {
     expect(moonArcs(day, null)).toBe(day)
   })
 
+  /**
+   * T23.19G F7: the sky bakes each moon set `MOON_REACH` past the frame (`SkyQuad.reach`). Wherever the darkness curve
+   * leaves a set any weight, that set must be within the reach of its place, or a moon is clipped at the bake's edge.
+   * The sweep reads the curve (`darknessAt`) and the blend's own visibility, not a hand-picked range of `u`.
+   */
+  it('stays within the baked reach wherever the darkness curve shows it', () => {
+    let seen = { day: 0, night: 0 }
+    const far = { day: 0, night: 0 }
+    for (let i = 0; i < 1000; i++) {
+      const u = i / 1000
+      const bg = blendLook(DAY.look, NIGHT.look, nightShare(darknessAt(u, ND), ND)).bg!
+      const sets = [
+        ['day', bg.moons?.length ? bg.moons[0]!.vis ?? 1 : 0, DAY_MOON_U],
+        ['night', bg.sun ? bg.sun.vis ?? 1 : 0, NIGHT_MOON_U],
+      ] as const
+      for (const [name, vis, ref] of sets) {
+        if (!(vis > 0)) continue
+        seen = { ...seen, [name]: seen[name] + 1 }
+        const [dx, dy] = arcOffset(u, ref)
+        far[name] = Math.max(far[name], Math.abs(dx))
+        expect(Math.abs(dx), `${name} set at u ${u}: ${dx.toFixed(0)} px from its place`).toBeLessThanOrEqual(MOON_REACH[0] + 1e-6)
+        expect(dy, `${name} set at u ${u}: ${dy.toFixed(0)} px below its place`).toBeLessThanOrEqual(MOON_REACH[1] + 1e-6)
+      }
+    }
+    // Not vacuous: both sets show for most of the cycle, and one of them reaches the edge of the reach.
+    expect(seen.day).toBeGreaterThan(500)
+    expect(seen.night).toBeGreaterThan(400)
+    expect(Math.max(far.day, far.night)).toBeGreaterThan(MOON_REACH[0] * 0.99)
+  })
+
   it('jumps back only where its end is invisible (half a cycle from its moment)', () => {
     const dx = (u: number, ref: number): number => arcOffset(u, ref)[0]
     // Continuous through the whole day for the day moons (u 0 → 0.5)…
@@ -141,5 +225,26 @@ describe('T23.11: the moons move with the cycle', () => {
 
   it('the two ends lay out the same bands (a shape never blends, so they must agree)', () => {
     expect(day.layers.map(({ color: _c, fade: _f, ...shape }) => shape)).toEqual(night.layers.map(({ color: _c, fade: _f, ...shape }) => shape))
+  })
+})
+
+describe('T23.19G F5: space keeps F1 at every hour', () => {
+  const map = (space: boolean) => ({ w: 4000, h: 2000, seed: 7, space })
+  it('a space map has nothing to blend, so its look stays F1\'s grade and bloom; a ground map at t = 0 is F5\'s (the control)', async () => {
+    const { gameDescription } = await import('./worldRenderer')
+    const space = gameDescription(map(true))
+    expect(space.daylight).toBeUndefined()
+    expect(space.look.grade).toEqual(F1.look.grade)
+    expect(space.look.bloom).toEqual(F1.look.bloom)
+    expect(space.palette).toEqual(F1.palette)
+    const ground = gameDescription(map(false))
+    const d = ground.daylight
+    expect(d).toBeDefined()
+    if (!d) return
+    const day = blendLook(d.day, d.night, 0)
+    expect(day.grade).toEqual(F5.look.grade)
+    expect(day.bloom).toEqual(F5.look.bloom)
+    expect(blendPalette(d.dayPalette, d.nightPalette, 0)).toEqual(F5.palette)
+    expect(F5.look.grade).not.toEqual(F1.look.grade)
   })
 })

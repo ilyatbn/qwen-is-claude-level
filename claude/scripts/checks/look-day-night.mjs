@@ -28,14 +28,18 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { actorBoxes, compare, failures, loadPng, thresholdsFor, withActors } from '../lib/look-compare.mjs'
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
+import { constants as rustConstants } from '../lib/rust-constants.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 const ref = (p) => join(root, 'tasks/M23/reference', p)
 const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
 
-/** Sandbox seconds: the middle of the day (`DAY_MOON_U` 0.25 of the 120 s cycle), and how far the clock is moved. */
-const DAY_T = 30
+/**
+ * Sandbox seconds: how far the clock is moved from the middle of the day — `DAY_T`, `daylight.ts::DAY_MOON_U` of the
+ * cycle. T23.19G F8: both read, not typed in (the cycle from `constants.rs`, the anchor from the page).
+ */
+const CYCLE = rustConstants().get('DAY_DURATION') + rustConstants().get('NIGHT_DURATION')
 const MOVE_S = 6
 /** A patch "changed" when its mean per-channel change exceeds this (0–255); "held" when under `HELD_MAX`. */
 const CHANGED_MIN = 6
@@ -151,6 +155,11 @@ export default async function ({ page, shot, log }) {
     const s = await page.evaluate(() => window.__world.sky())
     return { f: { ...f, data: Buffer.from(f.rgba, 'base64') }, s }
   }
+  const U = await page.evaluate(async () => {
+    const d = await import('/src/look/daylight.ts')
+    return { day: d.DAY_MOON_U, night: d.NIGHT_MOON_U }
+  })
+  const DAY_T = U.day * CYCLE
   const A = await at(DAY_T)
   const A2 = await at(DAY_T)
   const B = await at(DAY_T + MOVE_S)
@@ -186,6 +195,33 @@ export default async function ({ page, shot, log }) {
     if (!(moonMoved > CHANGED_MIN)) problems.push(`the moon's old place changed only ${moonMoved.toFixed(2)} when the clock moved`)
     if (!(moonHeld <= HELD_MAX)) problems.push(`the moon's place changed ${moonHeld.toFixed(2)} with the clock held — the frame moves by itself`)
     if (!(ctrl <= HELD_MAX)) problems.push(`the control sky patch changed ${ctrl.toFixed(2)} — something besides the moon moved`)
+  }
+
+  // ------------------------------------------------------------------------------------- 3. no compile at dusk
+  // T23.19G F6: the sky's moon-set variants are built at the map change (`SkyQuad.warm`), so pushing the clock through
+  // dusk (both sets), full night (night's only) and back to day builds no program. Planted out (no warm) the count rose
+  // at dusk. The sandbox's clock is the match's `WorldRenderer.setDaylight` path; only the clock's source differs.
+  const P = await page.evaluate(async () => {
+    const m = await import('/src/render/sky-math.ts')
+    return { dusk: (m.DUSK_START + m.NIGHT_START) / 2 }
+  })
+  const programs = async (t) => {
+    await page.evaluate((x) => window.__game.setTime(x), t)
+    for (let i = 0; i < 6; i++) await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)))
+    return page.evaluate(() => ({ n: window.__world.info().memory.programs, names: window.__world.info().programNames, hour: window.__world.sky()?.hour }))
+  }
+  const legs = [['day', U.day * CYCLE], ['dusk', P.dusk * CYCLE], ['night', U.night * CYCLE], ['day again', U.day * CYCLE]]
+  const seen = []
+  for (const [name, t] of legs) seen.push({ name, t, ...(await programs(t)) })
+  log(`programs through the day: ${seen.map((s) => `${s.name} (${s.t.toFixed(1)} s, hour ${JSON.stringify(s.hour)}) ${s.n}`).join(', ')}`)
+  const hours = new Set(seen.map((s) => JSON.stringify(s.hour?.t)))
+  if (hours.size < 3) problems.push(`the clock did not move the sky through three hours: ${[...hours].join(' ')} — nothing here is evidence`)
+  const grew = seen.filter((s) => s.n !== seen[0].n)
+  if (grew.length) {
+    const count = (a) => (a ?? []).reduce((m, n) => m.set(n, (m.get(n) ?? 0) + 1), new Map())
+    const before = count(seen[0].names)
+    const added = [...count(grew[0].names)].filter(([n, k]) => k > (before.get(n) ?? 0)).map(([n]) => n)
+    problems.push(`a program was built mid-round: ${seen[0].n} at day → ${grew.map((s) => `${s.n} at ${s.name}`).join(', ')} (${added.join(', ') || 'names unknown'})`)
   }
 
   if (problems.length) throw new Error(`look-day-night:\n  - ${problems.join('\n  - ')}`)

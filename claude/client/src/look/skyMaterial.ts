@@ -317,6 +317,13 @@ const nightAnchor = (bg: Background | null): [number, number] | null =>
  * (per frame: the palette at `t` and where the moon sets are — `daylight.ts`), baked and moved by `place` before a
  * frame is drawn. `hide` is a dev check's control: those layer slots are skipped exactly as an empty slot is.
  */
+/** T23.19G F6: the moon-set variants (`NSET`, `DSET`) a blend can draw — (0, 0) never: a sky always has one end's set. */
+export const SET_VARIANTS: readonly (readonly [number, number])[] = [
+  [1, 1],
+  [1, 0],
+  [0, 1],
+]
+
 export class SkyQuad {
   readonly mesh: Mesh<PlaneGeometry, ShaderMaterial>
   /** Bakes made so far, and the bytes the current ones hold (the dev handle reports both; T23.11: `rayBytes` the moon sets' rays, one size at every tier). */
@@ -484,6 +491,39 @@ export class SkyQuad {
       C[i]!.set(...(L ? hexLinear(L.color) : ([0, 0, 0] as [number, number, number])))
       Dz[i] = L ? (L.fade ?? [L.y, bg.horizon, 0.15])[2] : 1
     }
+  }
+
+  /**
+   * T23.19G F6: build the composite's program for **every moon-set variant a blend reaches** now — both sets (dusk,
+   * dawn), night's only, day's only (`setColours`' `NSET`/`DSET`) — drawn into 1 px of `target`, as `GlowLayer.warm`
+   * does. Without it a round compiled one at its first dusk and one at its first full night: a frame stalled at a
+   * gameplay moment, on the GPU tier too. three keeps each program on the material, so a later switch finds it built.
+   * Nothing to do without a sky (a space map). The px is overwritten by the next drawn frame (the render pass clears).
+   */
+  warm(r: WebGLRenderer, target: WebGLRenderTarget): void {
+    if (!this.bg) return
+    const mat = this.mesh.material
+    const keep = { n: mat.defines['NSET'] as number, d: mat.defines['DSET'] as number }
+    const prev = r.getRenderTarget()
+    const autoClear = r.autoClear
+    const vis = this.mesh.visible
+    r.autoClear = false
+    target.scissor.set(0, 0, 1, 1)
+    target.scissorTest = true
+    r.setRenderTarget(target)
+    this.mesh.visible = true
+    for (const [n, d] of SET_VARIANTS) {
+      this.define('NSET', n)
+      this.define('DSET', d)
+      r.render(this.mesh, this.bakeCam)
+    }
+    this.define('NSET', keep.n)
+    this.define('DSET', keep.d)
+    this.mesh.visible = vis
+    target.scissor.set(0, 0, target.width, target.height)
+    target.scissorTest = false
+    r.setRenderTarget(prev)
+    r.autoClear = autoClear
   }
 
   private define(name: string, v: number): void {

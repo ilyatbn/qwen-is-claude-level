@@ -16,14 +16,22 @@ export type SkyPhase = 'morning' | 'day' | 'afternoon' | 'evening' | 'night' | '
 /** One full day, in seconds. `DAY_DURATION + NIGHT_DURATION`. */
 export const CYCLE_LENGTH = 120
 
+/**
+ * T23.19G F7: the darkness curve's bounds (`world/cycle.rs`'s `DUSK_START`, `NIGHT_START`, `DAWN_START`, as cycle
+ * positions) — exported so what hangs off the day (`daylight.ts`'s moon anchors and reach) is derived, not re-typed.
+ */
+export const DUSK_START = 0.5
+export const NIGHT_START = 0.62
+export const DAWN_START = 0.9
+
 /** Phase boundaries, from §A4. Upper bound exclusive. */
 const PHASES: Array<[SkyPhase, number, number]> = [
   ['morning', 0.0, 0.15],
   ['day', 0.15, 0.4],
-  ['afternoon', 0.4, 0.5],
-  ['evening', 0.5, 0.62],
-  ['night', 0.62, 0.9],
-  ['dawn', 0.9, 1.0],
+  ['afternoon', 0.4, DUSK_START],
+  ['evening', DUSK_START, NIGHT_START],
+  ['night', NIGHT_START, DAWN_START],
+  ['dawn', DAWN_START, 1.0],
 ]
 
 /** Position in the day, wrapped to `[0, 1)`. */
@@ -60,10 +68,10 @@ export function darknessAt(u: number, nightDarkness: number): number {
     const k = Math.max(0, Math.min(1, x))
     return k * k * (3 - 2 * k)
   }
-  if (t < 0.5) return 0
-  if (t < 0.62) return nightDarkness * smooth((t - 0.5) / 0.12)
-  if (t < 0.9) return nightDarkness
-  return nightDarkness * (1 - smooth((t - 0.9) / 0.1))
+  if (t < DUSK_START) return 0
+  if (t < NIGHT_START) return nightDarkness * smooth((t - DUSK_START) / (NIGHT_START - DUSK_START))
+  if (t < DAWN_START) return nightDarkness
+  return nightDarkness * (1 - smooth((t - DAWN_START) / (1 - DAWN_START)))
 }
 
 /**

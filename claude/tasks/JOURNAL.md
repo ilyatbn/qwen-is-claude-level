@@ -7665,3 +7665,9 @@ night-view-match: control stand clear of every standing light (`debug().staticLi
 F3: SPACE_MOON_ORBIT 118→236 (radii doubled at zoom 1, orbit not); vitest basis; space-sky asserts rim-to-rim clearance (−42.9 red → 72.3), moon leg measured again. Earth-pace comment restated (3.5 px/s measured).
 Done-when EXIT 0: vitest 1177/1177, cargo 1721/0, e2e 4/4. check.sh --changed HEAD: 95/97 — effect-lights red (also red alone 2/2 on the untouched baseline: "laser impact: control … changed by 24", not this change), audio red in batch, green alone.
 F4–F11 split to T23.10C. `ui/minimap*.ts` touched outside Touch-only (the task named visibleRemotes).
+
+## T23.19G — what the daylight review found (builder2, 2026-10-01)
+effect-lights: the laser control read a gate that took the impact's freed light slot (+24) and the gate's orb lit by the uncapped list (+47); control = drawn set minus the light (`__world.drawnLights`), no actors in either read. Both plants red.
+F5 space has no daylight (F1 always); F6 `SkyQuad.warm` builds the sky's set variants at setScene (programs 23 at day/dusk/night; plant 22→23 at dusk); F7 moon anchors/reach derived from sky-math's exported phase bounds + a darknessAt sweep (finding's NIGHT_MOON_U plant is green by design; DAY_MOON_U 0.20 / NIGHT_START 0.66 red); F8 constants read; F9 snap allow-list (fogFront plant red); F10 comments. F4 → coordinator (docs/60 row).
+Stale wasm found: pkg had SPACE_MOON_ORBIT 118 (T23.10B's 236 never reached the client) until a cargo clean of the wasm target.
+Done-when: vitest 1180/1180; e2e 4/5 (look-sky red once under 5-wide load, 3/3 alone). check.sh --changed HEAD 93/97: night-view, platforms, smoke-fx, look-match red in batch, green alone.

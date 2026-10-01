@@ -562,6 +562,8 @@ export default async function ({ page, shot, log }) {
   if (!(night.d.darkness > 0.5 * k.NIGHT_DARKNESS)) problems.push(`night darkness ${night.d.darkness}`)
   // The presence control's pixel half (T23.07 retired it while the world was F1's night at every hour; T23.11 put
   // it back): on the standard map night darkens the frame — F5's moonlit day → F1's night and the night view (R7).
+  // T23.19G F10: it holds with the blend deleted (the night view alone darkens outside the sight), so it is not evidence
+  // for the blend — `look-day-night-match` is; do not retire that one as redundant with this.
   if (!(dm.mean - nm.mean > 15)) problems.push(`night darkened the frame by only ${(dm.mean - nm.mean).toFixed(1)}`)
   log(`standard: night darkened the frame's mean by ${(dm.mean - nm.mean).toFixed(1)} (min 15)`)
   // T23.04C F4: the star counter's negative control, back. (Retired in T23.04: "the daytime sky

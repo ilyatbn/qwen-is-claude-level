@@ -8,8 +8,9 @@
  * Each leg fires the real thing, waits until the effect's light is in the list the scene handed the
  * world renderer (`__game.effectLights()`, kind by kind) **and** the terrain drew with at least one light
  * (`__world.litTerrain().lights` ≥ 1, asserted on every leg), then freezes the scene (update stops; the world canvas
- * still draws). The frozen frame is read twice — as drawn, and with **only that light** taken out of the renderer's
- * list (`__world.setLights`, every other light kept) — so the crater, the camera, the sky and the fog are the same
+ * still draws). The frozen frame is read twice — as drawn, and with **only that light** taken out of the
+ * lights the terrain drew (`__world.drawnLights`, `setLights`; every other drawn light kept, no actors in either read —
+ * T23.19G) — so the crater, the camera, the sky and the fog are the same
  * pixels in both and **the only difference is the light**.
  *
  * ## 4. Through `GameScene` (T23.09C F6)
@@ -62,7 +63,7 @@ const frames = (page, n) =>
   }), n)
 
 /**
- * The frozen frame as drawn, and again with **only `light`** taken out of the renderer's list (every other
+ * The frozen frame as drawn, and again with **only `light`** taken out of the lights the terrain drew (every other
  * light — gates, other effects — stays, so the difference is this light's alone), plus a rock mask on the
  * buffer grid. Throws if the light is not in the renderer's list: the scene's list and the renderer's must
  * agree (both ends).
@@ -70,12 +71,23 @@ const frames = (page, n) =>
 async function bothWays(page, light) {
   const held = await page.evaluate(() => window.__world.lights())
   const same = (l) => l.x === light.x && l.y === light.y && l.r === light.r && l.i === light.i
-  const rest = held.filter((l) => !same(l))
-  if (rest.length !== held.length - 1) throw new Error(`the light is not in the renderer's list once: ${JSON.stringify(light)} in ${JSON.stringify(held)}`)
+  if (held.filter(same).length !== 1) throw new Error(`the light is not in the renderer's list once: ${JSON.stringify(light)} in ${JSON.stringify(held)}`)
+  // T23.19G: the control frame is the **drawn** set without the light, not the held list without it. The held list can be
+  // longer than the terrain's slots (a map's gates + a shot's muzzle + its impact: 14 against the low tier's 10), and
+  // taking one out of it lets a light that had lost its slot take it: the gate at (1312, 719), 676 px from the laser's
+  // impact, lit its rock in the control frame only (+24 on a channel) — read as "the whole frame moved".
+  const drawn = await page.evaluate(() => window.__world.drawnLights())
+  const rest = drawn.filter((l) => !same(l))
+  if (rest.length !== drawn.length - 1) throw new Error(`both ends — the light is held but the terrain did not draw it once: ${JSON.stringify(light)} in ${JSON.stringify(drawn)}`)
+  // T23.19G: no figures, gates or pickups in either read. The actors are lit by the renderer's whole list, uncapped, so the
+  // drawn set above (without the gate lights that lost their slots) re-lit the gate at (1312, 719) in the control frame
+  // only (+47 on its orb). The rock under them is what is measured.
+  await page.evaluate(() => window.__world.setActors([]))
   const on = decode(await page.evaluate(() => window.__world.readFrame()))
   await page.evaluate((l) => window.__world.setLights(l), rest)
   const off = decode(await page.evaluate(() => window.__world.readFrame()))
   await page.evaluate((l) => window.__world.setLights(l), held)
+  await page.evaluate(() => window.__world.setActors(null))
   const rock = await page.evaluate(([v, w, h]) => {
     const c = window.__game.core
     const k = w / v.w

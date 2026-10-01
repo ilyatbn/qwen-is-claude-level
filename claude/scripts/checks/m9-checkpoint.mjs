@@ -94,7 +94,10 @@ export default async function ({ page, shot, log }) {
 
     // Night must actually cost you something — this is the pillar §A16 restored. (T23.07 retired it: the lit
     // terrain was F1's night at every hour. T23.11 put it back: by day the world is F5's moonlit day, at night
-    // F1's night with the night view outside your sight — R7.)
+    // F1's night with the night view outside your sight — R7.) T23.19G F10: **this holds with the blend deleted** — the
+    // night view alone darkens everything outside the sight circle — so it gates "night costs something", not the blend.
+    // The blend's evidence is `look-day-night-match` (day against night with the view held); do not retire that one as
+    // redundant with this.
     if (!(night < day * 0.75)) {
       throw new Error(`${t.name}: night ${night.toFixed(1)} is not darker than day ${day.toFixed(1)}`)
     }

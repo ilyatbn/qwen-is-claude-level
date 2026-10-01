@@ -393,6 +393,8 @@ export class WorldRenderer implements SceneRenderer {
     this.sky.setSky(desc.daylight ? desc.daylight.night.bg : desc.look.bg, desc.daylight?.day.bg ?? null, desc.daylight ? MOON_REACH : [0, 0])
     this.skyNow = desc.look.bg
     if (desc.daylight) this.blendHour()
+    // T23.19G F6: every moon-set variant the day's blend will reach, compiled at the map change, not at the first dusk.
+    if (desc.daylight) this.sky.warm(this.renderer, this.composer.readBuffer)
     this.syncBake()
   }
 
@@ -514,6 +516,7 @@ export class WorldRenderer implements SceneRenderer {
     // T23.18B: the tier's slot count (not the forced material's: both materials at a tier get the same list).
     const lights = pickLights(desc.look.lights, view, this.tier === 'low' ? TERRAIN_LIGHTS_LOW : TERRAIN_LIGHTS)
     setLights(u, lights)
+    this.pickedLights = lights
     ;(u['ext']!.value as { set(x: number, y: number): void }).set(desc.world.w, desc.world.h)
     const low = (this.terrainForce ?? this.tier) === 'low' && this.terrain.baked && !!g.bake
     u['baked']!.value = low ? g.bake?.texture ?? null : null
@@ -797,6 +800,13 @@ export class WorldRenderer implements SceneRenderer {
 
   /** Dev (`look-terrain`): draw the terrain with this tier's material whatever the tier (`null`: the tier's own). */
   terrainForce: QualityTier | null = null
+
+  /**
+   * Dev (T23.19G, `effect-lights`): the lights the terrain last drew — `pickLights`' choice, not the list it chose from.
+   * A check that takes one light out of a list longer than the slots must hand back the drawn set without it, or a
+   * light that had lost its slot takes it and lights rock the removed one never reached.
+   */
+  pickedLights: readonly Light[] = []
 
   /** Dev: the lit terrain as last drawn — whether, which tier's material, how many lights. */
   terrainDrawn(): { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } {
@@ -1105,7 +1115,11 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
   })
   const night = end(F1.look, f1)
   return {
-    daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette },
+    // T23.19G F5: **space keeps F1's look at every hour**, as it had before T23.11 — no daylight to blend, so
+    // `setDaylight` leaves `look` and `palette` F1's. Space has no day (`sky-math.ts::sceneDarkness` is 0 there), so
+    // blending by darkness handed it F5's moonlit day for good: its bloom, grade, exposure and combat palette. Its own
+    // look is T23.20's.
+    ...(map.space ? {} : { daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette } }),
     id: 'game',
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },

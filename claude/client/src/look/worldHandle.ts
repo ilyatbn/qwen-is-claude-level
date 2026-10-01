@@ -88,6 +88,8 @@ export interface WorldHandle {
   hideWall(hide: boolean): void
   /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`; T23.18 `fx`, every effect); `[]` restores. */
   hideLayers(names: string[]): void
+  /** T23.19G: the point lights the terrain last drew (after `pickLights`: culled to the view, capped to the slots). */
+  drawnLights(): Light[] | null
   /** T23.09: the point lights the renderer holds now (before `pickLights`); `null` without three.js. */
   lights(): Light[] | null
   /**
@@ -361,6 +363,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     scorchOnly: (x, y, r) => (three ? scorchOnly(three.terrain, x, y, r) : null),
     litTerrain: () => three?.terrainDrawn() ?? null,
+    drawnLights: () => (three ? [...three.pickedLights] : null),
     hideTerrain(hide) {
       if (!three) return
       three.terrainHidden = hide
