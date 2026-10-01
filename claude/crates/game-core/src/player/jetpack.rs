@@ -33,6 +33,12 @@ pub struct JetpackState {
     pub ticks_since_jump: u32,
     /// Set after running dry; cleared once fuel reaches `JETPACK_MIN_FUEL_TO_ENGAGE`.
     pub locked_out: bool,
+    /// T23.32: the engage key was held while the pack was refused ([`refuse`] — on a
+    /// platform, on wings) and has not been let go since. Holding JUMP is the dismount
+    /// gesture, and since a held JUMP climbs, a dismount held a moment long launched the
+    /// player (`the_dismount_hold_never_launches_the_player`). On the ground the pack waits
+    /// for a fresh press.
+    pub refused_hold: bool,
 }
 
 impl Default for JetpackState {
@@ -43,6 +49,7 @@ impl Default for JetpackState {
             idle_ticks: 0,
             ticks_since_jump: u32::MAX / 2,
             locked_out: false,
+            refused_hold: false,
         }
     }
 }
@@ -94,7 +101,12 @@ pub fn update(
         can_start
     };
 
-    state.active = if !engage_held || !has_fuel {
+    // Let go, or off the ground (a dismounted body that walked off its platform, wings
+    // dropped in mid-air): a held key engages again.
+    if !engage_held || !body.grounded {
+        state.refused_hold = false;
+    }
+    state.active = if !engage_held || !has_fuel || state.refused_hold {
         // Released, or nothing to burn: disengage instantly.
         false
     } else if jumped_this_tick {
@@ -177,7 +189,15 @@ pub fn thrust_delta(input: &Input, gravity: GravityMode, vel: Vec2, dt: f32) -> 
     let mut thrust_x = 0.0;
     let mut thrust_y = 0.0;
 
-    if input.held(button::UP) {
+    // T23.32 (owner: *"make pressing and holding space (jetpack) fly up … without having to
+    // click w"*): under gravity the pack is engaged only by a held JUMP, so a held JUMP with
+    // neither UP nor DOWN pushes **up**, as UP does. DOWN still wins its own direction. Not
+    // in space: there a held direction is what engages the thrusters (`player::space`) and
+    // JUMP is a jump that costs fuel, so a JUMP-alone climb would be a second, unasked-for
+    // UP key in a scheme that has one.
+    let jump_climbs =
+        gravity != GravityMode::Space && input.held(button::JUMP) && !input.held(button::DOWN);
+    if input.held(button::UP) || jump_climbs {
         thrust_y -= JETPACK_THRUST_UP * scale * dt;
     }
     if input.held(button::DOWN) {
@@ -327,6 +347,7 @@ pub fn spend_jump(state: &mut JetpackState) {
 /// burning, so their tank refills exactly as it does for anyone not thrusting.
 pub fn refuse(state: &mut JetpackState) {
     state.active = false;
+    state.refused_hold = true;
     state.idle_ticks = state.idle_ticks.saturating_add(1);
     state.ticks_since_jump = state.ticks_since_jump.saturating_add(1);
     if state.idle_ticks > REFILL_DELAY_TICKS {
@@ -630,10 +651,14 @@ mod tests {
 
     #[test]
     fn no_directional_input_applies_no_thrust() {
+        // T23.32: no button at all (a held JUMP climbs now — below). And in space a
+        // held JUMP alone is no direction, as before.
         let mut b = Body::new(Vec2::new(1.0, 2.0));
         b.vel = Vec2::new(3.0, 4.0);
-        apply_thrust(&mut b, &input_with(JUMP), GravityMode::Standard, SIM_DT);
+        apply_thrust(&mut b, &input_with(0), GravityMode::Standard, SIM_DT);
         assert_eq!(b.vel, Vec2::new(3.0, 4.0));
+        let still = thrust_delta(&input_with(JUMP), GravityMode::Space, Vec2::ZERO, SIM_DT);
+        assert_eq!(still, (0.0, 0.0), "space: JUMP alone pushed {still:?}");
     }
 
     #[test]
@@ -672,39 +697,42 @@ mod tests {
         assert!(b.pos.y < 0.0, "did not climb: y = {}", b.pos.y);
     }
 
+    /// **T23.32 (owner: *"make pressing and holding space (jetpack) fly up … without
+    /// having to click w"*): a held JUMP alone pushes as UP does**, in standard and low
+    /// gravity — the push pinned to `JETPACK_THRUST_UP` (and the mode's scale), equal to
+    /// the UP case's. Controls: JUMP + DOWN is the DOWN case's (DOWN wins its own
+    /// direction); JUMP + UP is UP's, not doubled. And a JUMP press on the ground is a
+    /// jump, not thrust: the pack does not engage that tick. (Plant: `jump_climbs`
+    /// `false` → red.)
     #[test]
-    fn holding_space_with_no_wasd_is_a_slow_descent() {
-        // Between 10% and 50% of an unpowered fall over the same time.
-        let ticks = 60;
-        let mut powered = Body::new(Vec2::ZERO);
+    fn holding_space_alone_flies_up_as_up_does() {
+        for g in [GravityMode::Standard, GravityMode::Low] {
+            let up = thrust_delta(&input_with(UP), g, Vec2::ZERO, SIM_DT);
+            let space = thrust_delta(&input_with(JUMP), g, Vec2::ZERO, SIM_DT);
+            assert_eq!(space, up, "{g:?}: Space alone pushed {space:?}, UP {up:?}");
+            assert_eq!(space.1, -JETPACK_THRUST_UP * thrust_scale(g) * SIM_DT);
+            let down = thrust_delta(&input_with(DOWN), g, Vec2::ZERO, SIM_DT);
+            let space_down = thrust_delta(&input_with(JUMP | DOWN), g, Vec2::ZERO, SIM_DT);
+            assert_eq!(space_down, down, "{g:?}: Space+S is not S's push");
+            let both = thrust_delta(&input_with(JUMP | UP), g, Vec2::ZERO, SIM_DT);
+            assert_eq!(both, up, "{g:?}: Space+W doubled the climb");
+        }
+        // It climbs, in the integrator the game runs.
+        let mut b = Body::new(Vec2::ZERO);
         let s = JetpackState {
             active: true,
             ..Default::default()
         };
-        for _ in 0..ticks {
-            apply_thrust(
-                &mut powered,
-                &input_with(JUMP),
-                GravityMode::Standard,
-                SIM_DT,
-            );
-            powered.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
-            powered.pos.y += powered.vel.y * SIM_DT;
+        for _ in 0..30 {
+            apply_thrust(&mut b, &input_with(JUMP), GravityMode::Standard, SIM_DT);
+            b.vel.y += GRAVITY * gravity_scale(&s, false, GravityMode::Standard) * SIM_DT;
+            b.pos.y += b.vel.y * SIM_DT;
         }
-
-        let mut free = Body::new(Vec2::ZERO);
-        for _ in 0..ticks {
-            free.vel.y += GRAVITY * SIM_DT;
-            free.pos.y += free.vel.y * SIM_DT;
-        }
-
-        let ratio = powered.pos.y / free.pos.y;
-        assert!(
-            (0.10..=0.50).contains(&ratio),
-            "descent ratio {ratio:.3} (powered {:.1} px, free {:.1} px)",
-            powered.pos.y,
-            free.pos.y
-        );
+        assert!(b.pos.y < 0.0, "Space alone did not climb: y = {}", b.pos.y);
+        // A press on the ground is the jump.
+        let mut st = JetpackState::default();
+        update(&mut st, &grounded(), true, true, true, SIM_DT);
+        assert!(!st.active, "the jump's press engaged the pack");
     }
 
     #[test]

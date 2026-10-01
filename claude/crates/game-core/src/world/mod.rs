@@ -9260,9 +9260,12 @@ mod gravity_tests {
     ///
     /// `the_runner_reaches_every_falling_subsystem` re-measures this on every
     /// run rather than trusting the paragraph above, which is the only reason it
-    /// is safe to write a number here at all.
+    /// is safe to write a number here at all. **T23.32 re-measured it: 10 → 5.** A held
+    /// JUMP climbs now, so the driven run's mid-air presses lift player 0 (it ended 77 px
+    /// higher, 87 px further right) and the last rocket, dropped above it, burst inside
+    /// the 9 ticks before the hash: `projectiles = 0` at 10, 3 at 5.
     const TICKS: u32 = 600;
-    const RESEED_TICKS: u32 = 10;
+    const RESEED_TICKS: u32 = 5;
 
     /// Where the falling things are dropped, relative to the player they follow:
     /// high enough to fall for a while, offset so a projectile's arc is not the

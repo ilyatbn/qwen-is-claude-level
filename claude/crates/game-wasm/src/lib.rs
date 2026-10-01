@@ -4182,7 +4182,8 @@ mod tests {
     /// assertion below only claims the gap exceeds the epsilon, so it was sound
     /// either way; the prose was not.
     ///
-    /// **`JUMP | RIGHT`, held.** A jump is the one gesture whose two arms are
+    /// **`JUMP | RIGHT`, then RIGHT held** (T23.32: JUMP let go inside the hold delay).
+    /// A jump is the one gesture whose two arms are
     /// unmistakable: under gravity it arcs and lands, and in space the player
     /// leaves the shelf at `JUMP_VELOCITY` and never comes back. RIGHT then
     /// thrusts them sideways once they are floating, so both axes are live.
@@ -4257,11 +4258,20 @@ mod tests {
         let mut seq = 1000u32;
         // Four times `WALK_TICKS`: long enough for the gravity arm to complete
         // an arc and land, which is the whole shape the space arm does not have.
-        for _ in 0..(WALK_TICKS * 4) {
+        // T23.32: JUMP let go inside the hold delay — a held JUMP climbs on the pack under
+        // gravity now, which would carry the uninformed mirror to the sky as well and
+        // erase the one difference this fixture is built on. The jump, then RIGHT held.
+        let hold = game_core::player::jetpack::HOLD_DELAY_TICKS;
+        for i in 0..(WALK_TICKS * 4) {
             seq += 1;
-            w.queue_input(1, Input::new(seq, buttons, 0));
+            let b = if i < hold {
+                buttons
+            } else {
+                game_core::player::input::button::RIGHT
+            };
+            w.queue_input(1, Input::new(seq, b, 0));
             w.step(SIM_DT);
-            core.apply_input(1, seq, buttons, 0, SIM_DT);
+            core.apply_input(1, seq, b, 0, SIM_DT);
         }
         let sp = w.player(1).expect("seated");
         let c = core.player_state(1);
@@ -4599,9 +4609,18 @@ mod tests {
             }
             assert_eq!(w.gravity, GravityMode::Standard);
             let mut seq = 1000u32;
-            for _ in 0..(WALK_TICKS * 4) {
+            // T23.32: under gravity a held JUMP now climbs on the pack, so the standard
+            // control is **an ordinary jump** — JUMP let go inside the hold delay, RIGHT
+            // held on — which is what this control always stood for.
+            let hold = game_core::player::jetpack::HOLD_DELAY_TICKS;
+            for i in 0..(WALK_TICKS * 4) {
                 seq += 1;
-                w.queue_input(1, Input::new(seq, buttons, 0));
+                let b = if i < hold {
+                    buttons
+                } else {
+                    game_core::player::input::button::RIGHT
+                };
+                w.queue_input(1, Input::new(seq, b, 0));
                 w.step(SIM_DT);
             }
             let sp = w.player(1).expect("seated");

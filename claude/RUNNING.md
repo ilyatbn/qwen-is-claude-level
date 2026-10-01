@@ -69,8 +69,8 @@ real deathmatch on your own.
 | | |
 |---|---|
 | `A` / `D` | walk |
-| `Space` | jump; **hold** it in the air for the jetpack |
-| `W` `A` `S` `D` while thrusting | directional flight |
+| `Space` | jump; **hold** it to fly up on the jetpack |
+| `A` `D` / `S` while thrusting | steer sideways / thrust down |
 | mouse | aim — the crosshair rides a ring around you |
 | left click, or `F` | fire the selected weapon |
 | right click | inventory panel |

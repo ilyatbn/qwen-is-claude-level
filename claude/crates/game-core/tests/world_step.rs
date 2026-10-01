@@ -1097,14 +1097,21 @@ fn a_held_jump_that_goes_silent_jumps_exactly_once() {
     let (mut jumps, mut landed_after, mut airborne) = (0u32, false, false);
     let mut was_grounded = true;
     let hold = 3;
-    for t in 0..3 * SIM_HZ {
+    // T23.32: a held JUMP climbs on the pack, and a stand-in holds it — so the body comes
+    // down only once the tank has run dry (`JETPACK_MAX_FUEL / JETPACK_DRAIN` s), not
+    // within the 3 s that sufficed when a held JUMP alone only slowed the fall.
+    let dry_s = game_core::constants::JETPACK_MAX_FUEL / game_core::constants::JETPACK_DRAIN;
+    let window = ((dry_s + 3.0) * SIM_HZ as f32) as u32;
+    for t in 0..window {
         if t < hold {
             sent += 1;
             w.queue_input(1, Input::new(sent, button::JUMP, 0));
         }
         w.step(SIM_DT);
         let p = w.player(1).expect("seated");
-        if was_grounded && !p.body.grounded && p.body.vel.y < 0.0 {
+        // A take-off on the pack (the stood-in JUMP re-engages it once the tank refills,
+        // T23.32) is not a jump edge.
+        if was_grounded && !p.body.grounded && p.body.vel.y < 0.0 && !p.jetpack.active {
             jumps += 1;
         }
         airborne |= !p.body.grounded;

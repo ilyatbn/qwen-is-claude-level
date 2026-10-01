@@ -525,15 +525,17 @@ impl Route {
                 }
             }
             Move::Jet => {
-                out.buttons = toward | button::JUMP;
+                out.buttons = toward;
                 // Hold the step's height by velocity, as a column is centred on: thrust up
-                // while rising slower than the gap asks, and let the pack's gentler gravity
-                // settle the rest. A height switch (up under it, off over it) bobbed a body
-                // a cell either side of a level jet, and it never arrived.
+                // while rising slower than the gap asks, and let gravity settle the rest. A
+                // height switch (up under it, off over it) bobbed a body a cell either side
+                // of a level jet, and it never arrived. T23.32: a held JUMP alone climbs now
+                // (`jetpack::thrust_delta`), so "no push" is the pack let go, not JUMP
+                // without UP — the pack re-engages on the next airborne press.
                 let want =
                     ((goal.y - pos.y) * CENTRE_GAIN).clamp(-JETPACK_MAX_SPEED, JETPACK_MAX_SPEED);
-                if me.body.vel.y > want + CENTRE_DEADBAND {
-                    out.buttons |= button::UP;
+                if me.body.vel.y > want + CENTRE_DEADBAND || me.body.grounded {
+                    out.buttons |= button::JUMP | button::UP;
                 }
             }
             Move::Rest | Move::Teleport => {}
