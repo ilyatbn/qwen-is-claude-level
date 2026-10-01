@@ -1954,14 +1954,32 @@ const SEED_LOS_FLOOR: f32 = 10.0;
 
 /// Damage dealt between players, summed over every seed.
 ///
-/// **Measured at `177108b`, `--release`:** shipping **2117** against this floor
+/// **Measured at `177108b`, `--release`:** shipping **2117** against a floor
 /// of 1000, a **2.1x margin**; the control totals **27** (78x below shipping)
 /// and the retired `Large`-4 control totalled 411.
+///
+/// **Re-derived at T23.26C (T23.26B item 1), measured on its step-6 tree, `--release`:**
+/// routed bots find each other — shipping **15122**, the 2-seat control **1119**, over
+/// the old 1000 floor (the control "passing" it was the red T23.26 filed). The floor
+/// sits at the two's geometric mean, rounded down: **4000**, a **3.8x margin** under
+/// shipping and **3.6x** over the control, so either side has to move by more than
+/// a factor of three to cross it.
 ///
 /// Pooled, because this one *is* a population claim about the configuration and
 /// not about any round: some rounds end in a chase and some in a brawl, and a
 /// per-seed damage floor would be a claim about pacing that nobody has made.
-const POOLED_DAMAGE_FLOOR: f32 = 1000.0;
+const POOLED_DAMAGE_FLOOR: f32 = 4000.0;
+
+/// Seeds of eight the control must miss the sight floor on.
+///
+/// **Measured at T23.26C step 6, `--release`:** the 2-seat control is under
+/// `SEED_LOS_FLOOR` on **7 of 8** seeds (2.3/0.4/4.4/1.7/1.3/3.0/1.3 %, seed 7 over it) —
+/// before routes it was all eight, and the test asked for all eight plus damage
+/// (`> SEEDS.len()` failures), so one pair of routed bots meeting on one seed turned it
+/// red (T23.26 step 4: a coin at the margin). Three in four is still a structural
+/// failure — no seed of the shipping six is under the floor — with a seed of margin
+/// from the measured seven.
+const CONTROL_SIGHT_FAILS_MIN: usize = 6;
 
 /// What the floors say, and which of them a configuration fails.
 ///
@@ -2123,16 +2141,16 @@ fn the_shipping_configuration_produces_a_fight() {
          configuration cleared — the floors do not measure the change"
     );
     // And it must fail *structurally*, not by one seed: a control that scrapes
-    // under one floor on one seed is the marginal shape all over again.
-    // Measured: **9 failures** — all eight seeds under the sight floor, plus the
-    // pooled damage floor.
+    // under one floor on one seed is the marginal shape all over again. The damage
+    // floor, and the sight floor on `CONTROL_SIGHT_FAILS_MIN` seeds (its doc has the
+    // measurement; T23.26C re-derived it from "all eight" once routed bots met).
+    let sight_fails = control_failed.iter().filter(|f| f.starts_with("seed ")).count();
+    let damage_fails = control_failed.iter().any(|f| f.starts_with("pooled damage"));
     assert!(
-        control_failed.len() > SEEDS.len(),
-        "the control failed only {} of the {} floor checks ({:?}) — a control \
-         that barely fails is the marginal control T20.16 replaced",
-        control_failed.len(),
-        SEEDS.len() + 1,
-        control_failed
+        damage_fails && sight_fails >= CONTROL_SIGHT_FAILS_MIN,
+        "the control failed only {sight_fails} seeds' sight (wants {CONTROL_SIGHT_FAILS_MIN}) \
+         and the damage floor {damage_fails} ({control_failed:?}) — a control that barely \
+         fails is the marginal control T20.16 replaced"
     );
 }
 
@@ -2156,6 +2174,7 @@ fn the_balance_floors_record_their_basis() {
     for name in [
         "SEED_LOS_FLOOR",
         "POOLED_DAMAGE_FLOOR",
+        "CONTROL_SIGHT_FAILS_MIN",
         // T20.26. Its basis is a quotation rather than a fresh measurement, and
         // `the_wait_ceiling_is_still_the_one_the_constant_records` guards the
         // quotation itself; this guards that the numbers behind it are written
