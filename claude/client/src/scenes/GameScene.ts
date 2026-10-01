@@ -1798,7 +1798,7 @@ export class GameScene extends Phaser.Scene {
     const seedHi = Number((init.seed >> 32n) & 0xffffffffn) >>> 0
     // T23.15: the theme is read here and nowhere else in the client — as simulation, not look (R5): it picks the
     // objects stamped into the collision mask, so the landform the fields are derived from needs it to be the server's.
-    const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme])
+    const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme, init.shape])
     this.terrainFields = fields
     this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids)
     this.worldRenderer?.setTerrain(fields)

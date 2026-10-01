@@ -605,6 +605,110 @@ impl MapGenerator {
 pub const DEFAULT_MAP_GENERATOR: MapGenerator = MapGenerator::V2;
 
 // ---------------------------------------------------------------------------
+// Map shapes (`docs/78` §A5, T23.30): a lobby setting beside gravity.
+// ---------------------------------------------------------------------------
+
+/// The silhouette a ground map is generated to (`docs/78` §A5).
+///
+/// **A second axis beside [`MapGenerator`], not a fourth generator.** `Random` is
+/// whatever the generator does today, byte for byte — `tests/golden.rs` iterates
+/// `MapGenerator::ALL` and none of its rows moves. Every other shape is built on
+/// v2's pipeline (`map::gen::shapes`), whichever generator the server is set to.
+/// **Space ignores it** ([`MapShape::for_generator`]): the space map is its own.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MapShape {
+    /// Today's generator, unchanged. The default.
+    #[default]
+    Random,
+    /// Near-flat ground with a few hills of varying size; still floating islands.
+    Hill,
+    /// "Mostly flat": an almost flat ground, gentle undulation only; islands as usual.
+    Flat,
+}
+
+impl MapShape {
+    /// Lobby order — the order the panel steps through.
+    pub const ALL: [MapShape; 3] = [MapShape::Random, MapShape::Hill, MapShape::Flat];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MapShape::Random => "random",
+            MapShape::Hill => "hill",
+            MapShape::Flat => "flat",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == s)
+    }
+
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            MapShape::Random => 0,
+            MapShape::Hill => 1,
+            MapShape::Flat => 2,
+        }
+    }
+
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(MapShape::Random),
+            1 => Some(MapShape::Hill),
+            2 => Some(MapShape::Flat),
+            _ => None,
+        }
+    }
+
+    /// The shape a map is actually generated to: **space has none** (§A5 —
+    /// "space keeps its own map"), so a lobby that chose Hill and then space gravity
+    /// gets the space arena with `Random` recorded, never a shaped arena. The one
+    /// derivation, beside [`MapGenerator::for_gravity`].
+    pub const fn for_generator(self, generator: MapGenerator) -> MapShape {
+        match generator {
+            MapGenerator::Space => MapShape::Random,
+            _ => self,
+        }
+    }
+}
+
+/// Hill: the mean ground line, as a fraction of map height. The owner's reference
+/// (`tasks/M23/map-shapes/hill.png`) sits its plain at ~0.78 of the frame; lower
+/// than Random's `GROUND_BASE_FRAC` so the hills have sky to rise into.
+pub const HILL_BASE_FRAC: f32 = 0.78;
+/// Hill: the plain's gentle swing either side of the base, as a fraction of height.
+pub const HILL_UNDULATION_FRAC: f32 = 0.025;
+/// Hill: wavelength of that swing, as a fraction of map width — about two swells across.
+pub const HILL_UNDULATION_WAVELENGTH_FRAC: f32 = 0.45;
+/// Hill: how many hills a map raises (inclusive range). The reference has three.
+pub const HILL_COUNT_MIN: i32 = 2;
+pub const HILL_COUNT_MAX: i32 = 4;
+/// Hill: a hill's half-width, as a fraction of map width. The reference's tall
+/// peak is ~0.12 of the frame either side, its small ones ~0.07.
+pub const HILL_HALF_WIDTH_FRAC_MIN: f32 = 0.05;
+pub const HILL_HALF_WIDTH_FRAC_MAX: f32 = 0.13;
+/// Hill: a hill's rise above the plain, as a fraction of map height. The reference's
+/// peak rises ~0.24, its small ones ~0.07.
+pub const HILL_RISE_FRAC_MIN: f32 = 0.06;
+pub const HILL_RISE_FRAC_MAX: f32 = 0.26;
+
+/// A shaped map's scenery, as a share of the scale's `object_count`. A shape has one
+/// ground line where Random has terraces, cliffs and mesas (measured on Medium: 58–127
+/// surface points per shaped attempt), and the full count blanketed it — 4 of 8 Hill
+/// seeds needed 8–12 attempts, and every failed attempt measured had a traversable
+/// fraction of 0.92–1.00, so the gate was failing on its spawn half: no six spawns
+/// clear of objects. At half the count, 32 of 32 attempts measured passed.
+pub const SHAPE_OBJECT_SHARE: f32 = 0.5;
+
+/// Mostly flat: the mean ground line, as a fraction of map height (reference ~0.81).
+pub const FLAT_BASE_FRAC: f32 = 0.80;
+/// Mostly flat: the undulation either side of the base, as a fraction of height —
+/// the reference swings ±0.02.
+pub const FLAT_UNDULATION_FRAC: f32 = 0.02;
+/// Mostly flat: wavelength of the undulation, as a fraction of map width.
+pub const FLAT_UNDULATION_WAVELENGTH_FRAC: f32 = 0.5;
+
+// ---------------------------------------------------------------------------
 // The space map (M22 `T22.05A`, `M22-RULINGS` R13). `map/gen/space.rs`.
 // ---------------------------------------------------------------------------
 

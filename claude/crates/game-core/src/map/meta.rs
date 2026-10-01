@@ -17,10 +17,7 @@ use crate::map::gen::components::SealedPocket;
 use crate::map::gen::objects::{
     clear_of_objects, column_gap, fill_column, PlacedObject, WhenStarved,
 };
-use crate::map::gen::{
-    generate_terrain_with,
-    spawns::{choose_separated, choose_spawns},
-};
+use crate::map::gen::spawns::{choose_separated, choose_spawns};
 use crate::map::{CoarseGrid, Mask};
 use crate::math::Point;
 use crate::rng::{range_f32, range_i32, substream, ChaCha8Rng};
@@ -387,6 +384,11 @@ pub struct MapMeta {
     /// to *"is this a space map?"*, read through [`Map::space_geometry`]; it cannot
     /// change during a round, which `asteroids` can.
     pub generator: MapGenerator,
+    /// T23.30 (`docs/78` §A5): the silhouette this map was generated to — the lobby's
+    /// setting, collapsed to `Random` on a space map. Carried by `map_init` so a
+    /// client re-derives the landform from the right generator, and read by the
+    /// shape's own rules (multilevel pads, meteors, the islands' void).
+    pub shape: crate::constants::MapShape,
     /// Indices into `surface_points` forming the validated strongly connected set.
     ///
     /// Shipped because nothing downstream can otherwise tell "every cave is
@@ -600,7 +602,24 @@ pub fn generate_full(
     buried_secret: u64,
     generator: MapGenerator,
 ) -> Map {
-    generate_full_with(requested_seed, scale, buried_secret, generator, true)
+    generate_full_shaped(
+        requested_seed,
+        scale,
+        buried_secret,
+        generator,
+        crate::constants::MapShape::Random,
+    )
+}
+
+/// [`generate_full`] to a lobby's map shape (T23.30). `Random` is `generate_full`.
+pub fn generate_full_shaped(
+    requested_seed: u64,
+    scale: MapScale,
+    buried_secret: u64,
+    generator: MapGenerator,
+    shape: crate::constants::MapShape,
+) -> Map {
+    generate_full_with(requested_seed, scale, buried_secret, generator, shape, true)
 }
 
 /// `T23.06B` (F4): the standing furniture pass 8 seats — spawns, teleport pads, gun
@@ -902,9 +921,12 @@ pub(crate) fn generate_full_with(
     scale: MapScale,
     buried_secret: u64,
     generator: MapGenerator,
+    shape: crate::constants::MapShape,
     fill: bool,
 ) -> Map {
-    let outcome = generate_terrain_with(requested_seed, scale, generator);
+    let outcome = crate::map::gen::generate_terrain_shaped(requested_seed, scale, generator, shape);
+    // A shaped map is built on v2's passes (`gen::shapes`), and says so.
+    let generator = outcome.generator;
     let params = scale.params();
     let objects = outcome.objects.clone();
     let asteroids = outcome.asteroids.clone();
@@ -1063,6 +1085,7 @@ pub(crate) fn generate_full_with(
             traversable_fraction,
             largest_component,
             generator,
+            shape: outcome.shape,
         },
         mask,
         coarse,
@@ -1540,7 +1563,14 @@ mod standing_ground {
                     let map = if fill {
                         generate_with(seed, scale, DEFAULT_MAP_GENERATOR)
                     } else {
-                        generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, false)
+                        generate_full_with(
+                            seed,
+                            scale,
+                            0,
+                            DEFAULT_MAP_GENERATOR,
+                            crate::constants::MapShape::Random,
+                            false,
+                        )
                     };
                     for (pos, w) in standing(&map) {
                         things[i] += 1;
@@ -1663,8 +1693,22 @@ mod standing_ground {
         let mut differs = 0;
         for seed in SEEDS {
             for scale in MapScale::ALL {
-                let with = generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, true);
-                let without = generate_full_with(seed, scale, 0, DEFAULT_MAP_GENERATOR, false);
+                let with = generate_full_with(
+                    seed,
+                    scale,
+                    0,
+                    DEFAULT_MAP_GENERATOR,
+                    crate::constants::MapShape::Random,
+                    true,
+                );
+                let without = generate_full_with(
+                    seed,
+                    scale,
+                    0,
+                    DEFAULT_MAP_GENERATOR,
+                    crate::constants::MapShape::Random,
+                    false,
+                );
                 assert_eq!(
                     with.meta.spawn_points, without.meta.spawn_points,
                     "{seed} {scale:?}"
@@ -2099,8 +2143,22 @@ mod tests {
     #[test]
     fn no_ground_is_filled_on_a_space_map() {
         for scale in MapScale::ALL {
-            let filled = generate_full_with(4242, scale, 0, MapGenerator::Space, true);
-            let unfilled = generate_full_with(4242, scale, 0, MapGenerator::Space, false);
+            let filled = generate_full_with(
+                4242,
+                scale,
+                0,
+                MapGenerator::Space,
+                crate::constants::MapShape::Random,
+                true,
+            );
+            let unfilled = generate_full_with(
+                4242,
+                scale,
+                0,
+                MapGenerator::Space,
+                crate::constants::MapShape::Random,
+                false,
+            );
             assert_eq!(
                 filled.mask.hash(),
                 unfilled.mask.hash(),
@@ -2111,8 +2169,22 @@ mod tests {
         // mask, so the equality above is a fact about space and not about a
         // flag that does nothing.
         let scale = MapScale::Medium;
-        let a = generate_full_with(4242, scale, 0, DEFAULT_MAP_GENERATOR, true);
-        let b = generate_full_with(4242, scale, 0, DEFAULT_MAP_GENERATOR, false);
+        let a = generate_full_with(
+            4242,
+            scale,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            crate::constants::MapShape::Random,
+            true,
+        );
+        let b = generate_full_with(
+            4242,
+            scale,
+            0,
+            DEFAULT_MAP_GENERATOR,
+            crate::constants::MapShape::Random,
+            false,
+        );
         assert_ne!(
             a.mask.hash(),
             b.mask.hash(),

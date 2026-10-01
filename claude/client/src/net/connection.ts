@@ -366,6 +366,11 @@ export class Connection {
     this.sendRaw('set_gravity', { gravity })
   }
 
+  /** T23.30's map shape, refused with `lobby_error` on gravity's terms. */
+  sendSetMapShape(shape: string): void {
+    this.sendRaw('set_map_shape', { map_shape: shape })
+  }
+
   sendUseItem(slot: number): void {
     this.emit('use_item', { slot })
   }

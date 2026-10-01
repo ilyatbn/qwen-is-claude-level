@@ -328,12 +328,33 @@ impl GameCore {
     /// is the one derivation, and [`GameCore::generate_for_gravity`] is that
     /// same call with the mode set first so the two cannot be ordered wrongly.
     pub fn generate_with(&mut self, seed_lo: u32, seed_hi: u32, scale: u8, generator: u8) {
+        self.generate_shaped(
+            seed_lo,
+            seed_hi,
+            scale,
+            generator,
+            game_core::constants::MapShape::Random.to_u8(),
+        );
+    }
+
+    /// `generate_with` to a map shape (T23.30, `docs/78` §A5): `MapShape`'s byte, an
+    /// unknown one read as Random (local only, like `generate_with`'s generator byte).
+    /// Space ignores it — `MapShape::for_generator`, inside `generate_full_shaped`.
+    pub fn generate_shaped(
+        &mut self,
+        seed_lo: u32,
+        seed_hi: u32,
+        scale: u8,
+        generator: u8,
+        shape: u8,
+    ) {
         let seed = ((seed_hi as u64) << 32) | seed_lo as u64;
         let scale = MapScale::from_u8(scale).unwrap_or(MapScale::Medium);
         let chosen = game_core::constants::MapGenerator::from_u8(generator)
             .unwrap_or(game_core::constants::DEFAULT_MAP_GENERATOR);
         let generator = game_core::constants::MapGenerator::for_gravity(self.gravity, chosen);
-        self.map = game_core::map::generate_with(seed, scale, generator);
+        let shape = game_core::constants::MapShape::from_u8(shape).unwrap_or_default();
+        self.map = game_core::map::generate_full_shaped(seed, scale, 0, generator, shape);
     }
 
     /// `generate_with` under a named gravity, **deriving the generator from it**
@@ -370,6 +391,24 @@ impl GameCore {
         // `for_gravity` itself, so deriving here too would be the second copy
         // of the one derivation R15 exists to prevent.
         self.generate_with(seed_lo, seed_hi, scale, generator);
+        true
+    }
+
+    /// `generate_for_gravity` to a map shape (T23.30) — the sandbox's `?shape=`.
+    pub fn generate_for_gravity_shaped(
+        &mut self,
+        seed_lo: u32,
+        seed_hi: u32,
+        scale: u8,
+        generator: u8,
+        gravity: &str,
+        shape: u8,
+    ) -> bool {
+        let Some(g) = GravityMode::parse(gravity) else {
+            return false;
+        };
+        self.gravity = g;
+        self.generate_shaped(seed_lo, seed_hi, scale, generator, shape);
         true
     }
 
@@ -562,6 +601,20 @@ impl GameCore {
     /// rocks. **Before `load_mask`**, which derives the surface from it.
     /// `WorldMirror.applyMapInit` is the one production caller. `false` for a byte
     /// that names no generator (nothing changes).
+    /// T23.30: which shape the map `map_init` carries was generated to (`MapShape`'s
+    /// byte) — read by the shape's rules (multilevel pads) and by the landform
+    /// re-derive. `WorldMirror.applyMapInit` is the production caller; `false` for a
+    /// byte naming no shape (nothing changes).
+    pub fn set_map_shape(&mut self, shape: u8) -> bool {
+        match game_core::constants::MapShape::from_u8(shape) {
+            Some(m) => {
+                self.map.meta.shape = m;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn set_map_generator(&mut self, generator: u8) -> bool {
         match game_core::constants::MapGenerator::from_u8(generator) {
             Some(g) => {
@@ -2789,6 +2842,9 @@ pub fn constants_json() -> String {
         // with nothing red first. `lobby.test.ts` asserts the two are equal;
         // this is the end of that assertion that Rust owns.
         GRAVITY_MODES => c::GravityMode::ALL.iter().map(|g| g.as_str()).collect::<Vec<_>>(),
+        // T23.30: the map shapes' spellings, `MapShape::ALL` in lobby order — pinned
+        // to `lobby.ts`'s `MAP_SHAPES` the way `GRAVITY_MODES` pins `GRAVITIES`.
+        MAP_SHAPES => c::MapShape::ALL.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
         // §F7. The private-lobby panel draws its own bounds and its own step;
         // a stepper carrying a local 240/600/60 would keep offering the old
         // range after any of them was tuned (§A19).

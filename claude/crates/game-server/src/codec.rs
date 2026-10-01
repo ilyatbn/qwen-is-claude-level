@@ -173,6 +173,10 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
 
     b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     b.extend_from_slice(&payload);
+    // T23.30 (`docs/78` §A5): the map shape, **appended after the mask** so no
+    // offset before it moves. A client re-derives the landform from it and the
+    // shape's rules (multilevel pads) read it.
+    b.push(m.shape.to_u8());
     b
 }
 
@@ -205,6 +209,8 @@ pub struct MapInitParts {
     /// Which generator made the map (T22.14A B3): `MapMeta::generator`, the one
     /// answer to *"is this a space map?"*.
     pub generator: game_core::constants::MapGenerator,
+    /// T23.30: the map shape (`MapMeta::shape`), the trailing byte.
+    pub shape: game_core::constants::MapShape,
     /// The carve sequence this mask is stamped at (`docs/70` §A40).
     ///
     /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
@@ -316,6 +322,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
     let payload = r.take(payload_len)?;
     let mask =
         game_core::map::rle::decode(w, h, payload).map_err(|_| CodecError::BadMapInit("rle"))?;
+    let shape =
+        game_core::constants::MapShape::from_u8(r.u8()?).ok_or(CodecError::BadMapInit("shape"))?;
     r.finish()?;
     Ok(MapInitParts {
         mask,
@@ -323,6 +331,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         gun_platforms,
         asteroids,
         generator,
+        shape,
         carve_seq,
     })
 }
@@ -841,7 +850,8 @@ mod tests {
             + 2
             + map.meta.asteroids.len() * ASTEROID_WIRE_BYTES
             + 4
-            + rle_len;
+            + rle_len
+            + 1; // map shape (T23.30), after the mask
         assert_eq!(b.len(), expect);
     }
 
@@ -1002,6 +1012,32 @@ mod tests {
         assert!(matches!(
             decode_map_init_parts(&b),
             Err(CodecError::BadMapInit("generator"))
+        ));
+    }
+
+    /// T23.30: `map_init` carries the map shape (the trailing byte), every shape,
+    /// and refuses a byte naming none.
+    #[test]
+    fn map_init_carries_the_map_shape_and_refuses_an_unknown_one() {
+        use game_core::constants::MapShape;
+        for shape in MapShape::ALL {
+            let map = game_core::map::generate_full_shaped(
+                7,
+                MapScale::Small,
+                0,
+                MapGenerator::V2,
+                shape,
+            );
+            assert_eq!(map.meta.shape, shape, "premise: generation records it");
+            let parts = decode_map_init_parts(&encode_map_init(&map)).expect("decode");
+            assert_eq!(parts.shape, shape);
+        }
+        let mut b = encode_map_init(&game_core::map::generate(7, MapScale::Small));
+        let last = b.len() - 1;
+        b[last] = 0xEE;
+        assert!(matches!(
+            decode_map_init_parts(&b),
+            Err(CodecError::BadMapInit("shape"))
         ));
     }
 

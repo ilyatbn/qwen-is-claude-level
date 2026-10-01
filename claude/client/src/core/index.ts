@@ -141,6 +141,8 @@ export interface MapMeta {
   asteroids: Asteroid[]
   /** Which generator made the map (`MapMeta::generator`, serde's spelling). T22.14A B3. */
   generator: 'V1' | 'V2' | 'Space'
+  /** T23.30: the map shape (`MapMeta::shape`, serde's spelling). */
+  shape: 'Random' | 'Hill' | 'Flat'
 }
 
 /** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
@@ -276,6 +278,8 @@ export interface Constants {
    * as `lobby_error: unknown gravity`.
    */
   GRAVITY_MODES: readonly string[]
+  /** T23.30: `MapShape::ALL`'s spellings, lobby order — the index is the wire byte. */
+  MAP_SHAPES: readonly string[]
   MINE_ARM_TIME: number
   /** T20.10's ground animals — drawn size **is** the hit box. */
   SPIDER_W: number
@@ -846,10 +850,12 @@ export class Core {
     scale: MapScale,
     generator: MapGenerator,
     gravity: string,
+    shape = 0,
   ): boolean {
     const lo = Number(seed & 0xffffffffn) >>> 0
     const hi = Number((seed >> 32n) & 0xffffffffn) >>> 0
-    const ok = this.inner.generate_for_gravity(lo, hi, scale, generator, gravity)
+    // T23.30: `shape` is `MapShape`'s byte (0 = Random); space ignores it in Rust.
+    const ok = this.inner.generate_for_gravity_shaped(lo, hi, scale, generator, gravity, shape)
     this.invalidate()
     return ok
   }
@@ -926,6 +932,16 @@ export class Core {
   setMapGenerator(generator: number): boolean {
     const ok = this.inner.set_map_generator(generator)
     // `meta.generator` is the readback, and `meta` is cached.
+    this.invalidate()
+    return ok
+  }
+
+  /**
+   * T23.30: which shape the map `map_init` carries was generated to (`MapInit.shape`,
+   * `MapShape`'s byte). `false` for a byte naming no shape (nothing changes).
+   */
+  setMapShape(shape: number): boolean {
+    const ok = this.inner.set_map_shape(shape)
     this.invalidate()
     return ok
   }
@@ -1559,7 +1575,7 @@ export class Core {
     return new Uint16Array(this.memory.buffer, this.inner.render_fields_din2_ptr(), this.inner.render_fields_len() / 4)
   }
 
-  /** `[seed_lo, seed_hi, scale, generator, theme]` naming a map **this core generated** (not after `loadMask`). */
+  /** `[seed_lo, seed_hi, scale, generator, theme, shape]` naming a map **this core generated** (not after `loadMask`). */
   renderFieldsOwnKey(): number[] {
     return Array.from(this.inner.render_fields_own_key())
   }

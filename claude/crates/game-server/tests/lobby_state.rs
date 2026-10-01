@@ -408,6 +408,7 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     assert_eq!(before["start_kit"], "none");
     assert_eq!(before["round_seconds"], ROUND_SECONDS);
     assert_eq!(before["gravity"], "standard");
+    assert_eq!(before["map_shape"], "random");
 
     for cmd in [
         Command::SetBots {
@@ -430,6 +431,11 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
             gravity: GravityMode::Space,
             reply: tokio::sync::oneshot::channel().0,
         },
+        Command::SetMapShape {
+            by: ana,
+            shape: game_core::constants::MapShape::Flat,
+            reply: tokio::sync::oneshot::channel().0,
+        },
     ] {
         room.apply_for_test(cmd);
     }
@@ -439,9 +445,10 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     assert_eq!(p["start_kit"], "basic");
     assert_eq!(p["round_seconds"], ROUND_SECONDS_MIN + ROUND_SECONDS_STEP);
     assert_eq!(p["gravity"], "space");
+    assert_eq!(p["map_shape"], "flat");
     // Present, not merely equal to a default: a payload that dropped the keys
     // would read `Value::Null` and compare unequal above, but say so poorly.
-    for key in ["bots", "start_kit", "round_seconds", "gravity"] {
+    for key in ["bots", "start_kit", "round_seconds", "gravity", "map_shape"] {
         assert!(!p[key].is_null(), "{key} is missing from lobby_state");
     }
 
@@ -455,7 +462,7 @@ fn the_payload_carries_the_three_private_settings_once_for_the_whole_room() {
     let players = p["players"].as_array().expect("players is an array");
     assert_eq!(players.len(), 2, "both seats must be in the payload");
     for seat in players {
-        for key in ["bots", "start_kit", "round_seconds", "gravity"] {
+        for key in ["bots", "start_kit", "round_seconds", "gravity", "map_shape"] {
             assert!(
                 seat[key].is_null(),
                 "{key} is carried per seat — a guest would only see the host's copy"

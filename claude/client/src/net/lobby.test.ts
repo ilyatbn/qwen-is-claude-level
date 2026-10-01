@@ -19,6 +19,7 @@ import {
   parseLobbyState,
   quickMatchPayload,
   GRAVITIES,
+  MAP_SHAPES,
   SCALES,
   settingsControls,
   START_KITS,
@@ -211,6 +212,7 @@ const emptyLobby = {
   startKit: 'none' as const,
   roundSeconds: 0,
   gravity: 'standard' as const,
+  mapShape: 'random' as const,
   players: [],
 }
 
@@ -374,6 +376,7 @@ describe('the roster (§E6)', () => {
     startKit: 'none' as const,
     roundSeconds: 0,
     gravity: 'standard' as const,
+    mapShape: 'random' as const,
     players: [
       { seat: 0, name: 'ana', ready: true, bot: false },
       { seat: 1, name: 'Bot 1', ready: true, bot: true },
@@ -512,6 +515,7 @@ function lobby(over: Partial<LobbyStateMsg> = {}): LobbyStateMsg {
     // that has nothing to do with the host gate.
     roundSeconds: bounds.min + bounds.step,
     gravity: 'standard',
+    mapShape: 'random',
     settingsOwner: HOST,
     players: [
       { seat: HOST, name: 'ana', ready: false, bot: false },
@@ -534,6 +538,21 @@ describe('the private settings panel (§F7)', () => {
     // together and this line is the one that says the count changed.
     expect(C().GRAVITY_MODES).toHaveLength(3)
     expect(C().GRAVITY_MODES).toContain('space')
+  })
+
+  it('carries the same map-shape list the Rust enum does, and hides it in space (T23.30)', () => {
+    expect([...MAP_SHAPES]).toEqual([...C().MAP_SHAPES])
+    expect(C().MAP_SHAPES.length).toBeGreaterThan(1)
+    const ids = (g: 'standard' | 'space') => settingsControls(lobby({ gravity: g }), HOST, bounds).map((c) => c.id)
+    expect(ids('standard')).toContain('shape')
+    expect(ids('space')).not.toContain('shape')
+    // The host steps it, wrapping; nobody steps it in space.
+    expect(stepSetting(lobby(), HOST, 'shape', 1, bounds)).toBe(MAP_SHAPES[1])
+    expect(stepSetting(lobby(), HOST, 'shape', -1, bounds)).toBe(MAP_SHAPES[MAP_SHAPES.length - 1])
+    expect(stepSetting(lobby({ gravity: 'space' }), HOST, 'shape', 1, bounds)).toBeUndefined()
+    expect(stepSetting(lobby(), GUEST, 'shape', 1, bounds)).toBeUndefined()
+    expect(parseLobbyState({ map_shape: 'flat' }).mapShape).toBe('flat')
+    expect(parseLobbyState({}).mapShape).toBe('random')
   })
 
   it('reads its bounds from the core, and they are a usable range', () => {
@@ -599,7 +618,7 @@ describe('the private settings panel (§F7)', () => {
 
   it('disables exactly what it refuses, so a screen cannot disagree with the wire', () => {
     const guest = settingsControls(lobby(), GUEST, bounds)
-    expect(guest).toHaveLength(5)
+    expect(guest).toHaveLength(6)
     for (const c of guest) {
       expect([c.id, c.prevDisabled, c.nextDisabled]).toEqual([c.id, true, true])
     }
@@ -693,7 +712,7 @@ describe('the private settings panel (§F7)', () => {
     // the server's own defaults, rather than throwing or showing blanks.
     const bare = parseLobbyState({ private: true, capacity: 5, scale: 'small', players: [] })
     const rows = settingsControls({ ...bare, settingsOwner: HOST }, HOST, bounds)
-    expect(rows.map((c) => c.id)).toEqual(['scale', 'gravity', 'bots', 'kit', 'timer'])
+    expect(rows.map((c) => c.id)).toEqual(['scale', 'gravity', 'shape', 'bots', 'kit', 'timer'])
     expect(rows.find((c) => c.id === 'bots')?.value).toBe('Enabled')
     expect(rows.find((c) => c.id === 'kit')?.value).toBe('None')
     expect(rows.find((c) => c.id === 'gravity')?.value).toBe('Standard')

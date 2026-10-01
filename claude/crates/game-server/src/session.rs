@@ -723,6 +723,12 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             // `set_setting`, for the reason stated above the three: the parse
             // belongs here, at the boundary, where an unknown value can still be
             // refused with a reason a player can read.
+            // ------------------------------------------------ map shape (T23.30)
+            //
+            // A fourth handler in the §F7 shape rather than a generic
+            // `set_setting`, for the reason stated above the three: the parse
+            // belongs here, at the boundary, where an unknown value can still be
+            // refused with a reason a player can read.
             {
                 let ctx = ctx.clone();
                 socket.on(

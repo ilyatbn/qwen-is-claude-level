@@ -1550,6 +1550,7 @@ mod ballistics {
                 asteroids: Vec::new(),
                 largest_component: Vec::new(),
                 generator: crate::constants::MapGenerator::V1,
+                shape: crate::constants::MapShape::Random,
             }
         }
 
@@ -1718,6 +1719,7 @@ mod ballistics {
                     asteroids: Vec::new(),
                     largest_component: Vec::new(),
                     generator: crate::constants::MapGenerator::V1,
+                    shape: crate::constants::MapShape::Random,
                 },
             );
             let mut dealt = 0.0f32;

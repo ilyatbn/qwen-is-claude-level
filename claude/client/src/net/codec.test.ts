@@ -44,6 +44,8 @@ function mapInitFixture(opts: Partial<{
   carveSeq: number
   /** The generator byte (T22.14A); space by default so a decoder that ignores it fails. */
   generator: number
+  /** T23.30's trailing map-shape byte; 2 (Flat) by default, off Random, for the same reason. */
+  shape: number
 }> = {}): ArrayBuffer {
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
@@ -65,7 +67,9 @@ function mapInitFixture(opts: Partial<{
     2 + decos * 7 +
     2 + objects * OBJECT_WIRE_BYTES +
     // T22.05A's asteroids ride between the objects and the RLE length.
-    2 + asteroids * ASTEROID_WIRE_BYTES + 4 + rle.length
+    2 + asteroids * ASTEROID_WIRE_BYTES + 4 + rle.length +
+    // T23.30: the map shape, after the mask.
+    1
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -127,6 +131,8 @@ function mapInitFixture(opts: Partial<{
   }
   v.setUint32(at, opts.rleLenLie ?? rle.length, true); at += 4
   new Uint8Array(b).set(rle, at)
+  at += rle.length
+  v.setUint8(at, opts.shape ?? 2)
   return b
 }
 
@@ -244,6 +250,13 @@ describe('map_init', () => {
    * RLE still lines up — so the two bytes this costs every other map are paid
    * and read.
    */
+  it('reads the map shape after the mask and refuses one naming no shape (T23.30)', () => {
+    expect(decodeMapInit(mapInitFixture()).shape).toBe(2)
+    expect(decodeMapInit(mapInitFixture({ shape: 0 })).shape).toBe(0)
+    const n = C().MAP_SHAPES.length
+    expect(() => decodeMapInit(mapInitFixture({ shape: n }))).toThrow(/names no map shape/)
+  })
+
   it('refuses a generator byte that names no generator (T22.14A)', () => {
     const max = C().MAP_GENERATOR_MAX
     expect(decodeMapInit(mapInitFixture({ generator: 0 })).generator).toBe(0)

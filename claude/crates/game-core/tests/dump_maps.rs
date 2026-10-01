@@ -98,3 +98,36 @@ fn enclosed_air_fraction(mask: &game_core::map::Mask) -> f64 {
     }
     (air - open) as f64 / air as f64
 }
+
+/// T23.30: one contact sheet per map shape — eight seeds of Medium, black rock on grey
+/// air like the owner's references, spawns magenta and pads cyan — written to
+/// `target/mapdump/shapes-<shape>.png`. The variety across seeds is what to look at.
+#[test]
+fn dump_a_contact_sheet_per_map_shape() {
+    use game_core::constants::MapShape;
+    use game_core::map::dump::dump_overview;
+    use game_core::map::generate_full_shaped;
+    let dir = dump_dir();
+    std::fs::create_dir_all(&dir).expect("create dump dir");
+    let seeds = [1u64, 7, 4242, 31337, 8123, 99, 271_828, 1_000_003];
+    for shape in MapShape::ALL {
+        let maps: Vec<_> = seeds
+            .iter()
+            .map(|&s| generate_full_shaped(s, MapScale::Medium, 0, MapGenerator::V2, shape))
+            .collect();
+        let refs: Vec<_> = maps.iter().collect();
+        let name = format!("shapes-{}.png", shape.as_str());
+        dump_overview(&refs, 4, 6, &dir.join(&name)).expect("write sheet");
+        for m in &maps {
+            println!(
+                "{name}: seed {} attempts {} safe {} spawns {} pads {} fraction {:.3}",
+                m.meta.requested_seed,
+                m.meta.attempts,
+                m.meta.used_safe_preset,
+                m.meta.spawn_points.len(),
+                m.meta.teleport_pads.len(),
+                m.meta.traversable_fraction
+            );
+        }
+    }
+}

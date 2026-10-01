@@ -84,6 +84,9 @@ pub struct Config {
     /// `Config` and `restart()` writes a fresh header for round two, so a
     /// setting that lived on `Room` would replay round two at the default.
     pub gravity: game_core::constants::GravityMode,
+    /// T23.30 (`docs/78` §A5): the map shape, a lobby setting beside gravity. On
+    /// `Config` for gravity's reason — the replay header is built from it.
+    pub map_shape: game_core::constants::MapShape,
     /// Spawn every player with a weapon. **Development only, default off.**
     ///
     /// The game's design is that you find your weapons (`docs/32`), and that is
@@ -314,6 +317,8 @@ impl Default for Config {
             // T22.01's default: the shipped game. Nothing plays differently
             // until a host says otherwise.
             gravity: game_core::constants::GravityMode::Standard,
+            // T23.30's default: Random, today's generator.
+            map_shape: game_core::constants::MapShape::Random,
             dev_loadout: false,
             dev_start_health: 0.0,
             dev_poisoned: false,
@@ -486,6 +491,7 @@ impl Config {
             bots_enabled: d.bots_enabled,
             start_kit: d.start_kit,
             gravity: d.gravity,
+            map_shape: d.map_shape,
             bot_count,
             bot_skill,
             dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),

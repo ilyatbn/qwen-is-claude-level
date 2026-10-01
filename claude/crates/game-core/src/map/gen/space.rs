@@ -695,6 +695,7 @@ pub fn generate_once(seed: u64, params: &SpaceParams) -> GenOutcome {
         attempts: 1,
         used_safe_preset: false,
         generator: MapGenerator::Space,
+        shape: crate::constants::MapShape::Random,
     }
 }
 

@@ -17,6 +17,7 @@ pub mod caves;
 pub mod components;
 pub mod network;
 pub mod objects;
+pub mod shapes;
 pub mod silhouette;
 pub mod smooth;
 pub mod space;
@@ -27,7 +28,7 @@ pub mod v2;
 
 pub use silhouette::{borders_hold, force_borders, solid_fraction, GenParams};
 
-use crate::constants::{MapGenerator, MapScale, DEFAULT_MAP_GENERATOR, MAX_GEN_ATTEMPTS};
+use crate::constants::{MapGenerator, MapScale, MapShape, DEFAULT_MAP_GENERATOR, MAX_GEN_ATTEMPTS};
 use crate::map::Mask;
 use crate::math::Point;
 use components::SealedPocket;
@@ -78,6 +79,10 @@ pub struct GenOutcome {
     /// Which generator produced this. Carried so a dump, a log line or a test can
     /// say which of the two it is looking at without being told.
     pub generator: MapGenerator,
+    /// T23.30 (`docs/78` §A5): the silhouette this was generated to. `Random` from
+    /// every generator's own pipeline; anything else from `shapes`, whose outcomes
+    /// say `generator: V2` because v2's passes built them.
+    pub shape: crate::constants::MapShape,
     /// `T23.05B` (M23 R17): everything that **was rock in the generator's landform** —
     /// the mask as it stood before the first carve pass, OR'd with the mask this
     /// outcome ships. So `landform ∧ ¬mask` is exactly the rock the carve passes
@@ -147,6 +152,7 @@ pub fn generate_once(seed: u64, params: &GenParams) -> GenOutcome {
         attempts: 1,
         used_safe_preset: false,
         generator: MapGenerator::V1,
+        shape: crate::constants::MapShape::Random,
     }
 }
 
@@ -182,6 +188,24 @@ pub fn generate_terrain_with(
         // `tests/golden.rs::cases()` nothing and ship the generator with zero
         // golden coverage.
         MapGenerator::Space => space::generate_terrain(requested_seed, scale),
+    }
+}
+
+/// `generate_terrain_with` under a lobby's **map shape** (T23.30, `docs/78` §A5).
+///
+/// `Random` — and any shape on the space generator, which has its own map
+/// ([`MapShape::for_generator`]) — is `generate_terrain_with` itself, so
+/// `tests/golden.rs`, which calls that, pins Random. Every other shape is
+/// `shapes::generate_terrain`, built on v2's passes.
+pub fn generate_terrain_shaped(
+    requested_seed: u64,
+    scale: MapScale,
+    generator: MapGenerator,
+    shape: MapShape,
+) -> GenOutcome {
+    match shape.for_generator(generator) {
+        MapShape::Random => generate_terrain_with(requested_seed, scale, generator),
+        shape => shapes::generate_terrain(requested_seed, scale, shape),
     }
 }
 
@@ -259,7 +283,19 @@ pub fn surface_for(generator: MapGenerator, mask: &Mask) -> Vec<Point> {
 ///
 /// Cost: one generation, two when the safe preset shipped (never, in every sweep so
 /// far). Measured in `rederive_timing` (T23.05B's journal line).
-pub fn rederive(seed: u64, scale: MapScale, generator: MapGenerator, theme: u8) -> GenOutcome {
+pub fn rederive(
+    seed: u64,
+    scale: MapScale,
+    generator: MapGenerator,
+    shape: MapShape,
+    theme: u8,
+) -> GenOutcome {
+    // T23.30: a shaped map is re-derived the way it was generated — `map_init`
+    // carries the shape beside the generator.
+    let shape = shape.for_generator(generator);
+    if shape != MapShape::Random {
+        return shapes::rederive(seed, scale, shape, theme);
+    }
     match generator {
         MapGenerator::V1 => {
             let mut p = GenParams::default_for(scale);
@@ -315,9 +351,10 @@ pub fn rederive_landform(
     seed: u64,
     scale: MapScale,
     generator: MapGenerator,
+    shape: MapShape,
     theme: u8,
 ) -> Rederived {
-    let o = rederive(seed, scale, generator, theme);
+    let o = rederive(seed, scale, generator, shape, theme);
     let space = generator == MapGenerator::Space;
     let (_, pads, platforms) = crate::map::meta::standing_furniture(&o, space);
     let mut mask = o.mask.clone();
@@ -475,7 +512,7 @@ mod tests {
                                 // T23.06B F4: the re-derive replays pass 8's fill exactly —
                                 // the round-start mask a client receives, px for px — and its
                                 // landform holds it.
-                                let r = rederive_landform(map.meta.seed, scale, generator, map.meta.theme);
+                                let r = rederive_landform(map.meta.seed, scale, generator, MapShape::Random, map.meta.theme);
                                 assert_eq!(r.mask, map.mask, "{at}: re-derived fill ≠ the map build's");
                                 let mut held = r.landform.clone();
                                 union_into(&mut held, &map.mask);
@@ -486,7 +523,7 @@ mod tests {
                                 (server.seed, theme_for(requested))
                             };
                             let t = std::time::Instant::now();
-                            let d = rederive(seed, scale, generator, theme);
+                            let d = rederive(seed, scale, generator, MapShape::Random, theme);
                             worst_ms = worst_ms.max(t.elapsed().as_secs_f64() * 1e3);
                             assert_eq!(d.mask, server.mask, "{at}: mask");
                             assert_eq!(d.landform, server.landform, "{at}: landform");
@@ -525,10 +562,23 @@ mod tests {
             .find(|(_, o)| o.attempts > 1)
             .expect("a retried Small map in 64 seeds");
         let theme = crate::map::meta::theme_for(requested);
-        let wrong = rederive(requested, MapScale::Small, o.generator, theme);
+        let wrong = rederive(
+            requested,
+            MapScale::Small,
+            o.generator,
+            MapShape::Random,
+            theme,
+        );
         assert_ne!(wrong.mask, o.mask);
         assert_eq!(
-            rederive(o.seed, MapScale::Small, o.generator, theme).mask,
+            rederive(
+                o.seed,
+                MapScale::Small,
+                o.generator,
+                MapShape::Random,
+                theme
+            )
+            .mask,
             o.mask
         );
         // T23.06B F10: `rederive`'s safe-preset branch, exercised. V2 Small requested 71284
@@ -549,7 +599,13 @@ mod tests {
         default.theme = theme;
         let default_attempt = v2::generate_once(RETRIED, &default);
         assert!(!default_attempt.report.passed);
-        let d = rederive(RETRIED, MapScale::Small, MapGenerator::V2, theme);
+        let d = rederive(
+            RETRIED,
+            MapScale::Small,
+            MapGenerator::V2,
+            MapShape::Random,
+            theme,
+        );
         assert_eq!(d.mask, v2::generate_once(RETRIED, &safe).mask);
         assert_ne!(d.mask, default_attempt.mask);
     }

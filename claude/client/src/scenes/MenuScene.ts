@@ -35,6 +35,7 @@ import {
   type SettingId,
   type StartKit,
   type Gravity,
+  type MapShapeName,
   type TimerBounds,
 } from '../net/lobby'
 import { Connection, type LobbyIntent, type Welcome } from '../net/connection'
@@ -559,6 +560,9 @@ export class MenuScene extends Phaser.Scene {
       case 'gravity':
         this.conn?.sendSetGravity(next as Gravity)
         break
+      case 'shape':
+        this.conn?.sendSetMapShape(next as MapShapeName)
+        break
       case 'bots':
         this.conn?.sendSetBots(next as boolean)
         break
@@ -647,7 +651,7 @@ export class MenuScene extends Phaser.Scene {
       settings: () => {
         const out: Record<string, { value: string; prevDisabled: boolean; nextDisabled: boolean }> =
           {}
-        for (const id of ['scale', 'gravity', 'bots', 'kit', 'timer'] as const) {
+        for (const id of ['scale', 'gravity', 'shape', 'bots', 'kit', 'timer'] as const) {
           const value = self.root?.querySelector(`#${id}-value`)
           if (!value) continue
           out[id] = {

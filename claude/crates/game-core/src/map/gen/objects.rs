@@ -218,7 +218,15 @@ pub(crate) fn fill_column(mask: &mut Mask, col: i32, from: i32, limit: i32) -> u
 /// pass cannot move an object and draining any other stream cannot either
 /// (`docs/10` §2).
 pub fn stamp_objects(mask: &mut Mask, seed: u64, scale: MapScale, theme: u8) -> Placement {
-    stamp_objects_with(mask, seed, scale, theme, true)
+    stamp_objects_with(mask, seed, theme, true, scale.params().object_count)
+}
+
+/// `stamp_objects` with the object count named — T23.30's shapes, whose single
+/// ground line has a fraction of Random's surface and was blanketed by the scale's
+/// full count (no six spawns left clear of objects: the traversal gate failed on
+/// spawns, not on reach). Random calls `stamp_objects`, so its count is unchanged.
+pub fn stamp_objects_counted(mask: &mut Mask, seed: u64, theme: u8, count: u32) -> Placement {
+    stamp_objects_with(mask, seed, theme, true, count)
 }
 
 /// `stamp_objects`, with the T21.21 ground fill switchable — `false` only for the
@@ -226,11 +234,11 @@ pub fn stamp_objects(mask: &mut Mask, seed: u64, scale: MapScale, theme: u8) -> 
 pub(crate) fn stamp_objects_with(
     mask: &mut Mask,
     seed: u64,
-    scale: MapScale,
     theme: u8,
     fill: bool,
+    count: u32,
 ) -> Placement {
-    let count = scale.params().object_count as usize;
+    let count = count as usize;
     let table = objects::count();
     let budget_px = ((mask.w as f64) * (mask.h as f64) * OBJECT_PIXEL_BUDGET as f64) as u64;
     let empty = |stop| Placement {
@@ -684,7 +692,9 @@ mod tests {
             for scale in [MapScale::Small, MapScale::Medium, MapScale::Large] {
                 for (i, fill) in [false, true].into_iter().enumerate() {
                     let mut mask = v2::generate_once(seed, &v2::V2Params::default_for(scale)).mask;
-                    let objs = stamp_objects_with(&mut mask, seed, scale, 0, fill).objects;
+                    let objs =
+                        stamp_objects_with(&mut mask, seed, 0, fill, scale.params().object_count)
+                            .objects;
                     placed[i] += objs.len();
                     for p in &objs {
                         let Some(m) = objects::mask(p.id as usize) else {

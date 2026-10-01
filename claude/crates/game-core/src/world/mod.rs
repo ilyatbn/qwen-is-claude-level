@@ -1115,6 +1115,7 @@ impl World {
             buried_secret,
             crate::constants::DEFAULT_MAP_GENERATOR,
             GravityMode::Standard,
+            crate::constants::MapShape::Random,
         )
     }
 
@@ -1129,7 +1130,14 @@ impl World {
         buried_secret: u64,
         generator: crate::constants::MapGenerator,
     ) -> Self {
-        Self::build(seed, scale, buried_secret, generator, GravityMode::Standard)
+        Self::build(
+            seed,
+            scale,
+            buried_secret,
+            generator,
+            GravityMode::Standard,
+            crate::constants::MapShape::Random,
+        )
     }
 
     /// As `with_generator`, under a named gravity — **and the gravity decides
@@ -1152,7 +1160,28 @@ impl World {
         generator: crate::constants::MapGenerator,
         gravity: GravityMode,
     ) -> Self {
-        Self::build(seed, scale, buried_secret, generator, gravity)
+        Self::build(
+            seed,
+            scale,
+            buried_secret,
+            generator,
+            gravity,
+            crate::constants::MapShape::Random,
+        )
+    }
+
+    /// As `with_gravity`, to the lobby's **map shape** (T23.30, `docs/78` §A5). The
+    /// gravity still decides the generator first, and a space map ignores the shape
+    /// (`MapShape::for_generator`).
+    pub fn with_shape(
+        seed: u64,
+        scale: MapScale,
+        buried_secret: u64,
+        generator: crate::constants::MapGenerator,
+        gravity: GravityMode,
+        shape: crate::constants::MapShape,
+    ) -> Self {
+        Self::build(seed, scale, buried_secret, generator, gravity, shape)
     }
 
     fn build(
@@ -1161,9 +1190,10 @@ impl World {
         buried_secret: u64,
         generator: crate::constants::MapGenerator,
         gravity: GravityMode,
+        shape: crate::constants::MapShape,
     ) -> Self {
         let generator = crate::constants::MapGenerator::for_gravity(gravity, generator);
-        let map = crate::map::generate_full(seed, scale, buried_secret, generator);
+        let map = crate::map::generate_full_shaped(seed, scale, buried_secret, generator, shape);
         let mut world = Self::from_map(seed, buried_secret, map);
         // Set **here**, not by the caller afterwards. The map that just got
         // built is the map this gravity asked for, and a second assignment at
@@ -6453,6 +6483,7 @@ mod toxic_rain_falls {
             asteroids: Vec::new(),
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
+            shape: crate::constants::MapShape::Random,
         };
         // The surface points the pre-§C21 code placed the hazard on directly.
         // Under the cave the "surface" is the CAVE FLOOR — under a roof — which
@@ -6961,6 +6992,7 @@ mod toxic_rain_falls {
             asteroids: Vec::new(),
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
+            shape: crate::constants::MapShape::Random,
         };
         meta.surface_points.push(crate::math::Point {
             x: x as i32,
@@ -7319,6 +7351,7 @@ mod toxic_rain_falls {
                 asteroids: Vec::new(),
                 largest_component: Vec::new(),
                 generator: crate::constants::MapGenerator::V1,
+                shape: crate::constants::MapShape::Random,
             };
             Map::from_parts(mask, coarse, meta)
         };

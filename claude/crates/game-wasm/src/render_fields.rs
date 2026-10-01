@@ -32,7 +32,7 @@
 //! a heuristic with 2.5–16 % open-sky false positives, off via `CAVE_BACKDROP`) differs
 //! from the mockup and is not used.
 
-use game_core::constants::{MapGenerator, MapScale};
+use game_core::constants::{MapGenerator, MapScale, MapShape};
 use game_core::map::mask::Mask;
 
 /// Distances are stored ×4 (`kit.js::fieldTextures`).
@@ -282,6 +282,8 @@ pub struct LandformKey {
     pub scale: MapScale,
     pub generator: MapGenerator,
     pub theme: u8,
+    /// T23.30: the map shape — a shaped map's landform is its shape's generator's.
+    pub shape: MapShape,
 }
 
 impl RenderFields {
@@ -297,6 +299,7 @@ impl RenderFields {
                 key.seed,
                 key.scale,
                 key.generator,
+                key.shape,
                 key.theme,
             );
             let class = classify(&BitGrid::from_solid(&r.landform), &r.mask, WALL_CLOSING_R);
@@ -878,8 +881,10 @@ impl GameCore {
         scale: u8,
         generator: u8,
         theme: u8,
+        shape: u8,
     ) -> Result<Vec<u32>, String> {
         let key = LandformKey {
+            shape: MapShape::from_u8(shape).ok_or(format!("render_fields: shape byte {shape}"))?,
             seed: ((seed_hi as u64) << 32) | seed_lo as u64,
             scale: MapScale::from_u8(scale).ok_or(format!("render_fields: scale byte {scale}"))?,
             generator: MapGenerator::from_u8(generator)
@@ -907,6 +912,7 @@ impl GameCore {
             m.scale.as_u8() as u32,
             m.generator.to_u8() as u32,
             m.theme as u32,
+            m.shape.to_u8() as u32,
         ]
     }
 
@@ -1368,6 +1374,7 @@ mod tests {
                 m.meta.seed,
                 m.meta.scale,
                 m.meta.generator,
+                m.meta.shape,
                 m.meta.theme,
             );
             // Counted per px, not as a difference of totals: pass 8's ground fill puts
@@ -1417,6 +1424,7 @@ mod tests {
                     m.meta.scale.as_u8(),
                     m.meta.generator.to_u8(),
                     m.meta.theme,
+                    m.meta.shape.to_u8(),
                 )
                 .unwrap();
             assert_eq!(out[4], 0, "gen {generator}: strays on a matching build");
@@ -1427,7 +1435,7 @@ mod tests {
         }
         let mut c = GameCore::new();
         assert!(c
-            .render_fields_full_landform(1, 0, 9, 1, 0)
+            .render_fields_full_landform(1, 0, 9, 1, 0, 0)
             .is_err_and(|e| e.contains("scale byte 9")));
     }
 
@@ -1482,7 +1490,7 @@ mod tests {
         let m = &main.map.meta;
         let (seed, scale, gen, theme) = (m.seed, m.scale.as_u8(), m.generator.to_u8(), m.theme);
         worker
-            .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme)
+            .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme, 0)
             .unwrap();
         let (wall, rgba, din2) = (
             worker.render_fields_wall_words(),
@@ -1549,6 +1557,7 @@ mod tests {
             scale.as_u8(),
             generator.to_u8(),
             theme,
+            0,
         )
         .unwrap()
     }
@@ -1581,6 +1590,7 @@ mod tests {
                 m.meta.seed,
                 m.meta.scale,
                 m.meta.generator,
+                m.meta.shape,
                 m.meta.theme,
             );
             // The fill: rock in the round-start mask the generator did not make.
@@ -1622,6 +1632,7 @@ mod tests {
                     m.meta.scale.as_u8(),
                     m.meta.generator.to_u8(),
                     m.meta.theme,
+                    m.meta.shape.to_u8(),
                 )
                 .unwrap();
             assert_eq!(out[4], 0, "seed {seed}: strays");
@@ -1663,6 +1674,7 @@ mod tests {
                 m.meta.scale.as_u8(),
                 m.meta.generator.to_u8(),
                 m.meta.theme,
+                m.meta.shape.to_u8(),
             )
             .unwrap()
         };

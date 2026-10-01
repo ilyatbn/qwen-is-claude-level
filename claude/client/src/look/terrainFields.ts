@@ -207,7 +207,7 @@ export class TerrainFields implements TerrainFeed {
   private cancel: (() => void) | null = null
 
   /**
-   * @param key `[seed_lo, seed_hi, scale, generator, theme]` — `map_init`'s, or `renderFieldsOwnKey()` for a local map.
+   * @param key `[seed_lo, seed_hi, scale, generator, theme, shape]` — `map_init`'s, or `renderFieldsOwnKey()` for a local map.
    * @param host where the job runs — the page's worker; a fake in the tests.
    */
   constructor(

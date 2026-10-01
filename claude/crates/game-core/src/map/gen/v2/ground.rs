@@ -125,7 +125,7 @@ pub fn build_profile(seed: u64, params: &V2Params) -> Profile {
 /// A last, fine wobble over everything — ledges, cliff faces and canyon floors
 /// alike. Applied **after** the features precisely so it disturbs them: a ledge
 /// that is exactly flat and a riser that is exactly vertical read as masonry.
-fn apply_detail(profile: &mut Profile, nseed: u64, w: i32) {
+pub(crate) fn apply_detail(profile: &mut Profile, nseed: u64, w: i32) {
     for x in 0..w {
         let n = fbm_octaves(
             x as f32 / GROUND_DETAIL_WAVELENGTH,

@@ -173,6 +173,12 @@ pub enum Command {
         gravity: game_core::constants::GravityMode,
         reply: oneshot::Sender<Result<(), &'static str>>,
     },
+    /// T23.30's map shape, through gravity's gate, record and ready-clearing.
+    SetMapShape {
+        by: PlayerId,
+        shape: game_core::constants::MapShape,
+        reply: oneshot::Sender<Result<(), &'static str>>,
+    },
     /// Tell the room who it is: its join code, and whether it is private.
     ///
     /// The registry owns identity — it mints codes and keeps the `code -> id`
@@ -239,6 +245,7 @@ impl std::fmt::Debug for Command {
                 write!(f, "SetRoundSeconds({by}, {seconds})")
             }
             Command::SetGravity { by, gravity, .. } => write!(f, "SetGravity({by}, {gravity:?})"),
+            Command::SetMapShape { by, shape, .. } => write!(f, "SetMapShape({by}, {shape:?})"),
             Command::LobbyRead { .. } => f.write_str("LobbyRead"),
             Command::Inspect(_) => f.write_str("Inspect"),
         }
@@ -492,6 +499,28 @@ impl RoomHandle {
         rx.await.unwrap_or(Err("the room is gone"))
     }
 
+    /// Choose the map shape the match is generated to, as `by` (T23.30).
+    pub async fn set_map_shape(
+        &self,
+        by: PlayerId,
+        shape: game_core::constants::MapShape,
+    ) -> Result<(), &'static str> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::SetMapShape {
+                by,
+                shape,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err("the room is gone");
+        }
+        rx.await.unwrap_or(Err("the room is gone"))
+    }
+
     /// Choose the gravity the match is played under, as `by` (T22.01).
     pub async fn set_gravity(
         &self,
@@ -585,6 +614,8 @@ pub struct LobbyState {
     /// T22.01's gravity, carried here for the reason the three above are:
     /// every seat has to see what the host chose, not just the host who chose it.
     pub gravity: game_core::constants::GravityMode,
+    /// T23.30's map shape, for gravity's reason.
+    pub map_shape: game_core::constants::MapShape,
     pub settings_owner: Option<PlayerId>,
     pub starts_in: Option<f32>,
     pub players: Vec<LobbySeat>,
@@ -1082,6 +1113,11 @@ pub fn to_command(c: &ReplayCommand) -> Command {
             gravity: *gravity,
             reply: tokio::sync::oneshot::channel().0,
         },
+        ReplayCommand::SetMapShape(id, shape) => Command::SetMapShape {
+            by: *id,
+            shape: *shape,
+            reply: tokio::sync::oneshot::channel().0,
+        },
         ReplayCommand::Input(id, v) => Command::Input(*id, v.clone()),
         ReplayCommand::UseItem(id, s) => Command::UseItem(*id, *s),
         ReplayCommand::SelectSlot(id, s) => Command::SelectSlot(*id, *s),
@@ -1217,13 +1253,14 @@ impl Room {
         let round_seconds = self.config.round_seconds;
         let weather_mode = self.config.weather_mode;
         let gravity = self.config.gravity;
+        let map_shape = self.config.map_shape;
         let dev_round_clock = self.config.dev_round_clock;
         let warmup_seconds = self.config.warmup_seconds;
         move || {
             // **Gravity goes in, not on** (`T22.05A`, R15). It used to be
             // assigned after construction, which meant the map had already been
             // built by the time anything knew the round was in space.
-            let mut world = World::with_gravity(seed, scale, secret, generator, gravity);
+            let mut world = World::with_shape(seed, scale, secret, generator, gravity, map_shape);
             // `ROUND_SECONDS` is an environment override for testing (`docs/41`
             // §5) and it was parsed and then dropped: the world used the
             // constant, so a shortened round never shortened.
@@ -1429,6 +1466,7 @@ impl Room {
             // place a setting lives, so an untouched room reports the default
             // and a set room reports the host's choice.
             gravity: self.config.gravity,
+            map_shape: self.config.map_shape,
             settings_owner: self.settings_owner(),
             starts_in: self.starts_in,
             // T23.27: a spectator is not a player row (`docs/78` §A1).
@@ -2231,6 +2269,17 @@ impl Room {
                 });
                 let _ = reply.send(answer);
             }
+            // T23.30, through the same gate, record and ready-clearing as gravity.
+            Command::SetMapShape { by, shape, reply } => {
+                let answer = self.check_settings_change(by).map(|()| {
+                    let mut config = (*self.config).clone();
+                    config.map_shape = shape;
+                    self.config = Arc::new(config);
+                    self.note(R::SetMapShape(by, shape));
+                    self.settings_changed();
+                });
+                let _ = reply.send(answer);
+            }
             // Not recorded: identity is registry bookkeeping, not simulation.
             Command::SetIdentity { code, private } => {
                 self.code = code;
@@ -2586,7 +2635,8 @@ impl Room {
             | Command::SetBots { by, .. }
             | Command::SetStartKit { by, .. }
             | Command::SetRoundSeconds { by, .. }
-            | Command::SetGravity { by, .. } => Some(*by),
+            | Command::SetGravity { by, .. }
+            | Command::SetMapShape { by, .. } => Some(*by),
             _ => None,
         }
     }
@@ -2615,7 +2665,8 @@ impl Room {
             | Command::SetBots { reply, .. }
             | Command::SetStartKit { reply, .. }
             | Command::SetRoundSeconds { reply, .. }
-            | Command::SetGravity { reply, .. } => {
+            | Command::SetGravity { reply, .. }
+            | Command::SetMapShape { reply, .. } => {
                 let _ = reply.send(Err(NO_SAY));
             }
             _ => {}
@@ -3088,12 +3139,13 @@ impl Room {
         // §E1.1: the seats are the roster. A restart used to copy the old
         // world's player list into the new one, which meant the identity of a
         // player survived only as long as a world did.
-        let mut world = World::with_gravity(
+        let mut world = World::with_shape(
             seed,
             self.config.map_scale,
             buried_secret,
             self.config.map_generator,
             self.config.gravity,
+            self.config.map_shape,
         );
         world.set_round_seconds(self.config.round_seconds);
         world.set_warmup_seconds(self.config.warmup_seconds);
@@ -3722,6 +3774,63 @@ mod tests {
         assert!(
             normal.world_for_test().map.meta.asteroids.is_empty(),
             "a standard-gravity room built a space map on restart"
+        );
+    }
+
+    /// T23.30: the lobby's map shape reaches **the map**, at both construction sites
+    /// (`generate_world_task` and `restart`), set through the command a host sends —
+    /// and a space room ignores it. Control: an untouched room builds Random.
+    #[test]
+    fn a_shaped_room_builds_its_shape_at_both_construction_sites() {
+        use game_core::constants::{GravityMode, MapShape};
+        let mut room = Room::new_in_room(cfg(), 0);
+        room.apply_for_test(Command::SetIdentity {
+            code: Some("SHAPE1".into()),
+            private: true,
+        });
+        let (reply, seated) = tokio::sync::oneshot::channel();
+        room.apply_for_test(Command::Join {
+            name: "host".into(),
+            look: Default::default(),
+            reply,
+        });
+        let host = seated.blocking_recv().ok().flatten().expect("a seat");
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        room.apply_for_test(Command::SetMapShape {
+            by: host,
+            shape: MapShape::Flat,
+            reply: tx,
+        });
+        assert_eq!(rx.try_recv(), Ok(Ok(())), "the host's shape was refused");
+        assert_eq!(room.lobby_state().map_shape, MapShape::Flat);
+        assert_eq!(room.generate_world().map.meta.shape, MapShape::Flat);
+        room.restart(4242);
+        assert_eq!(
+            room.world_for_test().map.meta.shape,
+            MapShape::Flat,
+            "restart"
+        );
+
+        let space = Room::new_in_room(
+            Arc::new(Config {
+                bot_count: 0,
+                gravity: GravityMode::Space,
+                map_shape: MapShape::Hill,
+                ..Config::default()
+            }),
+            0,
+        );
+        assert_eq!(
+            space.generate_world().map.meta.shape,
+            MapShape::Random,
+            "space"
+        );
+
+        let plain = Room::new_in_room(cfg(), 0);
+        assert_eq!(
+            plain.generate_world().map.meta.shape,
+            MapShape::Random,
+            "control"
         );
     }
 

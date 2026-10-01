@@ -38,6 +38,9 @@ pub struct V2Params {
     pub mesa_count: u32,
     pub cave_count: u32,
     pub arch_count: u32,
+    /// Scenery stamped at pass 6b — the scale's `object_count` for Random (T23.30
+    /// moved it here so a shape can thin it; Random's value is unchanged).
+    pub object_count: u32,
     /// Which theme's category weights pass 6b draws with (§D5).
     ///
     /// On the params rather than an argument, because it belongs to the
@@ -56,6 +59,7 @@ impl V2Params {
             mesa_count: p.mesa_count,
             cave_count: p.cave_count,
             arch_count: p.arch_count,
+            object_count: p.object_count,
             theme: 0,
         }
     }
@@ -89,7 +93,21 @@ impl V2Params {
 /// One attempt, no retry. Exposed for tests and for the PNG dump.
 pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
     let profile = ground::build_profile(seed, params);
+    generate_from_profile(seed, params, &profile)
+}
 
+/// Passes 2–10 over a profile somebody else built — **the seam the map shapes use**
+/// (T23.30, `docs/78` §A5). Hill and Mostly flat differ from Random only in the
+/// ground line; fill, roughening, islands, caves, smoothing, cleanup, objects and the
+/// traversal gate are the same passes in the same order, so they are this function
+/// rather than a copy of it. `generate_once` is exactly `build_profile` + this, which
+/// is why `tests/golden.rs` does not move.
+pub(crate) fn generate_from_profile(
+    seed: u64,
+    params: &V2Params,
+    profile: &ground::Profile,
+) -> GenOutcome {
+    let profile = profile.clone();
     let mut mask = Mask::new_empty(params.width(), params.height());
     ground::fill(&mut mask, &profile);
     ground::roughen(&mut mask, &profile, seed);
@@ -108,7 +126,8 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
 
     // Pass 6b. After cleanup so `MIN_BLOB_PX` cannot delete a small crystal;
     // before surface extraction so the surface has object tops in it (§D3).
-    let placement = objects::stamp_objects(&mut mask, seed, params.scale, params.theme);
+    let placement =
+        objects::stamp_objects_counted(&mut mask, seed, params.theme, params.object_count);
 
     let surface = surface::extract_surface(&mask);
     let report = traversal::analyse(&mask, &surface, &placement.objects);
@@ -130,6 +149,7 @@ pub fn generate_once(seed: u64, params: &V2Params) -> GenOutcome {
         attempts: 1,
         used_safe_preset: false,
         generator: MapGenerator::V2,
+        shape: crate::constants::MapShape::Random,
     }
 }
 

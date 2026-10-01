@@ -607,6 +607,12 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
         gravity: GravityMode::Space,
         reply: tokio::sync::oneshot::channel().0,
     });
+    // T23.30's map shape, on the same path: round two's header is its carrier.
+    room.apply_for_test(Command::SetMapShape {
+        by: ana,
+        shape: game_core::constants::MapShape::Hill,
+        reply: tokio::sync::oneshot::channel().0,
+    });
     room.apply_for_test(Command::Ready(ana, true));
 
     // Round one, to its end, then vote it round again.
@@ -657,6 +663,7 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
             ReplayCommand::SetBots(..)
                 | ReplayCommand::SetStartKit(..)
                 | ReplayCommand::SetGravity(..)
+                | ReplayCommand::SetMapShape(..)
         )),
         "the second file contains the settings commands after all — then this \
          test is not exercising the header path it exists for"
@@ -669,6 +676,18 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
         ),
         (false, StartKit::All, GravityMode::Space),
         "round two's header does not describe the room that played it"
+    );
+    assert_eq!(
+        second.header.map_shape,
+        game_core::constants::MapShape::Hill,
+        "round two's header lost the map shape"
+    );
+    assert_eq!(
+        Room::new(Arc::new(second.header.to_config()))
+            .lobby_state()
+            .map_shape,
+        game_core::constants::MapShape::Hill,
+        "a room rebuilt from round two's header lost the map shape"
     );
 
     // The effect, not just the field: a room rebuilt from that header seats no

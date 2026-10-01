@@ -10,7 +10,7 @@
 
 import Phaser from 'phaser'
 import { C, Core, MapScale, strictConstants, type EffectForce, type FireEvent, type WeatherState } from '../core'
-import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl } from './sceneParams'
+import { DEFAULT_GRAVITY, SPACE_GRAVITY, generateForScene, gravityFromUrl, shapeFromUrl } from './sceneParams'
 import { DEPTH } from '../render/backdrop'
 import { occupiedPlatforms } from '../render/platforms'
 import { isHighQuality, setHighQuality } from '../ui/settings'
@@ -83,6 +83,8 @@ export class SandboxScene extends Phaser.Scene {
    * parsing it in two places is how a spelling drifts.
    */
   private gravity: string = DEFAULT_GRAVITY
+  /** T23.30: the map shape's byte, off `?shape=` (0 = Random). */
+  private shape = 0
   private carveRadius = 42
 
   /**
@@ -237,6 +239,7 @@ export class SandboxScene extends Phaser.Scene {
     // T22.05A is the first M22 task to land and the ruling says whichever one
     // does writes it.
     this.gravity = gravityFromUrl(params)
+    this.shape = shapeFromUrl(params, C().MAP_SHAPES)
 
     this.buildUi()
     this.regenerate()
@@ -453,7 +456,7 @@ export class SandboxScene extends Phaser.Scene {
     const t0 = performance.now()
     // Through the gravity, because the gravity decides the generator (R15).
     // Shared with `PreviewScene` and tested in `sceneParams.test.ts`.
-    generateForScene(this.core, this.seed, this.mapScale, this.gravity)
+    generateForScene(this.core, this.seed, this.mapScale, this.gravity, this.shape)
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core
@@ -1586,13 +1589,14 @@ export class SandboxScene extends Phaser.Scene {
       resyncTerrain() {
         self.feedTerrain()
       },
-      regenerate(seed?: string, scale?: string, gravity?: string) {
+      regenerate(seed?: string, scale?: string, gravity?: string, shape?: string) {
         if (seed !== undefined) self.seed = BigInt(seed)
         if (scale !== undefined) self.mapScale = SCALES[scale] ?? self.mapScale
         // R22's second half: the URL parameter covers a check that loads the
         // page in the mode, and this covers one that has to compare both modes
         // in a single page without a reload.
         if (gravity !== undefined) self.gravity = gravity
+        if (shape !== undefined) self.shape = Math.max(0, C().MAP_SHAPES.indexOf(shape))
         self.regenerate()
         // T23.07: a new map's rock is Phaser's until the lit terrain's picture is whole (seconds on
         // SwiftShader). Resolves once it will not change on its own again, so a check that awaits the

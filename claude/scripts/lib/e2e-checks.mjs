@@ -145,6 +145,9 @@ export const CHECKS = [
   // deep-rock world rect on two seeds wears different rock (the albedo's per-map offset), and the same
   // seed twice the same.
   { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=4242' },
+  // T23.30 (`docs/78` §A5): every map shape loads, says what it is, and is drawn — where a shape has rock
+  // and Mostly flat has air, the photograph differs from Flat's (control: the same shape twice does not).
+  { name: 'map-shapes', file: 'scripts/checks/map-shapes.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242&hour=1' },
   // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
   // clouds) and the ambient rain that fell from them.

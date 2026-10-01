@@ -38,6 +38,7 @@ fn meta() -> MapMeta {
         asteroids: Vec::new(),
         largest_component: Vec::new(),
         generator: game_core::constants::MapGenerator::V1,
+        shape: game_core::constants::MapShape::Random,
     }
 }
 

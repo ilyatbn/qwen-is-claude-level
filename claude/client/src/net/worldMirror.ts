@@ -374,6 +374,8 @@ export class WorldMirror {
     // T22.14A B3: the map says what it is — before `loadMask`, which re-extracts the
     // surface through it, and whichever of `lobby_state`/`map_init` came first.
     this.core.setMapGenerator(m.generator)
+    // T23.30: and which shape it was generated to — the shape's rules read it.
+    this.core.setMapShape(m.shape)
     if (!this.core.loadMask(m.width, m.height, m.rle)) {
       throw new Error('map_init: mask failed to load')
     }

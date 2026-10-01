@@ -213,6 +213,7 @@ mod tests {
             asteroids: Vec::new(),
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
+            shape: crate::constants::MapShape::Random,
         }
     }
 

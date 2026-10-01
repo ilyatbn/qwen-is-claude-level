@@ -37,6 +37,14 @@ export function gravityFromUrl(params: URLSearchParams): string {
 }
 
 /**
+ * T23.30: `?shape=hill` as `MapShape`'s byte — its index in the core's `MAP_SHAPES`
+ * (lobby order is byte order) — or 0, Random, when absent or unknown.
+ */
+export function shapeFromUrl(params: URLSearchParams, shapes: readonly string[]): number {
+  return Math.max(0, shapes.indexOf(params.get('shape') ?? ''))
+}
+
+/**
  * What a dev scene needs of `Core` in order to build a map.
  *
  * Narrow on purpose: it lets the test below drive `generateForScene` without a
@@ -48,6 +56,7 @@ export interface GeneratesMaps {
     scale: MapScale,
     generator: MapGenerator,
     gravity: string,
+    shape?: number,
   ): boolean
   generate(seed: bigint, scale: MapScale): void
 }
@@ -65,8 +74,9 @@ export function generateForScene(
   seed: bigint,
   scale: MapScale,
   gravity: string,
+  shape = 0,
 ): void {
-  if (!core.generateForGravity(seed, scale, DEFAULT_MAP_GENERATOR, gravity)) {
+  if (!core.generateForGravity(seed, scale, DEFAULT_MAP_GENERATOR, gravity, shape)) {
     core.generate(seed, scale)
   }
 }

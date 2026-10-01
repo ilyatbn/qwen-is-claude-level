@@ -35,6 +35,8 @@ export interface MapInit {
    * handed to `Core.setMapGenerator` before `loadMask`.
    */
   generator: number
+  /** T23.30: the map shape, `MapShape::to_u8` — the trailing byte, after the mask. */
+  shape: number
   wind: number
   /** The last carve `seq` this mask already contains. */
   carveSeq: number
@@ -344,10 +346,15 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
 
   const rleLen = r.u32()
-  if (rleLen !== r.remaining) {
-    throw new CodecError(`rle_byte_len ${rleLen} disagrees with ${r.remaining} remaining`)
+  // T23.30: one byte follows the mask — the map shape.
+  if (rleLen + 1 !== r.remaining) {
+    throw new CodecError(`rle_byte_len ${rleLen} + shape disagrees with ${r.remaining} remaining`)
   }
   const rle = r.bytes(rleLen)
+  const shape = r.u8()
+  if (shape >= C().MAP_SHAPES.length) {
+    throw new CodecError(`shape ${shape} names no map shape`)
+  }
 
   return {
     width,
@@ -356,6 +363,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     scale,
     theme,
     generator,
+    shape,
     wind,
     carveSeq,
     spawnPoints,

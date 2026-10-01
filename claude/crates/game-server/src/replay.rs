@@ -26,7 +26,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use game_core::constants::{GravityMode, MapGenerator, MapScale, StartKit, SIM_HZ};
+use game_core::constants::{GravityMode, MapGenerator, MapScale, MapShape, StartKit, SIM_HZ};
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -43,12 +43,13 @@ pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// Bytes a header occupies on disk: magic 4, version 2, seed 8, buried secret 8,
 /// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
 /// min_players_to_start 2 (retired §E2; still written, as 0), bot_count 2,
-/// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1, gravity 1.
+/// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1, gravity 1, map_shape 1
+/// (T23.30, v38 — a v37 header is one byte shorter).
 ///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
 /// inline and both broke the moment the header grew a field.
-pub const HEADER_BYTES: usize = 46;
+pub const HEADER_BYTES: usize = 47;
 
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
@@ -379,7 +380,16 @@ pub const HEADER_BYTES: usize = 46;
 /// Bumped to 37 by T22.22C (R113b): Small's iron is drawn at 99..100 px and never shrunk
 /// under 1.125 × its map's largest ordinary rock — a v36 Small space recording is
 /// played on a different arena. No new tag, no layout change.
-pub const REPLAY_VERSION: u16 = 37;
+///
+/// Bumped to 38 by T23.30 (`docs/78` §A5): the header gains the **map shape** byte,
+/// appended after gravity, and tag 25 `SetMapShape` joins the stream. **A v37 file
+/// still reads** — it predates shapes, so its shape is `Random`, which generates
+/// today's map byte for byte (`golden.rs` unmoved); `decode` accepts exactly
+/// [`REPLAY_VERSION_NO_SHAPE`] besides this one.
+pub const REPLAY_VERSION: u16 = 38;
+
+/// The last version without the map-shape byte (T23.30) — read as `Random`.
+pub const REPLAY_VERSION_NO_SHAPE: u16 = 37;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
 ///
@@ -455,6 +465,8 @@ pub enum ReplayCommand {
     /// setting too, and which of the two is authoritative depends on the round —
     /// see `SetBots` above, which states the rule once for all four.
     SetGravity(PlayerId, GravityMode),
+    /// T23.30: the lobby's map shape. Tag 25.
+    SetMapShape(PlayerId, MapShape),
     /// Already filtered: duplicates and stale sequences are dropped before they
     /// reach here, so a replay applies exactly the input the live round did.
     Input(PlayerId, Vec<Input>),
@@ -531,6 +543,7 @@ impl ReplayCommand {
             ReplayCommand::SetRoundSeconds(..) => 21,
             ReplayCommand::DropItem(..) => 22,
             ReplayCommand::SetGravity(..) => 23,
+            ReplayCommand::SetMapShape(..) => 25,
             ReplayCommand::JoinSpectator { .. } => 24,
         }
     }
@@ -578,6 +591,8 @@ pub struct ReplayHeader {
     /// for round two, so from round two this is the **only** carrier of a
     /// setting the host chose in round one's lobby.
     pub gravity: GravityMode,
+    /// T23.30's map shape — the header carries it for gravity's reason above.
+    pub map_shape: MapShape,
 }
 
 impl ReplayHeader {
@@ -598,6 +613,7 @@ impl ReplayHeader {
             bots_enabled: config.bots_enabled,
             start_kit: config.start_kit,
             gravity: config.gravity,
+            map_shape: config.map_shape,
         }
     }
 
@@ -616,6 +632,7 @@ impl ReplayHeader {
             bots_enabled: self.bots_enabled,
             start_kit: self.start_kit,
             gravity: self.gravity,
+            map_shape: self.map_shape,
             record_replay: false,
             ..Config::default()
         }
@@ -663,6 +680,8 @@ pub enum ReplayError {
     BadGenerator(u8),
     BadStartKit(u8),
     BadGravity(u8),
+    /// T23.30: a map-shape byte naming no shape.
+    BadMapShape(u8),
     /// A byte that is neither 0 nor 1 where a flag was written. Its own variant
     /// rather than a lenient `!= 0`, because a corrupt file that decodes as
     /// `true` replays a setting the round never had and then diverges somewhere
@@ -694,6 +713,7 @@ impl std::fmt::Display for ReplayError {
             ReplayError::BadGenerator(g) => write!(f, "unknown map generator {g}"),
             ReplayError::BadStartKit(k) => write!(f, "unknown starting kit {k}"),
             ReplayError::BadGravity(g) => write!(f, "unknown gravity {g}"),
+            ReplayError::BadMapShape(m) => write!(f, "unknown map shape {m}"),
             ReplayError::BadBool(field, b) => write!(f, "{field} is {b}, not 0 or 1"),
             ReplayError::BadUtf8 => f.write_str("player name is not valid utf-8"),
         }
@@ -824,6 +844,8 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     // T22.01, appended after everything above for the reason the note on the two
     // §F7 fields gives: inserting it earlier would move every field after it.
     w.write_all(&[h.gravity.as_u8()])?;
+    // T23.30, appended for the same reason.
+    w.write_all(&[h.map_shape.to_u8()])?;
     Ok(())
 }
 
@@ -873,6 +895,10 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::SetGravity(id, gravity) => {
             w.write_all(&[*id])?;
             w.write_all(&[gravity.as_u8()])?;
+        }
+        ReplayCommand::SetMapShape(id, shape) => {
+            w.write_all(&[*id])?;
+            w.write_all(&[shape.to_u8()])?;
         }
         ReplayCommand::Input(id, inputs) => {
             w.write_all(&[*id])?;
@@ -1004,7 +1030,7 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         return Err(ReplayError::BadMagic(magic));
     }
     let version = c.u16()?;
-    if version != REPLAY_VERSION {
+    if version != REPLAY_VERSION && version != REPLAY_VERSION_NO_SHAPE {
         return Err(ReplayError::BadVersion {
             found: version,
             expected: REPLAY_VERSION,
@@ -1054,6 +1080,13 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         gravity: {
             let b = c.u8()?;
             GravityMode::from_u8(b).ok_or(ReplayError::BadGravity(b))?
+        },
+        // T23.30: strict like gravity; absent before v38, where it can only be Random.
+        map_shape: if version == REPLAY_VERSION_NO_SHAPE {
+            MapShape::Random
+        } else {
+            let b = c.u8()?;
+            MapShape::from_u8(b).ok_or(ReplayError::BadMapShape(b))?
         },
     };
 
@@ -1135,6 +1168,10 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
         23 => ReplayCommand::SetGravity(c.u8()?, {
             let b = c.u8()?;
             GravityMode::from_u8(b).ok_or(ReplayError::BadGravity(b))?
+        }),
+        25 => ReplayCommand::SetMapShape(c.u8()?, {
+            let b = c.u8()?;
+            MapShape::from_u8(b).ok_or(ReplayError::BadMapShape(b))?
         }),
         3 => {
             let id = c.u8()?;
@@ -1232,6 +1269,8 @@ mod tests {
             start_kit: StartKit::All,
             // Off the default too, for the reason above.
             gravity: GravityMode::Space,
+            // T23.30: off the default too.
+            map_shape: MapShape::Flat,
         }
     }
 
@@ -1286,6 +1325,8 @@ mod tests {
             ReplayCommand::SetRoundSeconds(0, 300.0),
             ReplayCommand::SetGravity(0, GravityMode::Low),
             ReplayCommand::SetGravity(0, GravityMode::Space),
+            ReplayCommand::SetMapShape(0, MapShape::Hill),
+            ReplayCommand::SetMapShape(0, MapShape::Random),
         ]
     }
 
@@ -1325,7 +1366,8 @@ mod tests {
                 | ReplayCommand::QuickThrow(_)
                 | ReplayCommand::MoveItem(..)
                 | ReplayCommand::DropItem(..)
-                | ReplayCommand::SetGravity(..) => {}
+                | ReplayCommand::SetGravity(..)
+                | ReplayCommand::SetMapShape(..) => {}
             }
         }
         let all = every_command();
@@ -1346,11 +1388,11 @@ mod tests {
         // on `every_command`, not an assertion that the tags are contiguous —
         // renumbering would have made every later command's encoding depend on
         // this one's removal, for nothing.
-        // T23.27: 23 with `JoinSpectator` (tag 24).
+        // T23.27: 23 with `JoinSpectator` (tag 24). T23.30: 24 with `SetMapShape` (25).
         assert_eq!(
             tags.len(),
-            23,
-            "`every_command` returns {} distinct tags, not 23 — a variant was \
+            24,
+            "`every_command` returns {} distinct tags, not 24 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );
@@ -1409,6 +1451,32 @@ mod tests {
             }
             other => panic!("expected BadVersion, got {other:?}"),
         }
+    }
+
+    /// T23.30: a **v37** file — written before the shape byte — still reads, as
+    /// Random, with its body intact; a v38 header carries the shape (the fixture's
+    /// `Flat`, off the default); and a shape byte naming no shape is refused.
+    #[test]
+    fn a_v37_file_reads_as_random_and_a_v38_header_carries_the_shape() {
+        let h = header();
+        let body = [(3u32, ReplayCommand::Ready(1))];
+        let v38 = encode_round(&h, &body);
+        let now = decode(&v38).expect("v38");
+        assert_eq!(now.header.map_shape, MapShape::Flat);
+        assert_eq!(now.header.version, REPLAY_VERSION);
+
+        // The same round as v37 wrote it: no shape byte, version 37.
+        let mut v37 = v38.clone();
+        v37.remove(HEADER_BYTES - 1);
+        v37[4..6].copy_from_slice(&REPLAY_VERSION_NO_SHAPE.to_le_bytes());
+        let old = decode(&v37).expect("a v37 file must still read");
+        assert_eq!(old.header.map_shape, MapShape::Random);
+        assert_eq!(old.header.gravity, h.gravity, "v37 header misaligned");
+        assert_eq!(old.body, now.body, "v37 body misaligned");
+
+        let mut bad = v38;
+        bad[HEADER_BYTES - 1] = 0xEE;
+        assert!(matches!(decode(&bad), Err(ReplayError::BadMapShape(0xEE))));
     }
 
     #[test]
@@ -1627,6 +1695,10 @@ mod format_tests {
         v.push(0); // bots_enabled — off, so it is not the default
         v.push(1); // start_kit — Basic, so it is not the default
         v.push(2); // gravity — Space, so it is not the default
+                   // T23.30: the map shape — Hill, off the default — from v38 on.
+        if version != REPLAY_VERSION_NO_SHAPE {
+            v.push(1);
+        }
         v
     }
 
@@ -1664,6 +1736,7 @@ mod format_tests {
         // T22.01, appended after those two and written off *its* default for the
         // same reason: a decoder that stopped short would leave this `Standard`.
         assert_eq!(h.gravity, GravityMode::Space, "gravity did not read");
+        assert_eq!(h.map_shape, MapShape::Hill, "map_shape did not read");
     }
 
     /// The v4 fields are decoded **strictly**, and `dev_loadout` is not.
@@ -1680,9 +1753,9 @@ mod format_tests {
             v[i] = b;
             decode(&v)
         };
-        // The four strict-or-lenient bytes are the last four of the header:
-        // dev_loadout, bots_enabled, start_kit, gravity — in that order.
-        let n = HEADER_BYTES;
+        // The four strict-or-lenient bytes before the map shape (T23.30, the last
+        // byte): dev_loadout, bots_enabled, start_kit, gravity — in that order.
+        let n = HEADER_BYTES - 1;
         match at(n - 3, 2) {
             Err(ReplayError::BadBool("bots_enabled", 2)) => {}
             other => panic!("a bots_enabled of 2 must be refused, got {other:?}"),
@@ -1717,7 +1790,10 @@ mod format_tests {
     /// version *newer* than this build, which no shipped file ever is.
     #[test]
     fn a_replay_from_the_previous_version_is_refused_rather_than_replayed() {
-        let old = REPLAY_VERSION - 1;
+        // T23.30: v37 is the one older version that reads (`REPLAY_VERSION_NO_SHAPE`
+        // — `a_v37_file_reads_as_random_…`), so "the previous version" is the one
+        // before it.
+        let old = REPLAY_VERSION_NO_SHAPE - 1;
         match decode(&header_bytes(old)) {
             Err(ReplayError::BadVersion { found, expected }) => {
                 assert_eq!((found, expected), (old, REPLAY_VERSION));

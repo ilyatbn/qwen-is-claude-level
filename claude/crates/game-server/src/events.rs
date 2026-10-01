@@ -602,6 +602,8 @@ pub fn lobby_state_payload(state: &crate::room::LobbyState) -> serde_json::Value
         // has a gravity, and `parseLobbyState` reads a missing key as its
         // default — so omitting it would show every seat the wrong setting.
         "gravity": state.gravity.as_str(),
+        // T23.30, on gravity's terms: always present, never omitted.
+        "map_shape": state.map_shape.as_str(),
         "players": state
             .players
             .iter()

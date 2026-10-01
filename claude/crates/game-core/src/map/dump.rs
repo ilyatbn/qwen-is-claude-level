@@ -157,3 +157,48 @@ pub fn dump_dir() -> std::path::PathBuf {
         .components()
         .collect()
 }
+
+/// T23.30: a **contact sheet** of maps, in the owner's reference style — black rock,
+/// grey air (`tasks/M23/map-shapes/*.png`) — each downsampled by `div`, `cols` to a row,
+/// spawns as magenta dots and teleport pads as cyan ones. For seeing a shape's variety
+/// across seeds at a glance. A tile pixel is rock when any source pixel under it is.
+pub fn dump_overview(maps: &[&Map], cols: usize, div: u32, path: &Path) -> std::io::Result<()> {
+    const GAP: u32 = 6;
+    const GREY: [u8; 3] = [0x80, 0x80, 0x80];
+    const BLACK: [u8; 3] = [0, 0, 0];
+    const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
+    const PAD: [u8; 3] = [0x30, 0xe0, 0xff];
+    let Some(first) = maps.first() else {
+        return Ok(());
+    };
+    let (tw, th) = (first.mask.w / div, first.mask.h / div);
+    let cols = cols.max(1);
+    let rows = maps.len().div_ceil(cols);
+    let w = cols as u32 * (tw + GAP) + GAP;
+    let h = rows as u32 * (th + GAP) + GAP;
+    let mut rgb = vec![0u8; (w * h * 3) as usize];
+    for px in rgb.chunks_exact_mut(3) {
+        px.copy_from_slice(&WHITE);
+    }
+    for (i, map) in maps.iter().enumerate() {
+        let ox = GAP + (i % cols) as u32 * (tw + GAP);
+        let oy = GAP + (i / cols) as u32 * (th + GAP);
+        for ty in 0..th {
+            for tx in 0..tw {
+                let rock = (0..div).any(|dy| {
+                    (0..div).any(|dx| map.mask.get((tx * div + dx) as i32, (ty * div + dy) as i32))
+                });
+                let c = if rock { BLACK } else { GREY };
+                put(&mut rgb, w, (ox + tx) as i32, (oy + ty) as i32, c);
+            }
+        }
+        let at = |p: Point| Point::new(ox as i32 + p.x / div as i32, oy as i32 + p.y / div as i32);
+        for p in &map.meta.teleport_pads {
+            dot(&mut rgb, w, at(p.pos), 4, PAD);
+        }
+        for p in &map.meta.spawn_points {
+            dot(&mut rgb, w, at(*p), 3, SPAWN);
+        }
+    }
+    write_png(path, w, h, &rgb)
+}
