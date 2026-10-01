@@ -303,3 +303,91 @@ fn a_lost_enemy_is_chased_to_where_it_was_seen() {
         "control: forgetting, it came as near ({forgot:.0} px) — the fixture"
     );
 }
+
+/// **F6 (step 5, owner: *"also they can use teleports"*): an explorer far from anything
+/// takes a pad that is near.** Rock over the whole map, a room in its middle and two more
+/// far off, joined by a tunnel; six pads, one in the middle room a few cells from the bot,
+/// every other open place beyond `BOT_PAD_FAR`. Within the walk, the charge and a second
+/// it rides (its body jumps across the map). Control: the same rooms with no pads — no
+/// ride, it walks the tunnel. (Plant: the gamble's condition `false` → red; six pads are
+/// a lottery no route buys.)
+#[test]
+fn an_explorer_far_from_anything_takes_a_near_pad() {
+    use crate::constants::{BOT_PAD_FAR, TELEPORT_CHARGE};
+    let run = |pads: bool| {
+        // Rock over the whole map, so no open ground but the three rooms.
+        let (mut w, ox, oy) = block(MapScale::Small, 124, 62);
+        let feet = oy + 40;
+        fill(&mut w, ox + 58, feet - 3, ox + 67, feet, false);
+        fill(&mut w, ox + 4, feet - 3, ox + 12, feet, false);
+        fill(&mut w, ox + 112, feet - 3, ox + 120, feet, false);
+        // A tunnel joins them along the floor — a walk the planner takes, but no open
+        // ground to explore (`Grid::enclosed`).
+        fill(&mut w, ox + 4, feet - 1, ox + 120, feet, false);
+        // Six pads, as a shipping map has: a ride to a *chosen* one is ~28 s, over
+        // `BOT_NAV_COST_MAX`, so no route takes one — only the gamble does.
+        if pads {
+            for (id, x) in [64, 5, 8, 11, 114, 118].into_iter().enumerate() {
+                pad(&mut w, id as u8, ox + x, feet);
+            }
+        }
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        let start = stand_at(ox + 60, feet);
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(start);
+        }
+        // Nearest other open ground: a side room, ~48 cells off.
+        let side = (stand_at(ox + 12, feet) - start).len();
+        let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+        let walk = BOT_PAD_FAR / crate::constants::WALK_SPEED;
+        let bound = walk + TELEPORT_CHARGE + 1.0;
+        let mut last = start;
+        for t in 0..((bound * SIM_HZ as f32) as u32) {
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            let at = w.player(1).expect("bot").body.pos;
+            if (at - last).len() > 8.0 * crate::constants::BOT_NAV_CELL {
+                return (true, side);
+            }
+            last = at;
+        }
+        (false, side)
+    };
+    let (rode, side) = run(true);
+    assert!(
+        side > BOT_PAD_FAR,
+        "fixture: the side rooms are only {side:.0} px off"
+    );
+    assert!(
+        rode,
+        "an explorer with a pad beside it and nothing near never rode it"
+    );
+    let (rode, _) = run(false);
+    assert!(
+        !rode,
+        "control: with no pads the body jumped across the map"
+    );
+}
+
+/// A teleport pad with its surface on the floor under nav cell `(x, feet)`.
+fn pad(w: &mut World, id: u8, x: i32, feet: i32) {
+    let c = stand_at(x, feet);
+    w.map
+        .meta
+        .teleport_pads
+        .push(crate::map::meta::TeleportPad {
+            id,
+            pos: crate::math::Point {
+                x: c.x as i32,
+                y: (feet + 1) * crate::constants::BOT_NAV_CELL as i32,
+            },
+        });
+}

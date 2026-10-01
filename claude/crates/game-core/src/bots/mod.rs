@@ -158,6 +158,8 @@ pub struct BotStats {
     /// was doing when the window closed ([`STILL_CAUSES`] names the slots). Every bot
     /// always has a goal (`Wander` when nothing else), so this is "still with a goal".
     pub ticks_still: [u32; STILL_CAUSES.len()],
+    /// T23.26E step 5: pad rides chosen (`BOT_PAD_*`) that ended in a teleport.
+    pub pad_rides: u32,
 }
 
 /// What a still bot was doing — `BotStats::ticks_still`'s slots, in order.
@@ -293,6 +295,12 @@ pub struct Bot {
     strafe_next: i8,
     strafe_phase: f32,
     strafe_off: bool,
+    /// T23.26E step 5: the pad being ridden — where to stand on it and when it was chosen
+    /// — and when the last ride was chosen (`BOT_PAD_RETRY`); where the body was last
+    /// tick (a teleport is a jump in it).
+    pad_ride: Option<(Vec2, f32)>,
+    pad_ride_at: f32,
+    prev_pos: Vec2,
     /// Tests only: T23.26E's chase to where an enemy was last seen planted out.
     chase_off: bool,
     /// Tests only: T23.26E's open-ground-first planted out — a fight routes with dig
@@ -345,6 +353,9 @@ impl Bot {
             strafe_off: false,
             dig_first: false,
             chase_off: false,
+            pad_ride: None,
+            pad_ride_at: f32::NEG_INFINITY,
+            prev_pos: Vec2::ZERO,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -447,6 +458,14 @@ impl Bot {
         }
         let pos = me.body.pos;
         self.stats.ticks += 1;
+        // T23.26E step 5: a ride ends where the body jumped — explore from the exit.
+        if (pos - self.prev_pos).len() > 8.0 * crate::constants::BOT_NAV_CELL
+            && self.pad_ride.take().is_some()
+        {
+            self.wander_to = None;
+            self.stats.pad_rides += 1;
+        }
+        self.prev_pos = pos;
 
         self.choose_goal(world, pos, now, dt);
         if matches!(self.goal, Goal::Enemy(_)) {
@@ -706,6 +725,8 @@ impl Bot {
         }
         let target = match self.goal {
             Goal::Item(_) => route::item_target(aim_at),
+            // T23.26E step 5: onto the pad, not near it.
+            Goal::Wander if self.pad_ride.is_some() => route::item_target(aim_at),
             Goal::Wander => route::wander_target(aim_at),
             // An enemy with rock between: route to where the fight can be seen — a node
             // within the weapon's hold with a clear line. The shot rule still fires
@@ -1101,8 +1122,17 @@ impl Bot {
         // every bot under rock for the whole shower and the owner watched them stand in
         // holes "constantly digging"; the meteors are dodged on the move (`dodge`).
 
+        if self.goal != Goal::Wander {
+            self.pad_ride = None;
+        }
         if self.goal == Goal::Wander {
             self.wander_for += dt;
+            let riding = self
+                .pad_ride
+                .is_some_and(|(_, t0)| now - t0 < crate::constants::BOT_PAD_RIDE_S);
+            if !riding && self.pad_ride.take().is_some() {
+                self.wander_to = None;
+            }
             let cov = self.coverage.get_or_insert_with(|| {
                 let mut c = Coverage::new(world.map.mask.w as i32, world.map.mask.h as i32);
                 c.mark_outside(world);
@@ -1133,11 +1163,11 @@ impl Bot {
                     .is_some_and(|w| self.route.refused(&route::wander_target(w), now));
             let patience = BOT_WANDER_GIVE_UP.max(2.0 * self.route.planned_s());
             let gave_up = self.wander_for > patience || barred || refused;
-            if self.wander_to.is_some() {
+            if self.wander_to.is_some() && !riding {
                 self.stats.wander_arrived += u32::from(arrived);
                 self.stats.wander_gave_up += u32::from(gave_up && !arrived);
             }
-            if arrived || gave_up {
+            if !riding && (arrived || gave_up) {
                 if let Some(w) = self.wander_to {
                     let (wx, wy) = cov.cell_of(w);
                     let i = cov.index(wx, wy);
@@ -1177,6 +1207,19 @@ impl Bot {
                 } else {
                     cov.nearest_unseen(pos)
                 };
+                // T23.26E step 5: **the pad gamble** (`BOT_PAD_NEAR`/`_FAR`/`_RETRY`): the
+                // next place to explore is far, a pad is near — step on it, and explore
+                // wherever it sends you.
+                let far = self
+                    .wander_to
+                    .is_some_and(|to| (to - pos).len() > crate::constants::BOT_PAD_FAR);
+                if routes && far && now - self.pad_ride_at >= crate::constants::BOT_PAD_RETRY {
+                    if let Some(spot) = pad_near(world, self.player, pos, now) {
+                        self.pad_ride = Some((spot, now));
+                        self.pad_ride_at = now;
+                        self.wander_to = Some(spot);
+                    }
+                }
             }
         } else {
             self.wander_to = None;
@@ -1250,6 +1293,29 @@ impl Bot {
         }
         best.map(|(_, h)| h)
     }
+}
+
+/// T23.26E step 5: where to stand on the nearest teleport pad within `BOT_PAD_NEAR` of
+/// `pos` that `id` could ride — not winged (wings refuse pads, `World::fire_pads`), not on
+/// its own cooldown — or `None`.
+fn pad_near(world: &World, id: PlayerId, pos: Vec2, now: f32) -> Option<Vec2> {
+    let me = world.player(id)?;
+    if me.move_mods().flying || now < me.teleport.ready_at {
+        return None;
+    }
+    world
+        .map
+        .meta
+        .teleport_pads
+        .iter()
+        .map(|p| {
+            Vec2::new(
+                p.pos.x as f32,
+                p.pos.y as f32 - crate::constants::PLAYER_H * 0.5 - 1.0,
+            )
+        })
+        .filter(|c| (*c - pos).len() <= crate::constants::BOT_PAD_NEAR)
+        .min_by(|a, b| (*a - pos).len().total_cmp(&(*b - pos).len()))
 }
 
 /// T23.26E step 4: the open ground in the exploration cell round `centre` — the standing,
@@ -1918,6 +1984,7 @@ pub(crate) mod harness {
             melee_fires_with_ranged: a.melee_fires_with_ranged + b.melee_fires_with_ranged,
             rej_arc: a.rej_arc + b.rej_arc,
             ticks_still: std::array::from_fn(|i| a.ticks_still[i] + b.ticks_still[i]),
+            pad_rides: a.pad_rides + b.pad_rides,
         }
     }
 

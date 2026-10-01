@@ -4149,6 +4149,22 @@ pub const BOT_LOB_SWEEP: u32 = 24;
 /// T23.26D item 3: how often an arc is re-solved, s — six ticks. A solve walks up to
 /// fourteen predicted flights, and a target moves a few px in a tenth of a second.
 pub const BOT_LOB_EVERY: f32 = 0.1;
+/// T23.26E step 5 (owner: *"also they can use teleports"*): the pad gamble. A bot exploring
+/// with nothing in sight takes a teleport pad within `BOT_PAD_NEAR` when its next
+/// exploration target is further than `BOT_PAD_FAR`, at most once a `BOT_PAD_RETRY`. A pad
+/// sends you to a **random** other one, so the planner, which prices the lottery honestly
+/// (`nav::Search::pads`: ~28 s to a *chosen* pad on six), never routes through one — but
+/// to an explorer any exit is new ground: one exploration cell's walk (~1.7 s) and the
+/// 1.5 s charge buy a jump to somewhere a ≥ 3.4 s walk (two cells) was not going to reach
+/// soon. That is a human's reason to step on one.
+pub const BOT_PAD_NEAR: f32 = BOT_EXPLORE_CELL as f32;
+pub const BOT_PAD_FAR: f32 = 2.0 * BOT_EXPLORE_CELL as f32;
+/// One ride per this, s: the bot explores where it lands rather than riding on (the
+/// pad's own `TELEPORT_COOLDOWN`, 5 s, only stops the ping-pong).
+pub const BOT_PAD_RETRY: f32 = 20.0;
+/// How long a bot keeps heading for (and standing on) the pad it chose, s: the wander's
+/// give-up plus the charge.
+pub const BOT_PAD_RIDE_S: f32 = BOT_WANDER_GIVE_UP + TELEPORT_CHARGE;
 /// T23.26E: how far a bot **hears** a shot, px — the client's audio falloff
 /// (`client/src/audio/mixer.ts` `DEFAULT_FALLOFF`, where a sound's gain reaches zero), which
 /// is `FOV_DAY`: a human hears a gun as far as they see by day. A bot with nothing in sight

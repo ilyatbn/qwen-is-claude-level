@@ -335,6 +335,8 @@ impl Bot {
     fn stop_within(&self, world: &World) -> f32 {
         match self.goal {
             Goal::Item(_) => PICKUP_RADIUS * 0.5,
+            // T23.26E step 5: a pad is stood on, its middle within a quarter of its width.
+            Goal::Wander if self.pad_ride.is_some() => crate::constants::PAD_W as f32 * 0.25,
             Goal::Enemy(_) => self.hold_off(world),
             Goal::Wander | Goal::Flee(_) => self.stand_off(world),
         }
