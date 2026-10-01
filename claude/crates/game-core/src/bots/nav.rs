@@ -207,6 +207,16 @@ impl<'a> Grid<'a> {
         }
     }
 
+    /// T23.26F: is cell `(x, y)` air — the planner's own threshold, without the hard-rock
+    /// read a rock cell's [`cell`](Self::cell) pays for (the openness field reads every
+    /// cell of the map). Off the sides is not air; over the top is.
+    pub fn air(&self, x: i32, y: i32) -> bool {
+        if x < 0 || x >= self.nx {
+            return false;
+        }
+        y < 0 || y >= self.ny || self.rock_px(x, y) <= BOT_NAV_AIR_PX
+    }
+
     fn solid(&self, x: i32, y: i32) -> bool {
         self.cell(x, y) != Cell::Air
     }

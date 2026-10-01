@@ -3271,6 +3271,13 @@ fn bot_terrain_report() {
         moved.teleports as f32 / n,
         still_s / bot_min.max(1e-6)
     );
+    // T23.26F (`docs/78` §A6): the metrics that decide — meeting, and the shovel.
+    let melee_kills = rounds.iter().map(|r| r.kills_by_kind[0]).sum::<u32>() as f32;
+    println!(
+        "  T23.26F: {}, melee {:.0} % of kills",
+        moved.meet_row(),
+        100.0 * melee_kills / sum(|r| r.kills).max(1.0)
+    );
     assert!(bot_min > 0.0, "control: no bot was ever alive");
     assert!(
         arrived > 0.0,

@@ -4371,6 +4371,23 @@ pub const BOT_PAD_RIDE_S: f32 = BOT_WANDER_GIVE_UP + TELEPORT_CHARGE;
 /// goes to where it heard one (`Bot::choose_goal`). Hearing, not seeing: §A5's fairness —
 /// a bot knows only what a player at its seat could.
 pub const BOT_HEAR_RANGE: f32 = FOV_DAY;
+/// T23.26F (`docs/78` §A6, `bots/open.rs`): **open ground** is a nav cell whose box —
+/// `BOT_OPEN_REACH` cells either side, `BOT_OPEN_HEAD` rows above the feet — is at least
+/// `BOT_OPEN_AIR_SHARE` air, or `BOT_OPEN_SKY_SHARE` air with the sky straight above it.
+/// The box is 13 × 7 cells (208 × 112 px): four bodies tall and a pistol's hold
+/// (`BOT_GUN_HOLD_SHARE` × 520 = 104 px) to either side — the room a fight on it needs. A
+/// tunnel or pocket three cells tall fills at most 3/7 of it (0.43), so the share is set
+/// over that; a crater under the sky is open from 0.4 while a two-cell shaft (2/13) is not.
+pub const BOT_OPEN_REACH: i32 = 6;
+pub const BOT_OPEN_HEAD: i32 = 6;
+pub const BOT_OPEN_AIR_SHARE: f32 = 0.6;
+pub const BOT_OPEN_SKY_SHARE: f32 = 0.4;
+/// How stale the openness field may be after a carve, s: once a second, not once a swing.
+pub const BOT_OPEN_REFRESH_S: f32 = 1.0;
+/// Nodes the way-out-of-a-cave walk visits before it calls the body sealed in: 4096 is a
+/// box 64 cells (1024 px) square of air — four exploration cells — far past any cave's
+/// mouth the generator carves, and ~0.1 ms of reads, only when a target is chosen.
+pub const BOT_OPEN_SEARCH: u32 = 4096;
 /// T23.26E step 3 (replaces T23.26C item 6's hop on the spot — owner: *"bots jump nonstop
 /// now"*): one leg of a fighting bot's strafe, s — a walk of `WALK_SPEED × this` = 30 px,
 /// about two body widths: enough to step a straight round aimed at where it stood (a body

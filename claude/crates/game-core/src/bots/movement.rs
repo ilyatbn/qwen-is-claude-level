@@ -74,6 +74,15 @@ pub struct Movement {
     pub dig_swings: u32,
     /// Seconds enclosed by rock — [`enclosed`].
     pub in_rock_s: f32,
+    /// T23.26F (`docs/78` §A6): seconds **not in the open** — the body's node fails
+    /// `open::Openness::open` (a cave, a tunnel, a pocket), the volume rule the bots now
+    /// steer by; `in_rock_s` is the tighter five-point one.
+    pub closed_in_s: f32,
+    /// T23.26F: lives begun, lives that reached an engagement, and the seconds from each
+    /// such life's start to its first engaged tick, summed — **time to first engagement**.
+    pub lives: u32,
+    pub lives_engaged: u32,
+    pub to_engage_s: f32,
 }
 
 impl Movement {
@@ -122,6 +131,24 @@ impl Movement {
         self.jumps += o.jumps;
         self.dig_swings += o.dig_swings;
         self.in_rock_s += o.in_rock_s;
+        self.closed_in_s += o.closed_in_s;
+        self.lives += o.lives;
+        self.lives_engaged += o.lives_engaged;
+        self.to_engage_s += o.to_engage_s;
+    }
+
+    /// T23.26F: one line of the meeting table — mean seconds from a life's start to its
+    /// first engagement (over the lives that had one), the share of lives that never
+    /// engaged, and the share of time not in the open.
+    pub fn meet_row(&self) -> String {
+        format!(
+            "to-engage {:.1} s (lives {} , never engaged {:.0} %), closed-in {:.1} %",
+            self.to_engage_s / self.lives_engaged.max(1) as f32,
+            self.lives,
+            100.0 * (self.lives - self.lives_engaged.min(self.lives)) as f32
+                / self.lives.max(1) as f32,
+            100.0 * self.closed_in_s / self.alive_s.max(1e-6),
+        )
     }
 
     /// T23.26E: share of time digging — each dig swing is one `SHOVEL_COOLDOWN` spent.
@@ -223,6 +250,9 @@ struct Track {
     window_shower_s: f32,
     grounded: bool,
     health: f32,
+    /// T23.26F: seconds into this life, and whether it has engaged yet.
+    life_s: f32,
+    engaged_yet: bool,
     m: Movement,
 }
 
@@ -230,11 +260,15 @@ struct Track {
 #[derive(Debug, Default, Clone)]
 pub struct Watcher {
     tracks: Vec<Track>,
+    /// T23.26F: the openness field the bots steer by, refreshed the same way.
+    open: super::open::Openness,
 }
 
 impl Watcher {
     /// Read the world after a step of `dt`.
     pub fn observe(&mut self, world: &World, dt: f32) {
+        self.open.refresh(world);
+        let grid = super::nav::Grid::new(&world.map);
         let shower = world.effects.active().iter().any(|e| {
             e.kind == EffectKind::MeteorShower
                 && e.phase == crate::effects::scheduler::EffectPhase::Active
@@ -277,6 +311,8 @@ impl Watcher {
                         window_shower_s: 0.0,
                         grounded: p.body.grounded,
                         health: p.health,
+                        life_s: 0.0,
+                        engaged_yet: false,
                         m: Movement::default(),
                     });
                     self.tracks.len() - 1
@@ -305,6 +341,9 @@ impl Watcher {
                 t.window_from = pos;
                 t.window_s = 0.0;
                 t.ready_at = p.fire_ready_at;
+                t.life_s = 0.0;
+                t.engaged_yet = false;
+                t.m.lives += 1;
             }
             let step = (pos - t.last).len();
             let jumped = step > JUMP_PX;
@@ -355,6 +394,9 @@ impl Watcher {
             if enclosed(world, pos) {
                 t.m.in_rock_s += dt;
             }
+            if !self.open.open_at(&grid, pos) {
+                t.m.closed_in_s += dt;
+            }
             let held = p.inventory.selected_stack().map(|s| s.item);
             let band = held.and_then(super::arms::band);
             let enemies = || {
@@ -397,7 +439,13 @@ impl Watcher {
             }
             if engaged {
                 t.m.engaged_s += dt;
+                if !t.engaged_yet {
+                    t.engaged_yet = true;
+                    t.m.lives_engaged += 1;
+                    t.m.to_engage_s += t.life_s;
+                }
             }
+            t.life_s += dt;
             t.ready_at = p.fire_ready_at;
         }
         for (k, dmg, kill) in credit {
@@ -499,14 +547,20 @@ mod tests {
                 p.iframes_until = 0.0;
             }
             if roof {
-                // A roof a cell over the head and walls a cell either side: a dug pocket.
+                // A roof over the head and walls either side: a dug pocket — in rock
+                // `BOT_OPEN_REACH` + 1 cells wide either side and `BOT_OPEN_HEAD` + 1 deep
+                // (T23.26F), so the volume rule sees a cave and not a shell in the sky.
                 let (x, top) = (at.x as i32, (y - PLAYER_H) as i32);
-                for yy in (top - 16)..(top - 4) {
-                    w.map.mask.set_run(yy, x - 30, x + 30);
+                let (wide, deep) = (
+                    (crate::constants::BOT_OPEN_REACH + 1) * BOT_NAV_CELL as i32,
+                    (crate::constants::BOT_OPEN_HEAD + 1) * BOT_NAV_CELL as i32,
+                );
+                for yy in (top - deep)..(top - 4) {
+                    w.map.mask.set_run(yy, x - wide, x + wide);
                 }
                 for yy in (top - 4)..(y as i32 + 14) {
-                    w.map.mask.set_run(yy, x - 30, x - 14);
-                    w.map.mask.set_run(yy, x + 14, x + 30);
+                    w.map.mask.set_run(yy, x - wide, x - 14);
+                    w.map.mask.set_run(yy, x + 14, x + wide);
                 }
                 w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
             }
@@ -554,15 +608,29 @@ mod tests {
             fought.in_rock_s, 0.0,
             "the open shelf read as rock: {fought:?}"
         );
+        // T23.26F: one life, engaged from its first tick; the shelf is open ground.
+        assert!(
+            fought.lives == 1 && fought.lives_engaged == 1 && fought.to_engage_s < 2.0 * SIM_DT,
+            "a life engaged at once read as {fought:?}"
+        );
+        assert_eq!(fought.closed_in_s, 0.0, "the open shelf read as closed in");
         let (stood, ..) = run(false, false, false);
         assert!(
             stood.jumps == 0 && stood.engaged_s == 0.0 && stood.damage == 0.0,
             "control: a stand out of the band read as {stood:?}"
         );
+        assert!(
+            stood.lives == 1 && stood.lives_engaged == 0 && stood.to_engage_s == 0.0,
+            "control: a life never engaged read as {stood:?}"
+        );
         let (dug, ..) = run(false, false, true);
         assert!(
             dug.in_rock_s > 0.9 * dug.alive_s,
             "control: a body in a dug pocket read as {dug:?}"
+        );
+        assert!(
+            dug.closed_in_s > 0.9 * dug.alive_s,
+            "control: a body in a pocket in rock read as open: {dug:?}"
         );
     }
 }

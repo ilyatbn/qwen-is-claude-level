@@ -22,6 +22,7 @@ mod explore;
 mod fights;
 pub mod movement;
 mod nav;
+mod open;
 mod route;
 #[cfg(test)]
 mod scenarios;
