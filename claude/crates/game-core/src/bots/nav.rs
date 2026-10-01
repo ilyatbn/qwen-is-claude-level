@@ -119,9 +119,8 @@ pub(super) enum Want {
         r: i32,
         sight: Option<Vec2>,
     },
-    /// A standing node with `above` cells of rock over its head; with `hide`, one with
-    /// no clear line to that point as well (§A2's cover).
-    Cover { above: i32, hide: Option<Vec2> },
+    /// A standing node with no clear line to `from` (§A2's cover from an enemy).
+    Hide { from: Vec2 },
 }
 
 /// The live terrain as the planner sees it. Borrowed per call, never stored: the map
@@ -397,7 +396,7 @@ impl Search {
                 let (lo, hi) = (dx.min(dy), dx.max(dy));
                 (hi + (SQRT2 - 1.0) * lo) * cheapest_cell_s()
             }
-            Want::Cover { .. } => 0.0,
+            Want::Hide { .. } => 0.0,
         }
     }
 
@@ -514,17 +513,11 @@ pub(super) fn satisfies(grid: &Grid, want: Want, x: i32, y: i32) -> bool {
                 && (y - ty).abs() <= r
                 && sight.is_none_or(|p| grid.clear(Grid::centre(x, y), p))
         }
-        // Rock anywhere over the head counts, not only rock touching it: a meteor
-        // strikes the roof of a cave, however high its ceiling.
         // Ground under it, not `stands`: a dug pocket is still rock to the grid the
         // search reads (the dig is planned, not done), and a cover only reachable by
         // digging is exactly the one a bot with nothing near digs (measured: the foxhole
         // two cells down was never a goal, so a hurt bot found none).
-        Want::Cover { above, hide } => {
-            grid.solid(x, y + 1)
-                && (2..=y).filter(|k| grid.solid(x, y - k)).count() as i32 >= above
-                && hide.is_none_or(|p| !grid.clear(Grid::centre(x, y), p))
-        }
+        Want::Hide { from } => grid.solid(x, y + 1) && !grid.clear(Grid::centre(x, y), from),
     }
 }
 

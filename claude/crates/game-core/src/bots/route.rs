@@ -12,8 +12,8 @@
 
 use super::nav::{Grid, Move, Progress, Search, Step, Want};
 use crate::constants::{
-    GravityMode, BOT_COVER_ROWS, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF, BOT_NAV_CELL,
-    BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY,
+    GravityMode, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF, BOT_NAV_CELL, BOT_NAV_COST_MAX,
+    BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY,
     BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED, JETPACK_MAX_SPEED,
     JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
 };
@@ -89,37 +89,12 @@ pub(super) fn wander_target(at: Vec2) -> Target {
     }
 }
 
-/// Under `BOT_COVER_ROWS` of rock, standing — where a meteor shower is sat out.
-pub(super) fn cover_target(at: Vec2) -> Target {
-    Target {
-        want: Want::Cover {
-            above: BOT_COVER_ROWS,
-            hide: None,
-        },
-        at,
-    }
-}
-
 /// Out of `from`'s line of sight, standing — where a hurt bot breaks contact to (§A2).
 pub(super) fn hide_target(from: Vec2) -> Target {
     Target {
-        want: Want::Cover {
-            above: 0,
-            hide: Some(from),
-        },
+        want: Want::Hide { from },
         at: from,
     }
-}
-
-/// Is a meteor shower announced or falling? Its telegraph and its active phase both
-/// count: the telegraph is the warning, `EFFECT_TELEGRAPH` before the first drop, and
-/// the time to get under rock. Meteors fall across the whole width of a standard map
-/// (`meteor::spawn_band`), so every bot is within reach of one.
-pub(super) fn meteors_coming(world: &World) -> bool {
-    world.effects.active().iter().any(|e| {
-        e.kind == crate::weapons::explode::EffectKind::MeteorShower
-            && e.phase != crate::effects::scheduler::EffectPhase::Done
-    })
 }
 
 /// An enemy behind rock: a node within `hold` of it with a clear line to it — where the
@@ -228,13 +203,13 @@ impl Route {
             // Cover from an enemy has to be *near* (§A2: "digging in if none is near"):
             // a hurt bot under fire does not cross the map to hide.
             let bound = match target.want {
-                Want::Cover { hide: Some(_), .. } => BOT_HIDE_COST_MAX,
+                Want::Hide { .. } => BOT_HIDE_COST_MAX,
                 _ => BOT_NAV_COST_MAX,
             };
             let s = Search::new(&world.map, pos, fuel, target.want, BOT_NAV_NODES_MAX, bound);
             let mut s = s?;
             s.dig = can_dig;
-            if let Want::Cover { hide: Some(p), .. } = target.want {
+            if let Want::Hide { from: p } = target.want {
                 s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
             }
             self.search = Some((s, target));
@@ -265,10 +240,10 @@ impl Route {
             }
         }
         if !self.following() {
-            // In cover, and still? A hiding place the enemy has walked round, or a roof a
-            // meteor took, is not cover any more: plan again (`nav::satisfies`).
+            // In cover, and still? A hiding place the enemy has walked round is not cover
+            // any more: plan again (`nav::satisfies`).
             if let (Some(t), Some((x, y))) = (self.target, grid.locate(pos)) {
-                if matches!(t.want, Want::Cover { .. })
+                if matches!(t.want, Want::Hide { .. })
                     && !super::nav::satisfies(&grid, target.want, x, y)
                 {
                     self.clear();
@@ -484,9 +459,7 @@ fn same_target(a: &Target, b: &Target) -> bool {
         (Want::Near { r: ra, .. }, Want::Near { r: rb, .. }) => {
             ra == rb && (a.at - b.at).len() <= (ra.max(1) as f32) * BOT_NAV_CELL
         }
-        (Want::Cover { above: x, hide: h1 }, Want::Cover { above: y, hide: h2 }) => {
-            x == y && h1.is_some() == h2.is_some()
-        }
+        (Want::Hide { .. }, Want::Hide { .. }) => true,
         _ => false,
     }
 }

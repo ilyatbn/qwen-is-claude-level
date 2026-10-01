@@ -2985,6 +2985,7 @@ struct TerrainRound {
     /// T23.26C: deaths whose last damage was a meteor's, kills by a winged killer, and
     /// how the bots moved (`bots::movement`, the human-vs-bot table's columns).
     meteor_deaths: u32,
+    meteor_hits: u32,
     winged_kills: u32,
     moved: game_core::bots::movement::Movement,
 }
@@ -3011,6 +3012,9 @@ fn terrain_round(seed: u64) -> TerrainRound {
         for e in w.drain_events() {
             match e {
                 GameEvent::Damage { victim, effect, .. } => {
+                    r.meteor_hits += u32::from(
+                        effect == Some(game_core::weapons::explode::EffectKind::MeteorShower),
+                    );
                     last_hit.insert(victim, effect);
                 }
                 GameEvent::Death { cause, victim, .. } => {
@@ -3175,7 +3179,8 @@ fn bot_terrain_report() {
             .join(", ")
     );
     println!(
-        "  meteor deaths a round {:.2}, winged kills a round {:.2}",
+        "  meteor hits a round {:.1}, meteor deaths a round {:.2}, winged kills a round {:.2}",
+        sum(|r| r.meteor_hits) / n,
         sum(|r| r.meteor_deaths) / n,
         sum(|r| r.winged_kills) / n
     );

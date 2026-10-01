@@ -4121,12 +4121,22 @@ pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.
 pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
-/// Rows of rock a bot wants over its head to sit out a meteor shower (T23.26 C): a
-/// meteor's crater and a fragment's, and half a body — `METEOR_CARVE_R +
-/// METEOR_FRAG_CARVE_R + PLAYER_H / 2` (≈ 78 px), in whole cells (5).
-pub const BOT_COVER_ROWS: i32 =
-    ((METEOR_CARVE_R + METEOR_FRAG_CARVE_R + PLAYER_H * 0.5) as i32 + BOT_NAV_CELL as i32 - 1)
-        / BOT_NAV_CELL as i32;
+/// T23.26C (`docs/78` §A3, which struck T23.26 C's meteor cover): how far ahead a bot
+/// reads a meteor's fall, s. A meteor spawns 32 px over the map at `METEOR_SPEED` and
+/// gains `GRAVITY` a second, so it reaches the usual standing heights (300–800 px down)
+/// in 0.4–0.8 s: a second sees every meteor that will land on a bot this shower.
+pub const BOT_DODGE_HORIZON: f32 = 1.0;
+/// The seconds a bot takes to notice a falling meteor: `BOT_DODGE_LAG_MIN` at full
+/// skill (a person's simple visual reaction, ~0.15 s), plus `BOT_DODGE_LAG_SPAN` × (1 −
+/// skill) — 0.31 s at `BOT_SKILL_DEFAULT`. Walking clear of a crater takes up to
+/// `(METEOR_CARVE_R + PLAYER_H / 2 + BOT_DODGE_MARGIN) / WALK_SPEED` ≈ 0.53 s, so a meteor landing on a bot
+/// sooner than lag + that is not dodged: "not always succeeding" is a property of the
+/// numbers, not a dice roll.
+pub const BOT_DODGE_LAG_MIN: f32 = 0.15;
+pub const BOT_DODGE_LAG_SPAN: f32 = 0.4;
+/// How far past a meteor's blast radius plus half a body a dodging bot keeps going: a
+/// body's width (`bots::dodge::reach`).
+pub const BOT_DODGE_MARGIN: f32 = PLAYER_W;
 /// The dearest cover a hurt bot looks for, s (§A2: "digging in if none is near"): four
 /// dug cells — a foxhole two cells deep is two. Dearer than this, §E10's retreat stands.
 pub const BOT_HIDE_COST_MAX: f32 = 4.0 * BOT_NAV_DIG_S;

@@ -163,76 +163,179 @@ fn node_of(w: &World, id: PlayerId) -> Option<(i32, i32)> {
     super::nav::Grid::new(&w.map).locate(w.player(id)?.body.pos)
 }
 
-/// **D4: a meteor shower is sat out under rock.** Open ground, an overhang of
-/// `BOT_COVER_ROWS + 1` rows six cells off, the bot armed, an enemy on the open side; a
-/// shower is announced. By the end of the telegraph — before the first meteor can fall — the bot
-/// stands under at least `BOT_COVER_ROWS` of rock. Controls, each red where the
-/// behaviour is the reason: no shower (it does not go under the overhang); the route
-/// planted out (it cannot); a frenzied bot (it never takes cover, T99.01).
+/// **D4 (T23.26C, `docs/78` §A3): a meteor shower changes no goal.** T23.26 C's fixture —
+/// open ground, an overhang six cells off, the bot armed, an enemy on the open side — and
+/// a shower announced and falling: the bot keeps its enemy as its goal through the
+/// telegraph and the first seconds of the fall, and does not go under the overhang at the
+/// warning (T23.26 C had it there by the first drop).
+/// The presence half is the shots: a bot that froze would satisfy "never hid" too.
+/// (Planted red by hand: T23.26 C's `Goal::Cover` restored, the goal turns at the
+/// telegraph and the bot ends under the overhang — the journal has it.)
 #[test]
-fn a_meteor_shower_sends_a_bot_under_rock_before_the_first_impact() {
-    use crate::constants::{BOT_COVER_ROWS, EFFECT_TELEGRAPH};
+fn a_meteor_shower_changes_no_goal() {
+    use crate::constants::{EFFECT_TELEGRAPH, METEOR_CARVE_R};
     use crate::weapons::explode::EffectKind;
-    let run = |shower: bool, routes: bool, frenzy: bool| -> i32 {
-        let rows = BOT_COVER_ROWS + 1;
-        let (mut w, ox, oy) = block(MapScale::Small, 30, rows + 12);
-        let floor = oy + rows + 10;
-        // A room under an overhang `rows` thick on its right half; the left half open to
-        // the top of the map, so nothing over the bot's start is rock at all.
-        fill(&mut w, ox + 1, oy + rows + 1, ox + 28, floor - 1, false);
-        fill(&mut w, ox + 1, 0, ox + 14, oy + rows, false);
-        seal(&mut w);
-        w.set_phase(RoundPhase::Playing);
-        w.add_player(1, 0, "bot".into());
-        w.add_player(2, 0, "post".into());
+    let rows = (METEOR_CARVE_R / BOT_NAV_CELL).ceil() as i32 + 2;
+    let (mut w, ox, oy) = block(MapScale::Small, 30, rows + 12);
+    let floor = oy + rows + 10;
+    fill(&mut w, ox + 1, oy + rows + 1, ox + 28, floor - 1, false);
+    fill(&mut w, ox + 1, 0, ox + 14, oy + rows, false);
+    seal(&mut w);
+    w.set_phase(RoundPhase::Playing);
+    w.add_player(1, 0, "bot".into());
+    w.add_player(2, 0, "post".into());
+    let _ = w.drain_events();
+    let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+    for id in ids {
+        w.items.remove(id);
+    }
+    if let Some(p) = w.player_mut(1) {
+        p.body = crate::physics::body::Body::new(stand_at(ox + 8, floor - 1));
+    }
+    let post = stand_at(ox + 3, floor - 1);
+    // A full stack: an unarmed bot goes shopping (§E10), which is not the shower's doing.
+    give(&mut w, 1, PISTOL, crate::constants::PISTOL_AMMO);
+    let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+    w.force_effect(EffectKind::MeteorShower, 0.0);
+    let ticks = ((EFFECT_TELEGRAPH + 3.0) * SIM_HZ as f32) as u32;
+    let mut off_goal = 0;
+    let mut deepest = 0;
+    for t in 0..ticks {
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = post;
+            p.health = 100.0;
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.health = 100.0;
+        }
+        crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+        w.step(SIM_DT);
         let _ = w.drain_events();
+        off_goal += u32::from(bots[0].goal != Goal::Enemy(2));
+        // Under rock during the warning is hiding; once meteors fall, a sidestep may
+        // well end under the overhang, and that is a dodge (`dodge`), not a goal.
+        if (t as f32) * SIM_DT < EFFECT_TELEGRAPH {
+            deepest = deepest.max(node_of(&w, 1).map_or(0, |(x, y)| rock_overhead(&w, x, y)));
+        }
+    }
+    assert_eq!(
+        off_goal, 0,
+        "a shower took the bot off its enemy for {off_goal} of {ticks} ticks"
+    );
+    assert!(
+        deepest < rows,
+        "the bot went under the overhang ({deepest} rows of rock over it) at a shower's warning"
+    );
+    assert!(
+        bots[0].stats().fires > 0,
+        "presence: the bot never shot its enemy through the shower"
+    );
+}
+
+/// **D4b (T23.26C, §A3): a meteor coming down on a bot is stepped out from under — when
+/// there is time.** Open sky over a shelf, the bot holding at its enemy and shooting; a
+/// meteor dropped straight onto it from a height its fall takes the bot's noticing lag
+/// plus **twice** the walk out of the crater: no meteor damage. Controls on the same
+/// fixture: the dodge planted out (`without_dodge`) — hit; and a meteor dropped from a
+/// height that leaves a **quarter** of the walk after the lag — hit even with the dodge
+/// ("not always succeeding", §A3, a property of `BOT_DODGE_LAG_*` and the walk).
+#[test]
+fn a_bot_steps_out_from_under_a_meteor_it_has_time_to_see() {
+    use crate::constants::{GRAVITY, METEOR_CARVE_R, METEOR_SPEED, WALK_SPEED};
+    use crate::items::registry::WEAPON_METEOR;
+    use crate::weapons::explode::EffectKind;
+    let clear_s = super::dodge::reach(METEOR_CARVE_R) / WALK_SPEED;
+    let lag = super::dodge::lag(0.6);
+    // Meteor damage the bot took, dropped to land `fall` s later.
+    let hit = |fall: f32, dodge: bool| -> f32 {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
         let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
         for id in ids {
             w.items.remove(id);
         }
-        if let Some(p) = w.player_mut(1) {
-            p.body = crate::physics::body::Body::new(stand_at(ox + 8, floor - 1));
+        let y = flat_shelf(&mut w, at, 240);
+        // Open sky over the shelf: nothing between the meteor and the bot but air.
+        for row in 0..(y as i32 - PLAYER_H as i32) {
+            w.map
+                .mask
+                .clear_run(row, at.x as i32 - 240, at.x as i32 + 240);
         }
-        // An enemy on the open side: what the bot does when there is no shower (closes
-        // on it, in the open), and what it keeps shooting at from cover when there is.
-        let post = stand_at(ox + 3, floor - 1);
+        w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = Vec2::new(at.x, y);
+            // No spawn protection: a burst inside it deals nothing, dodged or not (the
+            // late control's first run read 0 for exactly that).
+            p.iframes_until = 0.0;
+        }
+        let enemy = Vec2::new(at.x + 60.0, y);
         give(&mut w, 1, PISTOL, 10);
-        let mut b = Bot::new(1, SEED, 0, 0.6).frenzied(frenzy);
-        if !routes {
-            b = b.without_routes();
+        wield(&mut w, 1, PISTOL);
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !dodge {
+            b = b.without_dodge();
         }
         let mut bots = vec![b];
-        if shower {
-            w.force_effect(EffectKind::MeteorShower, 0.0);
-        }
-        for t in 0..((EFFECT_TELEGRAPH * SIM_HZ as f32) as u32) {
+        // Settle: let it reach its stand and start shooting before anything falls.
+        let settle = SIM_HZ;
+        let mut taken = 0.0;
+        let mut burst_tick: Option<u32> = None;
+        for t in 0..(settle + 3 * SIM_HZ) {
+            let now = t as f32 * SIM_DT;
             if let Some(p) = w.player_mut(2) {
-                p.body.pos = post;
+                p.body.pos = enemy;
                 p.health = 100.0;
             }
-            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            if t == settle {
+                let me = w.player(1).expect("bot").body.pos;
+                let drop = METEOR_SPEED * fall + 0.5 * GRAVITY * fall * fall;
+                w.projectiles.spawn_raw(
+                    WEAPON_METEOR,
+                    u8::MAX,
+                    Vec2::new(me.x, me.y - drop),
+                    Vec2::new(0.0, METEOR_SPEED),
+                    now,
+                );
+            }
+            crate::bots::drive(&mut w, &mut bots, now, SIM_DT);
+            let meteor_flying = w.projectiles.iter().any(|p| p.weapon == WEAPON_METEOR);
             w.step(SIM_DT);
-            let _ = w.drain_events();
+            if meteor_flying && !w.projectiles.iter().any(|p| p.weapon == WEAPON_METEOR) {
+                burst_tick.get_or_insert(t);
+            }
+            for e in w.drain_events() {
+                if let crate::world::GameEvent::Damage {
+                    victim: 1,
+                    amount,
+                    effect: Some(EffectKind::MeteorShower),
+                    ..
+                } = e
+                {
+                    // The meteor's own burst: fragments fly on after it and are a second
+                    // threat this test is not about.
+                    if burst_tick.is_none_or(|b| b == t) {
+                        burst_tick = Some(t);
+                        taken += amount;
+                    }
+                }
+            }
         }
-        node_of(&w, 1).map_or(0, |(x, y)| rock_overhead(&w, x, y))
+        taken
     };
-    let covered = run(true, true, false);
-    assert!(
-        covered >= BOT_COVER_ROWS,
-        "a bot told of a meteor shower stood under {covered} rows of rock at the first drop \
-         (wants {BOT_COVER_ROWS})"
+    let in_time = lag + 2.0 * clear_s;
+    let late = lag + 0.25 * clear_s;
+    let dodged = hit(in_time, true);
+    assert_eq!(
+        dodged, 0.0,
+        "a bot with {in_time:.2} s to see and clear a meteor took {dodged} from it"
     );
     assert!(
-        run(false, true, false) < BOT_COVER_ROWS,
-        "control: with no shower it took cover anyway"
+        hit(in_time, false) > 0.0,
+        "control: with the dodge planted out the meteor missed anyway — the fixture"
     );
     assert!(
-        run(true, false, false) < BOT_COVER_ROWS,
-        "control: the greedy model took cover"
-    );
-    assert!(
-        run(true, true, true) < BOT_COVER_ROWS,
-        "control: a frenzied bot took cover"
+        hit(late, true) > 0.0,
+        "control: a meteor landing {late:.2} s after release was dodged — the lag is not real"
     );
 }
 

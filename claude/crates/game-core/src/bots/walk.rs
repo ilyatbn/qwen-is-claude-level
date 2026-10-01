@@ -77,12 +77,10 @@ impl Bot {
         let wing_space =
             winged && world.gravity == GravityMode::Space && me.mount.mounted.is_none();
         // T23.26 C: **in cover, keep still** — out of the enemy's sight (the route got it
-        // there), or sitting out a shower. The goal's point is the enemy, and walking or
-        // hopping toward it (`rise` alone jumped a bot out of its foxhole) would only
-        // show it again.
-        let hidden = matches!(self.goal, Goal::Cover(_))
-            || (matches!(self.goal, Goal::Flee(_))
-                && self.route.finished(&super::route::hide_target(aim_at)));
+        // there). The goal's point is the enemy, and walking or hopping toward it (`rise`
+        // alone jumped a bot out of its foxhole) would only show it again.
+        let hidden = matches!(self.goal, Goal::Flee(_))
+            && self.route.finished(&super::route::hide_target(aim_at));
         let move_to = if hidden {
             pos
         } else if wing_space && !matches!(self.goal, Goal::Flee(_)) {
@@ -319,8 +317,6 @@ impl Bot {
             Goal::Item(_) => PICKUP_RADIUS * 0.5,
             Goal::Enemy(_) => self.hold_off(world),
             Goal::Wander | Goal::Flee(_) => self.stand_off(world),
-            // In cover (or on the way, between route steps): never toward the threat.
-            Goal::Cover(_) => f32::INFINITY,
         }
     }
 }

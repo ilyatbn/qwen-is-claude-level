@@ -16,6 +16,7 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 mod arms;
+mod dodge;
 mod explore;
 pub mod movement;
 mod nav;
@@ -66,9 +67,6 @@ enum Goal {
     Flee(PlayerId),
     Item(u32),
     Wander,
-    /// T23.26 C (§A2): under rock until a meteor shower is over, still facing — and
-    /// shooting at — the nearest enemy in sight, if there is one.
-    Cover(Option<PlayerId>),
 }
 
 /// Why a bot did not pull the trigger this tick.
@@ -139,8 +137,8 @@ pub struct BotStats {
     pub dig_swings: u32,
     /// T23.26: swings at a lip a route step stuck on (the follower's stuck response).
     pub lip_swings: u32,
-    /// T23.26 C: ticks with the meteor-cover goal.
-    pub ticks_cover: u32,
+    /// T23.26C (§A3): ticks a bot stepped sideways out from under a falling meteor.
+    pub ticks_dodging: u32,
     /// T23.26C item 2: ticks alive spent **still** — a whole `BOT_STUCK_WINDOW` in which
     /// the body moved under `BOT_STUCK_PX`, in 2D, whatever was pressed — by what the bot
     /// was doing when the window closed ([`STILL_CAUSES`] names the slots). Every bot
@@ -149,8 +147,8 @@ pub struct BotStats {
 }
 
 /// What a still bot was doing — `BotStats::ticks_still`'s slots, in order.
-pub const STILL_CAUSES: [&str; 8] = [
-    "fighting", "cover", "hiding", "digging", "resting", "winged", "routed", "greedy",
+pub const STILL_CAUSES: [&str; 7] = [
+    "fighting", "hiding", "digging", "resting", "winged", "routed", "greedy",
 ];
 
 /// What one bot did on one [`drive`] tick — what a measuring caller needs and the
@@ -224,6 +222,8 @@ pub struct Bot {
     believed: Option<Vec2>,
     reaction: f32,
     aim_error: f32,
+    /// T23.26C: seconds before a falling meteor is noticed (`dodge::lag`).
+    dodge_lag: f32,
     goal: Goal,
     wander_to: Option<Vec2>,
     /// Where this bot has been (§E10). Built on the first `think`, because the
@@ -262,6 +262,8 @@ pub struct Bot {
     /// Tests only: the route planted out, so a scenario's control is the greedy walking
     /// model alone (`without_routes`). Never set in a round.
     routes_off: bool,
+    /// Tests only: the meteor dodge planted out (`without_dodge`).
+    dodge_off: bool,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -280,6 +282,7 @@ impl Bot {
             believed: None,
             reaction: (1.0 - skill) * 0.4,
             aim_error: (1.0 - skill) * 0.35,
+            dodge_lag: dodge::lag(skill),
             goal: Goal::Wander,
             wander_to: None,
             coverage: None,
@@ -297,6 +300,7 @@ impl Bot {
             still_from: Vec2::ZERO,
             route: route::Route::default(),
             routes_off: false,
+            dodge_off: false,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -307,6 +311,13 @@ impl Bot {
     /// real round's default.
     pub fn frenzied(mut self, on: bool) -> Self {
         self.frenzy = on;
+        self
+    }
+
+    /// T23.26C: the same bot with its meteor dodge planted out — the dodge test's control.
+    #[cfg(test)]
+    pub(crate) fn without_dodge(mut self) -> Self {
+        self.dodge_off = true;
         self
     }
 
@@ -361,7 +372,6 @@ impl Bot {
         if matches!(self.goal, Goal::Enemy(_)) {
             self.stats.ticks_engaged += 1;
         }
-        self.stats.ticks_cover += u32::from(matches!(self.goal, Goal::Cover(_)));
         if self.selected_weapon(world).is_some() {
             self.stats.ticks_armed += 1;
         }
@@ -416,6 +426,20 @@ impl Bot {
         // let go (traced: one hovered at 0 px/s with 2.5 s of fuel, released, and fell).
         // The sideways buttons are left to the route or the greedy step — the planner
         // routes out of the void from inside it.
+        // T23.26C (§A3): **a meteor coming down on the bot is stepped out from under**,
+        // whatever the goal — sideways, away from where it bursts — and the route resumes
+        // after. Not in space (its meteors fly at open points, and `space::steer` drives),
+        // and not on a mount (the platform is the body).
+        if world.gravity != GravityMode::Space && me.mount.mounted.is_none() && !self.dodge_off {
+            if let Some((at, reach)) = dodge::incoming(world, me, self.dodge_lag, now) {
+                if let Some(side) = dodge::away(world, pos, at, reach) {
+                    buttons &= !(button::LEFT | button::RIGHT);
+                    buttons |= side;
+                    self.stats.ticks_dodging += 1;
+                }
+            }
+        }
+
         if !me.body.grounded
             && me.jetpack.fuel >= crate::constants::JETPACK_MIN_FUEL_TO_ENGAGE
             && route::navigates(world, me)
@@ -468,7 +492,7 @@ impl Bot {
         // under the threshold. Bots are airborne most of the time, so for most of
         // their lives they could not shoot at all.
         let mut fighting = false;
-        if let Goal::Enemy(_) | Goal::Cover(Some(_)) = self.goal {
+        if let Goal::Enemy(_) = self.goal {
             if dig_at.is_none() && self.should_fire(world, me, pos, aim_at, now) {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
@@ -496,20 +520,18 @@ impl Bot {
         self.count_pressing_still(pos, buttons, dt);
         let cause = if fighting || (matches!(self.goal, Goal::Enemy(_)) && nav.is_none()) {
             0
-        } else if matches!(self.goal, Goal::Cover(_)) {
-            1
         } else if matches!(self.goal, Goal::Flee(_)) {
-            2
+            1
         } else if nav.is_some_and(|n| n.how == nav::Move::Dig || n.unstick) {
-            3
+            2
         } else if nav.is_some_and(|n| n.how == nav::Move::Rest) {
-            4
+            3
         } else if me.move_mods().flying {
-            5
+            4
         } else if nav.is_some() {
-            6
+            5
         } else {
-            7
+            6
         };
         self.count_still(pos, cause, dt);
 
@@ -544,10 +566,9 @@ impl Bot {
             Goal::Enemy(_) if !nav::Grid::new(&world.map).clear(pos, aim_at) => {
                 route::enemy_target(aim_at, self.hold_off(world))
             }
-            // T23.26 C: a meteor shower is sat out under rock; a hurt bot breaks contact
-            // to somewhere out of its enemy's sight (digging in if nothing is near), and
-            // §E10's retreat stands where no such place is reachable (`refused`).
-            Goal::Cover(_) => route::cover_target(pos),
+            // T23.26 C: a hurt bot breaks contact to somewhere out of its enemy's sight
+            // (digging in if nothing is near), and §E10's retreat stands where no such
+            // place is reachable (`refused`).
             Goal::Flee(_) => route::hide_target(aim_at),
             Goal::Enemy(_) => {
                 self.route.clear();
@@ -653,11 +674,6 @@ impl Bot {
                 at: aim_at,
                 stop: BOT_WANDER_ARRIVED,
             },
-            // Never chosen where bots fly (`choose_goal` asks `route::navigates`); hold.
-            Goal::Cover(_) => space::Dest {
-                at: pos,
-                stop: BOT_WANDER_ARRIVED,
-            },
         };
         let fire = self
             .hazard_at(world, pos, BOT_HAZARD_CLEARANCE)
@@ -706,13 +722,6 @@ impl Bot {
                 ));
             }
         }
-
-        // The nearest enemy in sight, whatever the goal becomes: a bot in cover still
-        // faces it and shoots it.
-        let threat = best.and_then(|(_, g)| match g {
-            Goal::Enemy(id) | Goal::Flee(id) => Some(id),
-            _ => None,
-        });
 
         // Unarmed, or nothing in sight: go shopping. **Any** firable slot counts,
         // not just the one in hand — see `has_firable_weapon`.
@@ -816,17 +825,9 @@ impl Bot {
             Some((_, g)) => g,
             None => Goal::Wander,
         };
-        // T23.26 C (§A2): **a meteor shower beats every errand** — announced or falling,
-        // a bot gets under rock and stays there until it is over. Frenzied bots never
-        // take cover (T99.01), and a shower no route to cover was found for is fought
-        // through (`refused`).
-        if !self.frenzy
-            && routes
-            && route::meteors_coming(world)
-            && !self.route.refused(&route::cover_target(pos), now)
-        {
-            self.goal = Goal::Cover(threat);
-        }
+        // T23.26C (`docs/78` §A3): **a meteor shower changes no goal.** T23.26 C sent
+        // every bot under rock for the whole shower and the owner watched them stand in
+        // holes "constantly digging"; the meteors are dodged on the move (`dodge`).
 
         if self.goal == Goal::Wander {
             self.wander_for += dt;
@@ -900,9 +901,6 @@ impl Bot {
             }
             Goal::Item(id) => world.items.iter().find(|i| i.id == id).map(|i| i.pos),
             Goal::Wander => self.wander_to.or(Some(pos)),
-            Goal::Cover(threat) => threat
-                .and_then(|id| world.player(id).filter(|p| p.alive).map(|p| p.body.pos))
-                .or(Some(pos)),
         }
     }
 
@@ -1595,7 +1593,7 @@ pub(crate) mod harness {
             ticks_routed: a.ticks_routed + b.ticks_routed,
             dig_swings: a.dig_swings + b.dig_swings,
             lip_swings: a.lip_swings + b.lip_swings,
-            ticks_cover: a.ticks_cover + b.ticks_cover,
+            ticks_dodging: a.ticks_dodging + b.ticks_dodging,
             ticks_still: std::array::from_fn(|i| a.ticks_still[i] + b.ticks_still[i]),
         }
     }
