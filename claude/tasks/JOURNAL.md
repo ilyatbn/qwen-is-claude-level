@@ -7678,3 +7678,6 @@ Client: `?game=1&spectate=1`; one viewpoint (`viewer()`/`viewAt`) for camera, se
 Check `spectate` (no body both ends, camera on A → Tab → B 768 px → Shift+Tab back, ana's Tab = scoreboard control). `make watch` (6 bots, headed D3D12 Chrome): two restarts seen; shots/t2327-watch-gpu-{a,b,ended}.png.
 Done-when: cargo 348/0; e2e spectate 1/1. full-round (opt-in) red on baseline 2/3 — self-kill runs out of rockets; not this change.
 check.sh --changed HEAD~2 (98 e2e): 96/98 — effect-lights (bazooka decay leg: light gone in 40 ms under load) and look-match (fog top-rows control; also red in T23.19G's batch) red in batch, both green alone (`gate-builder2-t2327.txt`).
+
+## T23.26 step 0 — the baseline (builder3, 2026-10-01)
+Full balance `--ignored` (11/11, 139.9 s, release) + kill_chain at `beea579`; the numbers nav can move are in the task file's As-built table. New `bot_terrain_report` (balance.rs, `ignored.sh` row): 5 bots Medium, bots' half 1.0 µs mean / 1.6 p99, whole tick 4.1 / 7.0 µs, load control and alive-at-end (40/40) printed. Log: `gate-builder3-baseline-balance.txt`. No gate for this commit alone: it is test-only, and step 1's `--changed HEAD~2` covers it.

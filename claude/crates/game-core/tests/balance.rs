@@ -3018,3 +3018,113 @@ fn asteroid_rock_report() {
     }
     assert!(failed.is_empty(), "asteroid rock: {}", failed.join("; "));
 }
+
+// --- T23.26: bots that read the terrain ------------------------------------
+
+/// The pure-arithmetic load control `capacity.rs` uses (§A38): if it moves between the
+/// start and the end of a run, the tick costs beside it are about the box.
+fn load_control_ms() -> f64 {
+    let t = std::time::Instant::now();
+    let mut acc = 0u64;
+    for i in 0..20_000_000u64 {
+        acc = acc.wrapping_add(i ^ (acc >> 7)).wrapping_mul(2_654_435_761);
+    }
+    std::hint::black_box(acc);
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// **T23.26 — what driving `BOT_COUNT_DEFAULT` bots costs a server tick**, and what the
+/// bots spend: µs per tick of the bots' half (think + commands) and of the whole tick
+/// (that + `World::step`), mean and p99, over [`SEEDS`] at `DEFAULT_MAP_SCALE`, 10 s
+/// warm and 20 s timed each. The planner's work is a node **count** per tick, so this
+/// is the only place its wall-clock cost is seen. Prints; asserts only the control.
+///
+/// `cargo test -p game-core --release --test balance bot_terrain_report -- --ignored --nocapture`
+#[test]
+#[ignore = "report: T23.26's before/after, ~1 min in release"]
+fn bot_terrain_report() {
+    let before = load_control_ms();
+    let (mut bots_us, mut tick_us) = (Vec::new(), Vec::new());
+    // The control that these are bots playing, not bodies lying dead: alive at the end.
+    let mut alive = 0usize;
+    for &seed in &SEEDS {
+        let mut w = World::new(seed, DEFAULT_MAP_SCALE);
+        w.set_phase(RoundPhase::Playing);
+        let mut bots: Vec<_> = (0..BOT_COUNT_DEFAULT)
+            .map(|i| {
+                w.add_player(i as u8, 0, format!("Bot {i}"));
+                Bot::new(i as u8, seed, i as u32, SKILL)
+            })
+            .collect();
+        let _ = w.drain_events();
+        let (warm, timed) = ((10.0 / SIM_DT) as u32, (20.0 / SIM_DT) as u32);
+        for t in 0..(warm + timed) {
+            let now = w.round_time;
+            let t0 = std::time::Instant::now();
+            // As `room.rs::drive_bots` does it: every bot thinks on the same world,
+            // then the commands are applied.
+            let mut fires = Vec::new();
+            let mut cmds = Vec::new();
+            for b in bots.iter_mut() {
+                let inp = b.think(&w, now, SIM_DT);
+                if inp.buttons & button::FIRE != 0 {
+                    fires.push(b.player);
+                }
+                cmds.push((b.player, inp, b.wants_select(), b.wants_use()));
+            }
+            for (id, inp, _, _) in &cmds {
+                w.queue_input(*id, *inp);
+            }
+            for (id, _, sel, _) in &cmds {
+                if let Some(s) = sel {
+                    w.select_slot(*id, *s);
+                }
+            }
+            for (id, _, _, us) in &cmds {
+                if let Some(s) = us {
+                    let _ = w.use_item(*id, *s, now);
+                }
+            }
+            for id in fires {
+                let _ = w.fire(id, now);
+            }
+            let t1 = std::time::Instant::now();
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            if t == warm + timed - 1 {
+                alive += w.players.iter().filter(|p| p.alive).count();
+            }
+            if t >= warm {
+                bots_us.push((t1 - t0).as_secs_f64() * 1e6);
+                tick_us.push(t0.elapsed().as_secs_f64() * 1e6);
+            }
+        }
+    }
+    let after = load_control_ms();
+    let stat = |v: &mut Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mean = v.iter().sum::<f64>() / v.len().max(1) as f64;
+        let p99 = v[((v.len() as f64 - 1.0) * 0.99).round() as usize];
+        (mean, p99, *v.last().unwrap_or(&0.0))
+    };
+    let (bm, bp, bx) = stat(&mut bots_us);
+    let (tm, tp, tx) = stat(&mut tick_us);
+    println!(
+        "\n== BOT TICK COST — {BOT_COUNT_DEFAULT} bots, {DEFAULT_MAP_SCALE:?}, {} seeds × 20 s ({}) ==",
+        SEEDS.len(),
+        if cfg!(debug_assertions) { "debug" } else { "release" }
+    );
+    println!("  bots (think + commands): mean {bm:.1} µs  p99 {bp:.1}  max {bx:.1}");
+    println!("  whole tick             : mean {tm:.1} µs  p99 {tp:.1}  max {tx:.1}");
+    println!(
+        "  alive at the end: {alive} of {}",
+        BOT_COUNT_DEFAULT * SEEDS.len()
+    );
+    let drift = (after - before).abs() / before.max(1.0);
+    println!("  load control {before:.0} → {after:.0} ms ({:.1} % drift)", drift * 100.0);
+    assert!(
+        drift < 0.25,
+        "the box's load moved {:.0} % during the run; these numbers are about the box",
+        drift * 100.0
+    );
+}
