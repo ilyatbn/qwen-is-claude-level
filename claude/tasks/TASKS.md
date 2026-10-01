@@ -871,6 +871,7 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.26B](M23/T23.26B-re-derive-the-bot-guards.md) — Re-derive the balance guards smarter bots broke; route winged/space bots; split nav.rs; the owner's watch notes
 - [ ] [T23.26C](M23/T23.26C-bots-keep-moving.md) — Bots keep moving: dodge meteors (no hiding), winged bots hunt, the jetpack is a tank (wait, re-route, give up, use a gate); learn from the owner's recorded play
 - [ ] [T23.26D](M23/T23.26D-bots-use-every-weapon.md) — Bots use every weapon at its range, aim arcs for grenades/rockets; the shovel is the last resort (owner)
+- [ ] [T23.26E](M23/T23.26E-bots-fight-on-open-ground.md) — **Regression:** bots hop nonstop and dig instead of fighting — fighting first, open ground, no hopping in place, use pads; measured against the owner's play
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [ ] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
