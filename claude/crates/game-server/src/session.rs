@@ -723,12 +723,6 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
             // `set_setting`, for the reason stated above the three: the parse
             // belongs here, at the boundary, where an unknown value can still be
             // refused with a reason a player can read.
-            // ------------------------------------------------ map shape (T23.30)
-            //
-            // A fourth handler in the §F7 shape rather than a generic
-            // `set_setting`, for the reason stated above the three: the parse
-            // belongs here, at the boundary, where an unknown value can still be
-            // refused with a reason a player can read.
             {
                 let ctx = ctx.clone();
                 socket.on(
@@ -760,6 +754,50 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                                 return;
                             };
                             if let Err(reason) = room.set_gravity(id, gravity).await {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": reason }),
+                                );
+                            }
+                        }
+                    },
+                );
+            }
+            // ------------------------------------------------ map shape (T23.30)
+            //
+            // `set_gravity`'s handler for the lobby's map shape, on the same terms.
+            {
+                let ctx = ctx.clone();
+                socket.on(
+                    "set_map_shape",
+                    move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let Some(id) = sessions.player_of(socket.id) else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "not seated" }),
+                                );
+                                return;
+                            };
+                            let Some(shape) = payload
+                                .get("map_shape")
+                                .and_then(|v| v.as_str())
+                                .and_then(game_core::constants::MapShape::parse)
+                            else {
+                                emit(
+                                    &socket,
+                                    "lobby_error",
+                                    &serde_json::json!({ "reason": "unknown map shape" }),
+                                );
+                                return;
+                            };
+                            if let Err(reason) = room.set_map_shape(id, shape).await {
                                 emit(
                                     &socket,
                                     "lobby_error",

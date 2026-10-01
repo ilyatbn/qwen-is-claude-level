@@ -158,7 +158,8 @@ const boPanel = await settings(bo)
 // because the list is what the assertions below iterate: a row left out of it
 // is a row the guest gate, the host control and the "every seat sees it" half
 // all skip in silence.
-const IDS = ['scale', 'gravity', 'bots', 'kit', 'timer']
+// T23.30 adds `shape` (hidden only in space; this lobby starts at Standard).
+const IDS = ['scale', 'gravity', 'shape', 'bots', 'kit', 'timer']
 const missing = IDS.filter((id) => !anaPanel[id])
 if (missing.length) fail(`the host's panel is missing rows: ${JSON.stringify(missing)}`)
 else ok(`the host sees all ${IDS.length} settings on screen: ${JSON.stringify(anaPanel)}`)
@@ -179,7 +180,7 @@ if (hostLocked.length) {
 } else ok("control: the host's controls are enabled, so the guest's are locked by seat")
 
 // --- the host changes every steppable setting, and the guest sees it -----
-const MOVED = ['scale', 'bots', 'kit', 'timer', 'gravity']
+const MOVED = ['scale', 'shape', 'bots', 'kit', 'timer', 'gravity']
 const beforeMoved = Object.fromEntries(MOVED.map((id) => [id, anaPanel[id].value]))
 for (const id of MOVED) {
   await ana.page.evaluate((i) => window.__menu.step(i, 1), id)
