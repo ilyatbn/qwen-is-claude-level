@@ -12,17 +12,18 @@
 //! See `docs/10-map-generation.md` §Pass 7b, 7c.
 
 use crate::constants::{
-    GRAVITY, JETPACK_CLIMB_BUDGET, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JUMP_VELOCITY,
-    MIN_TRAVERSABLE_FRACTION, SPAWN_COUNT_MIN, SPAWN_MIN_SEPARATION, STEP_UP, SURFACE_SAMPLE_STEP,
-    WALK_SPEED,
+    GRAVITY, JETPACK_CLIMB_BUDGET, JUMP_VELOCITY, MIN_TRAVERSABLE_FRACTION, SPAWN_COUNT_MIN,
+    SPAWN_MIN_SEPARATION, STEP_UP, SURFACE_SAMPLE_STEP, WALK_SPEED,
 };
 use crate::map::gen::objects::{self, PlacedObject};
 use crate::map::Mask;
 use crate::math::Point;
 
 /// Conservative jetpack reach: full speed for the whole tank, times 0.6 slack for
-/// the fact that flight is not a straight line.
-pub const JETPACK_RANGE: f32 = JETPACK_MAX_SPEED * JETPACK_MAX_FUEL * 0.6;
+/// the fact that flight is not a straight line. **The same number as
+/// `JETPACK_CLIMB_BUDGET`, and now the same constant** (T23.26): it was the formula
+/// written twice, and two copies of one rule drift.
+pub const JETPACK_RANGE: f32 = JETPACK_CLIMB_BUDGET;
 
 /// Peak of a jump: `v² / 2g` ≈ 66 px.
 pub const JUMP_HEIGHT: f32 = JUMP_VELOCITY * JUMP_VELOCITY / (2.0 * GRAVITY);

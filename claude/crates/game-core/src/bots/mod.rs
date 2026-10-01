@@ -17,6 +17,10 @@ use rand_chacha::ChaCha8Rng;
 
 mod arms;
 mod explore;
+// T23.26 step 2: the planner lands first, with its own tests; step 4's follower is
+// its production caller, and this allow goes with that commit.
+#[allow(dead_code)]
+mod nav;
 mod space;
 mod walk;
 

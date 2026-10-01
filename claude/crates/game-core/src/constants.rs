@@ -4091,6 +4091,43 @@ pub const BOT_WINGED_SWEEP_LEGS: u32 = 4;
 pub const BOT_WANDER_GIVE_UP: f32 = 6.0;
 /// Near enough a wander target to count as there, px — a quarter cell.
 pub const BOT_WANDER_ARRIVED: f32 = BOT_EXPLORE_CELL as f32 / 4.0;
+
+// --- T23.26 (`docs/78` §A2): the route planner (`bots/nav.rs`) and its follower ---
+
+/// The planner's cell, px: a body's width. A node is two cells (32 px), which holds a
+/// body (`PLAYER_H`, 28) and is exactly the shovel's bore (`2 × SHOVEL_CARVE`), so one
+/// swing opens one node.
+pub const BOT_NAV_CELL: f32 = PLAYER_W;
+/// Rock pixels a nav cell may hold and still count as air: three rows. A swing from a
+/// standing body leaves one row of the head cell (its bore is centred a pixel below the
+/// node's middle), and a node is 4 px taller than a body, so two rows at either end
+/// never touch it; the third is a ridge under `STEP_UP`.
+pub const BOT_NAV_AIR_PX: u32 = 3 * PLAYER_W as u32;
+/// Rows a hop climbs: the jump's apex (`v² / 2g`, ≈ 66 px) less a `STEP_UP` of margin,
+/// in whole cells — 3. One more is a jet. Without the hop every kerb cost a jet.
+pub const BOT_NAV_HOP_ROWS: i32 =
+    ((JUMP_VELOCITY * JUMP_VELOCITY / (2.0 * GRAVITY) - STEP_UP as f32) / BOT_NAV_CELL) as i32;
+/// Seconds to dig one cell: a swing clears about `SHOVEL_REACH` (20 px) of depth through
+/// a 32 px bore every `SHOVEL_COOLDOWN` — ≈ 36 px/s against a 150 px/s walk — so a cell
+/// costs ≈ 0.44 s, about four walked cells. That ratio is what decides "dig through or
+/// go round" (`nav::successors`).
+pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
+/// The search keys the tank in steps of this, s — a twentieth of it.
+pub const BOT_NAV_FUEL_STEP: f32 = JETPACK_MAX_FUEL / 20.0;
+/// Nodes one bot's search may expand per tick. A **count**, never a clock: the server
+/// re-runs bots on replay, and a clock would make it think differently.
+pub const BOT_NAV_NODES_PER_TICK: u32 = 300;
+/// Nodes one search may expand before it answers "no route" — twenty ticks of budget.
+pub const BOT_NAV_NODES_MAX: u32 = 20 * BOT_NAV_NODES_PER_TICK;
+/// The dearest route the planner returns, s. An item or an enemy behind rock is a target
+/// when a route to it — digging included — costs less than this (§A2). About the walk
+/// across a Medium map (3072 px at 150 px/s).
+pub const BOT_NAV_COST_MAX: f32 = 20.0;
+/// After "no route", the same target is not asked about again for this long, s.
+pub const BOT_NAV_RETRY: f32 = 3.0;
+/// A step may take twice its price plus this before the route is planned again, s: two
+/// swings, so a dig that needed a second swing is not a failed plan.
+pub const BOT_NAV_STEP_SLACK: f32 = 2.0 * SHOVEL_COOLDOWN;
 /// A bot's stand-off from its enemy is this many times its weapon's hazard reach (a zone's
 /// reach, else the blast radius) — outside its own blast either way (`Bot::stand_off`).
 pub const BOT_STAND_OFF_SCALE: f32 = 2.0;
