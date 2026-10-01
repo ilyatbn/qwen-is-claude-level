@@ -116,6 +116,18 @@ pub struct BotStats {
     /// not a bot holding at a keep-out's edge, which is where it is meant to be.
     pub ticks_dest_forbidden: u32,
     pub ticks_dest_forbidden_idle: u32,
+    /// T23.26: ticks spent pressing LEFT or RIGHT without moving sideways — counted a
+    /// whole `BOT_STUCK_WINDOW` at a time, when the body ended the window within
+    /// `BOT_STUCK_PX` (in x) of where it began it. **Not** the walking model's per-tick stuck test (`still_for`):
+    /// a walk is 2.5 px a tick, under `BOT_STUCK_PX`, so that test fires on every walking
+    /// second and a counter built on it would score walking as stuck.
+    pub ticks_pressing_still: u32,
+    /// T23.26: times the walking model's stuck hop fired — the last resort under a route.
+    pub stuck_hops: u32,
+    /// T23.26: wander targets reached, and given up on (`BOT_WANDER_GIVE_UP`, a barred
+    /// cell, or a route refused) — the goal reach rate's two ends.
+    pub wander_arrived: u32,
+    pub wander_gave_up: u32,
 }
 
 /// What one bot did on one [`drive`] tick — what a measuring caller needs and the
@@ -215,6 +227,10 @@ pub struct Bot {
     flight: space::Flight,
     want_use: Option<u8>,
     want_select: Option<u8>,
+    /// T23.26's stuck counter: seconds into the current pressing window, and where the
+    /// body was when it opened (`count_pressing_still`).
+    press_window: f32,
+    press_from: Vec2,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -244,6 +260,8 @@ impl Bot {
             flight: space::Flight::default(),
             want_use: None,
             want_select: None,
+            press_window: 0.0,
+            press_from: Vec2::ZERO,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -289,6 +307,7 @@ impl Bot {
             self.believed = None;
             self.want_use = None;
             self.want_select = None;
+            self.press_window = 0.0;
             return Input::default();
         }
         let pos = me.body.pos;
@@ -356,11 +375,36 @@ impl Bot {
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(me);
         self.want_select = self.choose_weapon(world, me, aim_at, pos);
+        self.count_pressing_still(pos, buttons, dt);
 
         Input {
             seq: 0, // the room owns sequencing; a bot has no packets to order
             buttons,
             aim,
+        }
+    }
+
+    /// T23.26: the population's stuck measure. A window opens on the first tick a
+    /// sideways button is held and closes `BOT_STUCK_WINDOW` later; if the body is then
+    /// within `BOT_STUCK_PX` of where the window opened **along x**, every tick of it
+    /// counts — so a bot rising up a face it presses into counts too. Letting
+    /// go closes it uncounted. A report, read by nothing that steers.
+    fn count_pressing_still(&mut self, pos: Vec2, buttons: u8, dt: f32) {
+        if buttons & (button::LEFT | button::RIGHT) == 0 {
+            self.press_window = 0.0;
+            return;
+        }
+        if self.press_window == 0.0 {
+            self.press_from = pos;
+        }
+        self.press_window += dt;
+        if self.press_window >= crate::constants::BOT_STUCK_WINDOW - dt * 0.5 {
+            // Sideways only: a bot hopping in place against a wall moves a jump's height
+            // every window and gets nowhere, and that is the stuck the owner sees.
+            if (pos.x - self.press_from.x).abs() < crate::constants::BOT_STUCK_PX {
+                self.stats.ticks_pressing_still += (self.press_window / dt).round() as u32;
+            }
+            self.press_window = 0.0;
         }
     }
 
@@ -580,6 +624,10 @@ impl Bot {
             let barred = world.gravity == GravityMode::Space
                 && self.wander_to.is_some_and(|w| space::forbidden(world, w));
             let gave_up = self.wander_for > BOT_WANDER_GIVE_UP || barred;
+            if self.wander_to.is_some() {
+                self.stats.wander_arrived += u32::from(arrived);
+                self.stats.wander_gave_up += u32::from(gave_up && !arrived);
+            }
             if arrived || gave_up {
                 if let Some(w) = self.wander_to {
                     let (wx, wy) = cov.cell_of(w);
@@ -1301,6 +1349,10 @@ pub(crate) mod harness {
             ticks_winged_stuck_moving: a.ticks_winged_stuck_moving + b.ticks_winged_stuck_moving,
             ticks_dest_forbidden: a.ticks_dest_forbidden + b.ticks_dest_forbidden,
             ticks_dest_forbidden_idle: a.ticks_dest_forbidden_idle + b.ticks_dest_forbidden_idle,
+            ticks_pressing_still: a.ticks_pressing_still + b.ticks_pressing_still,
+            stuck_hops: a.stuck_hops + b.stuck_hops,
+            wander_arrived: a.wander_arrived + b.wander_arrived,
+            wander_gave_up: a.wander_gave_up + b.wander_gave_up,
         }
     }
 

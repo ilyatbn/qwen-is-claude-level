@@ -191,6 +191,7 @@ impl Bot {
         let stuck = self.still_for > BOT_STUCK_WINDOW;
         let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded);
         if wants_jump {
+            self.stats.stuck_hops += u32::from(stuck && !winged);
             buttons |= button::JUMP;
             // A winged bot keeps its stuck time: its way over is held, below.
             if !winged {
@@ -464,6 +465,64 @@ mod tests {
              they did not end up doing different things",
             healthy[299].0,
             hurt[last].0,
+        );
+    }
+
+    /// **T23.26: the population's stuck counter counts a wall and not a walk.** A bot on
+    /// a flat shelf walks at an enemy across it: no tick counted, though the walking
+    /// model's own per-tick test hops it every window. The same bot with a wall three
+    /// body heights tall in the way — taller than a hop — counts most of its time: the
+    /// presence half, without which zero is a counter that never counts.
+    #[test]
+    fn the_stuck_counter_counts_pressing_into_a_wall_and_not_walking() {
+        let run = |wall: bool| {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
+            }
+            let y = flat_shelf(&mut w, at, 240);
+            if wall {
+                let floor = y as i32 + PLAYER_H as i32 / 2 + 1;
+                for row in (floor - 3 * PLAYER_H as i32)..floor {
+                    w.map.mask.set_run(row, at.x as i32 + 60, at.x as i32 + 76);
+                }
+                w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+            }
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+                p.jetpack.fuel = 0.0; // no way over but the hop
+            }
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = Vec2::new(at.x + 200.0, y);
+            }
+            give(&mut w, 1, PISTOL, 10);
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            let ticks = 2 * crate::constants::SIM_HZ;
+            for t in 0..ticks {
+                let inp = b.think(&w, t as f32 * SIM_DT, SIM_DT);
+                w.queue_input(1, inp);
+                if let Some(p) = w.player_mut(2) {
+                    p.health = 100.0;
+                }
+                if let Some(p) = w.player_mut(1) {
+                    p.jetpack.fuel = 0.0;
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+            }
+            (b.stats().ticks_pressing_still, ticks)
+        };
+        let (walking, _) = run(false);
+        assert_eq!(
+            walking, 0,
+            "a bot walking across a flat shelf counted itself stuck"
+        );
+        let (blocked, ticks) = run(true);
+        assert!(
+            blocked * 2 > ticks,
+            "control: pressing into a wall it cannot hop counted only {blocked} of {ticks} ticks"
         );
     }
 

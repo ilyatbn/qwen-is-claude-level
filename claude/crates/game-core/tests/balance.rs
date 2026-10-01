@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 use game_core::bots::{drive, Bot};
 use game_core::constants::{
-    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE,
+    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE, BOT_SKILL_DEFAULT,
     BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
     ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
@@ -2956,11 +2956,63 @@ fn load_control_ms() -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-/// **T23.26 — what driving `BOT_COUNT_DEFAULT` bots costs a server tick**, and what the
-/// bots spend: µs per tick of the bots' half (think + commands) and of the whole tick
-/// (that + `World::step`), mean and p99, over [`SEEDS`] at `DEFAULT_MAP_SCALE`, 10 s
-/// warm and 20 s timed each. The planner's work is a node **count** per tick, so this
-/// is the only place its wall-clock cost is seen. Prints; asserts only the control.
+/// One T23.26 population round: `BOT_COUNT_DEFAULT` bots at `BOT_SKILL_DEFAULT`, the
+/// shipping map scale, a full `ROUND_SECONDS`, everything natural (spawns, weather).
+#[derive(Default)]
+struct TerrainRound {
+    kills: u32,
+    void_deaths: u32,
+    pickups: u32,
+    stats: game_core::bots::BotStats,
+}
+
+fn terrain_round(seed: u64) -> TerrainRound {
+    let mut w = World::new(seed, DEFAULT_MAP_SCALE);
+    w.set_round_seconds(ROUND_SECONDS);
+    w.set_phase(RoundPhase::Playing);
+    let mut bots: Vec<_> = (0..BOT_COUNT_DEFAULT)
+        .map(|i| {
+            w.add_player(i as u8, 0, format!("Bot {i}"));
+            Bot::new(i as u8, seed, i as u32, BOT_SKILL_DEFAULT)
+        })
+        .collect();
+    let _ = w.drain_events();
+    let mut r = TerrainRound::default();
+    while w.phase == RoundPhase::Playing {
+        let now = w.round_time;
+        drive(&mut w, &mut bots, now, SIM_DT);
+        w.step(SIM_DT);
+        for e in w.drain_events() {
+            match e {
+                GameEvent::Death { cause, .. } => match cause {
+                    DeathCause::Player(_) => r.kills += 1,
+                    DeathCause::Void => r.void_deaths += 1,
+                    _ => {}
+                },
+                GameEvent::ItemPickup { .. } => r.pickups += 1,
+                _ => {}
+            }
+        }
+    }
+    for b in &bots {
+        let s = b.stats();
+        r.stats.ticks += s.ticks;
+        r.stats.ticks_pressing_still += s.ticks_pressing_still;
+        r.stats.stuck_hops += s.stuck_hops;
+        r.stats.wander_arrived += s.wander_arrived;
+        r.stats.wander_gave_up += s.wander_gave_up;
+    }
+    r
+}
+
+/// **T23.26 — the terrain-reading bots' before/after**: the population (8 [`SEEDS`],
+/// natural rounds, `BOT_COUNT_DEFAULT` bots at `BOT_SKILL_DEFAULT`, `DEFAULT_MAP_SCALE`,
+/// `ROUND_SECONDS`) — seconds pressing sideways without moving per bot-minute, the wander
+/// reach rate, kills and pickups per round, void deaths per bot per round — and what
+/// driving those bots costs a server tick: µs of the bots' half (think + commands) and
+/// of the whole tick, mean and p99, `SEEDS` × 20 s after 10 s warm. The planner's work
+/// is a node **count** per tick, so this is the only place its wall-clock cost is seen.
+/// Prints; asserts only its controls (the load, and that the bots lived and moved).
 ///
 /// `cargo test -p game-core --release --test balance bot_terrain_report -- --ignored --nocapture`
 #[test]
@@ -3016,6 +3068,53 @@ fn bot_terrain_report() {
     println!(
         "  alive at the end: {alive} of {}",
         BOT_COUNT_DEFAULT * SEEDS.len()
+    );
+
+    let rounds: Vec<TerrainRound> = SEEDS.iter().map(|&s| terrain_round(s)).collect();
+    let n = rounds.len() as f32;
+    let sum = |f: fn(&TerrainRound) -> u32| rounds.iter().map(f).sum::<u32>() as f32;
+    let bot_min = sum(|r| r.stats.ticks) * SIM_DT / 60.0;
+    let stuck_s = sum(|r| r.stats.ticks_pressing_still) * SIM_DT;
+    let (arrived, gave_up) = (
+        sum(|r| r.stats.wander_arrived),
+        sum(|r| r.stats.wander_gave_up),
+    );
+    println!(
+        "\n== BOTS ON THE TERRAIN — {} seeds × {ROUND_SECONDS} s, {BOT_COUNT_DEFAULT} bots, skill \
+         {BOT_SKILL_DEFAULT}, {DEFAULT_MAP_SCALE:?} ==",
+        SEEDS.len()
+    );
+    println!(
+        "  pressing without moving: {:.1} s per bot-minute ({stuck_s:.0} s over {bot_min:.0} \
+         bot-minutes; per seed {})",
+        stuck_s / bot_min.max(1e-6),
+        rounds
+            .iter()
+            .map(|r| format!("{:.0}", r.stats.ticks_pressing_still as f32 * SIM_DT))
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    println!(
+        "  wander targets reached: {:.1} % ({arrived:.0} reached, {gave_up:.0} given up)",
+        100.0 * arrived / (arrived + gave_up).max(1.0)
+    );
+    println!(
+        "  kills per round {:.2} (per seed {}), pickups per round {:.1}, void deaths a bot a \
+         round {:.2}, stuck hops per bot-minute {:.1}",
+        sum(|r| r.kills) / n,
+        rounds
+            .iter()
+            .map(|r| r.kills.to_string())
+            .collect::<Vec<_>>()
+            .join("/"),
+        sum(|r| r.pickups) / n,
+        sum(|r| r.void_deaths) / (n * BOT_COUNT_DEFAULT as f32),
+        sum(|r| r.stats.stuck_hops) / bot_min.max(1e-6),
+    );
+    assert!(bot_min > 0.0, "control: no bot was ever alive");
+    assert!(
+        arrived > 0.0,
+        "control: no bot reached anything — not a round of bots playing"
     );
     let drift = (after - before).abs() / before.max(1.0);
     println!(
