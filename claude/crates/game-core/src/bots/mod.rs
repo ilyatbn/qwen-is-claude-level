@@ -453,6 +453,7 @@ impl Bot {
         }
 
         if !me.body.grounded
+            && !me.move_mods().flying
             && me.jetpack.fuel >= crate::constants::JETPACK_MIN_FUEL_TO_ENGAGE
             && route::navigates(world, me)
             && (me.body.vel.y > FALL_SAFE_SPEED * BOT_FALL_BRAKE

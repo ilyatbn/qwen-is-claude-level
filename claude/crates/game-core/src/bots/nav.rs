@@ -36,7 +36,7 @@ use crate::constants::{
     BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS, COARSE_CELL, GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY,
     JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL,
     JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, TELEPORT_CHARGE, TELEPORT_COOLDOWN, WALK_SPEED,
-    WALL_W,
+    WALL_W, WINGS_FLY_SPEED, WINGS_SPEED_MULT,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -98,6 +98,8 @@ pub(super) enum Move {
     /// T23.26C item 4: stand on a teleport pad until it fires, arriving at this step's
     /// node — another pad's (`Search::pads`).
     Teleport,
+    /// T23.26C item 3: on wings, one cell in any of eight directions — no fuel, no fall.
+    Fly,
 }
 
 /// One step of a route: arrive at cell `(x, y)` (feet) by `how`.
@@ -346,6 +348,9 @@ pub(super) struct Search {
     /// pad is not a route, which is the truth about a lottery.
     pads: Vec<(i32, i32)>,
     pad_s: f32,
+    /// T23.26C item 3: the body flies on wings — `fly_successors`' edges, not the
+    /// walker's, and no pads (wings refuse them, `World::fire_pads`).
+    fly: bool,
 }
 
 impl Search {
@@ -375,6 +380,7 @@ impl Search {
             side: None,
             pads: Vec::new(),
             pad_s: 0.0,
+            fly: false,
         };
         let pads: Vec<(i32, i32)> = map
             .meta
@@ -405,6 +411,12 @@ impl Search {
         );
         s.open.push((Reverse(s.f_ms(x, y, 0.0)), Reverse(k)));
         Some(s)
+    }
+
+    /// The body is winged: plan its flight (T23.26C item 3).
+    pub fn flying(&mut self) {
+        self.fly = true;
+        self.pads.clear();
     }
 
     /// Nodes expanded so far.
@@ -470,7 +482,11 @@ impl Search {
                 return Progress::NoRoute;
             }
             edges.clear();
-            successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
+            if self.fly {
+                fly_successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
+            } else {
+                successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
+            }
             if self.pads.contains(&(x, y)) {
                 for &(px, py) in &self.pads {
                     if (px, py) != (x, y) {
@@ -565,6 +581,38 @@ pub(super) fn satisfies(grid: &Grid, want: Want, x: i32, y: i32) -> bool {
             grid.stands(x, y)
                 && (Grid::centre(x, y) - from).len() >= beyond
                 && !grid.clear(Grid::centre(x, y), from)
+        }
+    }
+}
+
+/// T23.26C item 3 (`docs/78` §A3: "a bot with wings hunts and shops with them"): every
+/// move out of node `(x, y)` for a winged body. Wings hover with no input, climb and
+/// descend at `WINGS_FLY_SPEED` and move sideways at the walk times `WINGS_SPEED_MULT`
+/// (`movement::apply_flight`), with no fuel and no fall — so the air is all one cheap
+/// medium, and the two axes run at once (a diagonal costs the slower of the two). Dig
+/// edges as the walker's, hovering while the swing works.
+fn fly_successors(
+    g: &Grid,
+    x: i32,
+    y: i32,
+    fuel: f32,
+    dig: bool,
+    out: &mut Vec<(i32, i32, Move, f32, f32)>,
+) {
+    let across = BOT_NAV_CELL / (WALK_SPEED * WINGS_SPEED_MULT);
+    let up = BOT_NAV_CELL / WINGS_FLY_SPEED;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let (nx, ny) = (x + dx, y + dy);
+            let secs = (across * dx.abs() as f32).max(up * dy.abs() as f32);
+            if g.node(nx, ny) && (dx == 0 || dy == 0 || (g.node(nx, y) && g.node(x, ny))) {
+                out.push((nx, ny, Move::Fly, secs, fuel));
+            } else if dig && (dx == 0 || dy == 0) && g.diggable(nx, ny) == Some(true) {
+                out.push((nx, ny, Move::Dig, BOT_NAV_DIG_S + secs, fuel));
+            }
         }
     }
 }

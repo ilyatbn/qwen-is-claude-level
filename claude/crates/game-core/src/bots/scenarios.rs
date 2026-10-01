@@ -585,3 +585,72 @@ fn a_climb_the_tank_cannot_finish_waits_for_a_refill() {
         "control: without the rule it never flew dry — the fixture"
     );
 }
+
+/// **D10 (T23.26C item 3, §A3: "a bot with wings hunts and shops with them"): a winged
+/// bot flies the way round to an enemy ~1000 px off.** Two chambers at the bottom of a
+/// block, sixty cells of rock between them, a gallery over the top and a shaft down into
+/// each; the bot winged (and frenzied, so an enemy that far is its goal), the enemy in the
+/// far chamber. It ends with a clear line to the enemy, inside `BOT_ENGAGE_RANGE`.
+/// Control: the same bot with its routes planted out — the old sweep — does not.
+#[test]
+fn a_winged_bot_flies_round_to_an_enemy_a_thousand_px_off() {
+    use crate::constants::BOT_ENGAGE_RANGE;
+    use crate::items::registry::UNICORN_WINGS;
+    let run = |routes: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 70, 24);
+        let feet = oy + 21;
+        fill(&mut w, ox + 1, oy + 2, ox + 68, oy + 4, false);
+        fill(&mut w, ox + 2, oy + 5, ox + 4, feet, false);
+        fill(&mut w, ox + 65, oy + 5, ox + 67, feet, false);
+        fill(&mut w, ox + 2, feet - 3, ox + 8, feet, false);
+        fill(&mut w, ox + 61, feet - 3, ox + 67, feet, false);
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        w.add_player(2, 0, "enemy".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        let enemy = stand_at(ox + 63, feet);
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(stand_at(ox + 6, feet));
+        }
+        give(&mut w, 1, UNICORN_WINGS, 1);
+        give(&mut w, 1, PISTOL, 10);
+        let mut b = Bot::new(1, SEED, 0, 0.6).frenzied(true);
+        if !routes {
+            b = b.without_routes();
+        }
+        let mut bots = vec![b];
+        let start = (w.player(1).expect("bot").body.pos - enemy).len();
+        for t in 0..((2.0 * SCENARIO_S * SIM_HZ as f32) as u32) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = enemy;
+                p.health = 100.0;
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            let at = w.player(1).expect("bot").body.pos;
+            if (at - enemy).len() < BOT_ENGAGE_RANGE
+                && super::nav::Grid::new(&w.map).clear(at, enemy)
+            {
+                return (true, start);
+            }
+        }
+        (false, start)
+    };
+    let (got, start) = run(true);
+    assert!(
+        start > 2.5 * BOT_ENGAGE_RANGE,
+        "the fixture's enemy is only {start:.0} px off"
+    );
+    assert!(
+        got,
+        "a winged bot never got a line on an enemy {start:.0} px off"
+    );
+    let (got, _) = run(false);
+    assert!(!got, "control: the unrouted winged bot got there too");
+}

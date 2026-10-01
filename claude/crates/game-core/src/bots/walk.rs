@@ -794,7 +794,13 @@ mod tests {
             }
             give(&mut w, 1, UNICORN_WINGS, 1);
             give(&mut w, 1, PISTOL, 10);
+            // T23.26C item 3: under gravity a winged bot routes now (it digs out of a
+            // pocket, `scenarios`), and the sweep is the walking model's fallback while no
+            // route drives — which is what this pins, so the standard arm plants routes out.
             let mut b = Bot::new(1, SEED, 0, 0.6);
+            if gravity == GravityMode::Standard {
+                b = b.without_routes();
+            }
             let (mut pressed_after, mut pressed_before) = (0u32, 0u32);
             let end = bound + 2.0;
             for t in 0..((end / SIM_DT) as u32) {

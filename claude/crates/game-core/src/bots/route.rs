@@ -47,10 +47,11 @@ pub(super) struct Target {
     pub at: Vec2,
 }
 
-/// Where the planner runs: under gravity, on legs, not riding a platform. Space has
-/// its own flying model (`space::steer`), wings their sweep, a rider the platform.
+/// Where the planner runs: under gravity, not riding a platform — on legs or (T23.26C
+/// item 3) on wings. Space has its own flying model (`space::steer`), a rider the
+/// platform.
 pub(super) fn navigates(world: &World, me: &PlayerState) -> bool {
-    world.gravity != GravityMode::Space && !me.move_mods().flying && me.mount.mounted.is_none()
+    world.gravity != GravityMode::Space && me.mount.mounted.is_none()
 }
 
 /// The cell a point is in.
@@ -238,6 +239,9 @@ impl Route {
             };
             let s = Search::new(&world.map, pos, fuel, target.want, BOT_NAV_NODES_MAX, bound);
             let mut s = s?;
+            if me.move_mods().flying {
+                s.flying();
+            }
             s.dig = can_dig && !matches!(target.want, Want::Away { .. });
             if let Want::Hide { from: p } | Want::Away { from: p, .. } = target.want {
                 s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
@@ -453,6 +457,27 @@ impl Route {
                 }
             }
             Move::Fall => out.buttons = toward,
+            Move::Fly => {
+                // Both axes at once. Sideways **by velocity**, as a column is centred on:
+                // wings steer through air control, and a full press overshoots a node and
+                // swings back (measured: ±1.5 cells round a node for seconds). Up or down
+                // by the row the body is located in, which is what arriving tests — a
+                // node's centre sits 3 px above where the row changes.
+                let want = (dx * CENTRE_GAIN).clamp(-WALK_SPEED, WALK_SPEED);
+                let dv = want - me.body.vel.x;
+                out.buttons = if dv > CENTRE_DEADBAND {
+                    button::RIGHT
+                } else if dv < -CENTRE_DEADBAND {
+                    button::LEFT
+                } else {
+                    0
+                };
+                match here.map(|(_, y)| y.cmp(&s.y)) {
+                    Some(std::cmp::Ordering::Greater) => out.buttons |= button::UP,
+                    Some(std::cmp::Ordering::Less) => out.buttons |= button::DOWN,
+                    _ => {}
+                }
+            }
             Move::Jet => {
                 out.buttons = toward | button::JUMP;
                 // Hold the step's height by velocity, as a column is centred on: thrust up
