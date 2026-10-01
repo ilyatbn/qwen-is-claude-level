@@ -7677,3 +7677,4 @@ Server: `Command::Spectate` + `Seat.spectator` (`has_body()` at every door), cap
 Client: `?game=1&spectate=1`; one viewpoint (`viewer()`/`viewAt`) for camera, seeing rule, night view, minimap, ear; spectate = no core body/predictor/input/quick bar; HUD from the watched row + `#spectate-line`; Tab/Shift+Tab (`net/spectate.ts`), scores on held S.
 Check `spectate` (no body both ends, camera on A → Tab → B 768 px → Shift+Tab back, ana's Tab = scoreboard control). `make watch` (6 bots, headed D3D12 Chrome): two restarts seen; shots/t2327-watch-gpu-{a,b,ended}.png.
 Done-when: cargo 348/0; e2e spectate 1/1. full-round (opt-in) red on baseline 2/3 — self-kill runs out of rockets; not this change.
+check.sh --changed HEAD~2 (98 e2e): 96/98 — effect-lights (bazooka decay leg: light gone in 40 ms under load) and look-match (fog top-rows control; also red in T23.19G's batch) red in batch, both green alone (`gate-builder2-t2327.txt`).
