@@ -4117,6 +4117,20 @@ pub const BOT_NAV_HOP_ROWS: i32 =
 /// costs ≈ 0.44 s, about four walked cells. That ratio is what decides "dig through or
 /// go round" (`nav::successors`).
 pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
+/// T23.26E step 4 (owner: *"they should always prefer open grounds"*): what a dug cell is
+/// **priced** at against its time, for a route to a place (not for digging in, §A2's
+/// cornered fallback). At 4 a dug cell weighs what ~16 walked cells do (`BOT_NAV_DIG_S` is
+/// already ~4 walks), so a one-cell wall is dug only when the way round is longer by about
+/// an exploration cell (256 px): the open route has to be several times the tunnel's
+/// length before the tunnel wins. Basis: the owner dug 3.9 % of his time, the bots 14 %
+/// (`replay --player-stats`, `bot_terrain_report`), with a dug cell priced at 1.
+pub const BOT_NAV_DIG_FACTOR: f32 = 4.0;
+/// T23.26E step 4: the extra price of a route node **enclosed by rock** (`nav::Grid::
+/// enclosed`, three of the five cells round its head rock — a tunnel, a shaft, a pocket),
+/// s: two walked cells, so a tunnel cell weighs three and a route runs over open terrain
+/// unless the open way is over three times as long. Not for a hiding place (cover is the
+/// point) or a run (it is priced on getting away).
+pub const BOT_NAV_ENCLOSED_S: f32 = 2.0 * BOT_NAV_CELL / WALK_SPEED;
 /// The bottom of the map no bot digs into, px: a body's height of rock under the
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.

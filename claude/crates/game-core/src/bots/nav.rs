@@ -32,11 +32,11 @@ use std::collections::{BinaryHeap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::constants::{
-    BOT_LOS_STEP, BOT_NAV_AIR_PX, BOT_NAV_CELL, BOT_NAV_DIG_S, BOT_NAV_FLOOR_BAND,
-    BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS, COARSE_CELL, GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY,
-    JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL,
-    JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, TELEPORT_CHARGE, TELEPORT_COOLDOWN, WALK_SPEED,
-    WALL_W, WINGS_FLY_SPEED, WINGS_SPEED_MULT,
+    BOT_LOS_STEP, BOT_NAV_AIR_PX, BOT_NAV_CELL, BOT_NAV_DIG_FACTOR, BOT_NAV_DIG_S,
+    BOT_NAV_ENCLOSED_S, BOT_NAV_FLOOR_BAND, BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS, COARSE_CELL,
+    GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED,
+    JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H,
+    TELEPORT_CHARGE, TELEPORT_COOLDOWN, WALK_SPEED, WALL_W, WINGS_FLY_SPEED, WINGS_SPEED_MULT,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -66,6 +66,17 @@ pub(super) fn rise_s(h: f32) -> f32 {
     let v = JUMP_VELOCITY;
     let d = (v * v - 2.0 * GRAVITY * h).max(0.0);
     (v - d.sqrt()) / GRAVITY
+}
+
+/// T23.26E step 4: seconds a hop up `h` px **spends off the ground** — a jump is always
+/// the full `JUMP_VELOCITY`, so it rises past the ledge and comes down onto it:
+/// `(v + sqrt(v² - 2gh)) / g` (≈ 0.58 s onto one row, against the 0.04 s [`rise_s`] of
+/// reaching its height). An open-ground route pays the difference (`Search::open_ground`):
+/// a hop is a jump, and a level walk is preferred to one where both exist.
+pub(super) fn hop_air_s(h: f32) -> f32 {
+    let v = JUMP_VELOCITY;
+    let d = (v * v - 2.0 * GRAVITY * h).max(0.0);
+    (v + d.sqrt()) / GRAVITY
 }
 
 /// The cheapest any one-cell move can be — the heuristic's unit, so it never
@@ -213,6 +224,19 @@ impl<'a> Grid<'a> {
         self.node(x, y) && self.solid(x, y + 1)
     }
 
+    /// T23.26E step 4: is node `(x, y)` **enclosed by rock** — of the five cells round its
+    /// head (left, up-left, up, up-right, right), three or more not air? A tunnel (the
+    /// three above), a shaft (both sides and their tops) and a pocket are; open ground, a
+    /// wall at one side or a ledge overhead alone are not. `movement::enclosed`'s rule in
+    /// cells.
+    pub fn enclosed(&self, x: i32, y: i32) -> bool {
+        [(-1, -1), (-1, -2), (0, -2), (1, -2), (1, -1)]
+            .into_iter()
+            .filter(|&(dx, dy)| self.solid(x + dx, y + dy))
+            .count()
+            >= 3
+    }
+
     /// Would a body at `pos` be over the void — no rock anywhere under its feet before
     /// the map's bottom? The planner's own rule (`floored`), for the walking model's
     /// greedy step to share (T23.26).
@@ -351,6 +375,11 @@ pub(super) struct Search {
     /// T23.26C item 3: the body flies on wings — `fly_successors`' edges, not the
     /// walker's, and no pads (wings refuse them, `World::fire_pads`).
     fly: bool,
+    /// T23.26E step 4: **open ground is preferred** — each dig edge priced
+    /// `BOT_NAV_DIG_FACTOR` times its time and each enclosed node `BOT_NAV_ENCLOSED_S`
+    /// more, in the search's price only (the follower still times a step by its seconds).
+    /// Off for hiding (cover is the point) and running (`route::Route::step`).
+    pub open_ground: bool,
 }
 
 impl Search {
@@ -381,6 +410,7 @@ impl Search {
             pads: Vec::new(),
             pad_s: 0.0,
             fly: false,
+            open_ground: false,
         };
         let pads: Vec<(i32, i32)> = map
             .meta
@@ -505,7 +535,19 @@ impl Search {
                 // standing still later. Priced in, a flat run is walked and a kerb hopped
                 // rather than flown, because flying is faster only until the tank is owed.
                 let spent = (rec.fuel - fuel).max(0.0);
-                let g = rec.g + secs + spent / JETPACK_REFILL;
+                let mut g = rec.g + secs + spent / JETPACK_REFILL;
+                if self.open_ground {
+                    if how == Move::Dig {
+                        g += (BOT_NAV_DIG_FACTOR - 1.0) * BOT_NAV_DIG_S;
+                    }
+                    if how == Move::Hop {
+                        let h = ((y - ny) * CELL) as f32;
+                        g += hop_air_s(h) - rise_s(h);
+                    }
+                    if grid.enclosed(nx, ny) {
+                        g += BOT_NAV_ENCLOSED_S;
+                    }
+                }
                 if g > self.max_cost {
                     continue;
                 }

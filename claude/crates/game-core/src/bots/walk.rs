@@ -222,7 +222,11 @@ impl Bot {
         // ran. Climbing is the route's (hop and jet steps); the stuck hop stays, the
         // last resort under a route.
         let planned = !winged && !self.routes_off && super::route::navigates(world, me);
-        let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded && !planned);
+        // And no stuck hop while a search runs: the plan is a few ticks off, and hopping at
+        // the face meanwhile was 885 of the remaining grounded jump presses (8 seeds).
+        let waiting = planned && self.route.searching();
+        let wants_jump =
+            (stuck && !waiting) || (rise > STEP_UP as f32 && me.body.grounded && !planned);
         if wants_jump {
             self.stats.stuck_hops += u32::from(stuck && !winged);
             buttons |= button::JUMP;

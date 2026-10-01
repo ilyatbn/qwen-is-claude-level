@@ -377,6 +377,13 @@ impl Bot {
         self
     }
 
+    /// T23.26E: the same bot with open ground priced as any other — its control.
+    #[cfg(test)]
+    pub(crate) fn without_open_ground(mut self) -> Self {
+        self.route.open_ground_off = true;
+        self
+    }
+
     /// T23.26C: the same bot with the follower's tank rule planted out — its control.
     #[cfg(test)]
     pub(crate) fn without_tank_rule(mut self) -> Self {
@@ -1090,7 +1097,27 @@ impl Bot {
                     cov.mark_outside(world);
                     cov.mark(here);
                 }
-                self.wander_to = cov.nearest_unseen(pos);
+                // T23.26E step 4: **explore open ground** — where the planner runs, the
+                // nearest unseen cell with open standing ground in it, aimed at that
+                // ground (`open_spot`); a cell that is all rock or tunnel is marked seen
+                // rather than dug into. Its middle was the target before, and a middle in
+                // rock was a route that dug to it.
+                self.wander_to = if routes && !self.route.open_ground_off {
+                    let grid = nav::Grid::new(&world.map);
+                    let mut found = None;
+                    for (i, c) in cov.unseen_by_distance(pos) {
+                        match open_spot(&grid, c) {
+                            Some(p) => {
+                                found = Some(p);
+                                break;
+                            }
+                            None => cov.mark(i),
+                        }
+                    }
+                    found
+                } else {
+                    cov.nearest_unseen(pos)
+                };
             }
         } else {
             self.wander_to = None;
@@ -1164,6 +1191,32 @@ impl Bot {
         }
         best.map(|(_, h)| h)
     }
+}
+
+/// T23.26E step 4: the open ground in the exploration cell round `centre` — the standing,
+/// unenclosed node nearest it, in rings out to the cell's edge — as a body centre; `None`
+/// for a cell that is rock, tunnel or air with no floor.
+fn open_spot(grid: &nav::Grid, centre: Vec2) -> Option<Vec2> {
+    let cell = crate::constants::BOT_NAV_CELL;
+    let (cx, cy) = (
+        (centre.x / cell).floor() as i32,
+        (centre.y / cell).floor() as i32,
+    );
+    let reach = crate::constants::BOT_EXPLORE_CELL / (2 * cell as i32);
+    for r in 0..reach {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if grid.stands(x, y) && !grid.enclosed(x, y) {
+                    return Some(nav::Grid::centre(x, y));
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -88,6 +88,27 @@ impl Coverage {
         }
     }
 
+    /// T23.26E step 4: every cell not yet been to, nearest first (ties on the lower
+    /// index, as [`nearest_unseen`](Self::nearest_unseen)), with its middle.
+    pub(super) fn unseen_by_distance(&self, from: Vec2) -> Vec<(usize, Vec2)> {
+        let mut v: Vec<(f32, usize, Vec2)> = Vec::new();
+        for cy in 0..self.rows {
+            for cx in 0..self.cols {
+                let i = self.index(cx, cy);
+                if self.is_seen(i) {
+                    continue;
+                }
+                let c = Vec2::new(
+                    (cx * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32,
+                    (cy * BOT_EXPLORE_CELL + BOT_EXPLORE_CELL / 2) as f32,
+                );
+                v.push(((c - from).len(), i, c));
+            }
+        }
+        v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        v.into_iter().map(|(_, i, c)| (i, c)).collect()
+    }
+
     /// The middle of the nearest cell this bot has not been to, if any.
     ///
     /// Ties break on the lower index rather than at random, so two bots with the

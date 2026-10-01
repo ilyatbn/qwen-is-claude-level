@@ -96,3 +96,103 @@ fn an_enemy_behind_a_thin_wall_is_reached_over_open_ground() {
         "control, sealed in: line {got}, {digs} swings — with no open route it digs"
     );
 }
+
+/// Run an unarmed bot (`b`) at the one pistol on the floor until it picks it up, or the
+/// bound; `(got it, dig swings, seconds enclosed by rock)`.
+fn fetch(mut w: World, b: Bot) -> (bool, u32, f32) {
+    let mut bots = vec![b];
+    let mut watch = super::movement::Watcher::default();
+    for t in 0..((FIXTURE_S * SIM_HZ as f32) as u32) {
+        crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+        w.step(SIM_DT);
+        let _ = w.drain_events();
+        watch.observe(&w, SIM_DT);
+        if w.player(1).expect("bot").inventory.count_of(PISTOL) > 0 {
+            return (true, bots[0].stats().dig_swings, watch.of(1).in_rock_s);
+        }
+    }
+    (false, bots[0].stats().dig_swings, watch.of(1).in_rock_s)
+}
+
+/// **F2 (step 4): a wall five rows tall and one cell thick is flown over, not dug
+/// through.** A room, the bot on one side, the pistol on the other. Priced on time alone
+/// the bore wins (one dug node, ~0.55 s, against a jet up five rows, the fall and the
+/// fuel's refill, ~1.5 s); priced as open ground (`BOT_NAV_DIG_FACTOR`,
+/// `BOT_NAV_ENCLOSED_S`) the jet does. It gets the pistol with no swing and no time
+/// enclosed. Control: the pricing planted out (`without_open_ground`) — it digs.
+#[test]
+fn a_wall_is_flown_over_rather_than_bored_through() {
+    let room = || {
+        let (mut w, ox, oy) = block(MapScale::Small, 24, 14);
+        let feet = oy + 12;
+        fill(&mut w, ox + 1, oy + 1, ox + 22, feet, false);
+        fill(&mut w, ox + 11, feet - 4, ox + 11, feet, true);
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(stand_at(ox + 7, feet));
+        }
+        let _ = drop_at(&mut w, PISTOL, stand_at(ox + 15, feet));
+        w
+    };
+    let (got, digs, rock) = fetch(room(), Bot::new(1, SEED, 0, 0.6));
+    assert!(
+        got && digs == 0 && rock == 0.0,
+        "open ground: got {got}, {digs} swings, {rock:.2} s in rock"
+    );
+    let (_, digs, _) = fetch(room(), Bot::new(1, SEED, 0, 0.6).without_open_ground());
+    assert!(
+        digs > 0,
+        "control: priced on time alone it never bored the wall — the fixture"
+    );
+}
+
+/// **F3 (step 4): exploration aims at open ground.** A block of rock with one room carved
+/// in it, the bot alone in the room: the first wander target is a node it can stand on
+/// with open space round its head (`Grid::stands`, not `Grid::enclosed`). Control: the
+/// open-ground rule planted out — the nearest unseen cell's middle, inside the rock (the
+/// target a route then dug to).
+#[test]
+fn exploration_aims_at_open_ground_not_into_rock() {
+    let target = |open: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 60, 40);
+        fill(&mut w, ox + 2, oy + 30, ox + 57, oy + 36, false);
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(stand_at(ox + 5, oy + 36));
+        }
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !open {
+            b = b.without_open_ground();
+        }
+        let _ = b.think(&w, 0.0, SIM_DT);
+        let g = super::nav::Grid::new(&w.map);
+        let to = b.wander_to.expect("a wander target");
+        let (x, y) = (
+            (to.x / crate::constants::BOT_NAV_CELL).floor() as i32,
+            (to.y / crate::constants::BOT_NAV_CELL).floor() as i32,
+        );
+        g.stands(x, y) && !g.enclosed(x, y)
+    };
+    assert!(
+        target(true),
+        "exploration aimed somewhere a body cannot stand in the open"
+    );
+    assert!(
+        !target(false),
+        "control: the nearest cell's middle was open ground anyway — the fixture"
+    );
+}

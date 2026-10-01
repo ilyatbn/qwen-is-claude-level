@@ -171,6 +171,9 @@ pub(super) struct Route {
     pub tank_replans: u32,
     /// Tests only: the tank rule planted out (`Bot::without_tank_rule`).
     pub tank_rule_off: bool,
+    /// Tests only: T23.26E step 4's open-ground pricing planted out
+    /// (`Bot::without_open_ground`).
+    pub open_ground_off: bool,
     /// Where the body was last tick (a teleport is a jump in it).
     last_pos: Vec2,
 }
@@ -205,6 +208,10 @@ impl Route {
         self.target.is_some_and(|r| same_target(&r, t)) && self.next >= self.path.len()
     }
 
+    /// A search is running (T23.26E: the greedy step does not hop meanwhile).
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
     /// The route is live and has steps left.
     pub fn following(&self) -> bool {
         self.target.is_some() && self.next < self.path.len()
@@ -236,6 +243,14 @@ impl Route {
         // A new goal, or the goal moved off the end of the route: plan again.
         if !self.target.is_some_and(|t| same_target(&t, &target)) && !self.searching_for(&target) {
             self.clear();
+            // T23.26E step 4: **a falling body plans from where it lands.** The planner
+            // has no velocity: a plan made falling prices the jets from a standstill, and
+            // the follower's in-air slack (a second of fuel) let one fly dry arresting
+            // the fall (`a_climb_the_tank_cannot_finish_…`, traced). Landing is a fraction
+            // of a second; the fall brake covers what it must meanwhile.
+            if !me.body.grounded && me.body.vel.y > 0.0 && !me.move_mods().flying {
+                return None;
+            }
             if self.refused(&target, now) {
                 return None;
             }
@@ -253,6 +268,8 @@ impl Route {
                 s.flying();
             }
             s.dig = can_dig && target.dig;
+            // T23.26E step 4: a route to a place runs over open ground.
+            s.open_ground = matches!(target.want, Want::Near { .. }) && !self.open_ground_off;
             if let Want::Hide { from: p } | Want::Away { from: p, .. } = target.want {
                 s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
             }
@@ -375,7 +392,11 @@ impl Route {
             out.aim = Some(at);
             out.select = slot.filter(|sl| *sl != me.inventory.selected());
             out.fire = can_dig && slot == Some(me.inventory.selected()) && now >= me.fire_ready_at;
-            if me.body.grounded {
+            // T23.26E step 4: **hop only at a step above.** A lip on the level or below is
+            // swung at and leaned into; hopping there was the stuck hop's commonest case
+            // (7.3 a bot-minute after step 3) and it threw a drift-fall that landed a cell
+            // short into a jet on a fifth of a tank (`a_climb_the_tank_cannot_finish_…`).
+            if me.body.grounded && here.is_some_and(|(_, y)| y > s.y) {
                 out.buttons |= button::JUMP;
             }
             let dx = at.x - pos.x;
