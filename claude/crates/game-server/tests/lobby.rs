@@ -865,13 +865,14 @@ async fn two_humans_start_on_their_own() {
         game_core::constants::LOBBY_BOT_TIMEOUT + 3.0,
     ))
     .await;
-    let (phase, tick) = handle.inspect(|w| (w.phase, w.tick)).await.expect("alive");
-    assert_ne!(
-        phase,
-        game_core::world::RoundPhase::Lobby,
-        "two humans did not start a round"
-    );
-    assert!(tick > 0, "the round started but nothing is ticking");
+    // `inspect` answers only once there is a world (a lobby has none), so `Some` is the match having started. Its
+    // phase is not asserted: T23.28 holds a new map in `Lobby` until every body sends `ready` for it, and these raw
+    // sockets never do — the round's own start is `room.rs::a_new_map_holds_the_round_until_every_body_has_loaded_it`.
+    let (_phase, tick) = handle
+        .inspect(|w| (w.phase, w.tick))
+        .await
+        .expect("two humans did not start a match: the room has no world");
+    assert!(tick > 0, "the match started but nothing is ticking");
 
     drop(clients);
     h.stack.shutdown_all(Duration::from_secs(2)).await;
@@ -1391,6 +1392,8 @@ fn the_tick_asks_for_a_world_and_does_not_build_one() {
         room.world().is_some(),
         "installing a generated world left the room without one"
     );
+    // T23.28: the round begins once every seated body has loaded the map — here there is none to wait for.
+    let _ = room.tick_once(SIM_DT);
     assert_eq!(
         room.phase(),
         game_core::world::RoundPhase::Warmup,

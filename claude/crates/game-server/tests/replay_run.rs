@@ -84,6 +84,14 @@ struct Recorded {
     last_alive: u32,
 }
 
+/// T23.28: the `ready` a client sends once it has loaded the map in force — what begins the round. Sent through the
+/// room's commands, so it is recorded and a replay holds and releases on the same ticks.
+fn load(room: &mut Room) {
+    for id in room.awaiting_load() {
+        room.apply_for_test(Command::Ready(id, true));
+    }
+}
+
 fn record_a_round(dir: &Path, ticks: u32) -> PathBuf {
     record_a_round_reporting(dir, ticks).path
 }
@@ -120,6 +128,7 @@ fn record_a_round_reporting(dir: &Path, ticks: u32) -> Recorded {
         if t % 120 == 0 {
             room.apply_for_test(Command::Fire(id));
         }
+        load(&mut room);
         room.tick_inline(SIM_DT);
         if room
             .world_for_test()
@@ -282,6 +291,7 @@ fn empty_ticks_are_simulated_not_skipped() {
         if t == 800 {
             room.apply_for_test(Command::Fire(id));
         }
+        load(&mut room);
         room.tick_inline(SIM_DT);
     }
     let expected = room.world_for_test().state_hash();

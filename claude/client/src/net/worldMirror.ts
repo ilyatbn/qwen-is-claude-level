@@ -334,6 +334,30 @@ export class WorldMirror {
     this.core.setVortices([])
   }
 
+  /**
+   * T23.28: **a new round** (`new_round`, a restart): drop everything the last world told us — players, pickups, graves,
+   * projectiles, birds, animals, holes, dead cores, the carve stream and the map itself (`loaded` goes false until the
+   * new `map_init`, so a checksum in between is not compared against the old mask). Registered with the scene's
+   * `RoundReset`. **Not** a resync's job: a resync's `map_init` is the same round, and keeps all of it.
+   */
+  resetRound(): void {
+    this.players.clear()
+    this.items.clear()
+    this.tombstones.clear()
+    this.projectiles.clear()
+    this.birds.clear()
+    this.animals.clear()
+    this.clearVortices()
+    this.clearBlackHole()
+    this.clearCores()
+    this.asteroids = []
+    this.anchor = null
+    this.buffered.clear()
+    this.gapSince = null
+    this.stats.pendingCarves = 0
+    this.mapLoaded = false
+  }
+
   get loaded(): boolean {
     return this.mapLoaded
   }

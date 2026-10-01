@@ -103,6 +103,22 @@ fn a_lone_player_gets_bots_when_the_timeout_expires() {
     let world = room.generate_world();
     room.install_world(world);
     assert!(room.bot_count() > 0, "the match started with no bots");
+    // T23.28: the round waits for ana's `ready` for the map — the one body it waits on — and then begins.
+    assert_eq!(
+        room.phase(),
+        RoundPhase::Lobby,
+        "the round began before ana had the map"
+    );
+    let waiting = room.awaiting_load();
+    assert_eq!(
+        waiting.len(),
+        1,
+        "the hold waits on the one human, not the bots: {waiting:?}"
+    );
+    for id in waiting {
+        room.apply_for_test(game_server::room::Command::Ready(id, true));
+    }
+    let _ = room.tick_once(game_core::constants::SIM_DT);
     assert_eq!(room.phase(), RoundPhase::Warmup);
 }
 

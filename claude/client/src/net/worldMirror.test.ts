@@ -935,3 +935,32 @@ function initMirrorAgain(
     rle: core.maskRle(),
   })
 }
+
+/**
+ * T23.28: a restart drops round one's graves and pickups (and the rest of the round's holdings); a **resync** — the
+ * same round's `map_init` sent again — keeps them. The resync is the control: a mirror that dropped everything on any
+ * `map_init` would pass the first half and strand a resyncing client with no items.
+ */
+describe('a new round (T23.28)', () => {
+  const fill = (mirror: WorldMirror): void => {
+    mirror.applyEvent('item_spawn', { world_item_id: 7, item_id: 3, count: 4, x: 10, y: 20, source: 'Buried' }, 0)
+    mirror.applyEvent('tombstone_spawn', { id: 2, owner: 1, x: 30, y: 40 }, 0)
+    mirror.applyEvent('vortex_open', { id: 5, x: 100, y: 100, tick: 10 }, 0)
+  }
+  const counts = (m: WorldMirror) => [m.items.size, m.tombstones.size, m.vortices.length, m.loaded]
+
+  it('resetRound drops the round; a resync map_init does not', () => {
+    const { mirror } = freshMirror()
+    fill(mirror)
+    expect(counts(mirror)).toEqual([1, 1, 1, true])
+    // The control: the same round's map again.
+    mirror.applyMapInit({
+      width: core.width, height: core.height, seed: 4242n, scale: 0, theme: 0,
+      generator: GENERATOR_BYTE[core.meta.generator], wind: 0, carveSeq: 0, spawnPoints: [], pads: [], platforms: [],
+      decorations: [], objects: [], asteroids: [], rle: core.maskRle(),
+    })
+    expect(counts(mirror)).toEqual([1, 1, 1, true])
+    mirror.resetRound()
+    expect(counts(mirror)).toEqual([0, 0, 0, false])
+  })
+})

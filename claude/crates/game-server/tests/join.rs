@@ -174,6 +174,8 @@ async fn the_join_flow_end_to_end() {
         c1.emit("start_with_bots", serde_json::json!({}))
             .expect("start");
         wait_for(&r1, "map_init", 30);
+        // T23.28: what a client sends once it has the map; the round waits for every body's (bo's is below).
+        c1.emit("ready", serde_json::json!({})).expect("emit ready");
         report.insert("welcome".into(), got(&i1, "welcome")[0].clone());
         report.insert("lobby_state".into(), got(&i1, "lobby_state")[0].clone());
         report.insert("map_init".into(), got(&i1, "map_init")[0].clone());

@@ -84,7 +84,10 @@ async function quickMatch(label) {
   await page.waitForFunction(
     () => {
       try {
-        return window.__game?.debug().ready === true
+        // T23.28: in the match **as presented** — the map is loaded behind a cover and the round starts once every
+        // body has it, so until the cover lifts the phase is honestly still the lobby's and nothing of it is shown.
+        const d = window.__game?.debug()
+        return d?.ready === true && d?.cover?.inDom === false
       } catch {
         return false
       }

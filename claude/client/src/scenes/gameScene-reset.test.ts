@@ -31,12 +31,21 @@ export function fieldsOf(source: string): string[] {
   return [...source.matchAll(FIELD)].map((m) => m[1] ?? '').filter((n) => n !== '')
 }
 
-/** The body of `resetForNewRound`, up to its closing brace at method indent. */
+/** The body of one method, up to its closing brace at method indent. */
+function methodBody(source: string, head: string): string {
+  const at = source.indexOf(head)
+  if (at < 0) throw new Error(`${head.trim()} is gone — the guard cannot run`)
+  return source.slice(at, source.indexOf('\n  }\n', at))
+}
+
+/**
+ * The body of `resetForNewRound` — **and of `resetRound`**, which it calls (T23.28: the round's share, also run by a
+ * restart's `new_round`). The call is asserted below, so a field reset only in `resetRound` is reset on re-entry too.
+ */
 export function resetBody(source: string): string {
-  const head = source.indexOf('  private resetForNewRound(): void {')
-  if (head < 0) throw new Error('resetForNewRound() is gone — the guard cannot run')
-  const end = source.indexOf('\n  }\n', head)
-  return source.slice(head, end)
+  return (
+    methodBody(source, '  private resetForNewRound(): void {') + methodBody(source, '  private resetRound(): void {')
+  )
 }
 
 /**
@@ -64,6 +73,7 @@ const EXEMPT: Record<string, string> = {
   birds: 'new BirdLayer, every create()',
   animals: 'new AnimalLayer, every create()',
   results: 'new ResultsScreen, every create()',
+  roundReset: 'new RoundReset, every create() (T23.28)',
   // Deliberately outlives a round.
   audio: 'the Mixer keeps its decoded buffers; initAudio() reassigns it and SHUTDOWN stops it',
   unlockAudio: 'reassigned by initAudio() alongside the Mixer it unlocks',
@@ -113,6 +123,10 @@ describe('GameScene survives re-entry, so resetForNewRound must know every field
     expect(body).toContain('this.scores.clear()')
     expect(body).not.toContain('async create()')
     expect(body.length).toBeLessThan(src.length / 4)
+  })
+
+  it('resetForNewRound runs resetRound — or the fields only resetRound names are not reset on re-entry (T23.28)', () => {
+    expect(methodBody(src, '  private resetForNewRound(): void {')).toContain('this.resetRound()')
   })
 
   it('clears the two fields the report was actually about', () => {

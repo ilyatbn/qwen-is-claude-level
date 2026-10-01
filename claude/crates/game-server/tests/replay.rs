@@ -618,6 +618,10 @@ fn a_restart_carries_the_private_settings_into_the_second_file() {
         / SIM_DT) as usize
     {
         room.tick_inline(SIM_DT);
+        // T23.28: the client's `ready` for the map, which is what begins round one.
+        for id in room.awaiting_load() {
+            room.apply_for_test(Command::Ready(id, true));
+        }
         room.vote_for_test(ana, true);
         if s.files().len() == 2 {
             restarted = true;

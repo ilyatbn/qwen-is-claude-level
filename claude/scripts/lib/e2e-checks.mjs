@@ -437,6 +437,10 @@ export const CHECKS = [
   // lobby start on a new map, and the first frames of a match reached through the
   // menu. Standalone: it needs a short round and three bots on its own server.
   { name: 'round-over', file: 'scripts/checks/round-over.mjs', standalone: true },
+  // T23.28: a restart drops round one's graves and pickups, and its new map is loaded behind a cover before the
+  // server starts the round; and a respawn with the full kit shows the kit without a key press.
+  { name: 'round-restart', file: 'scripts/checks/round-restart.mjs', standalone: true },
+  { name: 'respawn-kit', file: 'scripts/checks/respawn-kit.mjs', standalone: true },
   // T20.05: the one weather assertion that is **not** a sandbox check. Every
   // other one drives `?sandbox=1`, which pokes the weather sub-layers by hand and
   // therefore cannot see whether the shared `WorldView` path works — the §C0 shape

@@ -806,7 +806,14 @@ async function stepGravity(page, gravity) {
   return seen()
 }
 
-const inTheGame = (page) => page.waitForFunction('window.__game && window.__game.debug().ready === true', null, { timeout: 60_000 })
+// T23.28: in the match **as presented** — the map loads behind a cover and the round starts once every body has it,
+// so `ready` (the map decoded) alone now lands in the lobby's phase with no snapshot yet; the cover lifting is the match.
+const inTheGame = (page) =>
+  page.waitForFunction(
+    'window.__game && window.__game.debug().ready === true && window.__game.debug().cover.inDom === false',
+    null,
+    { timeout: 60_000 },
+  )
 
 /** One human alone in a private room at `gravity` (the lobby's label), in the game. */
 export async function soloMatch(stack, name, gravity) {

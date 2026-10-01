@@ -58,6 +58,14 @@ fn ready(room: &mut Room, id: u8, on: bool) {
     room.apply_for_test(Command::Ready(id, on));
 }
 
+/// T23.28: every seated body's `ready` for the map in force — what each client sends once it has loaded it. The
+/// lobby's tick-box is not that: a new map is a new handshake.
+fn load(room: &mut Room) {
+    for id in room.awaiting_load() {
+        ready(room, id, true);
+    }
+}
+
 fn set_scale(room: &mut Room, by: u8, scale: MapScale) -> Result<(), &'static str> {
     let (reply, rx) = tokio::sync::oneshot::channel();
     room.apply_for_test(Command::SetScale { by, scale, reply });
@@ -273,7 +281,6 @@ fn withdrawing_ready_does_not_arm_the_unready_sweep() {
     let bo = seat(&mut room, "bo");
     ready(&mut room, ana, true);
     ready(&mut room, bo, true);
-    ready(&mut room, bo, false);
     // The sweep only runs once there is a map to have failed to decode (T20.01).
     room.request_start();
     room.tick_inline(SIM_DT);
@@ -281,6 +288,9 @@ fn withdrawing_ready_does_not_arm_the_unready_sweep() {
         room.world_for_test().players.len() >= 2,
         "the match never started, so the sweep below never runs and proves nothing"
     );
+    // T23.28: the handshake latch is per map — both decode this one, and then bo withdraws (the toggle under test).
+    load(&mut room);
+    ready(&mut room, bo, false);
 
     // Zero timeout: everyone who is sweepable at all is swept now. The control
     // is that this is the same call that *would* drop a player who never sent
@@ -394,6 +404,8 @@ fn a_private_match_that_has_started_is_swept_again() {
         2,
         "the private match never started, so the sweep below is being asked about a lobby"
     );
+    // T23.28: both decode the map (a new map is a new handshake), so only the late seat has not.
+    load(&mut room);
 
     // Now a seat that never handshakes. In a lobby §E3 protects it; in a match
     // nothing does.
@@ -499,6 +511,9 @@ fn start(room: &mut Room) {
     for _ in 0..2 {
         let _ = room.tick_inline(SIM_DT);
     }
+    // T23.28: and each body's `ready` for the map, which is what begins the round.
+    load(room);
+    let _ = room.tick_inline(SIM_DT);
     assert!(
         room.lobby_state().players.iter().any(|_| true),
         "the room emptied itself before the match started"

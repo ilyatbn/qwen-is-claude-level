@@ -55,6 +55,14 @@ fn the_round_seconds_override_actually_shortens_the_round() {
     );
 }
 
+/// T23.28: every seated body's `ready` for the map in force — what each client sends once it has loaded it, and
+/// what starts the round (a new map is held in `Lobby` until then). A no-op with no world.
+fn load(room: &mut Room) {
+    for id in room.awaiting_load() {
+        room.apply_for_test(Command::Ready(id, true));
+    }
+}
+
 /// Take a freshly-built room out of `Lobby`.
 ///
 /// §C18: a room is born in `Lobby` and starts a round only when asked. These
@@ -69,6 +77,7 @@ fn begin(room: &mut Room) {
         // task builds it on a blocking thread; a test drives the same trio
         // inline.
         let _ = room.tick_inline(SIM_DT);
+        load(room);
         if room.phase() != RoundPhase::Lobby {
             return;
         }
@@ -155,6 +164,7 @@ fn a_unanimous_restart_starts_a_new_round_on_a_new_seed_with_zeroed_scores() {
     // Run the 20 s vote window out.
     for _ in 0..(25 * 60) {
         let _ = room.tick_inline(SIM_DT);
+        load(&mut room);
         if room.phase() == RoundPhase::Warmup {
             break;
         }
@@ -218,7 +228,8 @@ fn back_to_lobby(room: &mut Room) {
     assert_eq!(room.phase(), RoundPhase::Ended, "the round never ended");
     for _ in 0..((game_core::constants::ENDED_SECONDS + 2.0) * 60.0) as usize {
         let _ = room.tick_inline(SIM_DT);
-        if room.phase() == RoundPhase::Lobby {
+        // T23.28: no world — a restart's world also waits in `Lobby`, for its load.
+        if room.world().is_none() {
             return;
         }
     }
@@ -371,7 +382,8 @@ fn a_vote_is_counted_only_inside_the_window() {
 fn back_to_lobby_from_ended(room: &mut Room) {
     for _ in 0..((game_core::constants::ENDED_SECONDS + 2.0) * 60.0) as usize {
         let _ = room.tick_inline(SIM_DT);
-        if room.phase() == RoundPhase::Lobby {
+        // T23.28: no world — a restart's world also waits in `Lobby`, for its load.
+        if room.world().is_none() {
             return;
         }
     }
@@ -466,6 +478,11 @@ fn resolve(room: &mut Room) -> (RoundPhase, usize) {
     for t in 1..=limit {
         let _ = room.tick_inline(SIM_DT);
         if room.phase() != RoundPhase::Ended {
+            // T23.28: a restart waits in `Lobby` for its load; the clients' `ready` releases it on the next tick.
+            if room.world().is_some() {
+                load(room);
+                let _ = room.tick_inline(SIM_DT);
+            }
             return (room.phase(), t);
         }
     }
@@ -663,6 +680,7 @@ fn a_restart_announces_the_new_round() {
     room.request_start();
     for _ in 0..(30 * 60) {
         first.extend(room.tick_inline(SIM_DT));
+        load(&mut room);
         if room.phase() != RoundPhase::Lobby {
             break;
         }
@@ -689,6 +707,7 @@ fn a_restart_announces_the_new_round() {
     let mut second = Vec::new();
     for _ in 0..(25 * 60) {
         second.extend(room.tick_inline(SIM_DT));
+        load(&mut room);
         if room.phase() == RoundPhase::Warmup {
             break;
         }
@@ -755,6 +774,7 @@ fn the_periodic_round_state_survives_a_restart() {
     room.vote_for_test(1, true);
     for _ in 0..(25 * 60) {
         let _ = room.tick_inline(SIM_DT);
+        load(&mut room);
         if room.phase() == RoundPhase::Warmup {
             break;
         }

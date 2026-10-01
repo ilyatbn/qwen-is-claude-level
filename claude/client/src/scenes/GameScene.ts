@@ -15,6 +15,8 @@ import Phaser from 'phaser'
 import { imagePortal, loadAssetManifest, runLoader } from '../render/assets'
 import { DeathOverlay } from '../ui/deathOverlay'
 import { TombstoneLayer } from '../render/tombstones'
+import { RoundReset } from '../net/roundReset'
+import { LoadCover } from '../ui/loadCover'
 import { AnimalLayer } from '../render/animals'
 import { BirdLayer } from '../render/birds'
 import { LANDING_VOLUME_FLOOR, LandingLatch, landingVolume } from '../render/feel-math'
@@ -531,6 +533,16 @@ export class GameScene extends Phaser.Scene {
   private vents: VentSpec[] = []
   /** T23.09: the per-frame effect-light list (`effectLights.ts`), handed to the world renderer. */
   private effectLights = new EffectLights()
+  /** T23.28: the one per-round reset — every holder registers here as `create` builds it; `new_round` runs them all. */
+  private roundReset!: RoundReset
+  /** T23.28: the cover over a map still being painted, or a round not yet started (`coverWanted`). */
+  private loadCover: LoadCover | null = null
+  /** T23.28: `ready` has gone out for the map in force — sent once it is painted (`trySendReady`), not on decode. */
+  private readySent = false
+  /** T23.28: this map's round has not been announced yet — a restart's (`new_round`) or a first round's (`lobby`). */
+  private awaitingRound = false
+  /** T23.28: the world renderer's chunk has loaded (or failed to) — until then "the terrain is painted" is unknown. */
+  private rendererSettled = false
   private seq = 0
   private acc = 0
   /** `performance.now()` at the last fixed-step update — see `update`'s clock (T22.10F). */
@@ -676,8 +688,7 @@ export class GameScene extends Phaser.Scene {
    * class and named in neither this method nor its exemption list.
    */
   private resetForNewRound(): void {
-    // `update`'s three guards, and the view they drive.
-    this.ready = false
+    // `update`'s three guards, and the view they drive. (`ready` is the round's too: `resetRound` below.)
     this.world = null
     // T23.06: last map's fields; a late worker result must not install into this round's core.
     this.terrainFields?.dispose()
@@ -686,13 +697,13 @@ export class GameScene extends Phaser.Scene {
     this.localView = null
     // T23.14: re-read from the next round's core (the same build's registry, but the core is the round's).
     this.itemKeysMap = null
-    // T23.09: last round's gates and muzzle bookkeeping; this map's gates arrive with `map_init`.
-    this.effectLights = new EffectLights()
+    // T23.28: the cover and the load handshake. `rendererSettled` is per scene: the world renderer's chunk is
+    // loaded again by every `create()`.
+    this.loadCover?.destroy()
+    this.loadCover = null
+    this.rendererSettled = false
 
-    // Who is in the room. `remotes` holds `PlayerView`s, so it is emptied rather
-    // than dropped — the sprites belong to a scene that is going away.
-    for (const r of this.remotes.values()) r.view.destroy()
-    this.remotes.clear()
+    // Who is in the room.
     this.scores.clear()
     this.me = -1
     // T23.27: the new round's players are not the last one's; the first living one is watched again. Spectating is the
@@ -701,59 +712,19 @@ export class GameScene extends Phaser.Scene {
     this.watch.reset()
     this.viewAt = null
 
-    // The round's identity and its clocks.
+    // The round's identity.
     this.mapSeed = 0
     this.onSpaceMap = false
     this.roundSeed = ''
     this.phase = 'lobby'
-    this.roundTime = 0
-    this.serverRoundTime = 0
-    this.timeLeft = 0
-    this.phaseEndsAt = 0
-    this.lastServerTick = 0
-    this.serverDarkness = 0
-    this.drawnDarkness = 0
-    this.vision = 1
-    this.pendingSnapshot = null
     this.observed = freshObserved()
-
-    // The local body, as the snapshot will describe it. `BASE_HEALTH` rather
-    // than a literal 100 — the field's own initializer is 0 for this reason.
-    this.health = C().BASE_HEALTH
-    this.meAlive = true
-    this.sightFov = 0
-    this.sightSeen.clear()
-    this.sight = []
-    this.sightLit = []
-    this.battery = 0
-    this.heals = 0
-    this.batteries = 0
-    this.shieldOn = false
-    this.poisoned = false
-    this.irradiated = false
-    this.hasFlashlight = false
-    this.hasBoots = false
-    this.hasWings = false
-    // T22.19: a new round's figures start upright.
-    this.localTrack = null
-    this.remoteTilts.clear()
-    this.remotePushes.clear()
-    this.roundOrigins.clear()
-    this.frameDt = 0
     // T23.14E F4: the e2e hooks' state is the round's too.
     this.slowFrameMs = 0
-    this.pendingUses.clear()
     this.roundWatch?.stop()
     this.roundWatch = null
-    this.fuel = 0
-    this.fuelShown = 0
-    this.teleportCharge = 0
-    this.slots = []
-    this.selectedSlot = 0
-    this.serverPos = null
-    this.watchPoint = null
 
-    // Input bookkeeping and the send clock.
+    // Input bookkeeping and the send clock. **Not** `resetRound`'s: a restart keeps the seat, and the server drops
+    // any input whose seq is not above the last it accepted from it.
     this.seq = 0
     this.acc = 0
     this.stepClockAt = null
@@ -807,7 +778,83 @@ export class GameScene extends Phaser.Scene {
     this.leaveCrystals()
     this.leaveCrystals = () => {}
 
-    // The three helpers that carry state of their own.
+    // T22.10B/T22.12/T22.16: last round's holes, black hole and dead cores — the core outlives the scene, so the pull
+    // goes too, not only the drawing. (A restart resets the whole mirror: its `RoundReset` entry.)
+    this.mirror?.clearVortices()
+    this.mirror?.clearBlackHole()
+    this.mirror?.clearCores()
+    // A pending probe resolves on its own timeout; the answer would be the old round's.
+    this.probeWaiters.length = 0
+
+    this.resetRound()
+  }
+
+  /**
+   * T23.28: **what one round leaves behind, and a new round on the same scene must drop** — the scene's own share of
+   * the `RoundReset` (`create` registers it beside the mirror's, the interpolator's and the ordnance layer's). Run on a
+   * restart's `new_round`, and by `resetForNewRound` above for a scene that is re-entered: one list, two callers.
+   *
+   * Kept out of it on purpose: the seat (`me`, `scores`, the input seq — a restart keeps the seat), the HUD, the map
+   * payload (`onMapInit` replaces it) and the world view (`onMapInit` destroys and rebuilds it).
+   */
+  private resetRound(): void {
+    // `update` stops until the new map is in (`onMapInit` sets it), and the handshake for that map starts again.
+    this.ready = false
+    this.readySent = false
+    this.awaitingRound = false
+    // T23.09: last round's gates and muzzle bookkeeping; this map's gates arrive with `map_init`.
+    this.effectLights = new EffectLights()
+
+    // Who was in the last world. `remotes` holds `PlayerView`s, so it is emptied rather than dropped — the next
+    // snapshot builds this round's.
+    for (const r of this.remotes.values()) r.view.destroy()
+    this.remotes.clear()
+
+    // The round's clocks.
+    this.roundTime = 0
+    this.serverRoundTime = 0
+    this.timeLeft = 0
+    this.phaseEndsAt = 0
+    this.lastServerTick = 0
+    this.serverDarkness = 0
+    this.drawnDarkness = 0
+    this.vision = 1
+    this.pendingSnapshot = null
+
+    // The local body, as the snapshot will describe it. `BASE_HEALTH` rather
+    // than a literal 100 — the field's own initializer is 0 for this reason.
+    this.health = C().BASE_HEALTH
+    this.meAlive = true
+    this.sightFov = 0
+    this.sightSeen.clear()
+    this.sight = []
+    this.sightLit = []
+    this.battery = 0
+    this.heals = 0
+    this.batteries = 0
+    this.shieldOn = false
+    this.poisoned = false
+    this.irradiated = false
+    this.hasFlashlight = false
+    this.hasBoots = false
+    this.hasWings = false
+    // T22.19: a new round's figures start upright.
+    this.localTrack = null
+    this.remoteTilts.clear()
+    this.remotePushes.clear()
+    this.roundOrigins.clear()
+    this.frameDt = 0
+    this.pendingUses.clear()
+    this.fuel = 0
+    this.fuelShown = 0
+    this.teleportCharge = 0
+    // The new round's bag arrives as `inventory`, after its `map_init`.
+    this.slots = []
+    this.selectedSlot = 0
+    this.serverPos = null
+    this.watchPoint = null
+
+    // The helpers that carry state of their own.
     //
     // `lava` for the reason `fog` is here (T20.13): a burst left running does not
     // stop at the round boundary, and the next match would open vents the server
@@ -817,13 +864,6 @@ export class GameScene extends Phaser.Scene {
     this.lava.clear()
     this.flareClock.clear()
     this.flareFx?.clear()
-    // T22.10B: last round's holes are not this round's, and the core outlives the
-    // scene — so the pull goes too, not only the drawing (`clearVortices`).
-    this.mirror?.clearVortices()
-    // T22.12: nor last round's black hole.
-    this.mirror?.clearBlackHole()
-    // T22.16: nor last round's dead cores — a new map's rocks all pull.
-    this.mirror?.clearCores()
     this.bellEndsTick = null
     this.bellSeq = null
     this.endedAtTick = null
@@ -835,8 +875,6 @@ export class GameScene extends Phaser.Scene {
     this.crosshairAt = null
     this.remoteHealth.clear()
     this.lastFlareQuery = null
-    // A pending probe resolves on its own timeout; the answer would be the old round's.
-    this.probeWaiters.length = 0
     this.vents = []
     this.death.cleared()
   }
@@ -846,6 +884,9 @@ export class GameScene extends Phaser.Scene {
     // does not await `create`, so `update` runs against these fields while the
     // two loads below are still pending.
     this.resetForNewRound()
+    // T23.28: up from the first frame — nothing is painted yet — and lowered by `update` (`coverWanted`).
+    this.loadCover = new LoadCover()
+    this.loadCover.set(true)
 
     await loadAssetManifest(this)
     await runLoader(this)
@@ -859,6 +900,11 @@ export class GameScene extends Phaser.Scene {
 
     this.mirror = new WorldMirror(this.core)
     this.interp = new RemoteInterpolator()
+    // T23.28: every holder of per-round state, in one list (`net/roundReset.ts`); `new_round` runs it.
+    this.roundReset = new RoundReset()
+    this.roundReset.register('mirror', () => this.mirror.resetRound())
+    this.roundReset.register('interp', () => this.interp.reset())
+    this.roundReset.register('scene', () => this.resetRound())
     this.clock = new ClockSync()
     // **Adopt the lobby's socket if there is one** (§E1).
     //
@@ -879,10 +925,20 @@ export class GameScene extends Phaser.Scene {
     void loadWorldRenderer(this).then((m) => {
       if (m) this.worldRenderer = m.createGameWorld(this, this.gameMap())
       this.worldRenderer?.setTerrain(this.terrainFields)
+      // T23.28: loaded or not, it is known now whether a lit terrain has to be painted before `ready`.
+      this.rendererSettled = true
     })
     // §A39 #10: the server has narrated melee, cones, mines and hazards since
     // T11.05 and nothing subscribed. This is the other half.
     this.fx = new OrdnanceFxLayer(this, C().MINE_ARM_TIME)
+    // T23.28: last round's mines and clouds are not this round's.
+    this.roundReset.register('ordnance', () => {
+      const st = this.fx.state
+      st.swings.length = 0
+      st.jets.length = 0
+      st.mines.clear()
+      st.hazards.clear()
+    })
     this.tombstones = new TombstoneLayer(this, C().TOMBSTONE_W, C().TOMBSTONE_H)
     // **Deliberately built here and not by `WorldView`**, unlike the pad and
     // item layers — a departure from §C1's layer-parity rule, so it is written
@@ -951,6 +1007,19 @@ export class GameScene extends Phaser.Scene {
       }
     })
     this.conn.on('map_init', (p) => this.onMapInit(typeof p === 'string' ? p : ''))
+    // T23.28: a restart — the server built a new world and its `map_init` follows. Drop every round's holdings now,
+    // before anything of the new round's arrives, and raise the cover until the new map is painted and the round has
+    // started (`coverWanted`).
+    this.conn.on('new_round', () => {
+      this.roundReset.run()
+      this.awaitingRound = true
+      this.loadCover?.set(true)
+    })
+    // T23.28: a page hidden while it loads draws no frames, so it would never paint and never say `ready` — and
+    // would hold every other player's round until the ready timeout dropped it. Hidden, it has nothing to cover.
+    const onVisibility = (): void => this.trySendReady()
+    document.addEventListener('visibilitychange', onVisibility)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => document.removeEventListener('visibilitychange', onVisibility))
     this.conn.on('snapshot', (p) => this.onSnapshot(typeof p === 'string' ? p : ''))
     // T21.32 item 1: the server's answer to "Play again". Only this makes the
     // button read "Voted".
@@ -961,6 +1030,8 @@ export class GameScene extends Phaser.Scene {
       const p = asRecord(raw)
       const before = this.phase
       this.phase = String(p['phase'] ?? 'lobby') as Phase
+      // T23.28: the round this map belongs to has started — the cover may lift (once the map is painted).
+      if (this.phase === 'warmup' || this.phase === 'playing') this.awaitingRound = false
       // T21.30: the mirror applies the server's input rule for this phase.
       this.core.setPhase(this.phase)
       // **Back to the lobby means back to the title** (T21.32 item 1, `docs/72` §C3:
@@ -1679,6 +1750,29 @@ export class GameScene extends Phaser.Scene {
     return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap }
   }
 
+  /**
+   * T23.28: is the map in force painted? The lit terrain is the world renderer's, and it paints over frames after the
+   * fields install (`TerrainLayer.ready`); until it has, Phaser's flat rock is what shows — the owner's "map with no
+   * textures". No renderer (space draws Phaser's rock, `?world=off`, no WebGL2) has nothing to wait for — once its chunk
+   * has settled, since before that it is not known which.
+   */
+  private mapPainted(): boolean {
+    return this.ready && this.rendererSettled && !(this.worldRenderer?.terrainSwapPending() ?? false)
+  }
+
+  /** T23.28: send `ready` for the map in force, once: when it is painted, or at once on a hidden page (see `create`). */
+  private trySendReady(): void {
+    if (this.readySent || !this.ready) return
+    if (!this.mapPainted() && !document.hidden) return
+    this.readySent = true
+    this.conn.sendRaw('ready', {})
+  }
+
+  /** T23.28: the cover is up until the map is in, painted, `ready` sent, and its round announced. */
+  private coverWanted(): boolean {
+    return !this.ready || !this.readySent || this.awaitingRound
+  }
+
   private onMapInit(b64: string): void {
     if (!b64) return
     const init = this.mirror.applyMapInitB64(b64)
@@ -1774,7 +1868,13 @@ export class GameScene extends Phaser.Scene {
     this.mirror.pushBlackHole()
 
     this.ready = true
-    this.conn.sendRaw('ready', {})
+    // T23.28: **`ready` once this map is painted**, not on decode (`trySendReady`, from `update`): the server starts
+    // the round on every body's, so a round never starts on a screen still showing an untextured map. A first round's
+    // map arrives in `lobby` and waits for its announcement too; a restart's was flagged by `new_round`. A resync's
+    // (mid-round) waits for neither.
+    this.readySent = false
+    if (this.phase === 'lobby') this.awaitingRound = true
+    this.trySendReady()
     this.setStatus('')
 
     // A snapshot that beat the map is applied now rather than discarded.
@@ -2315,6 +2415,9 @@ export class GameScene extends Phaser.Scene {
       this.fpsTextDue = FPS_READOUT_INTERVAL
       this.writeFpsCounter()
     }
+    // T23.28: the load handshake and its cover, above the `ready` guard — the cover is up exactly while that guard holds.
+    this.trySendReady()
+    this.loadCover?.set(this.coverWanted())
     if (!this.ready) return
     const dt = delta / 1000
     if (!this.ready || !this.world) return
@@ -3432,6 +3535,20 @@ export class GameScene extends Phaser.Scene {
           self.conn.sendRaw('debug_effects', {})
         })
       },
+      /**
+       * e2e only (T23.28, `DEV_PROBE=1`): the server's own round — its phase, round clock, pickups and graves (ids) and
+       * bodies — for a check to count the drawn set against. Null on a timeout.
+       */
+      probeRound(): Promise<unknown> {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(null), 5000)
+          self.probeWaiters.push((server) => {
+            clearTimeout(timer)
+            resolve(server)
+          })
+          self.conn.sendRaw('debug_effects', {})
+        })
+      },
       /** e2e only (§C2, T22.10B): hide the vortex layer for a same-instant control frame. */
       showVortices(on: boolean) {
         self.vortexFx.setHidden(!on)
@@ -3596,6 +3713,19 @@ export class GameScene extends Phaser.Scene {
         const body = self.core.playerState(self.me)
         return {
           ready: self.ready,
+          /**
+           * T23.28: the load handshake, both ends of the cover — whether the element is in the document (`up`), and
+           * the inputs that decide it; `resets` counts the `new_round`s heard, `holders` what each one reset.
+           */
+          cover: {
+            up: self.loadCover?.isUp ?? false,
+            inDom: document.getElementById('load-cover') !== null,
+            readySent: self.readySent,
+            awaitingRound: self.awaitingRound,
+            painted: self.mapPainted(),
+            resets: self.roundReset?.runs ?? 0,
+            holders: self.roundReset?.names ?? [],
+          },
           me: self.me,
           // §F9, at both ends (§A39): the strength the scene walked from the
           // effect's start time, and the alpha the shared layer actually filled

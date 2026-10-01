@@ -1001,6 +1001,22 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                                     "flare": flare.map(|(id, elapsed)| serde_json::json!({
                                         "id": id, "elapsed": elapsed
                                     })),
+                                    // T23.28: the round as the server holds it, for `round-restart` to count
+                                    // the client's drawn pickups and graves against (both ends).
+                                    "phase": w.phase.as_str(),
+                                    "items": w.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+                                    "item_detail": w.items.iter().map(|i| serde_json::json!({
+                                        "id": i.id, "source": format!("{:?}", i.source),
+                                        "x": i.pos.x, "y": i.pos.y, "grounded": i.grounded,
+                                    })).collect::<Vec<_>>(),
+                                    "tombstones": w.tombstones.all().iter().map(|t| t.id).collect::<Vec<_>>(),
+                                    "players": w.players.iter().map(|p| serde_json::json!({
+                                        "id": p.id, "x": p.body.pos.x, "y": p.body.pos.y, "alive": p.alive,
+                                        // T23.28: how many slots the bag fills — `respawn-kit`'s server end.
+                                        "filled": (0..game_core::constants::INVENTORY_SLOTS)
+                                            .filter(|i| p.inventory.slot(*i as u8).is_some())
+                                            .count(),
+                                    })).collect::<Vec<_>>(),
                                 })
                             })
                             .await;
@@ -1854,7 +1870,9 @@ fn catch_up_item(
 /// ribbon and still take the whole burn — nor which lava vents are open. Sent
 /// through the **live** serializer at the ticks and seeds the effect was announced
 /// with (`catch_up_effects`).
-fn catch_up_world(w: &mut game_core::world::World) -> Vec<(&'static str, serde_json::Value)> {
+pub(crate) fn catch_up_world(
+    w: &mut game_core::world::World,
+) -> Vec<(&'static str, serde_json::Value)> {
     let mut out: Vec<(&'static str, serde_json::Value)> =
         w.items.iter().map(|it| catch_up_item(w.tick, it)).collect();
     let tick = w.tick;

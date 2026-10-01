@@ -138,6 +138,9 @@ async fn start_round(room: &RoomHandle, id: u8) {
     room.send(Command::StartWithBots(id));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
+        // T23.28: the client's `ready` for the map, which is what begins the round. Re-sent while waiting: one sent
+        // before the world is built is a lobby's, and a new map clears it.
+        room.send(Command::Ready(id, true));
         let phase = room
             .join_info()
             .await

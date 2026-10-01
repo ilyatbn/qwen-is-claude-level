@@ -277,6 +277,8 @@ async fn a_room_whose_round_went_back_to_the_lobby_is_reaped_when_its_last_human
         );
         wait_for(&inbox, "welcome", 1, "ana");
         wait_for(&inbox, "map_init", 1, "ana");
+        // T23.28: the round waits for her `ready` for the map, as it waits for any client's.
+        c.emit("ready", serde_json::json!({})).expect("emit ready");
         c
     })
     .await

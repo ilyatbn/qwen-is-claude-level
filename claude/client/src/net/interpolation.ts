@@ -100,6 +100,13 @@ export class RemoteInterpolator {
     this.stats.bufferDepth = this.frames.length
   }
 
+  /** T23.28: a new round — the last world's frames would bracket nothing in this one (its clock starts again). */
+  reset(): void {
+    this.frames.length = 0
+    this.cuts.clear()
+    this.stats.bufferDepth = 0
+  }
+
   /**
    * T22.10B: the server relocated `id` on `tick` — a pad or a vortex trip. Between
    * the two snapshots that bracket it the body is **stepped**, never lerped: a lerp

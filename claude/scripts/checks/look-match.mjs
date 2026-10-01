@@ -140,11 +140,17 @@ try {
   console.log(`  match ${SEED_A}: renderer ${A.info.gpu}, tier ${A.info.tier} ${A.info.buffer.join('x')}; atmosphere ${JSON.stringify({ ...A.atmos, occluders: undefined, bloomTarget: undefined })}`)
   if (A.warning === '') ok(`seed ${SEED_A}: the terrain fields came from the worker (no warning)`)
   else fail(`seed ${SEED_A}: the terrain fields warn — got ${JSON.stringify(A.warning)}, want ""`)
+  // T23.28: the cast held empty across the four frames — a new world's own pickups are announced now (they were
+  // never sent to a player seated before the match), and a pickup's figure animates, so with it drawn the frame is
+  // not static and both controls below move (measured: top rows max 117, fg mean 0.08; 0 and 0.000 with the
+  // pickups unannounced). The fog and the grade are whole-frame passes, drawn the same with or without a cast.
+  await pa.evaluate(() => window.__world.setActors([]))
   const on = await frame(pa)
   const noFog = await hide(pa, ['fogBack', 'fogFront'])
   const noGrade = await hide(pa, ['grade'])
   const noFg = await hide(pa, ['fg'])
   await showAll(pa)
+  await pa.evaluate(() => window.__world.setActors(null))
   const W = on.w
   const H = on.h
   let band = { mean: -1 }

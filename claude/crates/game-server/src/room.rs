@@ -651,11 +651,13 @@ struct Seat {
     /// T23.27 (`docs/78` §A1): a spectator's seat — **no body**. Read through `has_body` and nowhere else, so the
     /// world's two doors (`populate_world`, the in-match `Join`) and the cap share one answer.
     spectator: bool,
-    /// Handshake finished, and therefore simulated.
+    /// Handshake finished — **this seat holds the map in force** — and therefore simulated.
     ///
-    /// Set once when `ready` first arrives and **never cleared**: it is what
-    /// `sweep_unready` and `ready_ids` read, so clearing it would drop a player
-    /// from the simulation and then from the room.
+    /// Set when `ready` arrives. **Cleared only when a new map goes out** (T23.28: `install_world` and
+    /// `restart`, through `await_load`), because a client that decoded the last map has not decoded this one: the
+    /// round does not start until every seated body has said so again (`loading`), and `sweep_unready` drops a seat
+    /// that has not within the ready timeout of the new map — the bound on that wait. Never cleared otherwise: it is
+    /// what `sweep_unready` reads, so clearing it mid-round would drop a player from the simulation and the room.
     ready: bool,
     /// §E3's consent: "I agree to start the game I am being shown."
     ///
@@ -917,6 +919,10 @@ pub struct Room {
     /// after the map it was waiting for. `None` while the room is a lobby, which
     /// is also the guard that keeps the sweep out of one.
     world_installed_at: Option<Instant>,
+    /// T23.28: `restart` built a new world whose map nobody has yet — the room task sends `new_round`, the map and
+    /// every inventory, then clears it (`take_restarted`). The first round's map goes out from `install_world`'s
+    /// own call site, so only a restart sets this.
+    restarted: bool,
     lag_warned_at: u32,
     last_checksum_at: f32,
     /// Seated AI players (`docs/70-amendments-v2.md` §A5).
@@ -1160,6 +1166,7 @@ impl Room {
             seats: Seats::default(),
             config,
             world_installed_at: None,
+            restarted: false,
             lag_warned_at: 0,
             last_checksum_at: 0.0,
             bots: Vec::new(),
@@ -1304,9 +1311,47 @@ impl Room {
         // window to decode it.
         self.world_installed_at = Some(Instant::now());
         self.starting = false;
+        self.await_load();
         self.populate_world();
         self.debug_dump();
         self.begin_round();
+    }
+
+    /// T23.28: **a new map went out, so nobody holds it yet.** Every seat but a bot's is unready again; the world is
+    /// parked in `Lobby` (no step, no clock — `tick_once`'s load hold) until every seated **body** has sent `ready`
+    /// for this map, and only then enters `Warmup`. A spectator loads too but never holds the round (`docs/78` §A1).
+    /// Shared by both construction sites, so the first round and a restart start the same way.
+    fn await_load(&mut self) {
+        for s in self.seats.seats.iter_mut().filter(|s| !s.bot) {
+            s.ready = false;
+        }
+    }
+
+    /// T23.28: some seated body has not loaded the map in force — the round may not start (`tick_once`). Bots are
+    /// ready on seating; a seat that never loads is dropped by `sweep_unready`, which is what bounds this.
+    fn loading(&self) -> bool {
+        !self.awaiting_load().is_empty()
+    }
+
+    /// T23.28: the seated bodies whose `ready` for the map in force the round is waiting on (empty: it may start).
+    /// Public for the tests that start a match, which send each of them the `ready` a client sends on loading.
+    pub fn awaiting_load(&self) -> Vec<PlayerId> {
+        // No world, no map in force: a lobby waits on nobody's load.
+        if self.world.is_none() {
+            return Vec::new();
+        }
+        self.seats
+            .seats
+            .iter()
+            .filter(|s| !s.bot && s.has_body() && !s.ready)
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// T23.28: whether a restart built a world since the last call — the room task's cue to send `new_round`, the
+    /// map and the inventories (see `restarted`).
+    pub fn take_restarted(&mut self) -> bool {
+        std::mem::take(&mut self.restarted)
     }
 
     /// Add every seated human to the freshly built world.
@@ -2387,17 +2432,15 @@ impl Room {
             .then(|| self.round.tally(self.human_count()))
     }
 
-    /// Seat bots and enter `Warmup`. The one place a round begins.
+    /// Seat bots. The round itself begins in `tick_once`, once every seated body has the map (T23.28's load hold:
+    /// the world waits in `Lobby` until then, and `Warmup` — its clock and movement — starts there).
     fn begin_round(&mut self) {
         self.seat_bots(self.seed);
-        if let Some(world) = self.world.as_mut() {
-            world.set_phase(game_core::world::RoundPhase::Warmup);
-        }
         tracing::info!(
             target: "game::round",
             humans = self.human_count(),
             bots = self.bots.len(),
-            "round starting"
+            "round built; waiting for every seated body to load the map"
         );
     }
 
@@ -2518,7 +2561,8 @@ impl Room {
 
     /// A player pressed "Start with bots".
     pub fn request_start(&mut self) {
-        if self.phase() == game_core::world::RoundPhase::Lobby {
+        // T23.28: `world.is_none()` too — a world parked in `Lobby` for its load is a match, not a lobby to start.
+        if self.world.is_none() && self.phase() == game_core::world::RoundPhase::Lobby {
             self.round.request_start();
         }
     }
@@ -2600,6 +2644,30 @@ impl Room {
                 self.starts_in = None;
             }
             return events;
+        }
+
+        // T23.28: **the load hold.** A new map is parked in `Lobby` until every seated body has loaded it
+        // (`await_load`). The room's clock runs (one clock, as in a lobby: the world's tick is the room's) and nothing
+        // else does — no step, no bots, no round clock, so nobody moves and no warmup is spent on a loading screen.
+        // The tick it releases on announces `Warmup`, which is what lifts the clients' loading cover.
+        if self
+            .world
+            .as_ref()
+            .is_some_and(|w| w.phase == game_core::world::RoundPhase::Lobby)
+        {
+            let loading = self.loading();
+            let Some(world) = self.world.as_mut() else {
+                return Vec::new();
+            };
+            world.tick += 1;
+            if loading {
+                return Vec::new();
+            }
+            // The release tick announces and does not step: its `round_state` is returned here, so it is flushed
+            // ahead of anything round two does (the room task flushes the world's queue first, then these).
+            world.set_phase(game_core::world::RoundPhase::Warmup);
+            tracing::info!(target: "game::round", tick = world.tick, "every seated body has the map; round starting");
+            return world.drain_events();
         }
 
         self.drive_bots(dt);
@@ -2687,6 +2755,15 @@ impl Room {
             }
         }
         for id in respawned {
+            // T23.28: **tell them what they respawned holding.** `inventory` describes changes and the kit is granted
+            // here, after the step — `give` pushes no event — so the client showed the death's empty bag until the
+            // next change it happened to make (the owner: "empty until I switch from 1 to 2"). One event after every
+            // grant below: its payload is read off the world when the batch is flushed, so it carries all of them.
+            let tick = self.world.as_ref().map_or(0, |w| w.tick);
+            events.push(game_core::world::GameEvent::Inventory {
+                tick,
+                player_id: id,
+            });
             self.grant_start_kit(id);
             self.apply_dev_battery(id);
         }
@@ -2968,10 +3045,19 @@ impl Room {
         if self.config.dev_round_clock > 0.0 {
             world.start_clock_at(self.config.dev_round_clock);
         }
+        // T23.28: parked in `Lobby` until every seated body has this map, exactly as `generate_world_task` parks the
+        // first round's — `tick_once` releases it into `Warmup`. Drained at once: the clients are in round one's
+        // `Ended` and a `lobby` round_state reads to them as "back to the title" (`GameScene`'s handler).
+        world.set_phase(game_core::world::RoundPhase::Lobby);
+        let _ = world.drain_events();
         self.world = Some(world);
         // A restart sends a fresh `map_init`, so the handshake window restarts
         // with it — see the field's own comment.
         self.world_installed_at = Some(Instant::now());
+        // T23.28: **and it does send one now** — the room task, on `take_restarted`. Before, nothing did: the clients
+        // kept drawing round one's map (and its graves and pickups) until a mask checksum disagreed seconds later.
+        self.restarted = true;
+        self.await_load();
         // §E2/§E4, unconditionally. There are three assignments to `self.world`
         // and every one of them must leave the bit agreeing with it, or
         // `has_started` describes a room that no longer exists.
@@ -2999,20 +3085,9 @@ impl Room {
         }
         self.populate_world();
         self.seat_bots(seed);
-        if let Some(world) = self.world.as_mut() {
-            // **`announce_phase`, not `set_phase`** (T21.13).
-            //
-            // The world above is freshly built and a world is *born* in
-            // `Warmup`, so `set_phase(Warmup)` was a no-op and round two
-            // announced nothing: for the whole warmup the client held
-            // `phase == ended` and round one's deadline, which is the "play
-            // again" panel over a live round and a clock that jumps back up.
-            // `set_phase` is a transition and correctly refuses to fake one;
-            // what this needs is to *state* the phase, which is a different
-            // verb.
-            debug_assert_eq!(world.phase, game_core::world::RoundPhase::Warmup);
-            world.announce_phase();
-        }
+        // (T21.13's `announce_phase` was here: a world born in `Warmup` announced nothing on its own. T23.28 parks it in
+        // `Lobby` above, so the release in `tick_once` is a real `set_phase(Warmup)` transition and announces itself —
+        // with a deadline counted from the tick the round really starts, not from the map going out.)
         // The controller outlives the world, and the new world's clock starts at
         // zero — see `RoundController::step`, which resets its own rebroadcast
         // anchor when it sees the clock go backwards.
@@ -3161,6 +3236,38 @@ pub fn spawn_room_with(
     }
 }
 
+/// T23.28: **what a new world already has on the ground, to everyone it was just sent to** — `place_initial`'s pickups
+/// are put down inside `World::new`, before any event buffer exists, so no `item_spawn` ever announces them. A
+/// mid-round joiner was sent them by `seat`'s catch-up (`session::catch_up_world`); everybody seated when the world was
+/// built — every player of a first round, and everyone at a restart — was sent nothing, and the server's pickups were
+/// invisible (measured by `round-restart`: server items `0,4,5,6,7,9,10` against the client's `10`). The same
+/// function, so the two lists cannot differ; emitted directly after `map_init`, as it is.
+fn send_the_ground(io: &SocketIo, sessions: &Arc<SessionMap>, room: &mut Room) {
+    let Some(world) = room.world_mut() else {
+        return;
+    };
+    let events = crate::session::catch_up_world(world);
+    for sid in sessions.sids() {
+        if let Some(s) = io.get_socket(sid) {
+            for (name, payload) in &events {
+                let _ = s.emit(*name, payload);
+            }
+        }
+    }
+}
+
+/// Tell every socket who the bots are, the moment a world seats them (`install_world`, `restart`).
+///
+/// Humans were sent `welcome` into a lobby with no bots in it, so this is the only thing that ever tells them who they
+/// are playing against. T23.28: on the map's arrival, not the round's start — the round now waits for every body to
+/// load the map, and the names belong on the scoreboard before the cover lifts (a restart's bots are new seats, and
+/// were never announced at all before this).
+fn announce_bots(io: &SocketIo, sessions: &Arc<SessionMap>, room: &Room) {
+    for (id, name, look) in room.seated_bots() {
+        crate::events::emit_player_join(io, sessions, room.tick(), id, &name, look);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     io: SocketIo,
@@ -3223,6 +3330,27 @@ async fn run(
                 // anything a restart produced) come back from `tick_once` and are
                 // flushed with the world's, in that order.
                 let round_events = room.tick_once(SIM_DT);
+
+                // T23.28: a restart built a new world. **Tell every socket, then send the map, then what they hold** —
+                // in that order and directly (as `broadcast_map_init` is), before this tick's events: `new_round` is
+                // the client's cue to drop round one's graves, pickups and clocks and raise its loading cover, so it
+                // must not land after anything of round two's. Its `ready` for this map is what starts the round.
+                if room.take_restarted() {
+                    if let Some(world) = room.world() {
+                        let tick = world.tick;
+                        for sid in sessions.sids() {
+                            if let Some(s) = io.get_socket(sid) {
+                                let _ = s.emit("new_round", &serde_json::json!({ "tick": tick }));
+                            }
+                        }
+                        let bytes =
+                            crate::codec::encode_map_init_at(&world.map, world.carve_seq());
+                        crate::events::broadcast_map_init(&io, &sessions, &bytes);
+                        crate::events::broadcast_inventories(&io, &sessions, world);
+                    }
+                    send_the_ground(&io, &sessions, &mut room);
+                    announce_bots(&io, &sessions, &room);
+                }
 
                 // §E1: the tick asked for a world and cannot build one — the
                 // generator is 0.3–1.1 s and this loop has 16.7 ms. Off the tick
@@ -3288,25 +3416,19 @@ async fn run(
                         // in a lobby is armed on the server and empty on screen.
                         crate::events::broadcast_inventories(&io, &sessions, world);
                     }
+                    send_the_ground(&io, &sessions, &mut room);
+                    announce_bots(&io, &sessions, &room);
                 }
 
                 let in_lobby = room.phase() == game_core::world::RoundPhase::Lobby;
+                // T23.28: a restart parks its world in `Lobby` for the load, and the world's tick starts again from 0
+                // there — re-based on entering as on leaving, or every second of round two logged a `tick overrun`
+                // (measured: `lagging=3111` once a second, for the whole round).
+                if in_lobby && !was_lobby {
+                    start = Instant::now();
+                }
                 if was_lobby && !in_lobby {
                     start = Instant::now();
-                    // The round just began, which is when `begin_round` seats
-                    // the bots — with humans already connected. Their `welcome`
-                    // was sent to an empty lobby, so this is the only thing that
-                    // ever tells them who they are playing against.
-                    for (id, name, look) in room.seated_bots() {
-                        crate::events::emit_player_join(
-                            &io,
-                            &sessions,
-                            room.tick(),
-                            id,
-                            &name,
-                            look,
-                        );
-                    }
                 }
                 was_lobby = in_lobby;
                 // `DEV_READY_TIMEOUT`, which defaults to `READY_TIMEOUT_SECS`.
@@ -3670,6 +3792,9 @@ mod tests {
         room.apply(Command::Ready(id, true));
         room.request_start();
         room.tick_inline(game_core::constants::SIM_DT);
+        // T23.28: the client's `ready` for the map, which is what starts the round.
+        room.apply(Command::Ready(id, true));
+        room.tick_inline(game_core::constants::SIM_DT);
         room.world_for_test()
             .set_phase(game_core::world::RoundPhase::Playing);
         assert!(
@@ -3733,6 +3858,9 @@ mod tests {
             });
             room.apply(Command::Ready(id, true));
             room.request_start();
+            room.tick_inline(SIM_DT);
+            // T23.28: the client's `ready` for the map, which is what starts the round.
+            room.apply(Command::Ready(id, true));
             room.tick_inline(SIM_DT);
             room.world_for_test()
                 .set_phase(game_core::world::RoundPhase::Playing);
@@ -4426,15 +4554,242 @@ mod tests {
 
         // The control: one silent human, the same round — back to the lobby.
         let mut room = Room::new(small(2, 1.0));
-        join(&mut room, "silent");
+        let silent = join(&mut room, "silent");
         spectate(&mut room, "watcher");
         assert!(!room.watched());
         room.request_start();
         room.tick_inline(SIM_DT);
+        // T23.28: silent in the vote, not in the handshake — a client always says it has the map.
+        room.apply(Command::Ready(silent, true));
         assert!(to(&mut room, RoundPhase::Ended, false));
+        // `Lobby` and **no world**: T23.28 parks a restarted world in `Lobby` for its load, so the phase alone cannot
+        // tell "went back to the lobby" from "restarted".
         assert!(
-            to(&mut room, RoundPhase::Lobby, true),
+            to(&mut room, RoundPhase::Lobby, true) && room.world().is_none(),
             "the control: a silent human's room restarted"
+        );
+    }
+
+    /// T23.28: **a new map holds the round until every seated body has loaded it — the first round and a restart
+    /// alike.** While a human has not sent `ready` for the map in force the world is parked in `Lobby`: its tick runs
+    /// (one clock) and nothing else — no round clock, and nobody moves, a bot included. A spectator who has not loaded
+    /// never holds it (`docs/78` §A1). The control is the release itself: the human's `ready`, and the round enters
+    /// `Warmup` on the next tick and its clock and bodies move. Then a restart: the same hold, with the map flagged for
+    /// the room task to send (`take_restarted`).
+    #[test]
+    fn a_new_map_holds_the_round_until_every_body_has_loaded_it() {
+        use game_core::world::RoundPhase;
+        let mut room = Room::new(small(2, 1.0));
+        let human = join(&mut room, "ana");
+        let watcher = spectate(&mut room, "watcher");
+        // A private lobby's tick-box sets the latch too; it is not a load of a map that does not exist yet.
+        room.apply(Command::Ready(human, true));
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        assert!(room.world().is_some(), "the match did not build its world");
+        assert!(
+            !room.take_restarted(),
+            "the first round's map is sent by install's own call site"
+        );
+        let snap = |room: &mut Room| {
+            let w = room.world_for_test();
+            let bodies: Vec<_> = w.players.iter().map(|p| (p.id, p.body.pos)).collect();
+            (w.tick, w.round_time, w.phase, bodies)
+        };
+        let held = |room: &mut Room, label: &str| {
+            let (t0, rt0, _, b0) = snap(room);
+            assert!(
+                b0.len() >= 2,
+                "{label}: want the human and a bot in the world, got {b0:?}"
+            );
+            for _ in 0..(2.0 / SIM_DT) as usize {
+                room.tick_inline(SIM_DT);
+            }
+            let (t1, rt1, ph1, b1) = snap(room);
+            assert_eq!(
+                ph1,
+                RoundPhase::Lobby,
+                "{label}: the round started before the human loaded the map"
+            );
+            assert!(t1 > t0, "{label}: the room's clock stopped during the hold");
+            assert_eq!(rt1, rt0, "{label}: the round clock ran during the hold");
+            assert_eq!(b1, b0, "{label}: a body moved during the hold");
+        };
+        held(&mut room, "first round");
+        // The spectator loading changes nothing; the human loading releases it.
+        room.apply(Command::Ready(watcher, true));
+        room.tick_inline(SIM_DT);
+        assert_eq!(
+            room.phase(),
+            RoundPhase::Lobby,
+            "the spectator's ready started the round"
+        );
+        room.apply(Command::Ready(human, true));
+        room.tick_inline(SIM_DT);
+        assert_eq!(
+            room.phase(),
+            RoundPhase::Warmup,
+            "the control: every body loaded and the round did not start"
+        );
+        let (_, rt0, _, b0) = snap(&mut room);
+        for _ in 0..(2.0 / SIM_DT) as usize {
+            room.tick_inline(SIM_DT);
+        }
+        let (_, rt1, _, b1) = snap(&mut room);
+        assert!(
+            rt1 > rt0,
+            "the control: the round clock does not run once released"
+        );
+        assert_ne!(b1, b0, "the control: nothing fell or moved once released (the hold's assertion would be vacuous)");
+
+        // The restart: the same hold, and the map flagged for sending.
+        let mut guard = 0;
+        while room.phase() != RoundPhase::Ended {
+            room.tick_inline(SIM_DT);
+            guard += 1;
+            assert!(guard < 100_000, "the round never ended");
+        }
+        room.apply(Command::VoteRestart(human, true, oneshot::channel().0));
+        while room.phase() == RoundPhase::Ended {
+            room.tick_inline(SIM_DT);
+            guard += 1;
+            assert!(guard < 200_000, "the restart never came");
+        }
+        assert!(
+            room.world().is_some(),
+            "the vote went back to the lobby, not a restart"
+        );
+        assert!(
+            room.take_restarted(),
+            "a restart did not flag its map for sending"
+        );
+        assert!(!room.take_restarted(), "the flag is taken once");
+        held(&mut room, "restart");
+        room.apply(Command::Ready(human, true));
+        room.tick_inline(SIM_DT);
+        assert_eq!(
+            room.phase(),
+            RoundPhase::Warmup,
+            "the restart did not start once the human loaded the map"
+        );
+    }
+
+    /// T23.28: **a restart starts with only its own items** — the world is built from nothing but the seed, so nothing
+    /// of round one's can be in it. Counted against a world built fresh from the same seed (the control end), after
+    /// round one had items of its own to carry (the precondition, or "none carried" would be vacuous).
+    #[test]
+    fn a_restarted_world_holds_only_its_own_items() {
+        let mut room = Room::new(small(0, 60.0));
+        let human = join(&mut room, "ana");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        room.apply(Command::Ready(human, true));
+        // Not the initial pickups (a fresh world has those too): one round one spawned for itself.
+        while !room
+            .world_for_test()
+            .items
+            .iter()
+            .any(|i| i.source != game_core::items::world::SpawnSource::Initial)
+        {
+            room.tick_inline(SIM_DT);
+            assert!(
+                room.world_for_test().round_time < 120.0,
+                "round one never spawned an item"
+            );
+        }
+        let seed = 0x5EED_0028;
+        room.restart(seed);
+        let ours: Vec<_> = room
+            .world_for_test()
+            .items
+            .iter()
+            .map(|i| (i.id, i.item))
+            .collect();
+        let fresh = World::with_gravity(
+            seed,
+            room.config.map_scale,
+            room.buried_secret,
+            room.config.map_generator,
+            room.config.gravity,
+        );
+        let theirs: Vec<_> = fresh.items.iter().map(|i| (i.id, i.item)).collect();
+        assert_eq!(
+            ours, theirs,
+            "the restarted world's items are not a fresh world's"
+        );
+    }
+
+    /// T23.28 (owner, 2026-10-01: "in full weapons mode you respawn and your inventory is empty until you click
+    /// something"): **a respawn announces the kit it was granted.** The kit is given after the step by `give`, which
+    /// pushes no event, so nothing told the client. The death's own `inventory` (an empty bag) is the control: the
+    /// last word the client had before this.
+    #[test]
+    fn a_respawn_announces_the_start_kit() {
+        use game_core::world::GameEvent;
+        let cfg = Arc::new(Config {
+            bot_count: 0,
+            map_scale: game_core::constants::MapScale::Small,
+            weather_mode: game_core::world::WeatherMode::Off,
+            start_kit: game_core::constants::StartKit::All,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        let id = join(&mut room, "ana");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        room.apply(Command::Ready(id, true));
+        room.tick_inline(SIM_DT);
+        let kit = |room: &mut Room| {
+            crate::events::inventory_payload(room.world_for_test(), id)
+                .and_then(|v| {
+                    v["slots"]
+                        .as_array()
+                        .map(|s| s.iter().filter(|x| !x.is_null()).count())
+                })
+                .unwrap_or(0)
+        };
+        let armed = kit(&mut room);
+        assert!(
+            armed > 1,
+            "precondition: the kit was not granted at the start ({armed} slots)"
+        );
+        let now = room.world_for_test().round_time;
+        let w = room.world_for_test();
+        let dropped = w
+            .player_mut(id)
+            .expect("seated")
+            .die(game_core::player::state::DeathCause::Weather, now);
+        assert!(
+            !dropped.is_empty(),
+            "precondition: the death dropped nothing"
+        );
+        assert_eq!(
+            kit(&mut room),
+            0,
+            "the control: a corpse holds nothing (the shovel is re-issued at respawn)"
+        );
+        let mut announced = false;
+        for _ in 0..((game_core::constants::RESPAWN_DELAY + 2.0) / SIM_DT) as usize {
+            let round = room.tick_inline(SIM_DT);
+            let world = room.world_for_test().drain_events();
+            let respawned = world
+                .iter()
+                .any(|e| matches!(e, GameEvent::Respawn { id: r, .. } if *r == id));
+            if respawned {
+                announced = round.iter().chain(world.iter()).any(
+                    |e| matches!(e, GameEvent::Inventory { player_id, .. } if *player_id == id),
+                );
+                break;
+            }
+        }
+        assert_eq!(
+            kit(&mut room),
+            armed,
+            "the respawn did not re-grant the kit"
+        );
+        assert!(
+            announced,
+            "the respawn granted the kit and sent no `inventory` — the client shows an empty bag"
         );
     }
 }
