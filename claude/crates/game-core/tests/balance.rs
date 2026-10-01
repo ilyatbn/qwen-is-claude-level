@@ -2161,6 +2161,9 @@ fn the_balance_floors_record_their_basis() {
         // quotation itself; this guards that the numbers behind it are written
         // down here rather than left to the reader to go and find.
         "WEAPON_WAIT_CEILING_S",
+        // T23.26 D: the before the stuck and kill claims are made against.
+        "STUCK_BEFORE_S_PER_MIN",
+        "KILLS_BEFORE_PER_ROUND",
     ] {
         let decl = format!("const {name}");
         let i = src
@@ -2956,6 +2959,21 @@ fn load_control_ms() -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
+/// T23.26's "before": seconds a bot spent pressing sideways without moving, per
+/// bot-minute, in [`bot_terrain_report`]'s population — at step 3 (the shared drive, the
+/// planner built, no follower wired). Measured: 39.0 (6145 s over 158 bot-minutes; per
+/// seed 887/590/710/556/864/1002/887/651). After the follower and cover it measured 3.9 —
+/// a margin of 2.5x under the ceiling [`STUCK_FALL_FACTOR`] sets.
+const STUCK_BEFORE_S_PER_MIN: f32 = 39.0;
+
+/// T23.26 D: the stuck time must fall by this factor — stated before the "after" was
+/// known to clear it by much (step 4 measured 4.3x, step 5 6.1x).
+const STUCK_FALL_FACTOR: f32 = 4.0;
+
+/// T23.26's "before" kills per round in the same population: "kills per round must not
+/// fall". Measured: 2.25 at step 3 (per seed 1/6/3/3/2/0/0/3); 8.00 after (margin 3.6x).
+const KILLS_BEFORE_PER_ROUND: f32 = 2.25;
+
 /// One T23.26 population round: `BOT_COUNT_DEFAULT` bots at `BOT_SKILL_DEFAULT`, the
 /// shipping map scale, a full `ROUND_SECONDS`, everything natural (spawns, weather).
 #[derive(Default)]
@@ -3012,7 +3030,9 @@ fn terrain_round(seed: u64) -> TerrainRound {
 /// driving those bots costs a server tick: µs of the bots' half (think + commands) and
 /// of the whole tick, mean and p99, `SEEDS` × 20 s after 10 s warm. The planner's work
 /// is a node **count** per tick, so this is the only place its wall-clock cost is seen.
-/// Prints; asserts only its controls (the load, and that the bots lived and moved).
+/// Asserts its controls (the load, and that the bots lived and moved) and T23.26 D's two
+/// claims: stuck time under [`STUCK_BEFORE_S_PER_MIN`] / [`STUCK_FALL_FACTOR`], kills per
+/// round at least [`KILLS_BEFORE_PER_ROUND`].
 ///
 /// `cargo test -p game-core --release --test balance bot_terrain_report -- --ignored --nocapture`
 #[test]
@@ -3115,6 +3135,18 @@ fn bot_terrain_report() {
     assert!(
         arrived > 0.0,
         "control: no bot reached anything — not a round of bots playing"
+    );
+    // T23.26 D's two claims, against the measured "before".
+    let stuck = stuck_s / bot_min.max(1e-6);
+    assert!(
+        stuck <= STUCK_BEFORE_S_PER_MIN / STUCK_FALL_FACTOR,
+        "bots press without moving {stuck:.1} s per bot-minute — the route was to cut the \
+         {STUCK_BEFORE_S_PER_MIN} before by {STUCK_FALL_FACTOR}x"
+    );
+    let kills = sum(|r| r.kills) / n;
+    assert!(
+        kills >= KILLS_BEFORE_PER_ROUND,
+        "{kills:.2} kills a round, under the {KILLS_BEFORE_PER_ROUND} before routes"
     );
     let drift = (after - before).abs() / before.max(1.0);
     println!(

@@ -502,9 +502,11 @@ impl Bot {
         let target = match self.goal {
             Goal::Item(_) => route::item_target(aim_at),
             Goal::Wander => route::wander_target(aim_at),
-            // An enemy the generous shot line already reaches is fought where it is
-            // (every weapon digs, §A3); the route is for one behind a mountain.
-            Goal::Enemy(_) if !self.reachable(world, pos, aim_at) => {
+            // An enemy with rock between: route to where the fight can be seen — a node
+            // within the weapon's hold with a clear line. The shot rule still fires
+            // through soft cover meanwhile (`reachable`, every weapon digs, §A3), but a bot
+            // standing at a pillar plinking at it is what watching it showed (T23.26).
+            Goal::Enemy(_) if !nav::Grid::new(&world.map).clear(pos, aim_at) => {
                 route::enemy_target(aim_at, self.hold_off(world))
             }
             // T23.26 C: a meteor shower is sat out under rock; a hurt bot breaks contact
