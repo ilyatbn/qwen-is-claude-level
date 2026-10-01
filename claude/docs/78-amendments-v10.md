@@ -33,9 +33,23 @@ or to hide from incoming players or meteors."*
   explore; the route decides *how to get there*.
 - **Reachability is a route, not a line of sight.** An item or enemy behind rock is a target when a route to it —
   digging included — costs less than a bound; a line of sight is still required to *shoot*.
-- **Cover.** A bot takes cover under rock from an announced or falling meteor shower, and a hurt bot breaks contact
+- **Cover.** ~~A bot takes cover under rock from an announced or falling meteor shower~~ (struck 2026-10-01, see
+  §A3), and a hurt bot breaks contact
   toward cover (digging in if none is near) rather than only away; it re-engages once healed. §E10's retreat stands
   where no cover is reachable. Frenzied bots (`DEV_BOT_FRENZY`) never take cover.
 - Unchanged: everything in `game-core`, deterministic, seeded; the search's per-tick work is bounded by a **count**,
   never by a clock.
 Task: `T23.26`.
+
+## A3 — Bots dodge meteors on the move; the jetpack is a tank (narrows §A2)
+
+**Owner, 2026-10-01:** *"if you taught them to hide i dont like it they should still be moving and attempting to dodge
+meteors (not always succeeding) … they should know to wait to recharge it a bit or go a different direction or give up
+and maybe find a teleport to use."*
+
+- During a meteor shower a bot **keeps its goal** and steers away from predicted impacts, with a skill-scaled lag so
+  some are hit. It does not hide or dig in because of a shower.
+- A bot never presses the jetpack for a climb its tank cannot finish: it waits on safe ground to refuel, takes
+  another route, or gives the goal up. **Teleport gates are routes** a bot may take.
+- A bot with wings hunts and shops with them; hovering without a goal is a defect.
+Task: `T23.26C`.

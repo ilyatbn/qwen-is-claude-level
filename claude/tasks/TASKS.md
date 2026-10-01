@@ -869,6 +869,8 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.27C](M23/T23.27C-what-the-spectate-review-found.md) — What the spectate review found — a spectator can still start a lobby or send item commands (one guard), watched-match replays, check legs that cannot fail
 - [ ] [T23.26](M23/T23.26-bots-that-read-the-terrain.md) — Bots that read the terrain — plan a route, jetpack over walls, dig through, take cover from meteors (owner ask) — 2026-10-01: A–D landed (ef37f2e…1496ed8): stuck 39→3.9 s/bot-min, reach 31→61 %, kills/round 2.25→8.0; **open: the owner's watch**
 - [ ] [T23.26B](M23/T23.26B-re-derive-the-bot-guards.md) — Re-derive the balance guards smarter bots broke; route winged/space bots; split nav.rs; the owner's watch notes
+- [ ] [T23.26C](M23/T23.26C-bots-keep-moving.md) — Bots keep moving: dodge meteors (no hiding), winged bots hunt, the jetpack is a tank (wait, re-route, give up, use a gate); learn from the owner's recorded play
+- [ ] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
