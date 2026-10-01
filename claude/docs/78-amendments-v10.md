@@ -53,3 +53,16 @@ and maybe find a teleport to use."*
   another route, or gives the goal up. **Teleport gates are routes** a bot may take.
 - A bot with wings hunts and shops with them; hovering without a goal is a defect.
 Task: `T23.26C`.
+
+## A4 — A round starts when everyone has it loaded (extends `docs/40`'s events)
+
+**Owner, 2026-10-01:** *"it should first load fully, and only then the players should see it and the round should start."*
+
+- A restart sends **`new_round`** (new wire event, added to `docs/40`'s list by this section), then the map, every
+  seat's inventory, the ground items and the bots — the same as a first round. Clients drop every per-round thing on
+  `new_round`.
+- Every seat's `ready` is cleared when a map goes out; the room does not step (no clock, no movement, no bots) until
+  **every seated body** is ready, bounded by `READY_TIMEOUT`. Spectators never hold a round. Clients load behind a
+  cover and lift it when the round starts.
+- A respawn sends the player's inventory.
+Task: `T23.28`.
