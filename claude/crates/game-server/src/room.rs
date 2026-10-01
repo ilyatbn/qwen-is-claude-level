@@ -3042,63 +3042,18 @@ impl Room {
         if self.bots.is_empty() {
             return;
         }
-        let Some(world) = self.world.as_ref() else {
-            return;
-        };
-        let now = world.round_time;
-        let mut uses: Vec<(PlayerId, u8)> = Vec::new();
-        let mut selects: Vec<(PlayerId, u8)> = Vec::new();
-        let mut fires: Vec<PlayerId> = Vec::new();
-        // Split the borrow: `think` reads the world, so it cannot run while the
-        // world is mutably borrowed for `queue_input`.
-        let mut inputs: Vec<(PlayerId, game_core::player::input::Input)> =
-            Vec::with_capacity(self.bots.len());
-        for bot in &mut self.bots {
-            let input = bot.think(world, now, dt);
-            if let Some(slot) = bot.wants_use() {
-                uses.push((bot.player, slot));
-            }
-            // Selection is a command too (`docs/30` §4), for the same reason
-            // firing is: nothing in `Input` carries it. Without this the only
-            // thing that ever changed a bot's selection was the inventory
-            // auto-advancing on an empty stack, so a bot could not switch to a
-            // better weapon or away from an uncharged energy one.
-            if let Some(slot) = bot.wants_select() {
-                selects.push((bot.player, slot));
-            }
-            // Firing is a *command*, not a button the sim reads: a human's
-            // client sends `fire` alongside its input (`docs/30` §4), and
-            // nothing anywhere consumes `Input`'s FIRE bit — `fire_pressed` is
-            // derived in `input.rs` and read by no production code. A bot has no
-            // client, so the room has to send that command on its behalf, the
-            // same way it does for `wants_use`.
-            //
-            // Without this the bots had never fired a shot: measured at 16,861
-            // trigger pulls across five rounds for zero damage and zero
-            // cooldown rejections, which is what a fire path that is never
-            // reached looks like from the outside.
-            if input.buttons & game_core::player::input::button::FIRE != 0 {
-                fires.push(bot.player);
-            }
-            inputs.push((bot.player, input));
-        }
         let Some(world) = self.world.as_mut() else {
             return;
         };
-        for (id, input) in inputs {
-            world.queue_input(id, input);
-        }
-        // Select before use and before fire: a bot that just picked up a better
-        // weapon should fire *that* one this tick, not next tick.
-        for (id, slot) in selects {
-            world.select_slot(id, slot);
-        }
-        for (id, slot) in uses {
-            let _ = world.use_item(id, slot, now);
-        }
-        for id in fires {
-            if let Err(e) = world.fire(id, now) {
-                tracing::debug!(target: "game::weapons", player = id, reason = ?e, "bot fire rejected");
+        let now = world.round_time;
+        // One shared sequence (T23.26, `game_core::bots::drive`): every bot thinks on
+        // the same world, then its input is queued and its select, use and fire
+        // commands applied, in that order. Firing and selecting are *commands* a bot
+        // has no client to send (`docs/30` §4) — without the room sending them the
+        // bots once pulled the trigger 16,861 times for zero damage.
+        for d in game_core::bots::drive(world, &mut self.bots, now, dt) {
+            if let Some(Err(e)) = d.fired {
+                tracing::debug!(target: "game::weapons", player = d.player, reason = ?e, "bot fire rejected");
             }
         }
     }

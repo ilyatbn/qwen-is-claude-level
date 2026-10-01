@@ -1177,17 +1177,8 @@ mod tests {
             let (mut swings, mut closest) = (0u32, f32::MAX);
             for t in 0..180 {
                 let now = t as f32 * SIM_DT;
-                let inp = b.think(&w, now, SIM_DT);
-                w.queue_input(1, inp);
-                if let Some(slot) = b.wants_select() {
-                    w.select_slot(1, slot);
-                }
-                let shovel = w.player(1).is_some_and(|p| {
-                    p.inventory
-                        .slot(p.inventory.selected())
-                        .is_some_and(|s| s.item == SHOVEL)
-                });
-                if inp.buttons & button::FIRE != 0 && shovel && w.fire(1, now).is_ok() {
+                let d = crate::bots::drive(&mut w, std::slice::from_mut(&mut b), now, SIM_DT)[0];
+                if d.held == Some(SHOVEL) && d.fired.is_some_and(|r| r.is_ok()) {
                     swings += 1;
                 }
                 // The enemy is a post: kept alive and in place.

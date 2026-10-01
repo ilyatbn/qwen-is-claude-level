@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use game_core::bots::Bot;
+use game_core::bots::{drive, Bot};
 use game_core::constants::{
     GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE,
     BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
@@ -32,7 +32,6 @@ use game_core::constants::{
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
-use game_core::player::input::button;
 use game_core::player::state::DeathCause;
 use game_core::weapons::defs::def;
 use game_core::world::{give, GameEvent, RoundPhase, World};
@@ -159,19 +158,7 @@ fn run_under(seed: u64, hold: Option<ItemId>, seconds: f32, gravity: GravityMode
                 w.items.remove(id);
             }
         }
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-            if let Some(slot) = b.wants_use() {
-                let _ = w.use_item(b.player, slot, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
 
         // Denial, measured from the world rather than from a damage event —
@@ -573,19 +560,7 @@ fn run_space(seed: u64, seconds: f32) -> SpaceRound {
     let _ = w.drain_events();
     for t in 0..(seconds / SIM_DT) as u32 {
         let now = t as f32 * SIM_DT;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-            if let Some(slot) = b.wants_use() {
-                let _ = w.use_item(b.player, slot, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
         let now = w.round_time;
         for p in w.players.iter().filter(|p| p.alive) {
@@ -840,18 +815,11 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            let burst = w
-                .player(b.player)
-                .filter(|p| p.alive)
-                .and_then(|p| p.inventory.slot(p.inventory.selected()))
-                .and_then(|st| def_item(st.item))
-                .and_then(|d| match d.kind {
+        for d in drive(&mut w, &mut bots, now, SIM_DT) {
+            let burst = d
+                .held
+                .and_then(def_item)
+                .and_then(|it| match it.kind {
                     ItemKind::Weapon(wid) => def(wid),
                     _ => None,
                 })
@@ -860,16 +828,13 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
             let zone =
                 flames || matches!(burst, Some(game_core::weapons::defs::Burst::Zone { .. }));
             r.zone_held += u32::from(zone);
-            if inp.buttons & button::FIRE != 0 {
+            if let Some(fired) = d.fired {
                 r.wanted += 1;
-                if w.fire(b.player, now).is_ok() {
+                if fired.is_ok() {
                     r.shots += 1;
                     r.zone_shots += u32::from(zone);
                     r.flame_shots += u32::from(flames);
                 }
-            }
-            if let Some(slot) = b.wants_use() {
-                let _ = w.use_item(b.player, slot, now);
             }
         }
         // Who is winged as the tick starts: a trip takes the wings, and a death drops them.
@@ -1702,16 +1667,7 @@ fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
     let ticks = (seconds / SIM_DT) as u32;
     for t in 0..ticks {
         let now = t as f32 * SIM_DT;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
         d.live_peak = d.live_peak.max(w.items.iter().count());
         for e in w.drain_events() {
@@ -1908,19 +1864,7 @@ fn encounters(seed: u64, scale: MapScale, bot_count: usize, seconds: f32) -> Enc
     r.ticks = (seconds / SIM_DT) as u32;
     for t in 0..r.ticks {
         let now = t as f32 * SIM_DT;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-            if let Some(slot) = b.wants_use() {
-                let _ = w.use_item(b.player, slot, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
 
         let live: Vec<Vec2> = bots
@@ -2363,16 +2307,7 @@ fn population(seed: u64, seconds: f32, scale: MapScale) -> Population {
     let ticks = (seconds / SIM_DT) as u32;
     for t in 0..ticks {
         let now = t as f32 * SIM_DT;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
 
         // Who was picked up this tick, so a pickup is not attributed to the cap.
@@ -2824,19 +2759,7 @@ fn run_rock_round(seed: u64, scale: MapScale) -> RockRound {
     };
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
-        for b in bots.iter_mut() {
-            let inp = b.think(&w, now, SIM_DT);
-            w.queue_input(b.player, inp);
-            if let Some(slot) = b.wants_select() {
-                w.select_slot(b.player, slot);
-            }
-            if inp.buttons & button::FIRE != 0 {
-                let _ = w.fire(b.player, now);
-            }
-            if let Some(slot) = b.wants_use() {
-                let _ = w.use_item(b.player, slot, now);
-            }
-        }
+        drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
         let events = w.drain_events();
         let hole: Vec<(i32, i32)> = events
@@ -3061,33 +2984,7 @@ fn bot_terrain_report() {
         for t in 0..(warm + timed) {
             let now = w.round_time;
             let t0 = std::time::Instant::now();
-            // As `room.rs::drive_bots` does it: every bot thinks on the same world,
-            // then the commands are applied.
-            let mut fires = Vec::new();
-            let mut cmds = Vec::new();
-            for b in bots.iter_mut() {
-                let inp = b.think(&w, now, SIM_DT);
-                if inp.buttons & button::FIRE != 0 {
-                    fires.push(b.player);
-                }
-                cmds.push((b.player, inp, b.wants_select(), b.wants_use()));
-            }
-            for (id, inp, _, _) in &cmds {
-                w.queue_input(*id, *inp);
-            }
-            for (id, _, sel, _) in &cmds {
-                if let Some(s) = sel {
-                    w.select_slot(*id, *s);
-                }
-            }
-            for (id, _, _, us) in &cmds {
-                if let Some(s) = us {
-                    let _ = w.use_item(*id, *s, now);
-                }
-            }
-            for id in fires {
-                let _ = w.fire(id, now);
-            }
+            drive(&mut w, &mut bots, now, SIM_DT);
             let t1 = std::time::Instant::now();
             w.step(SIM_DT);
             let _ = w.drain_events();
@@ -3121,7 +3018,10 @@ fn bot_terrain_report() {
         BOT_COUNT_DEFAULT * SEEDS.len()
     );
     let drift = (after - before).abs() / before.max(1.0);
-    println!("  load control {before:.0} → {after:.0} ms ({:.1} % drift)", drift * 100.0);
+    println!(
+        "  load control {before:.0} → {after:.0} ms ({:.1} % drift)",
+        drift * 100.0
+    );
     assert!(
         drift < 0.25,
         "the box's load moved {:.0} % during the run; these numbers are about the box",

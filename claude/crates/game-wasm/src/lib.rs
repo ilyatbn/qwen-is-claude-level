@@ -7018,7 +7018,7 @@ impl AttractCore {
         AttractCore { world, bots: list }
     }
 
-    /// One tick. Mirrors `room.rs::drive_bots` — think, queue, use, fire, step.
+    /// One tick. Mirrors `room.rs::drive_bots` — `bots::drive`, then step.
     ///
     /// Firing is a *command* and not a button the sim reads, so it has to be
     /// sent explicitly; that is the defect that left bots never firing a shot in
@@ -7033,33 +7033,11 @@ impl AttractCore {
     ///
     /// T18.02 changed what `think` *decides* (exploration, arming, retreat) and
     /// deliberately did not change the driving sequence, so this needed no edit.
-    /// **If the sequence itself ever changes — a new command a bot can ask for,
-    /// a different order — edit this with it or delete `AttractCore`.** Do not
-    /// leave it half-true.
+    /// **T23.26: it calls the room's own `game_core::bots::drive` now**, so the
+    /// sequence cannot drift from the room's again (it had: no select).
     pub fn step(&mut self, dt: f32) {
         let now = self.world.round_time;
-        let mut inputs = Vec::with_capacity(self.bots.len());
-        let mut fires = Vec::new();
-        let mut uses = Vec::new();
-        for bot in &mut self.bots {
-            let input = bot.think(&self.world, now, dt);
-            if let Some(slot) = bot.wants_use() {
-                uses.push((bot.player, slot));
-            }
-            if input.buttons & game_core::player::input::button::FIRE != 0 {
-                fires.push(bot.player);
-            }
-            inputs.push((bot.player, input));
-        }
-        for (id, input) in inputs {
-            self.world.queue_input(id, input);
-        }
-        for (id, slot) in uses {
-            let _ = self.world.use_item(id, slot, now);
-        }
-        for id in fires {
-            let _ = self.world.fire(id, now);
-        }
+        game_core::bots::drive(&mut self.world, &mut self.bots, now, dt);
         self.world.step(dt);
         // The events are not rendered here — the attract mode is a background,
         // not a game — but they must be drained or the buffer grows for the

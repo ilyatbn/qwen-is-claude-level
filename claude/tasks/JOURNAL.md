@@ -7681,3 +7681,8 @@ check.sh --changed HEAD~2 (98 e2e): 96/98 — effect-lights (bazooka decay leg: 
 
 ## T23.26 step 0 — the baseline (builder3, 2026-10-01)
 Full balance `--ignored` (11/11, 139.9 s, release) + kill_chain at `beea579`; the numbers nav can move are in the task file's As-built table. New `bot_terrain_report` (balance.rs, `ignored.sh` row): 5 bots Medium, bots' half 1.0 µs mean / 1.6 p99, whole tick 4.1 / 7.0 µs, load control and alive-at-end (40/40) printed. Log: `gate-builder3-baseline-balance.txt`. No gate for this commit alone: it is test-only, and step 1's `--changed HEAD~2` covers it.
+
+## T23.26 step 1 — one `bots::drive` (builder3, 2026-10-01)
+`game_core::bots::drive(world, bots, now, dt) -> Vec<Driven>` (think all on one world → queue → select → use → fire; `Driven { input, held, fired }`), the room's own order. Callers: `room.rs::drive_bots` (log only), `capacity.rs`, wasm `AttractCore`, `bots::harness`, explore/arms tests, 8 loops in `balance.rs` (incl. `bot_terrain_report`). `grep wants_select()` now finds only `drive` and three single-tick probes.
+Room path unchanged (cargo game-server 177+… green). **Harnesses are not byte-identical and could not be**: they interleaved think/fire per bot (bot 2 thought after bot 1's shot) in two orders and two skipped `use_item`. Shift measured, `gate-builder3-step1-balance.txt` vs `-baseline-`: 11/11 still ok; e.g. shipping worst sight 36.2→62.9 %, molotov-start void 1.62→0.23, kill_chain median deaths 1/2/0/2 unchanged. Step 1's numbers are the "before" for nav.
+Touch-only widened: `capacity.rs`, `game-wasm/src/lib.rs` (two more drive copies, no select in either).

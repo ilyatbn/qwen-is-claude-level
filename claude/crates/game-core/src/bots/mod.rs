@@ -114,6 +114,69 @@ pub struct BotStats {
     pub ticks_dest_forbidden_idle: u32,
 }
 
+/// What one bot did on one [`drive`] tick — what a measuring caller needs and the
+/// room logs, so nobody re-derives it from the world afterwards.
+#[derive(Debug, Clone, Copy)]
+pub struct Driven {
+    pub player: PlayerId,
+    pub input: Input,
+    /// The item in hand when the commands had been applied and the trigger was about
+    /// to be sent — after this tick's select and use, before its fire. `None` dead or
+    /// empty-handed.
+    pub held: Option<crate::items::registry::ItemId>,
+    /// `Some` when the bot pulled the trigger: what `World::fire` answered.
+    pub fired: Option<Result<(), crate::player::state::UseError>>,
+}
+
+/// **The one way bots are driven** (T23.26 step 1): every bot thinks on the same world,
+/// then its input is queued and its commands applied — select, then use, then fire —
+/// exactly as `room.rs::drive_bots` did it, because that is the order a real round
+/// runs in. The room, the WASM attract core and every harness and test that plays a
+/// round of bots call this; there were twelve copies, in three different orders, and a
+/// dig that worked in the room and not in one harness would have measured wrong.
+///
+/// Selection and firing are *commands*, not buttons the sim reads (`docs/30` §4): a
+/// human's client sends `select_slot` and `fire` beside its input, nothing consumes
+/// `Input`'s FIRE bit, and a bot has no client — so whatever drives it has to send
+/// them on its behalf. Without that the bots once fired 16,861 trigger pulls for zero
+/// damage. Select comes first so a bot that just picked up something better fires
+/// *that* this tick.
+pub fn drive(world: &mut World, bots: &mut [Bot], now: f32, dt: f32) -> Vec<Driven> {
+    let mut out: Vec<Driven> = bots
+        .iter_mut()
+        .map(|b| Driven {
+            player: b.player,
+            input: b.think(world, now, dt),
+            held: None,
+            fired: None,
+        })
+        .collect();
+    for d in &out {
+        world.queue_input(d.player, d.input);
+    }
+    for b in bots.iter() {
+        if let Some(slot) = b.wants_select() {
+            world.select_slot(b.player, slot);
+        }
+    }
+    for b in bots.iter() {
+        if let Some(slot) = b.wants_use() {
+            let _ = world.use_item(b.player, slot, now);
+        }
+    }
+    for d in out.iter_mut() {
+        d.held = world
+            .player(d.player)
+            .filter(|p| p.alive)
+            .and_then(|p| p.inventory.slot(p.inventory.selected()))
+            .map(|s| s.item);
+        if d.input.buttons & button::FIRE != 0 {
+            d.fired = Some(world.fire(d.player, now));
+        }
+    }
+    out
+}
+
 pub struct Bot {
     pub player: PlayerId,
     rng: ChaCha8Rng,
@@ -1298,27 +1361,9 @@ pub(crate) mod harness {
         let ticks = (seconds / SIM_DT) as u32;
         for t in 0..ticks {
             let now = t as f32 * SIM_DT;
-            for b in bots.iter_mut() {
-                let inp = b.think(&w, now, SIM_DT);
-                w.queue_input(b.player, inp);
-                // Selection is a command too (`docs/30` §4), and a harness that
-                // skips it has the same defect as one that skips firing: it
-                // measures a bot that can never change weapons. Before `fire`,
-                // so a bot that just picked up something better uses it now.
-                if let Some(slot) = b.wants_select() {
-                    w.select_slot(b.player, slot);
-                }
-                // Firing is a *command*, not a button the sim reads: a human's
-                // client sends `fire` alongside its input (`docs/30` §4). A bot
-                // has no client, so whatever drives it has to do the same — and
-                // a harness that skips this measures a game nobody plays.
-                if inp.buttons & crate::player::input::button::FIRE != 0 {
-                    let _ = w.fire(b.player, now);
-                }
-                if let Some(slot) = b.wants_use() {
-                    let _ = w.use_item(b.player, slot, now);
-                }
-            }
+            // The room's own sequence (`bots::drive`): a harness that skipped a
+            // command would measure a game nobody plays.
+            drive(&mut w, &mut bots, now, SIM_DT);
             w.step(SIM_DT);
             for e in w.drain_events() {
                 match e {

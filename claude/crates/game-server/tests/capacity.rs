@@ -33,7 +33,6 @@ use std::time::Instant;
 
 use game_core::bots::Bot;
 use game_core::constants::{MapScale, MAX_PLAYERS, SIM_DT, SIM_HZ};
-use game_core::player::input::button;
 use game_core::world::World;
 
 /// Half of one tick at `SIM_HZ`. §B2 sets the threshold here rather than at the
@@ -64,7 +63,8 @@ fn full_room(seed: u64, scale: MapScale) -> Room {
 }
 
 impl Room {
-    /// One tick, exactly as `room.rs::drive_bots` plus `World::step` does it.
+    /// One tick, exactly as `room.rs::drive_bots` plus `World::step` does it — through
+    /// the same `game_core::bots::drive` (T23.26).
     ///
     /// The first version of this file added six players and stepped the world,
     /// which measured six figures standing still: p50 and p99 both rounded to
@@ -73,28 +73,7 @@ impl Room {
     /// measurement of the idle case would have justified any `MAX_ROOMS` at all.
     fn tick(&mut self) {
         let now = self.world.round_time;
-        let mut inputs = Vec::with_capacity(self.bots.len());
-        let mut fires = Vec::new();
-        let mut uses = Vec::new();
-        for bot in &mut self.bots {
-            let input = bot.think(&self.world, now, SIM_DT);
-            if let Some(slot) = bot.wants_use() {
-                uses.push((bot.player, slot));
-            }
-            if input.buttons & button::FIRE != 0 {
-                fires.push(bot.player);
-            }
-            inputs.push((bot.player, input));
-        }
-        for (id, input) in inputs {
-            self.world.queue_input(id, input);
-        }
-        for (id, slot) in uses {
-            let _ = self.world.use_item(id, slot, now);
-        }
-        for id in fires {
-            let _ = self.world.fire(id, now);
-        }
+        game_core::bots::drive(&mut self.world, &mut self.bots, now, SIM_DT);
         self.world.step(SIM_DT);
         self.world.drain_events();
     }

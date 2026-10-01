@@ -140,19 +140,7 @@ mod tests {
         let ticks = (seconds / SIM_DT) as u32;
         for t in 0..ticks {
             let now = t as f32 * SIM_DT;
-            for b in bots.iter_mut() {
-                let inp = b.think(&w, now, SIM_DT);
-                w.queue_input(b.player, inp);
-                if let Some(slot) = b.wants_select() {
-                    w.select_slot(b.player, slot);
-                }
-                if inp.buttons & button::FIRE != 0 {
-                    let _ = w.fire(b.player, now);
-                }
-                if let Some(slot) = b.wants_use() {
-                    let _ = w.use_item(b.player, slot, now);
-                }
-            }
+            crate::bots::drive(&mut w, &mut bots, now, SIM_DT);
             w.step(SIM_DT);
             let _ = w.drain_events();
             for p in &w.players {
