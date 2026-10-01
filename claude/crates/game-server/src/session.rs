@@ -1410,7 +1410,13 @@ async fn seat(
     //
     // Refused **before** `room.join`, so no seat is allocated and no id is
     // consumed. A refusal that seats and then apologises is not a refusal.
-    if room.has_started() {
+    // T23.27 (`docs/78` §A1): `"spectate": true` seats a watcher with no body. §E4 stands for players; a spectator
+    // may join at any time, since it changes nothing in the match. An old client never sends the flag.
+    let spectate = payload
+        .get("spectate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if room.has_started() && !spectate {
         // **Detach, or the refusal is only on the wire.** Every verb calls
         // `ctx.attach` before reaching here, and attach increments the room's
         // human count — so returning without detaching leaves the registry
@@ -1426,7 +1432,12 @@ async fn seat(
         );
         return;
     }
-    let Some(id) = room.join(name.clone(), look).await else {
+    let seated = if spectate {
+        room.spectate(name.clone()).await
+    } else {
+        room.join(name.clone(), look).await
+    };
+    let Some(id) = seated else {
         // Distinct from `in_progress` above: a full lobby will have room later
         // and a started match will not, and the client says different things
         // about them. **Both are bare string literals on the wire**, not
@@ -1533,6 +1544,8 @@ async fn seat(
     // and `map_init` is sent to everyone seated at the moment the match starts.
     // That is what makes the lobby a place rather than an overlay on a battle
     // already under way.
+    // **Dormant since §E4 for players** (T23.27: a spectator may join a running match, `docs/78` §A1, and takes
+    // this path — the catch-up below is live again for it).
     // **Dormant since §E4, and deliberately so.**
     //
     // This block and the two below it (`item_spawn`, `tombstone_spawn`) are the
@@ -1738,8 +1751,11 @@ async fn seat(
         "skin_id": skin_id, "tombstone_skin_id": tombstone_skin_id,
         "hat_id": hat_id, "glasses_id": glasses_id,
     });
-    broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
-    tracing::info!(target: "game::net", player = id, %name, "joined");
+    // T23.27: a spectator is nobody's opponent — no scoreboard row on the other clients (`docs/78` §A1).
+    if !spectate {
+        broadcast_except(&io, &sessions, socket.id, "player_join", &joined);
+    }
+    tracing::info!(target: "game::net", player = id, %name, spectate, "joined");
 }
 
 /// Map size from a lobby payload, falling back to the server's default.

@@ -69,6 +69,10 @@ pub struct RoomEntry {
     /// Sending on this stops the room task. Taken on reap.
     shutdown: Option<oneshot::Sender<()>>,
     /// Humans only. Bots do not keep a room alive (§B1).
+    ///
+    /// **Sockets, spectators included** (T23.27) — not `Room::human_count`, which counts players only. On purpose,
+    /// both ways: a watched room stays alive while watched (reaping), and quick match's `humans >= max_players` treats
+    /// a watcher as an occupant, which is the cautious side. Do not "correct" one to match the other.
     humans: usize,
     /// When the last human left, or `None` while somebody is in it.
     empty_since: Option<Instant>,

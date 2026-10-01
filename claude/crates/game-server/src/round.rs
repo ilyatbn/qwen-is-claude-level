@@ -203,10 +203,15 @@ impl RoundController {
     ///
     /// `humans` is `Room::human_count` — seated players who are not bots. It is
     /// what the vote is counted against (T21.38).
+    ///
+    /// T23.27 (`docs/78` §A1): `watched` — the room's only non-bot seats are spectators. Nobody can vote, and a watched
+    /// room exists to keep playing, so it **restarts when the window closes** instead of going back to a lobby (where
+    /// nothing re-arms the bot timeout, and `make watch` would stop after one round).
     pub fn tick(
         &mut self,
         world: &mut World,
         humans: usize,
+        watched: bool,
         dt: f32,
     ) -> (Vec<GameEvent>, RoundOutcome) {
         let mut events = Vec::new();
@@ -252,7 +257,7 @@ impl RoundController {
                 if !self.resolved && (window_closed || self.restart_wins(humans)) {
                     self.resolved = true;
                     self.announced_tally = None;
-                    let restart = self.restart_wins(humans);
+                    let restart = self.restart_wins(humans) || (watched && window_closed);
                     self.votes.clear();
                     let seed = self.advance_seed();
                     return if restart {
@@ -372,19 +377,19 @@ mod tests {
                 .filter(|e| matches!(e, GameEvent::RoundState { .. }))
                 .count()
         };
-        let (evs, out) = r.tick(&mut w, 2, SIM_DT);
+        let (evs, out) = r.tick(&mut w, 2, false, SIM_DT);
         assert_eq!((states(&evs), &out), (1, &RoundOutcome::Continue));
         // Nothing changed: nothing announced.
-        let (evs, _) = r.tick(&mut w, 2, SIM_DT);
+        let (evs, _) = r.tick(&mut w, 2, false, SIM_DT);
         assert_eq!(states(&evs), 0, "an unchanged tally was re-announced");
         // One of two votes: announced, not resolved.
         r.vote(&w, 1, true);
-        let (evs, out) = r.tick(&mut w, 2, SIM_DT);
+        let (evs, out) = r.tick(&mut w, 2, false, SIM_DT);
         assert_eq!((states(&evs), &out), (1, &RoundOutcome::Continue));
         assert!(w.phase_time_left() > 1.0, "the premise: the window is open");
         // The second: resolved on this tick, with the window still open.
         r.vote(&w, 2, true);
-        let (_, out) = r.tick(&mut w, 2, SIM_DT);
+        let (_, out) = r.tick(&mut w, 2, false, SIM_DT);
         assert!(
             matches!(out, RoundOutcome::Restart { .. }),
             "every human said yes and the room waited: {out:?}"
@@ -431,7 +436,7 @@ mod tests {
         let mut broadcasts = 0;
         // Three seconds of ticks.
         for _ in 0..(3 * 60) {
-            let (evs, _) = r.tick(&mut w, 1, SIM_DT);
+            let (evs, _) = r.tick(&mut w, 1, false, SIM_DT);
             broadcasts += evs
                 .iter()
                 .filter(|e| matches!(e, GameEvent::RoundState { .. }))
@@ -479,10 +484,10 @@ mod tests {
         for _ in 0..window - 1 {
             w.step(SIM_DT);
         }
-        let (_, before) = r.tick(&mut w, 1, SIM_DT);
+        let (_, before) = r.tick(&mut w, 1, false, SIM_DT);
         assert_eq!(before, RoundOutcome::Continue, "closed a tick early");
         w.step(SIM_DT);
-        let (_, at) = r.tick(&mut w, 1, SIM_DT);
+        let (_, at) = r.tick(&mut w, 1, false, SIM_DT);
         assert!(
             matches!(at, RoundOutcome::ToLobby { .. }),
             "the window did not close on tick {window}: {at:?}"
@@ -498,9 +503,9 @@ mod tests {
         for _ in 0..(25 * 60) {
             w.step(SIM_DT);
         }
-        let (_, first) = r.tick(&mut w, 1, SIM_DT);
+        let (_, first) = r.tick(&mut w, 1, false, SIM_DT);
         assert!(matches!(first, RoundOutcome::Restart { .. }));
-        let (_, second) = r.tick(&mut w, 1, SIM_DT);
+        let (_, second) = r.tick(&mut w, 1, false, SIM_DT);
         assert_eq!(
             second,
             RoundOutcome::Continue,

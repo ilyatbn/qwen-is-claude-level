@@ -396,6 +396,12 @@ pub enum ReplayCommand {
         skin_id: u16,
     },
     Ready(PlayerId),
+    /// T23.27 (`docs/78` §A1): a **spectator** was seated — no body. Tag 24, appended: no older file contains it, and
+    /// `Join` (tag 1) is untouched, so every recording replays as before. Recorded at all because the seat takes an
+    /// id from the pool: a replay that skipped it would hand the next joiner a different id and diverge.
+    JoinSpectator {
+        name: String,
+    },
     /// A player who was ready and is not any more (§E3).
     ///
     /// **A new tag rather than a bool on `Ready`.** Tag 2 is one byte of player
@@ -516,6 +522,7 @@ impl ReplayCommand {
             ReplayCommand::SetRoundSeconds(..) => 21,
             ReplayCommand::DropItem(..) => 22,
             ReplayCommand::SetGravity(..) => 23,
+            ReplayCommand::JoinSpectator { .. } => 24,
         }
     }
 }
@@ -823,6 +830,12 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
             w.write_all(&bytes[..n])?;
             put_u16(w, *skin_id)?;
         }
+        ReplayCommand::JoinSpectator { name } => {
+            let bytes = name.as_bytes();
+            let n = bytes.len().min(255);
+            w.write_all(&[n as u8])?;
+            w.write_all(&bytes[..n])?;
+        }
         ReplayCommand::Ready(id)
         | ReplayCommand::Unready(id)
         | ReplayCommand::Fire(id)
@@ -1085,6 +1098,13 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
                 skin_id: c.u16()?,
             }
         }
+        24 => {
+            let n = c.u8()? as usize;
+            let name = std::str::from_utf8(c.take(n)?)
+                .map_err(|_| ReplayError::BadUtf8)?
+                .to_string();
+            ReplayCommand::JoinSpectator { name }
+        }
         2 => ReplayCommand::Ready(c.u8()?),
         17 => ReplayCommand::Unready(c.u8()?),
         18 => ReplayCommand::SetScale(c.u8()?, scale_from_byte(c.u8()?)?),
@@ -1212,6 +1232,9 @@ mod tests {
                 name: "ana".into(),
                 skin_id: 3,
             },
+            ReplayCommand::JoinSpectator {
+                name: "watcher".into(),
+            },
             ReplayCommand::Ready(0),
             ReplayCommand::Input(
                 1,
@@ -1272,6 +1295,7 @@ mod tests {
         fn assert_listed(c: &ReplayCommand) {
             match c {
                 ReplayCommand::Join { .. }
+                | ReplayCommand::JoinSpectator { .. }
                 | ReplayCommand::Ready(_)
                 | ReplayCommand::Unready(_)
                 | ReplayCommand::SetScale(..)
@@ -1313,10 +1337,11 @@ mod tests {
         // on `every_command`, not an assertion that the tags are contiguous —
         // renumbering would have made every later command's encoding depend on
         // this one's removal, for nothing.
+        // T23.27: 23 with `JoinSpectator` (tag 24).
         assert_eq!(
             tags.len(),
-            22,
-            "`every_command` returns {} distinct tags, not 22 — a variant was \
+            23,
+            "`every_command` returns {} distinct tags, not 23 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );

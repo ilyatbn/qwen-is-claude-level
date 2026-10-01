@@ -65,6 +65,14 @@ pub enum Command {
         look: Look,
         reply: oneshot::Sender<Option<PlayerId>>,
     },
+    /// T23.27 (`docs/78` §A1): seat a **spectator** — a seat with no body. It receives what a player receives and
+    /// counts toward nothing: not the player cap (`Seats::alloc`), not a round's outcome, not the lobby's fill, not the
+    /// restart vote. A separate command rather than a flag on `Join`, so every existing `Join` (and its replay tag) means
+    /// exactly what it meant. The reply carries the assigned id, or `None` when the id pool is spent.
+    Spectate {
+        name: String,
+        reply: oneshot::Sender<Option<PlayerId>>,
+    },
     /// Ready, or no longer ready (§E3).
     ///
     /// A toggle, not a latch: a private lobby starts when every seated human is
@@ -202,6 +210,7 @@ impl std::fmt::Debug for Command {
             Command::Join { name, look, .. } => {
                 write!(f, "Join({name:?}, skin {})", look.skin_id)
             }
+            Command::Spectate { name, .. } => write!(f, "Spectate({name:?})"),
             Command::Ready(id, on) => write!(f, "Ready({id}, {on})"),
             Command::Input(id, v) => write!(f, "Input({id}, {} inputs)", v.len()),
             Command::UseItem(id, s) => write!(f, "UseItem({id}, slot {s})"),
@@ -347,6 +356,20 @@ impl RoomHandle {
         if self
             .tx
             .send(Command::Join { name, look, reply })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
+
+    /// T23.27: seat a spectator (`Command::Spectate`) and await its id.
+    pub async fn spectate(&self, name: String) -> Option<PlayerId> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::Spectate { name, reply })
             .await
             .is_err()
         {
@@ -625,6 +648,9 @@ struct Seat {
     /// disagree about (CLAUDE.md: "derive, do not add a fourth flag" cuts both
     /// ways — this is the flag that removes a disagreement, not one that adds).
     bot: bool,
+    /// T23.27 (`docs/78` §A1): a spectator's seat — **no body**. Read through `has_body` and nowhere else, so the
+    /// world's two doors (`populate_world`, the in-match `Join`) and the cap share one answer.
+    spectator: bool,
     /// Handshake finished, and therefore simulated.
     ///
     /// Set once when `ready` first arrives and **never cleared**: it is what
@@ -691,6 +717,13 @@ impl StreamStats {
     }
 }
 
+impl Seat {
+    /// T23.27: whether this seat is (or will be) a player in the world. Bots have bodies; spectators do not.
+    fn has_body(&self) -> bool {
+        !self.spectator
+    }
+}
+
 impl Seats {
     /// The name a seat joined under, if it is still seated.
     fn name_of(&self, id: PlayerId) -> Option<String> {
@@ -738,10 +771,21 @@ impl Seats {
         }
     }
 
+    /// A seat with a body, if fewer than `max` seats have one. T23.27: **spectators are not counted** — a watcher in a
+    /// full room of bots must not take (or, through `kick_newest_bot`, cost) a bot its seat.
     fn alloc(&mut self, max: usize) -> Option<PlayerId> {
-        if self.seats.len() >= max {
+        if self.seats.iter().filter(|s| s.has_body()).count() >= max {
             return None;
         }
+        self.alloc_any(false)
+    }
+
+    /// T23.27: a spectator's seat — no cap but the id pool's (`docs/78` §A1: it counts toward nothing).
+    fn alloc_spectator(&mut self) -> Option<PlayerId> {
+        self.alloc_any(true)
+    }
+
+    fn alloc_any(&mut self, spectator: bool) -> Option<PlayerId> {
         let id = match self.free.pop() {
             Some(id) => id,
             None => {
@@ -764,6 +808,7 @@ impl Seats {
             hat_id: 0,
             glasses_id: 0,
             bot: false,
+            spectator,
             ready: false,
             consent: false,
             joined_at: Instant::now(),
@@ -988,6 +1033,11 @@ pub fn to_command(c: &ReplayCommand) -> Command {
                 reply,
             }
         }
+        // T23.27: a spectator's seat — the reply goes nowhere, as `Join`'s.
+        ReplayCommand::JoinSpectator { name } => Command::Spectate {
+            name: name.clone(),
+            reply: tokio::sync::oneshot::channel().0,
+        },
         ReplayCommand::Ready(id) => Command::Ready(*id, true),
         ReplayCommand::Unready(id) => Command::Ready(*id, false),
         // The reply goes nowhere: a replay has no socket to refuse to. The
@@ -1265,7 +1315,7 @@ impl Room {
             .seats
             .seats
             .iter()
-            .filter(|s| !s.bot)
+            .filter(|s| !s.bot && s.has_body())
             .map(|s| (s.id, s.name.clone(), s.skin_id, s.tombstone_skin_id))
             .collect();
         let Some(world) = self.world.as_mut() else {
@@ -1328,10 +1378,12 @@ impl Room {
             gravity: self.config.gravity,
             settings_owner: self.settings_owner(),
             starts_in: self.starts_in,
+            // T23.27: a spectator is not a player row (`docs/78` §A1).
             players: self
                 .seats
                 .seats
                 .iter()
+                .filter(|s| s.has_body())
                 .map(|s| LobbySeat {
                     seat: s.id,
                     name: s.name.clone(),
@@ -1362,7 +1414,7 @@ impl Room {
         self.seats
             .seats
             .iter()
-            .filter(|s| !s.bot)
+            .filter(|s| !s.bot && s.has_body())
             .min_by_key(|s| s.joined_at)
             .map(|s| s.id)
     }
@@ -1736,6 +1788,16 @@ impl Room {
     /// A person is never refused a seat because of a bot. Newest rather than
     /// oldest so the bot that has been in the round longest — and is likely
     /// mid-fight with someone — is the last to go.
+    /// §E2: start the bot timeout at the **first** seating of a public lobby; never reset, never in a private one
+    /// (§E3). From the config, not the constant: a browser check has to be able to raise it, because at 10 s a cold
+    /// page cannot reach `ready` before the lobby it means to observe is over. T23.27: shared by `Join` and
+    /// `Spectate`, so a watched lobby starts as a played one does.
+    fn arm_bot_timeout(&mut self) {
+        if !self.private && self.starts_in.is_none() && self.world.is_none() {
+            self.starts_in = Some(self.config.lobby_bot_timeout);
+        }
+    }
+
     fn kick_newest_bot(&mut self) -> bool {
         let Some(bot) = self.bots.pop() else {
             return false;
@@ -1814,12 +1876,7 @@ impl Room {
                     self.note_lobby_change();
                     // §E2: the bot timeout runs from the **first** seating and
                     // does not reset. A private lobby never gets one (§E3).
-                    if !self.private && self.starts_in.is_none() && self.world.is_none() {
-                        // From the config, not the constant: a browser check has to be
-                        // able to raise it, because at 10 s a cold page cannot reach
-                        // `ready` before the lobby it means to observe is over.
-                        self.starts_in = Some(self.config.lobby_bot_timeout);
-                    }
+                    self.arm_bot_timeout();
                     if let Some(world) = self.world.as_mut() {
                         world.add_player(id, skin_id, name);
                         // §B8. Parsed from `join` and, until now, dropped on the
@@ -1833,6 +1890,19 @@ impl Room {
                         self.grant_start_kit(id);
                         self.apply_dev_battery(id);
                     }
+                }
+                let _ = reply.send(id);
+            }
+            Command::Spectate { name, reply } => {
+                // T23.27 (`docs/78` §A1): no body, no cap, no bot kicked. Recorded under its own tag, so a replay seats
+                // the same id without a body — a plain `Join` there would add a player and diverge from tick one.
+                let id = self.seats.alloc_spectator();
+                if let Some(id) = id {
+                    self.note(R::JoinSpectator { name: name.clone() });
+                    self.seats.set_name(id, &name);
+                    self.note_lobby_change();
+                    // A watched lobby starts with bots as any public lobby does (§E2's timeout).
+                    self.arm_bot_timeout();
                 }
                 let _ = reply.send(id);
             }
@@ -1855,6 +1925,10 @@ impl Room {
                 let Some(seat) = self.seats.get_mut(id) else {
                     return;
                 };
+                // T23.27: a spectator has nothing to move; its input is neither applied nor recorded.
+                if !seat.has_body() {
+                    return;
+                }
                 let mut accepted = Vec::new();
                 for input in inputs {
                     // Duplicates and stale sequences are rejected, which is what
@@ -1942,6 +2016,12 @@ impl Room {
             Command::Fire(id) => self.use_weapon(id, false, None),
             Command::UseAt { id, quick, seq } => self.use_weapon(id, quick, Some(seq)),
             Command::VoteRestart(id, v, reply) => {
+                // T23.27: a spectator does not vote — `restart_wins` counts yes votes against `human_count`, which does
+                // not include it, so a watcher's yes would stand in for a player's. Refused, not recorded.
+                if self.seats.seats.iter().any(|s| s.id == id && !s.has_body()) {
+                    let _ = reply.send(false);
+                    return;
+                }
                 self.note(R::VoteRestart(id, v));
                 // No world is a lobby, and a lobby has no window to vote in.
                 let counted = match self.world.as_ref() {
@@ -2277,8 +2357,27 @@ impl Room {
     ///
     /// `seats.len()` counts bots, and using it as the start condition is what
     /// let a room start itself with nobody in it (§C18).
+    ///
+    /// T23.27: **spectators are not humans here** — a human is someone who plays. All three readers want that: the
+    /// lobby's fill (`LOBBY_CAPACITY`), the private lobby's "everyone ready", and the restart vote. (The registry's
+    /// `RoomEntry.humans` counts sockets, spectators included; see there.)
     pub fn human_count(&self) -> usize {
-        self.seats.seats.iter().filter(|s| !s.bot).count()
+        self.seats
+            .seats
+            .iter()
+            .filter(|s| !s.bot && s.has_body())
+            .count()
+    }
+
+    /// T23.27: seats held by spectators.
+    pub fn spectator_count(&self) -> usize {
+        self.seats.seats.iter().filter(|s| !s.has_body()).count()
+    }
+
+    /// T23.27 (`docs/78` §A1): **a watched room** — its only non-bot seats are spectators. Nobody can vote, so its
+    /// round restarts on its own when the window closes (`RoundController::tick`).
+    pub fn watched(&self) -> bool {
+        self.human_count() == 0 && self.spectator_count() > 0
     }
 
     /// The restart vote as `round_state` shows it: `Some` only while the round
@@ -2396,6 +2495,7 @@ impl Room {
                 .seats
                 .seats
                 .iter()
+                .filter(|s| s.has_body())
                 .map(|s| (s.id, s.name.clone(), s.skin_id, s.tombstone_skin_id, 0))
                 .collect();
         };
@@ -2430,6 +2530,7 @@ impl Room {
         // §E1: a lobby has no world at all — no map, no round clock, no weather
         // schedule, no item spawns. Only the clock and the start condition run.
         let humans = self.human_count();
+        let watched = self.watched();
 
         if self.world.is_none() {
             // The clock runs; nothing else does (`docs/72` §C18-clarified, and
@@ -2486,7 +2587,7 @@ impl Room {
                     .seats
                     .seats
                     .iter()
-                    .filter(|s| !s.bot)
+                    .filter(|s| !s.bot && s.has_body())
                     .all(|s| s.consent);
 
             if outcome == crate::round::RoundOutcome::Start || full || timed_out || everyone_ready {
@@ -2540,7 +2641,8 @@ impl Room {
         }
 
         // T21.38: the vote is counted against humans, not seats — bots never vote.
-        let (mut events, outcome) = self.round.tick(world, humans, dt);
+        // T23.27: and a watched room (spectators only) restarts at the window's close — nobody is there to vote.
+        let (mut events, outcome) = self.round.tick(world, humans, watched, dt);
 
         // `docs/61` §3, the rows that only the event stream can answer. These are
         // deliberate diagnostic lines, not verbosity: each one is the thing you
@@ -4178,6 +4280,206 @@ mod tests {
             room.sweep_unready(Duration::from_millis(0)).len(),
             1,
             "the sweep no longer fires in a match either, so the claim above is vacuous"
+        );
+    }
+
+    // ------------------------------------------------------------ T23.27: spectators (`docs/78` §A1)
+
+    fn spectate(room: &mut Room, name: &str) -> PlayerId {
+        let (reply, rx) = oneshot::channel();
+        room.apply(Command::Spectate {
+            name: name.into(),
+            reply,
+        });
+        rx.blocking_recv().ok().flatten().expect("a spectator seat")
+    }
+
+    fn join(room: &mut Room, name: &str) -> PlayerId {
+        let (reply, rx) = oneshot::channel();
+        room.apply(Command::Join {
+            name: name.into(),
+            look: Default::default(),
+            reply,
+        });
+        rx.blocking_recv().ok().flatten().expect("a seat")
+    }
+
+    fn small(bots: usize, round_seconds: f32) -> Arc<Config> {
+        Arc::new(Config {
+            bot_count: bots,
+            map_scale: game_core::constants::MapScale::Small,
+            round_seconds,
+            ..Config::default()
+        })
+    }
+
+    /// A spectator is seated (it is sent snapshots once ready) and is not in the world; a player seated beside it is
+    /// (the control: the same room, the same start, the unflagged join).
+    #[test]
+    fn a_spectator_is_not_in_the_world_and_receives_snapshots() {
+        let mut room = Room::new(small(0, 60.0));
+        let p = join(&mut room, "player");
+        let s = spectate(&mut room, "watcher");
+        assert_ne!(p, s);
+        assert_eq!(
+            room.human_count(),
+            1,
+            "the spectator was counted as a human"
+        );
+        assert_eq!(room.spectator_count(), 1);
+        assert!(
+            room.lobby_state().players.iter().all(|r| r.seat != s),
+            "the spectator is a row in the lobby"
+        );
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        let w = room.world_for_test();
+        assert!(w.player(p).is_some(), "the control: the player has no body");
+        assert!(w.player(s).is_none(), "the spectator was given a body");
+        room.apply(Command::Ready(s, true));
+        let seqs = room.last_seqs();
+        assert!(
+            seqs.iter().any(|(id, _)| *id == s),
+            "the spectator is not sent snapshots: {seqs:?}"
+        );
+        // The snapshot it is sent encodes without it.
+        let bytes = crate::codec::encode_snapshot(room.world_for_test(), s, 0);
+        assert!(!bytes.is_empty());
+        assert!(
+            room.roster().iter().all(|r| r.0 != s),
+            "the spectator is on the scoreboard"
+        );
+    }
+
+    /// The twin of `a_full_room_of_bots_still_admits_a_human`: a spectator in a full room of bots costs no bot its
+    /// seat. The control is that very test's join, which does.
+    #[test]
+    fn a_spectator_in_a_full_room_of_bots_kicks_no_bot() {
+        let cfg = Arc::new(Config {
+            bot_count: 6,
+            max_players: 6,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        let s = spectate(&mut room, "watcher");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        assert_eq!(
+            room.bot_count(),
+            6,
+            "a spectator in the lobby cost a bot its seat at the start"
+        );
+        assert!(room.world_for_test().player(s).is_none());
+        let s2 = spectate(&mut room, "late watcher");
+        assert_eq!(
+            room.bot_count(),
+            6,
+            "a spectator joining a full match kicked a bot"
+        );
+        assert_eq!(room.world_for_test().players.len(), 6);
+        assert!(room.world_for_test().player(s2).is_none());
+        // The control: a player joining the same full room does take a bot's seat.
+        join(&mut room, "human");
+        assert_eq!(
+            room.bot_count(),
+            5,
+            "the control: a player did not take a bot's seat"
+        );
+    }
+
+    /// A spectator's input, fire and vote do nothing: no body appears, the world's players are unchanged, and the
+    /// vote is refused. The control is a player's fire in the same match, which the world accepts.
+    #[test]
+    fn a_spectators_commands_do_nothing() {
+        let mut room = Room::new(small(2, 60.0));
+        let p = join(&mut room, "player");
+        let s = spectate(&mut room, "watcher");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        let before = room.world_for_test().players.len();
+        room.apply(Command::Input(
+            s,
+            vec![game_core::player::input::Input {
+                seq: 1,
+                ..Default::default()
+            }],
+        ));
+        room.apply(Command::Fire(s));
+        room.apply(Command::UseHeal(s));
+        room.tick_inline(SIM_DT);
+        let w = room.world_for_test();
+        assert!(
+            w.player(s).is_none(),
+            "a spectator's command made it a body"
+        );
+        assert_eq!(w.players.len(), before);
+        let now = w.round_time;
+        assert!(w.fire(s, now).is_err(), "the world fired for a spectator");
+        assert!(w.player(p).is_some(), "the control's body");
+        let (reply, rx) = oneshot::channel();
+        room.apply(Command::VoteRestart(s, true, reply));
+        assert_eq!(
+            rx.blocking_recv().ok(),
+            Some(false),
+            "a spectator's vote was counted"
+        );
+    }
+
+    /// `docs/78` §A1: a watched room restarts on its own when the vote window closes — round after round — where a
+    /// room with a silent human goes back to the lobby (the control: the same rounds, one silent player).
+    #[test]
+    fn a_watched_room_restarts_on_its_own() {
+        fn to(room: &mut Room, want: game_core::world::RoundPhase, from_other: bool) -> bool {
+            let limit = ((WARMUP_SECONDS + 2.0 + game_core::constants::ENDED_SECONDS + 4.0)
+                / SIM_DT) as usize;
+            let mut left = !from_other;
+            for _ in 0..limit {
+                room.tick_inline(SIM_DT);
+                let ph = room.phase();
+                if ph != want {
+                    left = true;
+                } else if left {
+                    return true;
+                }
+            }
+            false
+        }
+        use game_core::constants::WARMUP_SECONDS;
+        use game_core::world::RoundPhase;
+
+        let mut room = Room::new(small(2, 1.0));
+        let s = spectate(&mut room, "watcher");
+        room.apply(Command::Ready(s, true));
+        assert!(room.watched());
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        for round in 1..=2 {
+            assert!(
+                to(&mut room, RoundPhase::Ended, false),
+                "round {round} never ended"
+            );
+            assert!(
+                to(&mut room, RoundPhase::Playing, true),
+                "round {round}: the watched room did not come back to Playing (now {:?})",
+                room.phase()
+            );
+            assert!(
+                room.bot_count() > 0,
+                "round {round}: restarted with no bots"
+            );
+        }
+
+        // The control: one silent human, the same round — back to the lobby.
+        let mut room = Room::new(small(2, 1.0));
+        join(&mut room, "silent");
+        spectate(&mut room, "watcher");
+        assert!(!room.watched());
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        assert!(to(&mut room, RoundPhase::Ended, false));
+        assert!(
+            to(&mut room, RoundPhase::Lobby, true),
+            "the control: a silent human's room restarted"
         );
     }
 }
