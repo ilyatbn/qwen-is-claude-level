@@ -4149,6 +4149,12 @@ pub const BOT_LOB_SWEEP: u32 = 24;
 /// T23.26D item 3: how often an arc is re-solved, s — six ticks. A solve walks up to
 /// fourteen predicted flights, and a target moves a few px in a tenth of a second.
 pub const BOT_LOB_EVERY: f32 = 0.1;
+/// T23.26E: how far a bot **hears** a shot, px — the client's audio falloff
+/// (`client/src/audio/mixer.ts` `DEFAULT_FALLOFF`, where a sound's gain reaches zero), which
+/// is `FOV_DAY`: a human hears a gun as far as they see by day. A bot with nothing in sight
+/// goes to where it heard one (`Bot::choose_goal`). Hearing, not seeing: §A5's fairness —
+/// a bot knows only what a player at its seat could.
+pub const BOT_HEAR_RANGE: f32 = FOV_DAY;
 /// T23.26E step 3 (replaces T23.26C item 6's hop on the spot — owner: *"bots jump nonstop
 /// now"*): one leg of a fighting bot's strafe, s — a walk of `WALK_SPEED × this` = 30 px,
 /// about two body widths: enough to step a straight round aimed at where it stood (a body

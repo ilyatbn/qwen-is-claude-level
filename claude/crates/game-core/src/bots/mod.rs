@@ -33,8 +33,8 @@ use explore::Coverage;
 
 use crate::constants::{
     GravityMode, BATTERY_MAX, BOT_ENGAGE_RANGE, BOT_FALL_BRAKE, BOT_FLEE_HEALTH,
-    BOT_HAZARD_CLEARANCE, BOT_SUIT_SHOP_BELOW, BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP,
-    FALL_SAFE_SPEED, FLAME_RADIUS, INVENTORY_SLOTS, PICKUP_RADIUS,
+    BOT_HAZARD_CLEARANCE, BOT_HEAR_RANGE, BOT_SUIT_SHOP_BELOW, BOT_WANDER_ARRIVED,
+    BOT_WANDER_GIVE_UP, FALL_SAFE_SPEED, FLAME_RADIUS, INVENTORY_SLOTS, PICKUP_RADIUS,
 };
 
 use crate::items::registry::{def, ItemKind};
@@ -293,6 +293,8 @@ pub struct Bot {
     strafe_next: i8,
     strafe_phase: f32,
     strafe_off: bool,
+    /// Tests only: T23.26E's chase to where an enemy was last seen planted out.
+    chase_off: bool,
     /// Tests only: T23.26E's open-ground-first planted out — a fight routes with dig
     /// steps from the start, as before (`with_dig_first`).
     dig_first: bool,
@@ -342,6 +344,7 @@ impl Bot {
             strafe_phase: index as f32 * 0.618_034 % 1.0,
             strafe_off: false,
             dig_first: false,
+            chase_off: false,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -359,6 +362,13 @@ impl Bot {
     #[cfg(test)]
     pub(crate) fn without_strafe(mut self) -> Self {
         self.strafe_off = true;
+        self
+    }
+
+    /// T23.26E: the same bot forgetting an enemy the moment it leaves sight.
+    #[cfg(test)]
+    pub(crate) fn without_chase(mut self) -> Self {
+        self.chase_off = true;
         self
     }
 
@@ -1034,10 +1044,59 @@ impl Bot {
             }
         }
 
+        let was = self.goal;
         self.goal = match best {
             Some((_, g)) => g,
             None => Goal::Wander,
         };
+        // T23.26E (owner: *"engaging one another"*): **an enemy lost from sight is chased to
+        // where it was last seen** — the next wander target is that point (its open ground
+        // where the planner runs), not the nearest unexplored cell, which turned a bot
+        // away from every fight that crossed the sight range. Only what it saw: no
+        // knowledge past `BOT_ENGAGE_RANGE` (§A5); armed and not running.
+        // T23.26E: **and a shot heard is gone to** — a living enemy's round in flight within
+        // `BOT_HEAR_RANGE`, its shooter within it too: the next wander target is the
+        // shooter's open ground, unless the current one is already near it.
+        if self.goal == Goal::Wander && armed && !flee && !self.chase_off {
+            let heard = world
+                .projectiles
+                .iter()
+                .filter(|f| f.owner != self.player && (f.pos - pos).len() <= BOT_HEAR_RANGE)
+                .filter_map(|f| world.player(f.owner).filter(|o| o.alive))
+                .map(|o| o.body.pos)
+                .filter(|at| (*at - pos).len() <= BOT_HEAR_RANGE)
+                .min_by(|a, b| (*a - pos).len().total_cmp(&(*b - pos).len()));
+            if let Some(at) = heard {
+                let near = self.wander_to.is_some_and(|w| {
+                    (w - at).len() < crate::constants::BOT_EXPLORE_CELL as f32 * 0.5
+                });
+                if !near {
+                    let spot = if routes {
+                        open_spot(&nav::Grid::new(&world.map), at)
+                    } else {
+                        Some(at)
+                    };
+                    if spot.is_some() {
+                        self.wander_to = spot;
+                        self.wander_for = 0.0;
+                    }
+                }
+            }
+        }
+        if let (Goal::Enemy(_), Goal::Wander) = (was, self.goal) {
+            let last = self.believed.filter(|_| armed && !flee && !self.chase_off);
+            if let Some(at) = last {
+                let spot = if routes {
+                    open_spot(&nav::Grid::new(&world.map), at)
+                } else {
+                    Some(at)
+                };
+                if spot.is_some() {
+                    self.wander_to = spot;
+                    self.wander_for = 0.0;
+                }
+            }
+        }
         // T23.26C (`docs/78` §A3): **a meteor shower changes no goal.** T23.26 C sent
         // every bot under rock for the whole shower and the owner watched them stand in
         // holes "constantly digging"; the meteors are dodged on the move (`dodge`).

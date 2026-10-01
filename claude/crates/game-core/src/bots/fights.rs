@@ -196,3 +196,110 @@ fn exploration_aims_at_open_ground_not_into_rock() {
         "control: the nearest cell's middle was open ground anyway — the fixture"
     );
 }
+
+/// **F4 (owner: *"engaging one another"*): a bot goes to a shot it hears.** A long open
+/// gallery, the armed bot at one end with nothing in sight; an enemy `BOT_HEAR_RANGE` ×
+/// 0.85 off fires a round upward every second. Within the bound the bot closes to sight
+/// range of it. Control: hearing and chasing planted out (`without_chase`) — it explores
+/// the way it would have, and ends further off.
+#[test]
+fn a_bot_goes_to_a_shot_it_hears() {
+    use crate::constants::BOT_HEAR_RANGE;
+    use crate::items::registry::WEAPON_PISTOL;
+    let run = |chase: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 90, 12);
+        let feet = oy + 10;
+        fill(&mut w, ox + 1, oy + 1, ox + 88, feet, false);
+        seal(&mut w);
+        let off = ((BOT_HEAR_RANGE * 0.85) / crate::constants::BOT_NAV_CELL) as i32;
+        let (_, enemy) = duel(&mut w, (ox + 3, feet), (ox + 3 + off, feet));
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !chase {
+            b = b.without_chase();
+        }
+        let mut bots = vec![b];
+        let mut nearest = f32::MAX;
+        for t in 0..((FIXTURE_S * SIM_HZ as f32) as u32) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = enemy;
+                p.body.vel = Vec2::ZERO;
+                p.health = 100.0;
+            }
+            if t % SIM_HZ == 0 {
+                let now = t as f32 * SIM_DT;
+                let _ = w.projectiles.spawn_raw(
+                    WEAPON_PISTOL,
+                    2,
+                    enemy - Vec2::new(0.0, crate::constants::PLAYER_H),
+                    Vec2::new(0.0, -300.0),
+                    now,
+                );
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            nearest = nearest.min((w.player(1).expect("bot").body.pos - enemy).len());
+        }
+        let start = (stand_at(ox + 3, feet) - enemy).len();
+        (nearest, start)
+    };
+    let (heard, start) = run(true);
+    assert!(
+        start > BOT_ENGAGE_RANGE && heard < BOT_ENGAGE_RANGE,
+        "a bot {start:.0} px from a shooting enemy came no nearer than {heard:.0}"
+    );
+    let (deaf, _) = run(false);
+    assert!(
+        deaf > heard,
+        "control: deaf it came as near ({deaf:.0} px) — the fixture, not the hearing"
+    );
+}
+
+/// **F5: an enemy lost from sight is chased to where it was last seen.** The gallery, the
+/// armed bot in its middle, an enemy in sight down it for a quarter second — then gone
+/// (moved off, out of all sight). Within six seconds the bot gets to the spot it saw it
+/// at. Control: `without_chase` — it explores instead, and comes no nearer.
+#[test]
+fn a_lost_enemy_is_chased_to_where_it_was_seen() {
+    let run = |chase: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 90, 12);
+        let feet = oy + 10;
+        fill(&mut w, ox + 1, oy + 1, ox + 88, feet, false);
+        seal(&mut w);
+        // The bot mid-gallery, the enemy to its right: unseen cells tie left and right,
+        // and exploration breaks ties on the lower index — left, away from the fight.
+        let seen = (ox + 45 + 18, feet);
+        let (_, enemy) = duel(&mut w, (ox + 45, feet), seen);
+        let gone = Vec2::new(enemy.x, enemy.y + 4.0 * BOT_ENGAGE_RANGE);
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !chase {
+            b = b.without_chase();
+        }
+        let mut bots = vec![b];
+        let mut nearest = f32::MAX;
+        for t in 0..(6 * SIM_HZ) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = if t < SIM_HZ / 4 { enemy } else { gone };
+                p.body.vel = Vec2::ZERO;
+                p.health = 100.0;
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            if t >= SIM_HZ / 4 {
+                nearest = nearest.min((w.player(1).expect("bot").body.pos - enemy).len());
+            }
+        }
+        nearest
+    };
+    let chased = run(true);
+    assert!(
+        chased < crate::constants::BOT_WANDER_ARRIVED,
+        "the bot never reached where it last saw its enemy ({chased:.0} px off)"
+    );
+    let forgot = run(false);
+    assert!(
+        forgot > chased,
+        "control: forgetting, it came as near ({forgot:.0} px) — the fixture"
+    );
+}
