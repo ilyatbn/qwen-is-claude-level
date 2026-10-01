@@ -866,7 +866,8 @@ look up and see the earth, moved since the round began.
 - [x] [T23.25](M23/T23.25-the-batch-gate-reds.md) — The batch gate's reds on bcc5b30 — platforms, crates, lava-lights, debug-mode, swing-mine-fx (handoff item 1)
 - [ ] [T23.25B](M23/T23.25B-what-the-gate-fix-review-found.md) — What the review of T23.25 + T23.10B found — parachute and swing too faint by day (checks now night-only), a player in a gate's light vanishes in big fights
 - [ ] [T23.27B](M23/T23.27B-watch-follow-ups.md) — Follow-ups: **the client wasm goes stale on a constants change** (silent), the watched room's rematch line, full-round
-- [ ] [T23.26](M23/T23.26-bots-that-read-the-terrain.md) — Bots that read the terrain — plan a route, jetpack over walls, dig through, take cover from meteors (owner ask)
+- [ ] [T23.27C](M23/T23.27C-what-the-spectate-review-found.md) — What the spectate review found — a spectator can still start a lobby or send item commands (one guard), watched-match replays, check legs that cannot fail
+- [ ] [T23.26](M23/T23.26-bots-that-read-the-terrain.md) — Bots that read the terrain — plan a route, jetpack over walls, dig through, take cover from meteors (owner ask) — 2026-10-01: A–D landed (ef37f2e…1496ed8): stuck 39→3.9 s/bot-min, reach 31→61 %, kills/round 2.25→8.0; **open: the owner's watch**
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
