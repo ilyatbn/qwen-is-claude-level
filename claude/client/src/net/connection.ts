@@ -74,6 +74,8 @@ export type LobbyIntent =
   | { kind: 'quick'; scale: string }
   | { kind: 'create'; scale: string }
   | { kind: 'code'; code: string }
+  /** T23.27 (`docs/78` §A1): a plain `join` (quick match) flagged `spectate` — a seat with no body. */
+  | { kind: 'spectate' }
 
 /**
  * Events whose payload is a **current value**, not a change — so a subscriber
@@ -212,6 +214,9 @@ export class Connection {
           break
         case 'code':
           socket.emit('join_room', { ...id, code: intent.code })
+          break
+        case 'spectate':
+          socket.emit('join', { ...id, spectate: true })
           break
         default:
           socket.emit('join', id)

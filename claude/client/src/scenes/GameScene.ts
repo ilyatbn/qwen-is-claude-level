@@ -65,7 +65,8 @@ const FIRE_CUE: Record<string, 'fire_bazooka' | 'fire_grenade' | 'fire_smg' | nu
 // rest (melee, cone, placed, hitscan) can never reach this branch, so they have
 // no entry and their absence is not a gap.
 import { Predictor } from '../net/prediction'
-import { ClockSync, RemoteInterpolator } from '../net/interpolation'
+import { ClockSync, RemoteInterpolator, type InterpolatedPlayer } from '../net/interpolation'
+import { SPECTATE_SCORES_KEY, WatchState, type WatchCandidate } from '../net/spectate'
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
@@ -150,6 +151,8 @@ interface RemoteView {
  */
 function freshObserved() {
   return {
+    /** T23.27: Tab / Shift+Tab presses in spectate. */
+    watchSteps: 0,
     /** T23.14E: uses sent (`useNow`), and the last one's predicted answer (`key` null: refused). */
     uses: 0,
     /** T23.14E F4: frames held by `slowFrames`. */
@@ -427,6 +430,20 @@ export class GameScene extends Phaser.Scene {
   private lastRtt = 0
   private invOpen = false
   private scoreboardOpen = false
+  /**
+   * T23.27 (`docs/78` §A1): joined as a spectator (`?spectate=1`) — a seat with **no body**: no local player in the
+   * core, no predictor, no input sent. The camera, the night view, the minimap and the HUD follow `watch.watching`.
+   */
+  private spectating = false
+  private readonly watch = new WatchState()
+  /**
+   * T23.27: **the viewpoint this frame** — the local body's drawn place, or in spectate the watched player's
+   * interpolated one (`viewer`). The one input every "where am I looking from" site reads: the camera, the seeing rule
+   * (`renderRemotes`, T23.10B F1's circles), the night view, the minimap and the ear.
+   */
+  private viewAt: { x: number; y: number } | null = null
+  /** T23.27: "SPECTATING <name> — Tab to switch", over the HUD. */
+  private spectateLine: HTMLDivElement | null = null
   private selectedSlot = 0
   /**
    * §F3's hold-to-repeat. Repeats only — the first shot of a press is still
@@ -678,6 +695,11 @@ export class GameScene extends Phaser.Scene {
     this.remotes.clear()
     this.scores.clear()
     this.me = -1
+    // T23.27: the new round's players are not the last one's; the first living one is watched again. Spectating is the
+    // page's choice (`?spectate=1`), read again by `create` right after this.
+    this.spectating = false
+    this.watch.reset()
+    this.viewAt = null
 
     // The round's identity and its clocks.
     this.mapSeed = 0
@@ -757,6 +779,7 @@ export class GameScene extends Phaser.Scene {
     this.debugMode = null
     this.overlay = null
     this.jetReadout = null
+    this.spectateLine = null
     // T21.24. The element is removed and the subscription dropped in SHUTDOWN;
     // these two lines are the other half of that, so a rebuilt scene cannot find
     // a handle to a node that is no longer in the document.
@@ -831,6 +854,8 @@ export class GameScene extends Phaser.Scene {
     // T23.14: the ground the stick figures plant their feet on (`look/actors/cast.ts`).
     setGroundProbe(this, (x, y) => this.core.solidAt(x, y))
     const params = new URLSearchParams(location.search)
+    // T23.27: `?spectate=1` joins with no body (`docs/78` §A1; `make watch`).
+    this.spectating = params.get('spectate') === '1'
 
     this.mirror = new WorldMirror(this.core)
     this.interp = new RemoteInterpolator()
@@ -1413,7 +1438,10 @@ export class GameScene extends Phaser.Scene {
       this.audio.spatial('fire_smg', x0, y0, this.ear())
     })
 
+    // T23.27: a spectator has no body — no fire, no backpack, no slots, no uses (`docs/78` §A1: its commands do nothing,
+    // so nothing is sent for them either).
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (this.spectating) return
       if (p.rightButtonDown()) {
         this.toggleBackpack()
         return
@@ -1421,7 +1449,7 @@ export class GameScene extends Phaser.Scene {
       this.useNow(false)
     })
     this.input.keyboard?.on('keydown-F', () => {
-      this.useNow(false)
+      if (!this.spectating) this.useNow(false)
     })
 
     // Slot selection and item use. `Connection` has had `sendSelectSlot` and
@@ -1434,12 +1462,14 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < C().QUICK_SLOTS; i++) {
       const key = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'][i] as string
       this.input.keyboard?.on(`keydown-${key}`, () => {
+        if (this.spectating) return
         this.selectLocal(i)
         this.audio.play('ui_click', { volume: 0.4 })
         this.refreshHud()
       })
     }
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+      if (this.spectating) return
       const n = C().QUICK_SLOTS
       this.selectLocal((this.selectedSlot + (dy > 0 ? 1 : n - 1)) % n)
       this.refreshHud()
@@ -1451,18 +1481,43 @@ export class GameScene extends Phaser.Scene {
     // §C11 takes `E`. Something still has to use a shield generator: heals and
     // batteries left the inventory with §C9, so `use_item` now has exactly one
     // remaining target and no key. `G` is next to it and unbound.
-    this.input.keyboard?.on('keydown-G', () => this.conn.sendUseItem(this.selectedSlot))
+    this.input.keyboard?.on('keydown-G', () => {
+      if (!this.spectating) this.conn.sendUseItem(this.selectedSlot)
+    })
     // T23.14E F1: through the same predicted path as a fire, so your own throw animates on the frame you press.
-    this.input.keyboard?.on('keydown-E', () => this.useNow(true))
+    this.input.keyboard?.on('keydown-E', () => {
+      if (!this.spectating) this.useNow(true)
+    })
     // §C9: `Q` heals, `R` charges. Both slotless and both refused server-side at
     // zero, so the client sends unconditionally — a client-side "do you have
     // one?" would be a second copy of a rule the server already owns, and the
     // two would disagree the first time a pickup was in flight.
-    this.input.keyboard?.on('keydown-Q', () => this.conn.sendUseHeal())
-    this.input.keyboard?.on('keydown-R', () => this.conn.sendUseBattery())
+    this.input.keyboard?.on('keydown-Q', () => {
+      if (!this.spectating) this.conn.sendUseHeal()
+    })
+    this.input.keyboard?.on('keydown-R', () => {
+      if (!this.spectating) this.conn.sendUseBattery()
+    })
+    // T23.27 (`docs/78` §A1): in spectate, **Tab / Shift+Tab step through the living players** and the scoreboard moves
+    // to a held key (`SPECTATE_SCORES_KEY`, named on the spectate line). In a match Tab keeps the scoreboard.
     this.input.keyboard?.on('keydown-TAB', (e: KeyboardEvent) => {
       e.preventDefault()
-      this.scoreboardOpen = !this.scoreboardOpen
+      if (this.spectating) {
+        this.watch.step(this.watchCandidates(), e.shiftKey ? -1 : 1)
+        this.observed.watchSteps += 1
+      } else {
+        this.scoreboardOpen = !this.scoreboardOpen
+      }
+      this.refreshHud()
+    })
+    this.input.keyboard?.on(`keydown-${SPECTATE_SCORES_KEY}`, () => {
+      if (!this.spectating) return
+      this.scoreboardOpen = true
+      this.refreshHud()
+    })
+    this.input.keyboard?.on(`keyup-${SPECTATE_SCORES_KEY}`, () => {
+      if (!this.spectating) return
+      this.scoreboardOpen = false
       this.refreshHud()
     })
 
@@ -1483,6 +1538,7 @@ export class GameScene extends Phaser.Scene {
       this.debugMode?.destroy()
       this.overlay?.destroy()
       this.jetReadout?.remove()
+      this.spectateLine?.remove()
       // T21.24, both halves — `WeatherLayer.destroy` is the model. Without the
       // unsubscribe every round leaks a listener, and the next flip of the
       // setting wakes a dead scene's dangling element.
@@ -1558,7 +1614,8 @@ export class GameScene extends Phaser.Scene {
       // `?game=1` skips the front end entirely, so there is no lobby to adopt
       // and a plain `join` happens — which is what every check written before
       // the menu expects. The menu path never reaches here.
-      undefined,
+      // T23.27: `&spectate=1` makes it a spectator's join.
+      this.spectating ? { kind: 'spectate' } : undefined,
     )
       this.onWelcome(w)
     } catch (e) {
@@ -1688,12 +1745,21 @@ export class GameScene extends Phaser.Scene {
     // frame with no player in it.
     const spawn = this.core.meta.spawn_points[0] ?? { x: this.core.width / 2, y: 0 }
     this.core.removePlayer(this.me)
-    this.core.addPlayer(this.me, spawn.x, spawn.y - C().PLAYER_H / 2)
-    this.predictor = new Predictor(this.core, this.me)
-    // T23.14E F2: the predicted player's bag is the server's (an `inventory` event may have beaten the map).
-    this.pushBag()
+    if (this.spectating) {
+      // T23.27: no body — nothing for prediction to move, and no ghost for local rounds to hit or for the night view
+      // to centre on. The camera starts at the spawn and follows the watched player from the first snapshot.
+      this.predictor = null
+      this.localView?.destroy()
+      this.localView = null
+      this.crosshair.setVisible(false)
+    } else {
+      this.core.addPlayer(this.me, spawn.x, spawn.y - C().PLAYER_H / 2)
+      this.predictor = new Predictor(this.core, this.me)
+      // T23.14E F2: the predicted player's bag is the server's (an `inventory` event may have beaten the map).
+      this.pushBag()
 
-    this.buildLocalView()
+      this.buildLocalView()
+    }
 
     this.world.rig.follow(spawn)
     this.world.rig.snapTo(spawn)
@@ -1766,7 +1832,11 @@ export class GameScene extends Phaser.Scene {
       s.players.filter((p) => p.id !== this.me),
     )
 
-    const mine = s.players.find((p) => p.id === this.me)
+    // T23.27 (`docs/78` §A1): in spectate the HUD's numbers are **the watched player's** — the same fields, off their
+    // row (every player's health, fuel, battery, flags and vision are on the wire; ammo is not, so the HUD names the
+    // weapon only). Whom to watch is decided first, on this snapshot.
+    if (this.spectating) this.watch.update(this.watchCandidates(s.players), now)
+    const mine = s.players.find((p) => p.id === this.viewId())
     if (mine) {
       this.serverPos = { x: mine.x, y: mine.y }
       this.health = mine.health
@@ -1778,7 +1848,7 @@ export class GameScene extends Phaser.Scene {
       // Also already dequantised by `codec.ts`, for the same reason (§A24).
       this.battery = mine.battery
       // T23.14E F2: an energy weapon's use spends it — the predicted use (`Core.predictUse`) must see the server's.
-      this.core?.setBattery(this.me, mine.battery)
+      if (!this.spectating) this.core?.setBattery(this.me, mine.battery)
       this.heals = mine.heals
       this.batteries = mine.batteries
       // §C5. The server's number, not a clock this scene runs — see `pads.ts`.
@@ -2152,7 +2222,27 @@ export class GameScene extends Phaser.Scene {
 
   /** Where the listener is. Cues are mixed relative to the local player. */
   private ear(): { x: number; y: number } {
-    return this.predictor?.renderPos ?? this.world?.rig.center ?? { x: 0, y: 0 }
+    return this.predictor?.renderPos ?? this.viewAt ?? this.world?.rig.center ?? { x: 0, y: 0 }
+  }
+
+  /** T23.27: whose numbers the HUD shows and whose place the view is — yours, or in spectate the watched player's. */
+  private viewId(): number {
+    return this.spectating ? (this.watch.watching ?? -1) : this.me
+  }
+
+  /** T23.27: who can be watched — every player but this seat (a spectator is never in a snapshot anyway). */
+  private watchCandidates(players: Iterable<{ id: number; flags: number }> = this.mirror.players.values()): WatchCandidate[] {
+    return [...players].filter((p) => p.id !== this.me).map((p) => ({ id: p.id, alive: flag(p.flags, FLAG.alive) }))
+  }
+
+  /**
+   * T23.27: **the viewpoint** — the local body's drawn place (the predictor's), or in spectate the watched player's
+   * interpolated sample, which is where `renderRemotes` draws them. `null` before there is one; callers keep the last.
+   */
+  private viewer(sampled: ReadonlyMap<number, InterpolatedPlayer>): { x: number; y: number } | null {
+    if (!this.spectating) return this.predictor?.renderPos ?? null
+    const w = this.watch.watching === null ? undefined : sampled.get(this.watch.watching)
+    return w ? { x: w.x, y: w.y } : null
   }
 
   /**
@@ -2227,78 +2317,83 @@ export class GameScene extends Phaser.Scene {
     }
     if (!this.ready) return
     const dt = delta / 1000
-    if (!this.ready || !this.world || !this.predictor) return
+    if (!this.ready || !this.world) return
+    // T23.27: a spectator has no predictor (no body) — it steps and sends no input; the rest of the frame runs for it.
+    const predictor = this.predictor
+    if (!predictor && !this.spectating) return
 
-    // §F3: holding the **left** button empties the clip of an automatic weapon.
-    //
-    // Sampled here rather than driven from an event, for the reason
-    // `localInput.ts`'s header gives about held keys: `pointerdown` fires once,
-    // and "still held" is a state no event reports. An event-driven repeat stops
-    // the moment nothing changes, which is exactly when a player is holding the
-    // button down.
-    //
-    // **Left only.** The right button opens the backpack (§F4.1) and must not
-    // fire — `leftButtonDown()` is the whole guard, and holding right while left
-    // is up reads as not held.
-    this.stepRepeatFire(Math.min(dt, MAX_FRAME_DT))
+    if (predictor) {
+      // §F3: holding the **left** button empties the clip of an automatic weapon.
+      //
+      // Sampled here rather than driven from an event, for the reason
+      // `localInput.ts`'s header gives about held keys: `pointerdown` fires once,
+      // and "still held" is a state no event reports. An event-driven repeat stops
+      // the moment nothing changes, which is exactly when a player is holding the
+      // button down.
+      //
+      // **Left only.** The right button opens the backpack (§F4.1) and must not
+      // fire — `leftButtonDown()` is the whole guard, and holding right while left
+      // is up reads as not held.
+      this.stepRepeatFire(Math.min(dt, MAX_FRAME_DT))
 
-    // Fixed timestep. Stepping by the frame delta would make movement depend on
-    // the frame rate, and the whole point of shipping game-core to the browser
-    // is that it runs the simulation the server runs.
-    const step = C().SIM_DT
-    // **Real time, not Phaser's `delta`** (T22.10F). Phaser smooths `delta` and
-    // clamps it to one 60 Hz frame whenever the page is not focused (and for the
-    // first `panicMax` frames): an unfocused tab at 15 fps reported 16.7 ms a frame
-    // and stepped one input where 60 ms had passed. That used to cost only speed —
-    // the server ran whatever arrived — but since R89 the server steps every player
-    // every tick, standing in for inputs that have not come; a client simulating
-    // slower than real time then disagrees with every stand-in and its seqs fall
-    // ever further behind the server's. The fixed step's clock is the wall clock;
-    // `MAX_FRAME_DT` still caps one frame.
-    // **The first frame starts the clock at zero** (T22.10G). It took the frame's `dt`
-    // (Phaser's first delta is the scene's whole boot): a first burst of 14–15 inputs,
-    // which the server's jitter buffer trimmed to its lead — 11 dropped, a 63.7 px
-    // correction in the T22.10F review. The server now waits out the lead on the
-    // first input itself; this client need only start sending one a tick.
-    const wall = performance.now()
-    const elapsed = this.stepClockAt === null ? 0 : (wall - this.stepClockAt) / 1000
-    this.stepClockAt = wall
-    this.acc = Math.min(this.acc + elapsed, MAX_FRAME_DT)
-    const batch = []
-    while (this.acc >= step) {
-      const body = this.core.playerState(this.me)
-      const centre = body ? { x: body.x, y: body.y } : this.world.rig.center
-      const input = this.localInput.sample(++this.seq, centre, this.cameras.main)
-      this.predictor.pushInput(input, step)
-      const after = this.core.playerState(this.me)
-      if (after) this.landing.observe(after.grounded, after.landingImpact)
-      batch.push(input)
-      this.acc -= step
-    }
-    // **No redundancy: each input is sent once** (T22.10D F5 — this said "the last
-    // few inputs go with every packet, so a dropped one costs nothing", `docs/40`
-    // §2, and it has been false since T22.10B). The transport is TCP (socket.io,
-    // no volatile emits), so a packet is never dropped, only late; what the
-    // packets must do is carry *every* input of the frame, in order.
-    //
-    // Not while the results screen is up: the server drops every input in `Ended`
-    // and steps a neutral tick (T21.30, `World::apply_inputs`), so there is nothing
-    // it would use. (T22.14C LOW-7: this said the server kept accepting input there
-    // and queued a burst for the next round — false since T21.30.)
-    //
-    // **Every input this frame is sent, in packets of at most `INPUT_REDUNDANCY`**
-    // (T22.10B; `codec.ts::inputPackets` since T22.10D, so it has a test) — the
-    // most `decode_input_batch` takes. This sent only the last
-    // three, so a frame that stepped four or more ticks (a 15–20 fps page, which is
-    // what a headless browser drawing the vortex shader runs at) applied an input
-    // locally that the server never received: the server acked past it without
-    // integrating it, and the predictor snapped back by a tick of travel on every
-    // such snapshot — 4–12 px under a vortex's pull, measured by `breach-vortex`
-    // off `lastAckErrorPx` (ack deltas +4/+2 alternating, the big errors on the +4s).
-    if (batch.length && !this.results.isUp) {
-      for (const packet of inputPackets(batch, C().INPUT_REDUNDANCY)) this.conn.sendInput(packet)
-      this.inputsSent++
-      this.debugHud?.noteInputs(performance.now(), batch.length)
+      // Fixed timestep. Stepping by the frame delta would make movement depend on
+      // the frame rate, and the whole point of shipping game-core to the browser
+      // is that it runs the simulation the server runs.
+      const step = C().SIM_DT
+      // **Real time, not Phaser's `delta`** (T22.10F). Phaser smooths `delta` and
+      // clamps it to one 60 Hz frame whenever the page is not focused (and for the
+      // first `panicMax` frames): an unfocused tab at 15 fps reported 16.7 ms a frame
+      // and stepped one input where 60 ms had passed. That used to cost only speed —
+      // the server ran whatever arrived — but since R89 the server steps every player
+      // every tick, standing in for inputs that have not come; a client simulating
+      // slower than real time then disagrees with every stand-in and its seqs fall
+      // ever further behind the server's. The fixed step's clock is the wall clock;
+      // `MAX_FRAME_DT` still caps one frame.
+      // **The first frame starts the clock at zero** (T22.10G). It took the frame's `dt`
+      // (Phaser's first delta is the scene's whole boot): a first burst of 14–15 inputs,
+      // which the server's jitter buffer trimmed to its lead — 11 dropped, a 63.7 px
+      // correction in the T22.10F review. The server now waits out the lead on the
+      // first input itself; this client need only start sending one a tick.
+      const wall = performance.now()
+      const elapsed = this.stepClockAt === null ? 0 : (wall - this.stepClockAt) / 1000
+      this.stepClockAt = wall
+      this.acc = Math.min(this.acc + elapsed, MAX_FRAME_DT)
+      const batch = []
+      while (this.acc >= step) {
+        const body = this.core.playerState(this.me)
+        const centre = body ? { x: body.x, y: body.y } : this.world.rig.center
+        const input = this.localInput.sample(++this.seq, centre, this.cameras.main)
+        predictor.pushInput(input, step)
+        const after = this.core.playerState(this.me)
+        if (after) this.landing.observe(after.grounded, after.landingImpact)
+        batch.push(input)
+        this.acc -= step
+      }
+      // **No redundancy: each input is sent once** (T22.10D F5 — this said "the last
+      // few inputs go with every packet, so a dropped one costs nothing", `docs/40`
+      // §2, and it has been false since T22.10B). The transport is TCP (socket.io,
+      // no volatile emits), so a packet is never dropped, only late; what the
+      // packets must do is carry *every* input of the frame, in order.
+      //
+      // Not while the results screen is up: the server drops every input in `Ended`
+      // and steps a neutral tick (T21.30, `World::apply_inputs`), so there is nothing
+      // it would use. (T22.14C LOW-7: this said the server kept accepting input there
+      // and queued a burst for the next round — false since T21.30.)
+      //
+      // **Every input this frame is sent, in packets of at most `INPUT_REDUNDANCY`**
+      // (T22.10B; `codec.ts::inputPackets` since T22.10D, so it has a test) — the
+      // most `decode_input_batch` takes. This sent only the last
+      // three, so a frame that stepped four or more ticks (a 15–20 fps page, which is
+      // what a headless browser drawing the vortex shader runs at) applied an input
+      // locally that the server never received: the server acked past it without
+      // integrating it, and the predictor snapped back by a tick of travel on every
+      // such snapshot — 4–12 px under a vortex's pull, measured by `breach-vortex`
+      // off `lastAckErrorPx` (ack deltas +4/+2 alternating, the big errors on the +4s).
+      if (batch.length && !this.results.isUp) {
+        for (const packet of inputPackets(batch, C().INPUT_REDUNDANCY)) this.conn.sendInput(packet)
+        this.inputsSent++
+        this.debugHud?.noteInputs(performance.now(), batch.length)
+      }
     }
 
     // One tiny echo a second is enough to keep the estimate current without
@@ -2309,12 +2404,17 @@ export class GameScene extends Phaser.Scene {
       this.conn.sendRaw('ping_rtt', String(performance.now()))
     }
 
-    this.predictor.updateRender(dt)
+    predictor?.updateRender(dt)
     this.roundTime += dt
     this.frameDt = dt
 
     const body = this.core.playerState(this.me)
-    const rp = this.predictor.renderPos
+    // T23.27: the viewpoint (`viewer`) — the predictor's drawn place, as it always was, or in spectate the watched
+    // player's, off the same sample of the remotes `renderRemotes` draws below.
+    const sampleAt = performance.now()
+    const sampled = this.interp.sample(sampleAt)
+    this.viewAt = this.viewer(sampled) ?? this.viewAt
+    const rp = this.viewAt ?? this.world.rig.center
     if (body && this.localView) {
       const aim = dequantizeAngle(
         this.localInput.sample(this.seq, { x: body.x, y: body.y }, this.cameras.main).aim,
@@ -2370,9 +2470,11 @@ export class GameScene extends Phaser.Scene {
       this.world.rig.follow(this.watchPoint ?? { x: rp.x, y: rp.y })
       this.movementCues(dt, body)
     }
+    // T23.27: a spectator's camera follows the watched player (no body of its own to lead the rig).
+    if (this.spectating && this.viewAt) this.world.rig.follow(this.watchPoint ?? this.viewAt)
     this.world.rig.update(dt)
 
-    this.renderRemotes(performance.now())
+    this.renderRemotes(sampleAt, sampled)
 
     // Darkness from round time locally, corrected by the server's byte so the
     // two never drift apart (`docs/14` §1) — and none at all in space (T22.06).
@@ -2553,11 +2655,11 @@ export class GameScene extends Phaser.Scene {
     // lights — ordnance, fire, lava — light the terrain as F's point lights (`effectLights.ts`), handed over below.
     this.debugHud.update(performance.now(), {
       rttMs: this.clock.rtt,
-      pendingInputs: this.predictor.stats.pending,
-      corrections: this.predictor.stats.corrections,
-      lastCorrectionPx: this.predictor.stats.lastCorrectionPx,
-      maxCorrectionPx: this.predictor.stats.maxCorrectionPx,
-      snaps: this.predictor.stats.snaps,
+      pendingInputs: predictor?.stats.pending ?? 0,
+      corrections: predictor?.stats.corrections ?? 0,
+      lastCorrectionPx: predictor?.stats.lastCorrectionPx ?? 0,
+      maxCorrectionPx: predictor?.stats.maxCorrectionPx ?? 0,
+      snaps: predictor?.stats.snaps ?? 0,
       interpDepth: this.interp.stats.bufferDepth,
       extrapolatingMs: this.interp.stats.extrapolatingMs,
       frozen: this.interp.stats.frozen,
@@ -2666,10 +2768,10 @@ export class GameScene extends Phaser.Scene {
    * `apply_input`: there are no remote inputs to run, and interpolating
    * transmitted positions is both cheaper and more accurate (`docs/42` §4).
    */
-  private renderRemotes(now: number): void {
+  private renderRemotes(now: number, sampled: ReadonlyMap<number, InterpolatedPlayer>): void {
     this.flareBodies.length = 0
-    const sampled = this.interp.sample(now)
-    const localPos = this.predictor?.renderPos ?? { x: 0, y: 0 }
+    // T23.27: the seeing rule's own circle is centred on the viewpoint (`viewer`): yours, or the watched player's.
+    const localPos = this.viewAt ?? { x: 0, y: 0 }
     const darkness = sceneDarkness(this.gravity === SPACE_GRAVITY, this.serverDarkness, this.roundTime, C().NIGHT_DARKNESS)
     const fov = fovRadius({
       darkness,
@@ -2962,6 +3064,20 @@ export class GameScene extends Phaser.Scene {
       }
       this.audio.play('ui_click', { volume: 0.5 })
     })
+    // T23.27: a spectator has no bag (a remote's inventory is not on the wire) — no quick bar; and a line naming whom
+    // it watches, under the round clock.
+    if (this.spectating) {
+      this.inventory?.destroy()
+      this.inventory = null
+      const line = document.createElement('div')
+      line.id = 'spectate-line'
+      line.style.cssText =
+        'position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:12;pointer-events:none;' +
+        'font:600 15px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9fe7ff;' +
+        'text-shadow:0 1px 2px rgba(0,0,0,.9);white-space:pre'
+      document.body.appendChild(line)
+      this.spectateLine = line
+    }
   }
 
   private setStatus(text: string): void {
@@ -3037,6 +3153,19 @@ export class GameScene extends Phaser.Scene {
       canvasW: this.scale.width,
       canvasH: this.scale.height,
     }
+  }
+
+  /**
+   * T23.27: "SPECTATING <name> · <weapon> — Tab / Shift+Tab to switch · hold S for scores". The weapon is the
+   * watched player's held item off the snapshot (`selectedItem`); its ammo is not on the wire for a remote.
+   */
+  private spectateText(): string {
+    const id = this.watch.watching
+    if (id === null) return 'SPECTATING — waiting for a player'
+    const name = this.scores.get(id)?.name ?? `p${id}`
+    const item = this.mirror.players.get(id)?.selectedItem
+    const weapon = item === undefined || item === null ? '' : (this.itemKeys().get(item) ?? '')
+    return `SPECTATING ${name}${weapon ? ` · ${weapon}` : ''} — Tab / Shift+Tab to switch · hold ${SPECTATE_SCORES_KEY} for scores`
   }
 
   private refreshHud(): void {
@@ -3120,6 +3249,7 @@ export class GameScene extends Phaser.Scene {
     const lines = [[status, banner ?? '', strip].filter((p) => p !== '').join('   │   ')]
     if (this.scoreboardOpen) lines.push(board)
     this.hud.textContent = lines.join('\n')
+    if (this.spectateLine) this.spectateLine.textContent = this.spectateText()
 
     // §C26. One decimal, from the snapshot's fuel — see `jetpackReadout-math`
     // for the measured curve this exists to make legible.
@@ -3870,6 +4000,15 @@ export class GameScene extends Phaser.Scene {
           playerCount: self.mirror.players.size,
           player: body,
           renderPos: self.predictor?.renderPos ?? null,
+          // T23.27: spectate — whom the camera follows, where the viewpoint is (the watched player's drawn place), and
+          // the camera rig's centre, so a check reads both ends of "the camera is on player A".
+          spectating: self.spectating,
+          watching: self.watch.watching,
+          viewAt: self.viewAt,
+          cameraCentre: self.world ? { x: self.world.rig.center.x, y: self.world.rig.center.y } : null,
+          watchSteps: self.observed.watchSteps,
+          /** T23.27: the ids in the last snapshot — a spectator's own is never among them (no body). */
+          playerIds: [...self.mirror.players.keys()],
           /** T22.08E: where the crosshair's mark sits, world px — a pixel check's probe under it is occluded. */
           crosshair: self.crosshairAt,
           // §A39, both ends for the local player. `player` above is the *local

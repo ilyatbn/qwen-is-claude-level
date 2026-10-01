@@ -286,6 +286,8 @@ export const CHECKS = [
   // T23.10 (R7): the night seeing rule in a real match on pixels — a remote at 0.9 × your night sight drawn, one at
   // 1.1 × not, in one frame. Standalone: three humans on a `DEV_PROBE=1` server at night.
   { name: 'night-view-match', file: 'scripts/checks/night-view-match.mjs', standalone: true },
+  // T23.27 (`docs/78` §A1): a spectator — no body, the camera on the watched player, Tab / Shift+Tab to switch.
+  { name: 'spectate', file: 'scripts/checks/spectate.mjs', standalone: true },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
   // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
   { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345&hour=1' },

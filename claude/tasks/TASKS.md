@@ -865,7 +865,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.19G](M23/T23.19G-what-the-daylight-review-found.md) — What the review of T23.19F + T23.11 found — space always moonlit day, a mid-fight sky shader compile at first dusk/night, tests that cannot see a mid-dusk pop (handoff item 3)
 - [x] [T23.25](M23/T23.25-the-batch-gate-reds.md) — The batch gate's reds on bcc5b30 — platforms, crates, lava-lights, debug-mode, swing-mine-fx (handoff item 1)
 - [ ] [T23.26](M23/T23.26-bots-that-read-the-terrain.md) — Bots that read the terrain — plan a route, jetpack over walls, dig through, take cover from meteors (owner ask)
-- [ ] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
+- [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
 

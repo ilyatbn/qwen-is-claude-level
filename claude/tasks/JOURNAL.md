@@ -7671,3 +7671,9 @@ effect-lights: the laser control read a gate that took the impact's freed light 
 F5 space has no daylight (F1 always); F6 `SkyQuad.warm` builds the sky's set variants at setScene (programs 23 at day/dusk/night; plant 22→23 at dusk); F7 moon anchors/reach derived from sky-math's exported phase bounds + a darknessAt sweep (finding's NIGHT_MOON_U plant is green by design; DAY_MOON_U 0.20 / NIGHT_START 0.66 red); F8 constants read; F9 snap allow-list (fogFront plant red); F10 comments. F4 → coordinator (docs/60 row).
 Stale wasm found: pkg had SPACE_MOON_ORBIT 118 (T23.10B's 236 never reached the client) until a cargo clean of the wasm target.
 Done-when: vitest 1180/1180; e2e 4/5 (look-sky red once under 5-wide load, 3/3 alone). check.sh --changed HEAD 93/97: night-view, platforms, smoke-fx, look-match red in batch, green alone.
+
+## T23.27 — spectate a bots-only match (builder2, 2026-10-01)
+Server: `Command::Spectate` + `Seat.spectator` (`has_body()` at every door), cap counts bodies only, human_count excludes spectators, a **watched room restarts at the window's close** (round.rs `watched`), spectator input dropped / vote refused, replay tag 24 `JoinSpectator`, session `"spectate": true` (may join a live match, no player_join). 4 unit tests, plants red.
+Client: `?game=1&spectate=1`; one viewpoint (`viewer()`/`viewAt`) for camera, seeing rule, night view, minimap, ear; spectate = no core body/predictor/input/quick bar; HUD from the watched row + `#spectate-line`; Tab/Shift+Tab (`net/spectate.ts`), scores on held S.
+Check `spectate` (no body both ends, camera on A → Tab → B 768 px → Shift+Tab back, ana's Tab = scoreboard control). `make watch` (6 bots, headed D3D12 Chrome): two restarts seen; shots/t2327-watch-gpu-{a,b,ended}.png.
+Done-when: cargo 348/0; e2e spectate 1/1. full-round (opt-in) red on baseline 2/3 — self-kill runs out of rockets; not this change.

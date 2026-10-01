@@ -11,7 +11,7 @@
 SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := help
-.PHONY: help build start stop restart clean distclean test test-fast e2e status logs docker-up docker-down play probe
+.PHONY: help build start stop restart clean distclean test test-fast e2e status logs docker-up docker-down play probe watch
 
 RUN_DIR   := .run
 SERVER_PG := $(RUN_DIR)/server.pgid
@@ -32,6 +32,7 @@ help:
 	@echo "  make logs       tail both logs"
 	@echo "  make play       open the game in a headed Chrome with CDP (WSLg)"
 	@echo "  make probe      read that window's state + screenshot, without closing it"
+	@echo "  make watch      watch a bots-only match in a headed GPU Chrome (Tab / Shift+Tab: whom)"
 	@echo "  make test       the full gate: fmt, clippy, rust, client, e2e"
 	@echo "  make test-fast  the gate without the browser suite"
 	@echo "  make e2e        the browser suite only"
@@ -60,7 +61,7 @@ start: stop
 	command -v wasm-pack >/dev/null || { echo "wasm-pack is required: cargo install wasm-pack" >&2; exit 1; }
 	[ -d client/node_modules ] || npm --prefix client install
 	echo "starting server -> $(SERVER_LOG)"
-	setsid cargo run -p game-server --release >$(SERVER_LOG) 2>&1 < /dev/null &
+	$(SERVER_ENV) setsid cargo run -p game-server --release >$(SERVER_LOG) 2>&1 < /dev/null &
 	echo $$! > $(SERVER_PG)
 	echo "starting client -> $(CLIENT_LOG)"
 	setsid npm --prefix client run dev >$(CLIENT_LOG) 2>&1 < /dev/null &
@@ -150,6 +151,32 @@ play:
 
 probe:
 	@node scripts/probe.mjs $(ARGS)
+
+# T23.27 (`docs/78` §A1): **watch a bots-only match.** The release server with a full room of bots, vite, and a
+# headed GPU Chrome (`scripts/play.mjs`) joined as a spectator — no body; Tab / Shift+Tab switch whom you watch, hold
+# S for the scores. A watched room restarts on its own after every round. `WATCH_ENV` passes server settings, e.g.
+# `make watch WATCH_ENV='DEV_BOT_FRENZY=1 DEV_LOADOUT=1'`; `WATCH_BOTS` the bot count. `make stop` ends it.
+WATCH_BOTS ?= 6
+WATCH_ENV ?=
+SERVER_ENV ?=
+watch:
+	@set -euo pipefail
+	$(MAKE) --no-print-directory start SERVER_ENV="BOT_COUNT=$(WATCH_BOTS) $(WATCH_ENV)"
+	# The page joins the moment it loads, so the server has to be listening first (a cold release build is minutes).
+	echo "waiting for the server on :3000 (a cold release build takes a while) -> $(SERVER_LOG)"
+	up=""
+	for i in $$(seq 1 600); do
+	  if curl -sf http://localhost:3000/healthz >/dev/null 2>&1; then up=1; break; fi
+	  sleep 1
+	done
+	[ -n "$$up" ] || { echo "the server never answered /healthz — see $(SERVER_LOG)" >&2; exit 1; }
+	# The shared parse (`scripts/vite-url.mjs`, §B22), not a seventh copy of it.
+	port=$$(node --input-type=module -e "import { readFileSync } from 'node:fs'; import { matchVitePort } from './scripts/vite-url.mjs'; console.log(matchVitePort(readFileSync('$(CLIENT_LOG)', 'utf8')) ?? '')")
+	[ -n "$$port" ] || { echo "no vite port in $(CLIENT_LOG)" >&2; exit 1; }
+	node scripts/play.mjs "http://localhost:$$port/?e2e=1&game=1&spectate=1&name=Watcher"
+	echo
+	echo "  watching: Tab / Shift+Tab switch whom you watch, hold S for the scores, M the minimap"
+	echo "  make stop ends it"
 
 # ---------------------------------------------------------------- test
 
