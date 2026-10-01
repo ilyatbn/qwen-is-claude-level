@@ -3258,6 +3258,19 @@ fn bot_terrain_report() {
         game_core::bots::movement::Movement::header()
     );
     println!("           {}", moved.row());
+    // T23.26E: **fighting**, beside the owner's row (`replay --player-stats`).
+    println!(
+        "  fight:   {}",
+        game_core::bots::movement::Movement::fight_header()
+    );
+    println!("           {}", moved.fight_row());
+    println!(
+        "  T23.26E: kills a round {:.2}, pad uses a round {:.2}, still with a goal {:.1} s per \
+         bot-minute",
+        sum(|r| r.kills) / n,
+        moved.teleports as f32 / n,
+        still_s / bot_min.max(1e-6)
+    );
     assert!(bot_min > 0.0, "control: no bot was ever alive");
     assert!(
         arrived > 0.0,

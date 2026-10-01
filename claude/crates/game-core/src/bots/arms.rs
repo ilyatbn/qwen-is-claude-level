@@ -229,6 +229,23 @@ pub fn weapon_kind(item: ItemId) -> Option<usize> {
     })
 }
 
+/// T23.26E: **how far a held weapon hits from**, px — a swing's `effective_reach`, a
+/// stream's [`stream_reach`], a round's `range`; a weapon with no stated range (thrown and
+/// launched rounds) is good to the sight range, `BOT_ENGAGE_RANGE`. `None` for what is not
+/// a weapon. The fight measure's band (`movement::Watcher`), one answer for a human and a bot.
+pub(super) fn band(item: ItemId) -> Option<f32> {
+    let ItemKind::Weapon(wid) = def(item)?.kind else {
+        return None;
+    };
+    let w = crate::weapons::defs::def(wid)?;
+    Some(match w.delivery {
+        Delivery::Melee { reach, .. } => crate::weapons::melee::effective_reach(reach),
+        Delivery::Flames { .. } => stream_reach(),
+        _ if w.range > 0.0 => w.range,
+        _ => crate::constants::BOT_ENGAGE_RANGE,
+    })
+}
+
 impl Bot {
     /// Where to hold an enemy from: [`Bot::stand_off`], but **never outside the
     /// selected weapon's range** — `BOT_SPACE_IN_RANGE` of a swing's

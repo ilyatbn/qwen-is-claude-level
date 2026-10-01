@@ -32,7 +32,7 @@ usage: replay <file> [flags]
   --trace <filter>   re-run under a different GAME_LOG filter
   --verify           compare the final hash against the footer (the default)
   --stats            per-tick timing and command counts
-  --player-stats     how every player moved (T23.26C): air, jet, distance, digs,
+  --player-stats     how every player moved (T23.26C) and fought (T23.26E): air, jet, distance, digs,
                      teleports, fight distance — the human-vs-bot table
   -h, --help         this
 ";
@@ -409,6 +409,13 @@ fn print_movement(w: &game_core::bots::movement::Watcher, h: &game_server::repla
         println!("  {id:>2} {who:<6}   {}", m.row());
     }
     println!("  bots pooled  {}", bots.row());
+    // T23.26E: the same players, fighting.
+    println!("\n  player       {}", Movement::fight_header());
+    for (i, id) in ids.iter().enumerate() {
+        let who = if i < first_bot { "human" } else { "bot" };
+        println!("  {id:>2} {who:<6}   {}", w.of(*id).fight_row());
+    }
+    println!("  bots pooled  {}", bots.fight_row());
 }
 
 fn hex(b: &[u8; 32]) -> String {
