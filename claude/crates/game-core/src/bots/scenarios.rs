@@ -712,3 +712,168 @@ fn a_fighting_bot_hops_rather_than_standing_still() {
         still * 100.0
     );
 }
+
+/// **W1 (T23.26D item 2): a bot with a gun that can fire never brawls with its shovel.**
+/// An enemy inside the shovel's reach, the bot carrying a loaded pistol: it selects the
+/// pistol, not the shovel (which outscores it on dps at point blank — 54 against 50 —
+/// and was held 55.6 % of fighting ticks in the population before). Control: the same
+/// bot with a laser pistol and a flat battery — a ranged weapon that cannot fire — takes
+/// the shovel, so the rule is "a ranged weapon that can fire", not "never melee".
+#[test]
+fn a_bot_with_a_firing_gun_never_picks_the_shovel() {
+    use crate::items::registry::{LASER_PISTOL, SHOVEL};
+    let chosen = |laser: bool| {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+            p.battery = 0.0;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + crate::constants::PLAYER_W, at.y);
+        }
+        give(&mut w, 1, if laser { LASER_PISTOL } else { PISTOL }, 10);
+        let b = Bot::new(1, SEED, 0, 0.6);
+        let me = w.player(1).expect("bot").clone();
+        let slot = b
+            .choose_weapon(&w, &me, w.player(2).expect("enemy").body.pos, at)
+            .unwrap_or(me.inventory.selected());
+        me.inventory.slot(slot).map(|s| s.item)
+    };
+    assert_eq!(
+        chosen(false),
+        Some(PISTOL),
+        "a loaded pistol lost to the shovel at point blank"
+    );
+    assert_eq!(
+        chosen(true),
+        Some(SHOVEL),
+        "control: with only a flat laser the shovel should be the last resort"
+    );
+}
+
+/// Launch `item` from a shelf at a target `x` px along it, at `angle`, in the real
+/// simulation — with a body standing at the target, for a weapon that bursts on one —
+/// and a wall `wall` px tall half way; the distance from the target to where it went off.
+fn burst_off(
+    item: crate::items::registry::ItemId,
+    wall: f32,
+    x: f32,
+    angle: impl Fn(&World, Vec2, Vec2) -> f32,
+) -> f32 {
+    let mut w = world_with(&[1, 2]);
+    let at = clear_line(&w);
+    let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+    for id in ids {
+        w.items.remove(id);
+    }
+    let y = flat_shelf(&mut w, at, 240);
+    // Air to well over the highest arc, so the arc is the only question.
+    for row in (y as i32 - 240)..(y as i32 - 60) {
+        w.map
+            .mask
+            .clear_run(row, at.x as i32 - 40, at.x as i32 + 280);
+    }
+    let from = Vec2::new(at.x, y);
+    let target = Vec2::new(at.x + x, y);
+    if wall > 0.0 {
+        let floor = y as i32 + PLAYER_H as i32 / 2 + 1;
+        let mid = (at.x + x * 0.5) as i32;
+        for row in (floor - wall as i32)..floor {
+            w.map.mask.set_run(row, mid - 4, mid + 4);
+        }
+    }
+    w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+    give(&mut w, 1, item, 1);
+    wield(&mut w, 1, item);
+    if let Some(p) = w.player_mut(2) {
+        p.body.pos = target;
+        p.iframes_until = f32::INFINITY;
+    }
+    let a = angle(&w, from, target);
+    if let Some(p) = w.player_mut(1) {
+        p.body.pos = from;
+        p.iframes_until = f32::INFINITY;
+        p.aim = ((a.rem_euclid(crate::math::TAU) / crate::math::TAU) * 65536.0) as u16;
+    }
+    w.fire(1, 0.0).expect("nothing was launched");
+    for _ in 0..(5 * SIM_HZ) {
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = target;
+        }
+        w.step(SIM_DT);
+        for e in w.drain_events() {
+            if let crate::world::GameEvent::Explosion { x: ex, y: ey, .. } = e {
+                return (Vec2::new(ex, ey) - target).len();
+            }
+        }
+    }
+    f32::INFINITY
+}
+
+/// A weapon's level range, `v² / g`.
+fn level_range(wid: crate::items::registry::WeaponId) -> f32 {
+    let g = crate::weapons::defs::def(wid).expect("weapon");
+    g.muzzle_speed * g.muzzle_speed / (crate::constants::GRAVITY * g.gravity_scale)
+}
+
+/// **W2 (T23.26D item 3): an arcing round goes off where it was aimed.** A rocket fired on
+/// the solved arc at a body four fifths of the bazooka's level range along a shelf bursts
+/// within its blast radius of it, and so does a grenade thrown on its solved (swept,
+/// bounce-walked) arc. Control: the rocket fired along the chord — straight at the body,
+/// the old aim — drops into the floor short of it.
+#[test]
+fn an_arcing_round_on_its_solved_arc_lands_on_the_target_and_the_chord_misses() {
+    use crate::constants::{BAZOOKA_BLAST_RADIUS, GRENADE_BLAST_RADIUS};
+    use crate::items::registry::{BAZOOKA, GRENADE, WEAPON_BAZOOKA, WEAPON_GRENADE};
+    let x = 0.8 * level_range(WEAPON_BAZOOKA);
+    let solved = burst_off(BAZOOKA, 0.0, x, |w, f, t| {
+        super::arms::lob_angle(w, WEAPON_BAZOOKA, f, t).expect("no arc inside the range")
+    });
+    assert!(
+        solved <= BAZOOKA_BLAST_RADIUS,
+        "the solved rocket went off {solved:.0} px from the target (blast {BAZOOKA_BLAST_RADIUS})"
+    );
+    let chord = burst_off(BAZOOKA, 0.0, x, |_, f, t| (t - f).angle());
+    assert!(
+        chord > BAZOOKA_BLAST_RADIUS,
+        "control: the chord shot went off {chord:.0} px off — the fixture needs no arc"
+    );
+    let gx = 0.8 * level_range(WEAPON_GRENADE);
+    let thrown = burst_off(GRENADE, 0.0, gx, |w, f, t| {
+        super::arms::lob_angle(w, WEAPON_GRENADE, f, t).expect("no grenade arc")
+    });
+    assert!(
+        thrown <= GRENADE_BLAST_RADIUS,
+        "the solved grenade went off {thrown:.0} px from the target"
+    );
+}
+
+/// **W3 (T23.26D item 3): over a wall, the high arc.** The rocket shot with a wall half
+/// way, standing between the low arc's apex and the high one's: the solver's answer still
+/// bursts on the target. Control: the low ballistic solution — what a solver with no
+/// terrain check would fire — bursts at the wall.
+#[test]
+fn over_a_wall_the_high_arc_is_fired() {
+    use crate::constants::BAZOOKA_BLAST_RADIUS;
+    use crate::items::registry::{BAZOOKA, WEAPON_BAZOOKA};
+    let r = level_range(WEAPON_BAZOOKA);
+    let x = 0.8 * r;
+    let s2 = (x / r).asin();
+    let (low, high) = (s2 * 0.5, std::f32::consts::FRAC_PI_2 - s2 * 0.5);
+    // Each arc's apex, at the half way where the wall stands: r sin²e / 2.
+    let apex = |e: f32| r * e.sin() * e.sin() / 2.0;
+    let wall = (apex(low) + apex(high)) * 0.5;
+    let solved = burst_off(BAZOOKA, wall, x, |w, f, t| {
+        super::arms::lob_angle(w, WEAPON_BAZOOKA, f, t).expect("no arc over the wall")
+    });
+    assert!(
+        solved <= BAZOOKA_BLAST_RADIUS,
+        "over a {wall:.0} px wall the solved rocket went off {solved:.0} px from the target"
+    );
+    let flat = burst_off(BAZOOKA, wall, x, |_, _, _| -low);
+    assert!(
+        flat > BAZOOKA_BLAST_RADIUS,
+        "control: the low arc cleared a {wall:.0} px wall ({flat:.0} px off) — the fixture"
+    );
+}

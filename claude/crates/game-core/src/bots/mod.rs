@@ -26,6 +26,7 @@ mod scenarios;
 mod space;
 mod walk;
 
+pub use arms::{weapon_kind, WEAPON_KINDS};
 use explore::Coverage;
 
 use crate::constants::{
@@ -141,6 +142,15 @@ pub struct BotStats {
     pub ticks_dodging: u32,
     /// T23.26C item 4: routes dropped at a jet step the tank could not pay for.
     pub tank_replans: u32,
+    /// T23.26D: trigger pulls at an enemy by the held weapon's kind (`WEAPON_KINDS`),
+    /// and ticks fighting with a melee weapon in hand while a ranged one in the bag
+    /// could fire — the shovel the owner watched bots brawl with.
+    pub fires_by_kind: [u32; WEAPON_KINDS.len()],
+    pub ticks_melee_with_ranged: u32,
+    /// ...and swings at an enemy taken that way (the shovel used, not only held).
+    pub melee_fires_with_ranged: u32,
+    /// T23.26D: trigger pulls held because no arc reaches the target (`arms::lob_angle`).
+    pub rej_arc: u32,
     /// T23.26C item 2: ticks alive spent **still** — a whole `BOT_STUCK_WINDOW` in which
     /// the body moved under `BOT_STUCK_PX`, in 2D, whatever was pressed — by what the bot
     /// was doing when the window closed ([`STILL_CAUSES`] names the slots). Every bot
@@ -268,6 +278,11 @@ pub struct Bot {
     routes_off: bool,
     /// Tests only: the meteor dodge planted out (`without_dodge`).
     dodge_off: bool,
+    /// T23.26D item 3: the solved launch angle for the arcing weapon in hand at the
+    /// current enemy (`arms::lob_angle`), and when it was solved — re-solved every
+    /// `BOT_LOB_EVERY`, not every tick (a solve walks up to a dozen flights).
+    lob: Option<f32>,
+    lob_at: f32,
     /// T23.26C item 6: round time of the next fight hop, and its test-only plant.
     juke_at: f32,
     juke_phase: f32,
@@ -310,6 +325,8 @@ impl Bot {
             route: route::Route::default(),
             routes_off: false,
             dodge_off: false,
+            lob: None,
+            lob_at: f32::NEG_INFINITY,
             juke_at: 0.0,
             juke_phase: index as f32 * 0.618_034 % 1.0,
             juke_off: false,
@@ -523,9 +540,44 @@ impl Bot {
         // A dig step aims at its rock, and without the skill's error: nobody misses a
         // wall they are standing at, and a swing off the bore leaves a lip.
         let dig_at = nav.and_then(|n| n.aim);
-        let angle = match dig_at {
-            Some(p) => (p.y - pos.y).atan2(p.x - pos.x),
-            None => (aim_at.y - pos.y).atan2(aim_at.x - pos.x) + err,
+        // T23.26D item 3: **an arcing weapon is aimed along its solved arc**, and a fast
+        // straight round **leads** a moving enemy by its velocity over the flight time.
+        // The skill's error goes on top of either.
+        let wid = self
+            .selected_weapon(world)
+            .and_then(|i| match def(i)?.kind {
+                ItemKind::Weapon(wid) => Some(wid),
+                _ => None,
+            });
+        let enemy = match self.goal {
+            Goal::Enemy(id) => world.player(id).filter(|p| p.alive),
+            _ => None,
+        };
+        if enemy.is_none() || wid.is_none() || dig_at.is_some() {
+            self.lob = None;
+            self.lob_at = f32::NEG_INFINITY;
+        } else if now - self.lob_at >= crate::constants::BOT_LOB_EVERY {
+            self.lob = wid.and_then(|w| arms::lob_angle(world, w, pos, aim_at));
+            self.lob_at = now;
+        }
+        let lead = match (enemy, wid.and_then(crate::weapons::defs::def)) {
+            (Some(e), Some(w))
+                if self.lob.is_none()
+                    && w.muzzle_speed > 0.0
+                    && w.gravity_scale == 0.0
+                    && !matches!(w.delivery, crate::weapons::defs::Delivery::Melee { .. }) =>
+            {
+                e.body.vel * ((aim_at - pos).len() / w.muzzle_speed)
+            }
+            _ => Vec2::ZERO,
+        };
+        let angle = match (dig_at, self.lob) {
+            (Some(p), _) => (p.y - pos.y).atan2(p.x - pos.x),
+            (None, Some(a)) => a + err,
+            (None, None) => {
+                let at = aim_at + lead;
+                (at.y - pos.y).atan2(at.x - pos.x) + err
+            }
         };
         let aim = ((angle.rem_euclid(TAU) / TAU) * 65536.0) as u16;
 
@@ -548,6 +600,17 @@ impl Bot {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
                 fighting = true;
+                let held = me.inventory.slot(me.inventory.selected()).map(|s| s.item);
+                if let Some(k) = held.and_then(weapon_kind) {
+                    self.stats.fires_by_kind[k] += 1;
+                    if k == 0 && self.has_firable_weapon(world) {
+                        self.stats.melee_fires_with_ranged += 1;
+                    }
+                }
+            }
+            let held = me.inventory.slot(me.inventory.selected()).map(|s| s.item);
+            if held.and_then(weapon_kind) == Some(0) && self.has_firable_weapon(world) {
+                self.stats.ticks_melee_with_ranged += 1;
             }
         }
         // A dig step swings the same way a shot is fired (`bots::drive` sends it).
@@ -1670,6 +1733,10 @@ pub(crate) mod harness {
             lip_swings: a.lip_swings + b.lip_swings,
             ticks_dodging: a.ticks_dodging + b.ticks_dodging,
             tank_replans: a.tank_replans + b.tank_replans,
+            fires_by_kind: std::array::from_fn(|i| a.fires_by_kind[i] + b.fires_by_kind[i]),
+            ticks_melee_with_ranged: a.ticks_melee_with_ranged + b.ticks_melee_with_ranged,
+            melee_fires_with_ranged: a.melee_fires_with_ranged + b.melee_fires_with_ranged,
+            rej_arc: a.rej_arc + b.rej_arc,
             ticks_still: std::array::from_fn(|i| a.ticks_still[i] + b.ticks_still[i]),
         }
     }

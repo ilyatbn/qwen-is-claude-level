@@ -2144,8 +2144,13 @@ fn the_shipping_configuration_produces_a_fight() {
     // under one floor on one seed is the marginal shape all over again. The damage
     // floor, and the sight floor on `CONTROL_SIGHT_FAILS_MIN` seeds (its doc has the
     // measurement; T23.26C re-derived it from "all eight" once routed bots met).
-    let sight_fails = control_failed.iter().filter(|f| f.starts_with("seed ")).count();
-    let damage_fails = control_failed.iter().any(|f| f.starts_with("pooled damage"));
+    let sight_fails = control_failed
+        .iter()
+        .filter(|f| f.starts_with("seed "))
+        .count();
+    let damage_fails = control_failed
+        .iter()
+        .any(|f| f.starts_with("pooled damage"));
     assert!(
         damage_fails && sight_fails >= CONTROL_SIGHT_FAILS_MIN,
         "the control failed only {sight_fails} seeds' sight (wants {CONTROL_SIGHT_FAILS_MIN}) \
@@ -3006,6 +3011,8 @@ struct TerrainRound {
     meteor_deaths: u32,
     meteor_hits: u32,
     winged_kills: u32,
+    /// T23.26D: kills by the killer's held weapon kind at the death (`WEAPON_KINDS`).
+    kills_by_kind: [u32; game_core::bots::WEAPON_KINDS.len()],
     moved: game_core::bots::movement::Movement,
 }
 
@@ -3046,6 +3053,13 @@ fn terrain_round(seed: u64) -> TerrainRound {
                     match cause {
                         DeathCause::Player(k) => {
                             r.kills += 1;
+                            if let Some(kind) = w
+                                .player(k)
+                                .and_then(|p| p.inventory.slot(p.inventory.selected()))
+                                .and_then(|s| game_core::bots::weapon_kind(s.item))
+                            {
+                                r.kills_by_kind[kind] += 1;
+                            }
                             r.winged_kills +=
                                 u32::from(w.player(k).is_some_and(|p| p.move_mods().flying));
                         }
@@ -3069,6 +3083,13 @@ fn terrain_round(seed: u64) -> TerrainRound {
         for (a, b) in r.stats.ticks_still.iter_mut().zip(s.ticks_still) {
             *a += b;
         }
+        for (a, b) in r.stats.fires_by_kind.iter_mut().zip(s.fires_by_kind) {
+            *a += b;
+        }
+        r.stats.ticks_melee_with_ranged += s.ticks_melee_with_ranged;
+        r.stats.melee_fires_with_ranged += s.melee_fires_with_ranged;
+        r.stats.fires += s.fires;
+        r.stats.ticks_engaged += s.ticks_engaged;
         r.moved.add(&watch.of(b.player));
     }
     r
@@ -3202,6 +3223,31 @@ fn bot_terrain_report() {
         sum(|r| r.meteor_hits) / n,
         sum(|r| r.meteor_deaths) / n,
         sum(|r| r.winged_kills) / n
+    );
+    // T23.26D: what the bots fight with.
+    let kinds = game_core::bots::WEAPON_KINDS;
+    let share = |f: &dyn Fn(&TerrainRound, usize) -> u32| {
+        let tot: Vec<u32> = (0..kinds.len())
+            .map(|k| rounds.iter().map(|r| f(r, k)).sum())
+            .collect();
+        let all = tot.iter().sum::<u32>().max(1) as f32;
+        kinds
+            .iter()
+            .zip(&tot)
+            .map(|(n, t)| format!("{n} {:.0} %", 100.0 * *t as f32 / all))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!(
+        "  fires by kind: {}",
+        share(&|r, k| r.stats.fires_by_kind[k])
+    );
+    println!("  kills by kind: {}", share(&|r, k| r.kills_by_kind[k]));
+    println!(
+        "  melee in hand while a ranged weapon could fire: {:.1} % of engaged ticks; swung so: \
+         {:.1} % of trigger pulls",
+        100.0 * sum(|r| r.stats.ticks_melee_with_ranged) / sum(|r| r.stats.ticks_engaged).max(1.0),
+        100.0 * sum(|r| r.stats.melee_fires_with_ranged) / sum(|r| r.stats.fires).max(1.0)
     );
     let mut moved = game_core::bots::movement::Movement::default();
     for r in &rounds {

@@ -4121,6 +4121,20 @@ pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.
 pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
+/// T23.26D item 2: where a bot holding a gun (bullet or laser) stands, as a share of the
+/// gun's range — a pistol (520) at 104 px, a deagle (760) at 152, a laser SMG (1000) at
+/// 200: outside a melee brawl, inside the range a 0.6-skill bot's aim error (±0.14 rad,
+/// ±28 px at 200) still lands on a 16 px body often enough. The owner fought at a mean
+/// 84 px in his recorded round; bots held 128–182 px before this, closing to 40 with a
+/// gun and then switching to the shovel.
+pub const BOT_GUN_HOLD_SHARE: f32 = 0.2;
+/// T23.26D item 3: launch angles swept for a fused, bouncing throw, from π/8 under level
+/// to straight up — 5π/8 in 24 steps is ~4.7° a step, under the ~6° a 36 px grenade
+/// blast subtends at the throw's ~130 px. A bounce and a roll have no closed form.
+pub const BOT_LOB_SWEEP: u32 = 24;
+/// T23.26D item 3: how often an arc is re-solved, s — six ticks. A solve walks up to
+/// fourteen predicted flights, and a target moves a few px in a tenth of a second.
+pub const BOT_LOB_EVERY: f32 = 0.1;
 /// T23.26C item 6: seconds between a fighting bot's hops on the spot, on average (each
 /// drawn from 0.5–1.5 × this). The owner's recorded round has him airborne 44 % of the
 /// time and still 41–48 %; a bot planted at its stand-off was still for the whole fight.

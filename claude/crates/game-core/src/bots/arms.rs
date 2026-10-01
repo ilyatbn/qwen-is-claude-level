@@ -4,8 +4,8 @@
 use super::Bot;
 use crate::constants::{
     GravityMode, BATTERY_MAX, BOT_BLAST_GUARD, BOT_CHARGE_BELOW, BOT_FLAME_REACH_SCALE,
-    BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP,
-    BOT_OUT_OF_REACH_SCORE, BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE,
+    BOT_GUN_HOLD_SHARE, BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOB_SWEEP, BOT_LOS_MAX_BLOCKED,
+    BOT_LOS_STEP, BOT_OUT_OF_REACH_SCORE, BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE,
     BOT_SPACE_ZONE_REACH, BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, FLAME_DPS, FLAME_GRAVITY_SCALE,
     FLAME_LIFE, FLAME_RADIUS, GRAVITY, INVENTORY_SLOTS,
 };
@@ -43,6 +43,192 @@ const _: () = assert!(
     GRAVITY > 0.0 && FLAME_GRAVITY_SCALE > 0.0,
     "zone_reach divides by GRAVITY * FLAME_GRAVITY_SCALE; zero-g is a zero *scale*, never a zero GRAVITY"
 );
+/// T23.26D item 3: **the angle to launch an arcing projectile at so it reaches
+/// `target`** — the ballistic solution from the weapon's own muzzle speed and gravity
+/// (`GRAVITY × gravity_scale × the match's scale`, what `World` steps), checked against
+/// the terrain by walking the real flight (`projectile::predict_impact`). The **low arc
+/// first, then the high one**; `None` when neither gets there (out of reach, or rock in
+/// both ways) — hold fire. `None` too for anything gravity does not bend.
+///
+/// What "gets there" means depends on how it goes off. One that bursts on contact
+/// passes through `target` by construction, so it is enough that no rock is in the way
+/// before it. One that bounces and sits on a fuse has to come to rest near it, so its
+/// launch is swept (`BOT_LOB_SWEEP`) and walked to the fuse.
+pub(super) fn lob_angle(
+    world: &World,
+    wid: crate::items::registry::WeaponId,
+    pos: Vec2,
+    target: Vec2,
+) -> Option<f32> {
+    let w = crate::weapons::defs::def(wid)?;
+    let Delivery::Projectile {
+        explode_on_contact, ..
+    } = w.delivery
+    else {
+        return None;
+    };
+    let g = GRAVITY * w.gravity_scale * world.gravity.scale();
+    let v = w.muzzle_speed;
+    if g <= 0.0 || v <= 0.0 {
+        return None;
+    }
+    let dx = target.x - pos.x;
+    let up = pos.y - target.y;
+    let run = dx.abs().max(1.0);
+    let disc = v.powi(4) - g * (g * run * run + 2.0 * up * v * v);
+    if disc < 0.0 {
+        return None;
+    }
+    // Elevation above the horizontal, toward the target; screen angles have y down.
+    let screen = |elev: f32| {
+        if dx >= 0.0 {
+            -elev
+        } else {
+            std::f32::consts::PI + elev
+        }
+    };
+    // A fused throw is walked to its fuse (a grenade's 3 s is past `BOT_PREDICT_TICKS`,
+    // and a walk cut short knows nothing of where it rests).
+    let ticks = match w.delivery {
+        Delivery::Projectile { fuse: Some(f), .. } => {
+            (f / crate::constants::SIM_DT).ceil() as u32 + 1
+        }
+        _ => BOT_PREDICT_TICKS,
+    };
+    let land = |a: f32| {
+        crate::weapons::projectile::predict_impact(
+            &world.map,
+            wid,
+            pos,
+            a,
+            world.wind,
+            world.gravity,
+            ticks,
+            crate::constants::SIM_DT,
+        )
+    };
+    let tol = zone_reach(w, world.gravity)
+        .unwrap_or(w.blast_radius)
+        .max(crate::constants::PLAYER_H);
+    if !explode_on_contact {
+        // A bounce and a roll carry it on from where it first lands, so no closed form:
+        // sweep the launch from a little below level to straight up, `BOT_LOB_SWEEP`
+        // steps, and take the low half's best if it rests near enough, else the high's.
+        let lo = -std::f32::consts::FRAC_PI_8;
+        let hi = std::f32::consts::FRAC_PI_2;
+        let mut best = [None::<(f32, f32)>; 2];
+        for i in 0..=BOT_LOB_SWEEP {
+            let elev = lo + (hi - lo) * i as f32 / BOT_LOB_SWEEP as f32;
+            let a = screen(elev);
+            let Some(at) = land(a) else { continue };
+            let d = (at - target).len();
+            let fam = usize::from(elev >= std::f32::consts::FRAC_PI_4);
+            if best[fam].is_none_or(|(bd, _)| d < bd) {
+                best[fam] = Some((d, a));
+            }
+        }
+        return best
+            .into_iter()
+            .flatten()
+            .find(|(d, _)| *d <= tol)
+            .map(|(_, a)| a);
+    }
+    for elev in [
+        (v * v - disc.sqrt()).atan2(g * run),
+        (v * v + disc.sqrt()).atan2(g * run),
+    ] {
+        {
+            // It passes through the target by construction: enough that no rock is in
+            // the way before it gets there — the parabola walked in half-body steps of
+            // run, from the muzzle to the target's column.
+            let a = screen(elev);
+            let (vx, vy) = (v * a.cos(), v * a.sin());
+            let t_end = run / vx.abs().max(1.0);
+            let steps = (run / (crate::constants::PLAYER_W * 0.5)).ceil().max(1.0) as u32;
+            let muzzle = crate::constants::MUZZLE_OFFSET / v;
+            let clear = (1..steps).all(|i| {
+                let t = t_end * i as f32 / steps as f32;
+                if t < muzzle {
+                    return true;
+                }
+                let p = pos + Vec2::new(vx * t, vy * t + 0.5 * g * t * t);
+                !crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32)
+            });
+            if clear {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
+/// T23.26D item 3: can an arcing weapon reach `target` from `pos` at all — the
+/// ballistic discriminant alone, no terrain (`choose_weapon`'s cheap test; `lob_angle`
+/// is the full one). `true` for anything gravity does not bend.
+pub(super) fn lob_reaches(
+    world: &World,
+    w: &crate::weapons::defs::WeaponDef,
+    pos: Vec2,
+    target: Vec2,
+) -> bool {
+    if !matches!(w.delivery, Delivery::Projectile { .. }) {
+        return true;
+    }
+    let g = GRAVITY * w.gravity_scale * world.gravity.scale();
+    let v = w.muzzle_speed;
+    if g <= 0.0 || v <= 0.0 {
+        return true;
+    }
+    let run = (target.x - pos.x).abs().max(1.0);
+    let up = pos.y - target.y;
+    v.powi(4) - g * (g * run * run + 2.0 * up * v * v) >= 0.0
+}
+
+/// T23.26D item 2: **how far a flamethrower's stream reaches**, px: where a level stream
+/// has fallen a body's height — flames leave at `FLAME_MUZZLE_SPEED` and fall at
+/// `GRAVITY × FLAME_GRAVITY_SCALE`, so `v·√(2·PLAYER_H / g)` ≈ 108 px. The def's `range`
+/// is 0 (its damage is its flames'), so before this a bot fired it at anyone in sight.
+pub(super) fn stream_reach() -> f32 {
+    crate::constants::FLAME_MUZZLE_SPEED
+        * (2.0 * crate::constants::PLAYER_H / (GRAVITY * FLAME_GRAVITY_SCALE)).sqrt()
+}
+
+/// T23.26D item 2: **what a flamethrower deals one target in its stream**, per second:
+/// flames a second (`FLAMETHROWER_FLAMES_PER_SHOT / FLAMETHROWER_COOLDOWN`), each burning
+/// `FLAME_DPS` for the time it takes to cross a body and its own radius twice — ≈ 54,
+/// a shovel's. Its def's `damage / cooldown` is 0, and scored at 0 it lost to everything.
+pub(super) fn stream_dps() -> f32 {
+    use crate::constants::{
+        FLAMETHROWER_COOLDOWN, FLAMETHROWER_FLAMES_PER_SHOT, FLAME_MUZZLE_SPEED, PLAYER_W,
+    };
+    FLAME_DPS * FLAMETHROWER_FLAMES_PER_SHOT as f32 / FLAMETHROWER_COOLDOWN
+        * (2.0 * FLAME_RADIUS + PLAYER_W)
+        / FLAME_MUZZLE_SPEED
+}
+
+/// T23.26D: the kinds a weapon's report is broken down by — [`weapon_kind`]'s answers.
+pub const WEAPON_KINDS: [&str; 7] = ["melee", "gun", "laser", "flame", "arc", "rocket", "placed"];
+
+/// T23.26D: which of [`WEAPON_KINDS`] an item is, by how it is delivered — `None` for
+/// what is not a weapon. Arcs are projectiles gravity bends (grenades, molotovs, the
+/// bazooka's rocket); a laser is hitscan that spends charge.
+pub fn weapon_kind(item: ItemId) -> Option<usize> {
+    let ItemKind::Weapon(wid) = def(item)?.kind else {
+        return None;
+    };
+    let w = crate::weapons::defs::def(wid)?;
+    Some(match w.delivery {
+        Delivery::Melee { .. } => 0,
+        Delivery::Bullet { .. } => 1,
+        Delivery::Hitscan { .. } if w.energy_cost > 0.0 => 2,
+        Delivery::Hitscan { .. } => 1,
+        Delivery::Flames { .. } => 3,
+        Delivery::Projectile { .. } if w.gravity_scale > 0.0 => 4,
+        Delivery::Projectile { .. } => 5,
+        Delivery::Placed { .. } => 6,
+    })
+}
+
 impl Bot {
     /// Where to hold an enemy from: [`Bot::stand_off`], but **never outside the
     /// selected weapon's range** — `BOT_SPACE_IN_RANGE` of a swing's
@@ -61,10 +247,26 @@ impl Bot {
                 Delivery::Melee { reach, .. } => {
                     Some(crate::weapons::melee::effective_reach(reach))
                 }
+                Delivery::Flames { .. } => Some(stream_reach()),
                 _ => (w.range > 0.0).then_some(w.range),
             });
         let stand = self.stand_off(world);
-        range.map_or(stand, |r| stand.min(r * BOT_SPACE_IN_RANGE))
+        // T23.26D item 2: **a gun holds at range** — `BOT_GUN_HOLD_SHARE` of its reach,
+        // never nearer than the stand-off and never past `BOT_SPACE_IN_RANGE` of the
+        // reach. Before, every bullet weapon closed to the 40 px floor, and at 40 px a
+        // bot's best score was its shovel's (54 dps against a pistol's 50).
+        let gun = self
+            .selected_weapon(world)
+            .and_then(weapon_kind)
+            .is_some_and(|k| k == 1 || k == 2);
+        range.map_or(stand, |r| {
+            let far = r * BOT_SPACE_IN_RANGE;
+            if gun {
+                (r * BOT_GUN_HOLD_SHARE).clamp(stand.min(far), far)
+            } else {
+                stand.min(far)
+            }
+        })
     }
 
     /// How close to close. Never inside the guard that stops us firing, or the
@@ -214,7 +416,23 @@ impl Bot {
         // A weapon that leaves a zone is dangerous well past its blast radius:
         // the fire outlives the explosion and the thrower walks into it. Guard
         // on the zone's own reach, not on `blast_radius`, which is 0 for these.
-        match zone_refusal(world, w, wid, pos, target) {
+        // T23.26D item 3: an arcing weapon fires only along a solved arc (`think` aims
+        // it, `lob`); none that reaches is a held fire, not a throw at the chord.
+        let arcs = matches!(w.delivery, Delivery::Projectile { .. })
+            && w.gravity_scale * world.gravity.scale() > 0.0;
+        if arcs && self.lob.is_none() {
+            self.stats.rej_arc += 1;
+            return false;
+        }
+        // Along a solved arc the landing is the target's (that is what solved means), so
+        // of the zone guard only "too close" is left to ask.
+        let refusal = match self.lob.filter(|_| arcs) {
+            Some(_) => {
+                zone_refusal(world, w, wid, pos, target).filter(|r| *r == ZoneRefusal::TooClose)
+            }
+            None => zone_refusal(world, w, wid, pos, target),
+        };
+        match refusal {
             Some(ZoneRefusal::TooClose) => {
                 self.stats.rej_blast_guard += 1;
                 return false;
@@ -249,6 +467,11 @@ impl Bot {
                 return false;
             }
             if w.range > 0.0 && dist > w.range {
+                self.stats.rej_range += 1;
+                return false;
+            }
+            // T23.26D: a stream reaches as far as it does, and no further.
+            if matches!(w.delivery, Delivery::Flames { .. }) && dist > stream_reach() {
                 self.stats.rej_range += 1;
                 return false;
             }
@@ -313,6 +536,13 @@ impl Bot {
     ) -> Option<u8> {
         let dist = (target - pos).len();
         let mut best: Option<(f32, u8)> = None;
+        // T23.26D item 2 (owner: *"shovels are a last resort when no ranged weapons
+        // are available"*): melee is a choice only when nothing ranged in the bag can
+        // fire. Scored on dps it won at point blank (a shovel's 54 against a pistol's
+        // 50), and holding it shortened `hold_off` to its reach, which closed the bot in
+        // further: 55.6 % of fighting ticks with the shovel in hand while a loaded gun
+        // sat in the bag (measured, 8 seeds).
+        let mut best_ranged: Option<(f32, u8)> = None;
         for slot in 0..INVENTORY_SLOTS as u8 {
             let Some(stack) = me.inventory.slot(slot) else {
                 continue;
@@ -332,7 +562,10 @@ impl Bot {
             // Damage per second is the axis that matters; a weapon that cannot
             // reach the target, or whose blast would catch us, is heavily
             // penalised but not disqualified — it is still better than nothing.
-            let dps = zone_rate(w).unwrap_or(w.damage / w.cooldown.max(0.01));
+            let dps = match w.delivery {
+                Delivery::Flames { .. } => stream_dps(),
+                _ => zone_rate(w).unwrap_or(w.damage / w.cooldown.max(0.01)),
+            };
             let mut score = dps;
             // How far this weapon can actually hit from. **Melee carries its
             // range in `Delivery`, not in `range`** (§F5): `w.range` is 0.0 for a
@@ -343,6 +576,7 @@ impl Bot {
             // `effective_reach` because that is the number the hit test uses.
             let reach = match w.delivery {
                 Delivery::Melee { reach, .. } => crate::weapons::melee::effective_reach(reach),
+                Delivery::Flames { .. } => stream_reach(),
                 _ => w.range,
             };
             if reach > 0.0 && dist > reach {
@@ -365,10 +599,21 @@ impl Bot {
             if zone_refusal(world, w, wid, pos, target).is_some() {
                 score *= BOT_REFUSED_SCORE;
             }
+            // T23.26D: an arc that cannot reach the target at any launch angle.
+            if !lob_reaches(world, w, pos, target) {
+                score *= BOT_OUT_OF_REACH_SCORE;
+            }
             if best.is_none_or(|(bs, _)| score > bs) {
                 best = Some((score, slot));
             }
+            // In its band: ranged, and nothing above marked it down.
+            let in_band = !matches!(w.delivery, Delivery::Melee { .. }) && score >= dps;
+            if in_band && best_ranged.is_none_or(|(bs, _)| score > bs) {
+                best_ranged = Some((score, slot));
+            }
         }
+        // T23.26D item 2: a ranged weapon that can fire from here beats any swing.
+        let best = best_ranged.or(best);
         // Only ask for a change: `select_slot` on the slot already held is a
         // no-op, but reporting it every tick makes the intent unreadable.
         best.and_then(|(_, slot)| (slot != me.inventory.selected()).then_some(slot))
@@ -536,6 +781,19 @@ pub(super) fn zone_refusal(
     pos: Vec2,
     target: Vec2,
 ) -> Option<ZoneRefusal> {
+    zone_refusal_at(world, w, wid, pos, target, (target - pos).angle())
+}
+
+/// [`zone_refusal`] for a throw launched at `aim` — the solved arc (T23.26D), not the
+/// chord to the target.
+pub(super) fn zone_refusal_at(
+    world: &World,
+    w: &crate::weapons::defs::WeaponDef,
+    wid: crate::items::registry::WeaponId,
+    pos: Vec2,
+    target: Vec2,
+    aim: f32,
+) -> Option<ZoneRefusal> {
     let reach = zone_reach(w, world.gravity)?;
     if (target - pos).len() < reach + BOT_HAZARD_CLEARANCE {
         return Some(ZoneRefusal::TooClose);
@@ -544,7 +802,7 @@ pub(super) fn zone_refusal(
         &world.map,
         wid,
         pos,
-        (target - pos).angle(),
+        aim,
         world.wind,
         world.gravity,
         BOT_PREDICT_TICKS,
@@ -597,6 +855,25 @@ pub(super) fn zone_rate(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
 mod tests {
     use super::super::tests::*;
     use super::*;
+
+    /// Where a molotov's target goes: **below** the thrower, 260 px out — a molotov's
+    /// level range (`v² / g`, 158 px) is inside its own fire's reach (207 px), so no
+    /// level throw is safe and a bot that aims along a real arc (T23.26D) holds it; the
+    /// old fixture "threw" 260 px on the level only by aiming the chord from mid-air.
+    /// The drop is what the ballistic discriminant needs to reach that far, plus a
+    /// body; the air between is carved so the arc is the only question.
+    fn molotov_target(w: &mut World, at: Vec2) -> Vec2 {
+        let wd =
+            crate::weapons::defs::def(crate::items::registry::WEAPON_MOLOTOV).expect("molotov");
+        let (v, g, x) = (wd.muzzle_speed, GRAVITY * wd.gravity_scale, 260.0f32);
+        let drop = (g * g * x * x - v.powi(4)) / (2.0 * g * v * v) + crate::constants::PLAYER_H;
+        let to = Vec2::new(at.x + x, at.y + drop);
+        for y in (at.y as i32 - 120)..(to.y as i32 + 40) {
+            w.map.mask.clear_run(y, at.x as i32 - 20, to.x as i32 + 40);
+        }
+        w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+        to
+    }
 
     /// The space fixtures below search "well inside the arena, off the rim": within
     /// this share of the way from the centre to the rim, by the rim predicate's own
@@ -1316,7 +1593,7 @@ mod tests {
 
     /// T11.15, §B26 — the guard the distance test cannot express.
     ///
-    /// The target is 260 px away, which the distance guard is happy with (the
+    /// The target is in throwing range (`molotov_target`), which the distance guard is happy with (the
     /// control below is the same geometry and it throws). A wall sits 40 px in
     /// front of the thrower, so the arc lands almost immediately, on them.
     ///
@@ -1333,8 +1610,9 @@ mod tests {
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
         }
+        let to = molotov_target(&mut w, at);
         if let Some(p) = w.player_mut(2) {
-            p.body.pos = Vec2::new(at.x + 260.0, at.y);
+            p.body.pos = to;
         }
         // A pillar just ahead: high enough that any throw at the target clips it.
         for dx in 40..52 {
@@ -1355,9 +1633,11 @@ mod tests {
             "threw a molotov into a wall 40 px away: {:?}",
             b.stats()
         );
+        // T23.26D: the arc is walked by `lob_angle` now, and a pillar in every arc is
+        // its refusal (`rej_arc`) before the zone guard is asked.
         assert!(
-            b.stats().rej_impact_guard > 0,
-            "it refused, but not because of the arc — impact guard never fired: {:?}",
+            b.stats().rej_impact_guard + b.stats().rej_arc > 0,
+            "it refused, but not because of the arc — no arc refusal fired: {:?}",
             b.stats()
         );
     }
@@ -1372,8 +1652,9 @@ mod tests {
         if let Some(p) = w.player_mut(1) {
             p.body.pos = at;
         }
+        let to = molotov_target(&mut w, at);
         if let Some(p) = w.player_mut(2) {
-            p.body.pos = Vec2::new(at.x + 260.0, at.y);
+            p.body.pos = to;
         }
         let mut b = Bot::new(1, SEED, 0, 1.0);
         let mut fired = false;
@@ -1385,7 +1666,7 @@ mod tests {
         }
         assert!(
             fired,
-            "never threw a molotov at a target 260 px away: {:?}",
+            "never threw a molotov at a target in throwing range: {:?}",
             b.stats()
         );
     }
