@@ -17,6 +17,7 @@ use rand_chacha::ChaCha8Rng;
 
 mod arms;
 mod explore;
+pub mod movement;
 mod nav;
 mod route;
 #[cfg(test)]
@@ -140,7 +141,17 @@ pub struct BotStats {
     pub lip_swings: u32,
     /// T23.26 C: ticks with the meteor-cover goal.
     pub ticks_cover: u32,
+    /// T23.26C item 2: ticks alive spent **still** — a whole `BOT_STUCK_WINDOW` in which
+    /// the body moved under `BOT_STUCK_PX`, in 2D, whatever was pressed — by what the bot
+    /// was doing when the window closed ([`STILL_CAUSES`] names the slots). Every bot
+    /// always has a goal (`Wander` when nothing else), so this is "still with a goal".
+    pub ticks_still: [u32; STILL_CAUSES.len()],
 }
+
+/// What a still bot was doing — `BotStats::ticks_still`'s slots, in order.
+pub const STILL_CAUSES: [&str; 8] = [
+    "fighting", "cover", "hiding", "digging", "resting", "winged", "routed", "greedy",
+];
 
 /// What one bot did on one [`drive`] tick — what a measuring caller needs and the
 /// room logs, so nobody re-derives it from the world afterwards.
@@ -243,6 +254,9 @@ pub struct Bot {
     /// body was when it opened (`count_pressing_still`).
     press_window: f32,
     press_from: Vec2,
+    /// T23.26C's still counter: seconds into the current window, where it opened.
+    still_window: f32,
+    still_from: Vec2,
     /// T23.26 (`docs/78` §A2): the planned route to the goal and how far along it.
     route: route::Route,
     /// Tests only: the route planted out, so a scenario's control is the greedy walking
@@ -279,6 +293,8 @@ impl Bot {
             want_select: None,
             press_window: 0.0,
             press_from: Vec2::ZERO,
+            still_window: 0.0,
+            still_from: Vec2::ZERO,
             route: route::Route::default(),
             routes_off: false,
             stats: BotStats::default(),
@@ -334,6 +350,7 @@ impl Bot {
             self.want_use = None;
             self.want_select = None;
             self.press_window = 0.0;
+            self.still_window = 0.0;
             self.route.clear();
             return Input::default();
         }
@@ -477,6 +494,24 @@ impl Bot {
             _ => self.choose_weapon(world, me, aim_at, pos),
         };
         self.count_pressing_still(pos, buttons, dt);
+        let cause = if fighting || (matches!(self.goal, Goal::Enemy(_)) && nav.is_none()) {
+            0
+        } else if matches!(self.goal, Goal::Cover(_)) {
+            1
+        } else if matches!(self.goal, Goal::Flee(_)) {
+            2
+        } else if nav.is_some_and(|n| n.how == nav::Move::Dig || n.unstick) {
+            3
+        } else if nav.is_some_and(|n| n.how == nav::Move::Rest) {
+            4
+        } else if me.move_mods().flying {
+            5
+        } else if nav.is_some() {
+            6
+        } else {
+            7
+        };
+        self.count_still(pos, cause, dt);
 
         Input {
             seq: 0, // the room owns sequencing; a bot has no packets to order
@@ -545,6 +580,20 @@ impl Bot {
                 self.stats.ticks_pressing_still += (self.press_window / dt).round() as u32;
             }
             self.press_window = 0.0;
+        }
+    }
+
+    /// T23.26C item 2: the still counter (`BotStats::ticks_still`). A report.
+    fn count_still(&mut self, pos: Vec2, cause: usize, dt: f32) {
+        if self.still_window == 0.0 {
+            self.still_from = pos;
+        }
+        self.still_window += dt;
+        if self.still_window >= crate::constants::BOT_STUCK_WINDOW - dt * 0.5 {
+            if (pos - self.still_from).len() < crate::constants::BOT_STUCK_PX {
+                self.stats.ticks_still[cause] += (self.still_window / dt).round() as u32;
+            }
+            self.still_window = 0.0;
         }
     }
 
@@ -1547,6 +1596,7 @@ pub(crate) mod harness {
             dig_swings: a.dig_swings + b.dig_swings,
             lip_swings: a.lip_swings + b.lip_swings,
             ticks_cover: a.ticks_cover + b.ticks_cover,
+            ticks_still: std::array::from_fn(|i| a.ticks_still[i] + b.ticks_still[i]),
         }
     }
 

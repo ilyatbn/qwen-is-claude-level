@@ -82,8 +82,9 @@ pub(super) enum Cell {
 }
 
 /// How a step is made. The follower turns each into buttons.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(super) enum Move {
+    #[default]
     Start,
     Walk,
     Hop,

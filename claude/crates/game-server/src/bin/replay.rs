@@ -32,6 +32,8 @@ usage: replay <file> [flags]
   --trace <filter>   re-run under a different GAME_LOG filter
   --verify           compare the final hash against the footer (the default)
   --stats            per-tick timing and command counts
+  --player-stats     how every player moved (T23.26C): air, jet, distance, digs,
+                     teleports, fight distance — the human-vs-bot table
   -h, --help         this
 ";
 
@@ -75,6 +77,7 @@ struct Opts {
     dump_map: Option<u32>,
     trace: Option<String>,
     stats: bool,
+    player_stats: bool,
 }
 
 impl Opts {
@@ -85,6 +88,7 @@ impl Opts {
             dump_map: None,
             trace: None,
             stats: false,
+            player_stats: false,
         };
         let mut i = 0;
         while i < args.len() {
@@ -100,6 +104,7 @@ impl Opts {
                 "--dump-map" => o.dump_map = Some(parse_tick(&value("--dump-map")?)?),
                 "--trace" => o.trace = Some(value("--trace")?),
                 "--stats" => o.stats = true,
+                "--player-stats" => o.player_stats = true,
                 // The default; accepted so a script can be explicit.
                 "--verify" => {}
                 other if other.starts_with('-') => return Err(format!("unknown flag {other}")),
@@ -141,10 +146,27 @@ fn run(opts: &Opts) -> Result<bool, Box<dyn std::error::Error>> {
         .unwrap_or_else(|| file.body.last().map_or(0, |(t, _)| *t));
 
     let started = std::time::Instant::now();
-    let (mut room, applied) = simulate(&file, stop_at, opts.dump_map, opts.stats)?;
+    let mut watch = opts
+        .player_stats
+        .then(game_core::bots::movement::Watcher::default);
+    let (room, applied) = simulate(&file, stop_at, opts.dump_map, opts.stats, watch.as_mut())?;
     let elapsed = started.elapsed();
 
-    let hash = room.world_for_test().state_hash();
+    if let Some(w) = &watch {
+        print_movement(w, &file.header);
+    }
+    // A recording that ran past its round's end is back in the lobby (§E1): no world,
+    // and nothing to hash.
+    let Some(world) = room.world() else {
+        println!(
+            "  simulated {} ticks, applied {} commands in {:.2}s; the room is a lobby at the end",
+            room.tick(),
+            applied,
+            elapsed.as_secs_f64()
+        );
+        return Ok(true);
+    };
+    let hash = world.state_hash();
     println!(
         "  simulated {} ticks, applied {} commands in {:.2}s",
         room.tick(),
@@ -192,6 +214,7 @@ fn simulate(
     stop_at: u32,
     dump_at: Option<u32>,
     stats: bool,
+    mut watch: Option<&mut game_core::bots::movement::Watcher>,
 ) -> Result<(Room, usize), Box<dyn std::error::Error>> {
     let config = Arc::new(file.header.to_config());
     let mut room = Room::new(config);
@@ -234,6 +257,11 @@ fn simulate(
 
         let t0 = std::time::Instant::now();
         room.tick_inline(SIM_DT);
+        if let (Some(w), Some(world)) = (watch.as_deref_mut(), room.world()) {
+            if world.phase == game_core::world::RoundPhase::Playing {
+                w.observe(world, SIM_DT);
+            }
+        }
         if stats {
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             if ms > slowest.1 {
@@ -362,6 +390,25 @@ fn dump(room: &Room, tick: u32) -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         )
     }
+}
+
+/// The human-vs-bot table: every player's [`Movement`], the humans (ids under the
+/// header's first bot) marked, and the bots pooled on the last line.
+fn print_movement(w: &game_core::bots::movement::Watcher, h: &game_server::replay::ReplayHeader) {
+    use game_core::bots::movement::Movement;
+    let ids = w.ids();
+    let first_bot = ids.len().saturating_sub(h.bot_count);
+    println!("\n  player       {}", Movement::header());
+    let mut bots = Movement::default();
+    for (i, id) in ids.iter().enumerate() {
+        let m = w.of(*id);
+        let who = if i < first_bot { "human" } else { "bot" };
+        if i >= first_bot {
+            bots.add(&m);
+        }
+        println!("  {id:>2} {who:<6}   {}", m.row());
+    }
+    println!("  bots pooled  {}", bots.row());
 }
 
 fn hex(b: &[u8; 32]) -> String {

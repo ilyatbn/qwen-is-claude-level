@@ -35,6 +35,8 @@ pub(super) struct NavStep {
     pub select: Option<u8>,
     /// The swing is the stuck response at a lip, not a planned dig step.
     pub unstick: bool,
+    /// The step's kind (T23.26C: the still counter's cause).
+    pub how: Move,
 }
 
 /// Where a route goes: what the planner was asked, and the point it was asked about
@@ -387,7 +389,10 @@ impl Route {
         };
         // Feet row against the step's: positive when the step is higher.
         let rise = here.map_or(0, |(_, y)| y - s.y);
-        let mut out = NavStep::default();
+        let mut out = NavStep {
+            how: s.how,
+            ..NavStep::default()
+        };
         match s.how {
             Move::Start => {}
             Move::Walk => {

@@ -7727,3 +7727,8 @@ F1 one guard (`refuse_bodiless`) before every arm: a bodiless seat's body comman
 Plants red: F1 (two tests), F2 (hash), F4, F9 (spectate leg 6). Done-when: `cargo test -p game-server` ok, `e2e --only spectate` 1/1.
 Coordinator: F3(c) spectator quick match → started room?; F7 quick-match occupancy counting; F10 one light list?; F2 roster preamble (format change).
 T23.27B+C gate (`check.sh --changed HEAD~2`, `gate-builder4-T23.27BC.txt`): cargo (core, server, wasm), client, guards green; e2e 92/101 — effect-lights, thrusters, bullets-visible, night-view, audio, platforms, birds, smoke-fx, breach-vortex red in batch, **9/9 green alone** (`gate-builder4-T23.27BC-alone.txt`). Both ticked.
+## T23.26C step 1 — measure first: the human-vs-bot table and the "before" (builder-c, 2026-10-01)
+`bots/movement.rs::Watcher` (state-only, so a replay and a bots-only round share it) + `replay --player-stats`; `BotStats::ticks_still[cause]` (still a whole `BOT_STUCK_WINDOW`, 2D, by `STILL_CAUSES`); `bot_terrain_report` prints both plus meteor deaths and winged kills. Owner's round re-simulated at HEAD `255fc7d` (player 0 the human, 1–5 bots):
+human: air 44 %, jet 22 %, 7254 px/min, burns start at 3.96 of 5 fuel, digs 4.3/min, fights at 84 px; **in a shower air 54 %, 10538 px/min, still 35 %**.
+bots: air 45 %, jet 13 %, 6354 px/min, burns at 3.11, digs 8.8/min, fights at 182 px; **in a shower air 8 %, 1101 px/min, still 89 %** (the hiding).
+Population before (`bot_terrain_report`, 8 seeds × 240 s): still with a goal **28.7 s per bot-minute** (cover 17.1, greedy 4.8, winged 2.7, hiding 1.1, fighting 1.0, routed 0.9, resting 0.8, digging 0.4); pressing-still 3.9; reach 61.2 %; kills 8.00; void 0.25; meteor deaths 0.00; winged kills 0.38; air 46 %, 5822 px/min.

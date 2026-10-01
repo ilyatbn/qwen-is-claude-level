@@ -2982,6 +2982,11 @@ struct TerrainRound {
     void_deaths: u32,
     pickups: u32,
     stats: game_core::bots::BotStats,
+    /// T23.26C: deaths whose last damage was a meteor's, kills by a winged killer, and
+    /// how the bots moved (`bots::movement`, the human-vs-bot table's columns).
+    meteor_deaths: u32,
+    winged_kills: u32,
+    moved: game_core::bots::movement::Movement,
 }
 
 fn terrain_round(seed: u64) -> TerrainRound {
@@ -2996,21 +3001,40 @@ fn terrain_round(seed: u64) -> TerrainRound {
         .collect();
     let _ = w.drain_events();
     let mut r = TerrainRound::default();
+    let mut watch = game_core::bots::movement::Watcher::default();
+    let mut last_hit: BTreeMap<u8, Option<game_core::weapons::explode::EffectKind>> =
+        BTreeMap::new();
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
         for e in w.drain_events() {
             match e {
-                GameEvent::Death { cause, .. } => match cause {
-                    DeathCause::Player(_) => r.kills += 1,
-                    DeathCause::Void => r.void_deaths += 1,
-                    _ => {}
-                },
+                GameEvent::Damage { victim, effect, .. } => {
+                    last_hit.insert(victim, effect);
+                }
+                GameEvent::Death { cause, victim, .. } => {
+                    if last_hit.get(&victim).copied().flatten()
+                        == Some(game_core::weapons::explode::EffectKind::MeteorShower)
+                    {
+                        r.meteor_deaths += 1;
+                    }
+                    last_hit.remove(&victim);
+                    match cause {
+                        DeathCause::Player(k) => {
+                            r.kills += 1;
+                            r.winged_kills +=
+                                u32::from(w.player(k).is_some_and(|p| p.move_mods().flying));
+                        }
+                        DeathCause::Void => r.void_deaths += 1,
+                        _ => {}
+                    }
+                }
                 GameEvent::ItemPickup { .. } => r.pickups += 1,
                 _ => {}
             }
         }
+        watch.observe(&w, SIM_DT);
     }
     for b in &bots {
         let s = b.stats();
@@ -3019,6 +3043,10 @@ fn terrain_round(seed: u64) -> TerrainRound {
         r.stats.stuck_hops += s.stuck_hops;
         r.stats.wander_arrived += s.wander_arrived;
         r.stats.wander_gave_up += s.wander_gave_up;
+        for (a, b) in r.stats.ticks_still.iter_mut().zip(s.ticks_still) {
+            *a += b;
+        }
+        r.moved.add(&watch.of(b.player));
     }
     r
 }
@@ -3131,6 +3159,35 @@ fn bot_terrain_report() {
         sum(|r| r.void_deaths) / (n * BOT_COUNT_DEFAULT as f32),
         sum(|r| r.stats.stuck_hops) / bot_min.max(1e-6),
     );
+    // T23.26C: still with a goal, by cause; meteor and winged deaths; how they moved.
+    let still: Vec<u32> = (0..game_core::bots::STILL_CAUSES.len())
+        .map(|i| rounds.iter().map(|r| r.stats.ticks_still[i]).sum())
+        .collect();
+    let still_s = still.iter().sum::<u32>() as f32 * SIM_DT;
+    println!(
+        "  still with a goal: {:.1} s per bot-minute ({})",
+        still_s / bot_min.max(1e-6),
+        game_core::bots::STILL_CAUSES
+            .iter()
+            .zip(&still)
+            .map(|(c, t)| format!("{c} {:.1}", *t as f32 * SIM_DT / bot_min.max(1e-6)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "  meteor deaths a round {:.2}, winged kills a round {:.2}",
+        sum(|r| r.meteor_deaths) / n,
+        sum(|r| r.winged_kills) / n
+    );
+    let mut moved = game_core::bots::movement::Movement::default();
+    for r in &rounds {
+        moved.add(&r.moved);
+    }
+    println!(
+        "  moved:   {}",
+        game_core::bots::movement::Movement::header()
+    );
+    println!("           {}", moved.row());
     assert!(bot_min > 0.0, "control: no bot was ever alive");
     assert!(
         arrived > 0.0,
