@@ -625,17 +625,27 @@ pub enum MapShape {
     Hill,
     /// "Mostly flat": an almost flat ground, gentle undulation only; islands as usual.
     Flat,
+    /// Two levels — an upper rock band with sky above and an open gap below, and a
+    /// lower ground. No islands. Pads pair across the levels; meteors hit the top
+    /// level only; toxic clouds drift through the gap.
+    Multilevel,
 }
 
 impl MapShape {
     /// Lobby order — the order the panel steps through.
-    pub const ALL: [MapShape; 3] = [MapShape::Random, MapShape::Hill, MapShape::Flat];
+    pub const ALL: [MapShape; 4] = [
+        MapShape::Random,
+        MapShape::Hill,
+        MapShape::Flat,
+        MapShape::Multilevel,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             MapShape::Random => "random",
             MapShape::Hill => "hill",
             MapShape::Flat => "flat",
+            MapShape::Multilevel => "multilevel",
         }
     }
 
@@ -648,6 +658,7 @@ impl MapShape {
             MapShape::Random => 0,
             MapShape::Hill => 1,
             MapShape::Flat => 2,
+            MapShape::Multilevel => 3,
         }
     }
 
@@ -656,6 +667,7 @@ impl MapShape {
             0 => Some(MapShape::Random),
             1 => Some(MapShape::Hill),
             2 => Some(MapShape::Flat),
+            3 => Some(MapShape::Multilevel),
             _ => None,
         }
     }
@@ -668,6 +680,18 @@ impl MapShape {
         match generator {
             MapGenerator::Space => MapShape::Random,
             _ => self,
+        }
+    }
+
+    /// Multilevel's **level line** on a map `h` px tall: a y inside the upper rock
+    /// band at every column (`MULTILEVEL_DIVIDE_FRAC`, whose doc proves it), so a
+    /// standing point above it is on the top level and one below on the bottom.
+    /// `None` on every other shape. **The one answer** to "which level?" — the pad
+    /// pairing, the meteors' floor and the generator's per-level gate all read it.
+    pub fn level_divide(self, h: u32) -> Option<i32> {
+        match self {
+            MapShape::Multilevel => Some((h as f32 * MULTILEVEL_DIVIDE_FRAC).round() as i32),
+            _ => None,
         }
     }
 }
@@ -699,6 +723,46 @@ pub const HILL_RISE_FRAC_MAX: f32 = 0.26;
 /// fraction of 0.92–1.00, so the gate was failing on its spawn half: no six spawns
 /// clear of objects. At half the count, 32 of 32 attempts measured passed.
 pub const SHAPE_OBJECT_SHARE: f32 = 0.5;
+
+/// Multilevel: the upper band's top surface (the top level's ground), mean, as a
+/// fraction of height. The reference (`map-shapes/multilevel.png`) puts it at ~0.34–0.44.
+pub const MULTILEVEL_TOP_FRAC: f32 = 0.36;
+/// Multilevel: the band's thickness, mean, as a fraction of height (reference ~0.2).
+pub const MULTILEVEL_BAND_FRAC: f32 = 0.20;
+/// Multilevel: the lower ground's mean line, as a fraction of height (reference ~0.86).
+pub const MULTILEVEL_LOWER_FRAC: f32 = 0.86;
+/// Multilevel: each of the three lines' swell either side of its mean, fraction of
+/// height — "hilly or flat", gently.
+pub const MULTILEVEL_SWELL_FRAC: f32 = 0.025;
+/// Multilevel: the swell's wavelength, fraction of map width.
+pub const MULTILEVEL_WAVELENGTH_FRAC: f32 = 0.4;
+/// Multilevel: the level line, fraction of height — the band's mean centre
+/// (`TOP + BAND / 2`). What it must do is **separate the standing points**: every
+/// top-level one is on the band's top surface (at most `TOP + SWELL` plus the detail
+/// wobble and a roughening bite, ~0.385 h + 61 px) and every bottom-level one on the
+/// lower ground (at least `LOWER − SWELL` less the same, ~0.835 h − 61 px). Measured
+/// over 8 seeds (`shapes::tests::multilevel_has_two_separated_levels`, which asserts
+/// ≥ 0.03 h): the nearest surface point is 56 px from the line on Small, 112 on
+/// Medium, 128 on Large.
+pub const MULTILEVEL_DIVIDE_FRAC: f32 = MULTILEVEL_TOP_FRAC + MULTILEVEL_BAND_FRAC / 2.0;
+
+/// Multilevel's drifting toxic clouds (the bottom level's weather while a meteor
+/// shower hits the top): how many cross the gap at once.
+pub const TOXIC_DRIFT_CLOUDS: usize = 4;
+/// Their drift speed, px/s — under half a walk (`WALK_SPEED`), so a player can outpace one.
+pub const TOXIC_DRIFT_SPEED: f32 = 70.0;
+/// How far over the lower ground a cloud's centre hovers, px — half its reach, so
+/// the patch envelops whoever stands there and a jetpack climb gets you out.
+pub const TOXIC_DRIFT_HOVER: f32 = TOXIC_DRIFT_R * 0.5;
+/// A cloud's reach, px — the toxic grenade's (`TOXIC_GRENADE_RADIUS`), the hazard it reuses.
+pub const TOXIC_DRIFT_R: f32 = TOXIC_GRENADE_RADIUS;
+/// A cloud lays a toxic patch every this many seconds where it is…
+pub const TOXIC_DRIFT_EVERY: f32 = 0.5;
+/// …that lasts this long, so about `LIFE / EVERY` = 2 overlap at the cloud's heart.
+pub const TOXIC_DRIFT_PATCH_LIFE: f32 = 1.0;
+/// Each patch's dps — half the grenade's, so the ~2 overlapping patches are the
+/// grenade's `TOXIC_GRENADE_DPS` inside a cloud.
+pub const TOXIC_DRIFT_DPS: f32 = TOXIC_GRENADE_DPS * TOXIC_DRIFT_EVERY / TOXIC_DRIFT_PATCH_LIFE;
 
 /// Mostly flat: the mean ground line, as a fraction of map height (reference ~0.81).
 pub const FLAT_BASE_FRAC: f32 = 0.80;

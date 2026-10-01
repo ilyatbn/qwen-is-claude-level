@@ -67,6 +67,7 @@ pub fn generate_once(seed: u64, params: &V2Params, shape: MapShape) -> GenOutcom
             let profile = shaped_profile(seed, params, shape);
             v2::generate_from_profile(seed, params, &profile)
         }
+        MapShape::Multilevel => super::multilevel::generate_once(seed, params),
     };
     o.shape = shape;
     o
@@ -369,5 +370,131 @@ mod tests {
         assert_eq!(space.mask, plain.mask);
         let v1 = generate_terrain_shaped(7, MapScale::Small, MapGenerator::V1, MapShape::Random);
         assert_eq!(v1.generator, MapGenerator::V1);
+    }
+
+    /// Multilevel's silhouette, over seeds and scales: **two separated levels** — every
+    /// surface point clears the level line by a margin, both levels hold surface and
+    /// spawns, a column-wise scan finds rock, air, rock, air going up (lower ground, gap,
+    /// band, sky) in most columns — and no islands. Control: Mostly flat has one level.
+    #[test]
+    fn multilevel_has_two_separated_levels() {
+        for scale in MapScale::ALL {
+            let h = scale.params().height;
+            let divide = MapShape::Multilevel.level_divide(h).expect("a line");
+            let (mut worst_margin, mut two_band_cols) = (i32::MAX, 1.0f32);
+            for seed in SEEDS {
+                let at = format!("{scale:?} seed {seed}");
+                let map = crate::map::generate_full_shaped(
+                    seed,
+                    scale,
+                    0,
+                    MapGenerator::V2,
+                    MapShape::Multilevel,
+                );
+                assert_eq!(map.meta.shape, MapShape::Multilevel, "{at}");
+                assert!(!map.meta.used_safe_preset, "{at}: safe preset");
+                let s = &map.meta.surface_points;
+                for p in s {
+                    worst_margin = worst_margin.min((p.y - divide).abs());
+                }
+                let up = s.iter().filter(|p| p.y < divide).count();
+                assert!(
+                    up > 0 && up < s.len(),
+                    "{at}: one level has no surface ({up}/{})",
+                    s.len()
+                );
+                let sp = &map.meta.spawn_points;
+                let sp_up = sp.iter().filter(|p| p.y < divide).count();
+                assert!(
+                    sp_up > 0 && sp_up < sp.len(),
+                    "{at}: spawns on one level ({sp_up}/{})",
+                    sp.len()
+                );
+                let pads = &map.meta.teleport_pads;
+                let pads_up = pads.iter().filter(|p| p.pos.y < divide).count();
+                assert!(
+                    pads_up > 0 && pads_up < pads.len(),
+                    "{at}: pads on one level ({pads_up}/{})",
+                    pads.len()
+                );
+                two_band_cols = two_band_cols.min(two_band_share(&map.mask));
+                // The band spans the map at the line; Mostly flat (the control) has only
+                // its islands there.
+                let across = |m: &crate::map::Mask| {
+                    m.count_run(divide, 0, m.w as i32 - 1) as f32 / m.w as f32
+                };
+                let band = across(&map.mask);
+                assert!(
+                    band >= 0.9,
+                    "{at}: the band covers only {band:.3} of the line"
+                );
+                let flat = crate::map::generate_full_shaped(
+                    seed,
+                    scale,
+                    0,
+                    MapGenerator::V2,
+                    MapShape::Flat,
+                );
+                let f = across(&flat.mask);
+                assert!(
+                    f < 0.5,
+                    "{at}: control — Flat's rock covers {f:.3} of the line"
+                );
+            }
+            println!("{scale:?}: worst margin {worst_margin} px from the line at {divide}; two-band columns ≥ {two_band_cols:.3}");
+            assert!(
+                worst_margin >= (h as f32 * 0.03) as i32,
+                "{scale:?}: a surface point {worst_margin} px from the line"
+            );
+            assert!(
+                two_band_cols >= 0.6,
+                "{scale:?}: only {two_band_cols:.3} of columns are ground-gap-band-sky"
+            );
+        }
+    }
+
+    /// Share of interior columns (every 8th) that read, bottom up, exactly rock, air,
+    /// rock, air — ground, gap, band, sky. Scenery and roughening bites make the rest.
+    fn two_band_share(mask: &crate::map::Mask) -> f32 {
+        let (w, h) = (mask.w as i32, mask.h as i32);
+        let (mut n, mut two) = (0usize, 0usize);
+        for x in (WALL_W as i32 + 1..w - WALL_W as i32 - 1).step_by(8) {
+            let (mut runs, mut last) = (0, None);
+            for y in (0..h).rev() {
+                let solid = mask.get(x, y);
+                if last != Some(solid) {
+                    runs += 1;
+                    last = Some(solid);
+                }
+            }
+            n += 1;
+            two += usize::from(runs == 4);
+        }
+        two as f32 / n as f32
+    }
+
+    /// `map_init`'s fields re-derive every shape's map exactly — mask and landform with
+    /// the ground fill (what the client's cave wall is drawn from).
+    #[test]
+    fn every_shape_rederives_from_its_map_init_fields() {
+        for shape in MapShape::ALL {
+            for seed in [4242u64, 99] {
+                let map = crate::map::generate_full_shaped(
+                    seed,
+                    MapScale::Small,
+                    0,
+                    MapGenerator::V2,
+                    shape,
+                );
+                let r = crate::map::gen::rederive_landform(
+                    map.meta.seed,
+                    map.meta.scale,
+                    map.meta.generator,
+                    map.meta.shape,
+                    map.meta.theme,
+                );
+                assert_eq!(r.mask, map.mask, "{shape:?} seed {seed}");
+            }
+        }
     }
 }

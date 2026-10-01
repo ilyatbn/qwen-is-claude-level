@@ -23,6 +23,9 @@ const LATERAL_MAX: f32 = 60.0;
 
 pub struct MeteorShower {
     rng: ChaCha8Rng,
+    /// T23.30: on a multilevel map, the toxic clouds that drift through the bottom
+    /// level while this shower hits the top. Its own stream; idle elsewhere.
+    pub drift: crate::effects::drift::DriftClouds,
     /// `None` until the first **active** tick. See `tick`.
     next_spawn_at: Option<f32>,
 }
@@ -31,6 +34,7 @@ impl MeteorShower {
     pub fn new(seed: u64, _now: f32) -> Self {
         Self {
             rng: substream(seed, "meteor"),
+            drift: crate::effects::drift::DriftClouds::new(seed),
             // Set on the first ACTIVE tick, not here — the shower is constructed
             // when its TELEGRAPH starts and drops nothing for `EFFECT_TELEGRAPH`
             // (3 s) afterwards. Anchoring the cadence here meant the first active
@@ -226,6 +230,14 @@ impl MeteorShower {
 /// through a hole, or onto the rock) and of every impact (`blast` its carve radius).
 pub fn reaches_rim(geo: &crate::map::gen::space::SpaceGeometry, pos: Vec2, blast: f32) -> bool {
     !geo.inside(pos.x, pos.y) || geo.distance_to_rim(pos.x, pos.y) < geo.thickness * 0.5 + blast
+}
+
+/// T23.30: on a map with a level line (Multilevel), weather ordnance **below it** is
+/// gone — meteors hit the top level only (`docs/78` §A5). The line sits inside the
+/// upper band, so a meteor meets the band's top first; this is what stops one that
+/// found a crater dug through the band from reaching the lower level.
+pub fn below_the_top_level(divide: Option<i32>, pos: Vec2) -> bool {
+    divide.is_some_and(|d| pos.y > d as f32)
 }
 
 /// Where a meteor spawns, for the client's telegraph shadows.

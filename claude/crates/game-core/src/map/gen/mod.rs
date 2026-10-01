@@ -15,6 +15,7 @@ pub mod bridges;
 pub mod carvings;
 pub mod caves;
 pub mod components;
+pub mod multilevel;
 pub mod network;
 pub mod objects;
 pub mod shapes;
@@ -223,12 +224,17 @@ pub fn generate_terrain_shaped(
 /// gain an arm in one and not the other.
 pub fn reanalyse(
     generator: MapGenerator,
+    shape: MapShape,
     mask: &Mask,
     surface: &[Point],
     objects: &[objects::PlacedObject],
     asteroids: &[crate::map::meta::Asteroid],
     spawn_points: &[Point],
 ) -> TraversalReport {
+    // T23.30: a multilevel map is judged a level at a time, as it was generated.
+    if let Some(divide) = shape.level_divide(mask.h) {
+        return multilevel::analyse_levels(mask, surface, objects, divide);
+    }
     match generator {
         MapGenerator::V1 | MapGenerator::V2 => traversal::analyse(mask, surface, objects),
         MapGenerator::Space => space::analyse_space(

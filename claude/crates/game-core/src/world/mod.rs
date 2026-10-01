@@ -2391,6 +2391,28 @@ impl World {
             }
         }
 
+        // T23.30: on a multilevel map, weather ordnance below the level line is gone
+        // without carving — meteors hit the top level only (`meteor::below_the_top_level`).
+        let divide = self.map.meta.shape.level_divide(self.map.mask.h);
+        if divide.is_some() {
+            let gone: Vec<ProjectileId> = self
+                .projectiles
+                .iter()
+                .filter(|p| MeteorShower::owns(p.weapon))
+                .filter(|p| crate::effects::meteor::below_the_top_level(divide, p.pos))
+                .map(|p| p.id)
+                .collect();
+            for id in gone {
+                self.projectiles.remove(id);
+                let tick = self.tick;
+                self.events.push(GameEvent::ProjectileDespawn {
+                    tick,
+                    id,
+                    reason: DespawnReason::Void,
+                });
+            }
+        }
+
         // Where everything still in flight has got to. At `SNAPSHOT_HZ`, for the
         // same reason `emit_item_motion` uses it: a rocket flies for a second or
         // two and 60 Hz of positions is bandwidth spent on nothing. There is no
@@ -3739,8 +3761,27 @@ impl World {
 
         if let Some((eid, mut m)) = self.meteor.take() {
             let ids = m.tick(&mut self.projectiles, &self.map, meteor_on, now);
+            // T23.30: Multilevel's bottom level gets drifting toxic clouds while the
+            // top gets the meteors — the toxic grenade's patch, laid where each cloud is.
+            let lays = match self.map.meta.shape.level_divide(self.map.mask.h) {
+                Some(divide) => m.drift.tick(&self.map, divide, meteor_on, now, dt),
+                None => Vec::new(),
+            };
             self.meteor = Some((eid, m));
             self.announce_projectiles(&ids);
+            for at in lays {
+                self.burst_zone(
+                    at,
+                    BurnZone::Toxic,
+                    crate::constants::TOXIC_DRIFT_R,
+                    crate::constants::TOXIC_DRIFT_DPS,
+                    crate::constants::TOXIC_DRIFT_PATCH_LIFE,
+                    1,
+                    0.0,
+                    BlastSource::Weather(EffectKind::MeteorShower),
+                    now,
+                );
+            }
         }
 
         // T22.08A: the flare **touches** here and burns in stage 8a2 (R81). A
@@ -4331,7 +4372,9 @@ impl World {
             let teleport::TeleportStep::Fire(from) = fired else {
                 continue;
             };
-            let Some(to) = teleport::destination(pads, from, &mut self.rng) else {
+            // T23.30: paired across the levels on a multilevel map (`level_divide`).
+            let divide = self.map.meta.shape.level_divide(self.map.mask.h);
+            let Some(to) = teleport::destination_paired(pads, from, divide, &mut self.rng) else {
                 continue;
             };
 
@@ -14632,6 +14675,194 @@ mod space_meteor_tests {
                 "seed {seed}: ana's rockets carved the rim {rim_carves} times and opened no \
                  vortex"
             );
+        }
+    }
+}
+
+/// T23.30 B (`docs/78` §A5): the Multilevel map's rules, through `World::step`.
+#[cfg(test)]
+mod multilevel_tests {
+    use super::*;
+    use crate::constants::{
+        MapGenerator, MapScale, MapShape, EFFECT_TELEGRAPH, METEOR_DURATION, PLAYER_H,
+        PROJECTILE_MAX_LIFETIME, SIM_DT, TELEPORT_ARM_DISTANCE, TELEPORT_CHARGE,
+    };
+
+    fn world(seed: u64, shape: MapShape) -> World {
+        let mut w = World::with_shape(
+            seed,
+            MapScale::Medium,
+            0,
+            MapGenerator::V2,
+            GravityMode::Standard,
+            shape,
+        );
+        w.set_round_seconds(600.0);
+        w.set_phase(RoundPhase::Playing);
+        w.effects.postpone_until(1.0e9);
+        w
+    }
+
+    #[derive(Debug, Default)]
+    struct Shower {
+        meteor_carves: usize,
+        carves_below: usize,
+        toxic_below: usize,
+        toxic_above: usize,
+        void_despawns: usize,
+    }
+
+    /// One forced meteor shower, with a shaft dug through the band at every quarter of
+    /// the map first — so a meteor *could* reach the lower level and only the rule stops it.
+    fn shower(seed: u64, shape: MapShape) -> (Shower, i32) {
+        let mut w = world(seed, shape);
+        let h = w.map.mask.h;
+        let divide = MapShape::Multilevel.level_divide(h).expect("a line");
+        let wd = w.map.mask.w as i32;
+        for q in 1..4 {
+            let x = wd * q / 4;
+            let mut y = divide - 200;
+            while y < divide + 200 {
+                w.map.carve_circle(x, y, 40);
+                y += 20;
+            }
+        }
+        w.force_effect(EffectKind::MeteorShower, w.round_time);
+        let mut s = Shower::default();
+        let window = EFFECT_TELEGRAPH + METEOR_DURATION + 2.0 * PROJECTILE_MAX_LIFETIME;
+        for _ in 0..(window / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            for e in w.drain_events() {
+                match e {
+                    GameEvent::Carve {
+                        y,
+                        kind: CarveKind::Meteor,
+                        ..
+                    } => {
+                        s.meteor_carves += 1;
+                        s.carves_below += usize::from(y > divide);
+                    }
+                    GameEvent::HazardSpawn {
+                        kind: HazardKind::Toxic,
+                        y,
+                        ..
+                    } => {
+                        if y > divide as f32 {
+                            s.toxic_below += 1;
+                        } else {
+                            s.toxic_above += 1;
+                        }
+                    }
+                    GameEvent::ProjectileDespawn {
+                        reason: DespawnReason::Void,
+                        ..
+                    } => s.void_despawns += 1,
+                    _ => {}
+                }
+            }
+        }
+        (s, divide)
+    }
+
+    /// Meteors hit the top level only, and the bottom gets drifting toxic clouds —
+    /// across seeds. Presence: meteors did carve, clouds were laid, and the shafts let
+    /// some meteors past the line, where the rule took them (`Void` despawns). Control:
+    /// the same seed as Mostly flat lays no toxic cloud.
+    #[test]
+    fn meteors_hit_only_the_top_and_toxic_clouds_drift_below() {
+        let mut stopped = 0;
+        for seed in [4242u64, 7, 31337] {
+            let (s, _) = shower(seed, MapShape::Multilevel);
+            println!("multilevel seed {seed}: {s:?}");
+            assert!(
+                s.meteor_carves > 0,
+                "seed {seed}: the shower carved nothing"
+            );
+            assert_eq!(
+                s.carves_below, 0,
+                "seed {seed}: a meteor hit the lower level"
+            );
+            assert!(
+                s.toxic_below > 0,
+                "seed {seed}: no toxic cloud drifted below"
+            );
+            assert_eq!(
+                s.toxic_above, 0,
+                "seed {seed}: a toxic cloud on the top level"
+            );
+            stopped += s.void_despawns;
+        }
+        assert!(
+            stopped > 0,
+            "no meteor ever passed the line — the floor is untested"
+        );
+        let (flat, divide) = shower(4242, MapShape::Flat);
+        assert_eq!(
+            flat.toxic_below + flat.toxic_above,
+            0,
+            "control: Flat laid toxic clouds"
+        );
+        // On Flat the "line" means nothing: meteors reach the ground below it.
+        assert!(
+            flat.carves_below > 0,
+            "control: no Flat meteor landed below {divide}"
+        );
+    }
+
+    /// Every pad on a multilevel map, stood on through `World::step`, sends you to the
+    /// other level — on several seeds, and both levels have pads.
+    #[test]
+    fn every_multilevel_pad_sends_you_to_the_other_level() {
+        for seed in [4242u64, 7, 31337] {
+            let mut w = world(seed, MapShape::Multilevel);
+            w.add_player(0, 0, "ana".into());
+            let divide = w.map.meta.shape.level_divide(w.map.mask.h).expect("a line");
+            let pads = w.map.meta.teleport_pads.clone();
+            let up = pads.iter().filter(|p| p.pos.y < divide).count();
+            assert!(
+                up > 0 && up < pads.len(),
+                "seed {seed}: pads on one level only: {pads:?}"
+            );
+            for pad in &pads {
+                let centre = Vec2::new(pad.pos.x as f32, pad.pos.y as f32 - PLAYER_H / 2.0);
+                {
+                    let p = w.player_mut(0).expect("there");
+                    p.alive = true;
+                    p.body = crate::physics::body::Body::new(centre);
+                    p.body.grounded = true;
+                    p.teleport.spawn_pos =
+                        Vec2::new(centre.x - TELEPORT_ARM_DISTANCE * 4.0, centre.y);
+                    p.teleport.armed = true;
+                    p.teleport.charging = None;
+                    p.teleport.ready_at = 0.0;
+                }
+                let mut to = None;
+                for _ in 0..((TELEPORT_CHARGE * 2.0 / SIM_DT) as i32) {
+                    if to.is_none() {
+                        let p = w.player_mut(0).expect("there");
+                        p.body.pos = centre;
+                        p.body.grounded = true;
+                    }
+                    w.step(SIM_DT);
+                    for e in w.drain_events() {
+                        if let GameEvent::Teleport {
+                            from_pad, to_pad, ..
+                        } = e
+                        {
+                            assert_eq!(from_pad, pad.id);
+                            to = Some(to_pad);
+                        }
+                    }
+                }
+                let to = to.unwrap_or_else(|| panic!("seed {seed}: pad {} never fired", pad.id));
+                let dest = pads[to as usize];
+                assert_ne!(
+                    pad.pos.y < divide,
+                    dest.pos.y < divide,
+                    "seed {seed}: pad {} sent to pad {to} on its own level",
+                    pad.id
+                );
+            }
         }
     }
 }

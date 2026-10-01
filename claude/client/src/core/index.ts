@@ -142,7 +142,7 @@ export interface MapMeta {
   /** Which generator made the map (`MapMeta::generator`, serde's spelling). T22.14A B3. */
   generator: 'V1' | 'V2' | 'Space'
   /** T23.30: the map shape (`MapMeta::shape`, serde's spelling). */
-  shape: 'Random' | 'Hill' | 'Flat'
+  shape: 'Random' | 'Hill' | 'Flat' | 'Multilevel'
 }
 
 /** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */

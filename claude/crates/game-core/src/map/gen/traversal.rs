@@ -378,7 +378,7 @@ fn largest_scc(adj: &[Vec<u32>]) -> Vec<usize> {
 
 /// Greedy count of points at least `sep` apart, so "enough spawns exist" is checked
 /// with the same separation rule T1.12 will use.
-fn count_separated(surface: &[Point], component: &[usize], sep: f32) -> usize {
+pub(crate) fn count_separated(surface: &[Point], component: &[usize], sep: f32) -> usize {
     let sep_sq = (sep * sep) as i64;
     let mut chosen: Vec<Point> = Vec::new();
     for &i in component {

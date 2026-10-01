@@ -773,17 +773,35 @@ pub(crate) fn standing_furniture(
             &bodies,
             &[],
         );
-        let chosen = seat_then_top_up(
-            &outcome.surface,
-            &[&seated_main, &seated_anywhere],
-            TELEPORT_PADS,
-            |c| {
+        let choose = |main: &[usize], anywhere: &[usize], count: usize| {
+            seat_then_top_up(&outcome.surface, &[main, anywhere], count, |c| {
                 choose_pads(&outcome.mask, &outcome.surface, c, outcome.seed)
                     .into_iter()
                     .map(|p| p.pos)
                     .collect()
-            },
-        );
+            })
+        };
+        // T23.30: on a multilevel map **half the pads on each level** (top first),
+        // because every pad sends you to the other level (`world::teleport::
+        // destination_paired`) — a level with none is a level nobody can leave by
+        // pad. The same sampler and stream, over each level's candidates.
+        let chosen = match outcome.shape.level_divide(outcome.mask.h) {
+            None => choose(&seated_main, &seated_anywhere, TELEPORT_PADS),
+            Some(divide) => {
+                let on = |pool: &[usize], upper: bool| -> Vec<usize> {
+                    pool.iter()
+                        .copied()
+                        .filter(|&i| (outcome.surface[i].y < divide) == upper)
+                        .collect()
+                };
+                let mut both = Vec::new();
+                for upper in [true, false] {
+                    let (m, a) = (on(&seated_main, upper), on(&seated_anywhere, upper));
+                    both.extend(choose(&m, &a, TELEPORT_PADS / 2));
+                }
+                both
+            }
+        };
         a_network_or_none(chosen)
             .into_iter()
             .enumerate()
@@ -1023,6 +1041,7 @@ pub(crate) fn generate_full_with(
         // the outcome's report would say one thing and `MapMeta` another.
         let report = crate::map::gen::reanalyse(
             outcome.generator,
+            outcome.shape,
             &mask,
             &surface,
             &objects,
@@ -2241,6 +2260,7 @@ mod tests {
         let surface = crate::map::gen::surface_for(MapGenerator::Space, &mask);
         let report = crate::map::gen::reanalyse(
             MapGenerator::Space,
+            crate::constants::MapShape::Random,
             &mask,
             &surface,
             &[],
@@ -2293,6 +2313,7 @@ mod tests {
         let broken_surface = crate::map::gen::surface_for(MapGenerator::Space, &broken);
         let broken_space = crate::map::gen::reanalyse(
             MapGenerator::Space,
+            crate::constants::MapShape::Random,
             &broken,
             &broken_surface,
             &[],

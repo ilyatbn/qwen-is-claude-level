@@ -9,6 +9,7 @@
 //! disagreed about where the lava is would put someone in fire they cannot see
 //! (`docs/13-weather-effects.md` §7).
 
+pub mod drift;
 pub mod flare;
 pub mod fog;
 pub mod lava;

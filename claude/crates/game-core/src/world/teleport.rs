@@ -165,7 +165,29 @@ pub fn step(
 /// Returns `None` when there is nowhere else to go, which is a one-pad map and a
 /// no-op rather than a teleport to yourself.
 pub fn destination(pads: &[TeleportPad], from: u8, rng: &mut crate::rng::ChaCha8Rng) -> Option<u8> {
-    let others: Vec<u8> = pads.iter().map(|p| p.id).filter(|&id| id != from).collect();
+    destination_paired(pads, from, None, rng)
+}
+
+/// [`destination`], **paired across levels** when the map has a level line
+/// (T23.30, `docs/78` §A5 Multilevel: *"a pad on the bottom always sends you to the
+/// top, and a top pad to the bottom"*): only pads on the other side of `divide` from
+/// `from` are candidates. `None` is `destination` exactly — the same one draw over
+/// the same list — so no other map's teleports move. `None` back when the other level
+/// has no pad (no teleport, as on a one-pad map).
+pub fn destination_paired(
+    pads: &[TeleportPad],
+    from: u8,
+    divide: Option<i32>,
+    rng: &mut crate::rng::ChaCha8Rng,
+) -> Option<u8> {
+    let upper = |p: &TeleportPad| divide.map(|d| p.pos.y < d);
+    let from_level = pads.iter().find(|p| p.id == from).and_then(upper);
+    let others: Vec<u8> = pads
+        .iter()
+        .filter(|p| p.id != from)
+        .filter(|p| from_level.is_none() || upper(p) != from_level)
+        .map(|p| p.id)
+        .collect();
     if others.is_empty() {
         return None;
     }
@@ -489,6 +511,56 @@ mod tests {
                 assert_ne!(to, from);
             }
         }
+    }
+
+    /// T23.30: with a level line every destination is on the other level, both ways;
+    /// the control is the same pads with no line, where a same-level exit turns up.
+    #[test]
+    fn a_paired_pad_always_crosses_the_level_line() {
+        let ys = [100, 120, 140, 800, 820, 840];
+        let pads: Vec<TeleportPad> = ys
+            .iter()
+            .enumerate()
+            .map(|(i, &y)| TeleportPad {
+                id: i as u8,
+                pos: Point::new(200 + 300 * i as i32, y),
+            })
+            .collect();
+        let divide = 460;
+        let mut rng = substream(9, "teleport");
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            for p in &pads {
+                let to = destination_paired(&pads, p.id, Some(divide), &mut rng).expect("an exit");
+                let q = pads[to as usize];
+                assert_ne!(
+                    p.pos.y < divide,
+                    q.pos.y < divide,
+                    "pad {} sent to its own level ({to})",
+                    p.id
+                );
+                seen.insert(to);
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            pads.len(),
+            "some pad was never an exit: {seen:?}"
+        );
+        let same_level = (0..200).any(|_| {
+            let to = destination_paired(&pads, 0, None, &mut rng).expect("an exit");
+            pads[to as usize].pos.y < divide
+        });
+        assert!(
+            same_level,
+            "control: unpaired pads never chose the same level"
+        );
+        // A level with no pad: nowhere to go rather than a same-level exit.
+        let top_only = &pads[..3];
+        assert_eq!(
+            destination_paired(top_only, 0, Some(divide), &mut rng),
+            None
+        );
     }
 
     #[test]
