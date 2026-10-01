@@ -268,6 +268,10 @@ pub struct Bot {
     routes_off: bool,
     /// Tests only: the meteor dodge planted out (`without_dodge`).
     dodge_off: bool,
+    /// T23.26C item 6: round time of the next fight hop, and its test-only plant.
+    juke_at: f32,
+    juke_phase: f32,
+    juke_off: bool,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -306,6 +310,9 @@ impl Bot {
             route: route::Route::default(),
             routes_off: false,
             dodge_off: false,
+            juke_at: 0.0,
+            juke_phase: index as f32 * 0.618_034 % 1.0,
+            juke_off: false,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -316,6 +323,13 @@ impl Bot {
     /// real round's default.
     pub fn frenzied(mut self, on: bool) -> Self {
         self.frenzy = on;
+        self
+    }
+
+    /// T23.26C: the same bot without its fight hop — the juke test's control.
+    #[cfg(test)]
+    pub(crate) fn without_juke(mut self) -> Self {
+        self.juke_off = true;
         self
     }
 
@@ -438,6 +452,26 @@ impl Bot {
         // let go (traced: one hovered at 0 px/s with 2.5 s of fuel, released, and fell).
         // The sideways buttons are left to the route or the greedy step — the planner
         // routes out of the void from inside it.
+        // T23.26C item 6: **a bot holding its ground in a fight does not stand still.**
+        // It hops every `BOT_JUKE_S` or so, on the spot — a moving target, and
+        // never a step away from the enemy, which `walk.rs`'s healthy-holds-its-ground
+        // control forbids. Standing at the stand-off shooting was the largest still cause
+        // left (3.1 s per bot-minute) once the hiding and the item stands were gone.
+        if matches!(self.goal, Goal::Enemy(_))
+            && !self.juke_off
+            && me.body.grounded
+            && route::navigates(world, me)
+            && buttons & (button::LEFT | button::RIGHT | button::JUMP) == 0
+            && now >= self.juke_at
+        {
+            buttons |= button::JUMP;
+            // Spread by a golden-ratio step per hop rather than a draw on `rng`: a draw
+            // here would shift every later aim error, and the population would move for
+            // a reason that is not the hop.
+            self.juke_phase = (self.juke_phase + 0.618_034).fract();
+            self.juke_at = now + crate::constants::BOT_JUKE_S * (0.5 + self.juke_phase);
+        }
+
         // T23.26C (§A3): **a meteor coming down on the bot is stepped out from under**,
         // whatever the goal — sideways, away from where it bursts — and the route resumes
         // after. Not in space (its meteors fly at open points, and `space::steer` drives),

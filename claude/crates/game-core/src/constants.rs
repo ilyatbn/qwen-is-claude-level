@@ -4121,6 +4121,12 @@ pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.
 pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
+/// T23.26C item 6: seconds between a fighting bot's hops on the spot, on average (each
+/// drawn from 0.5–1.5 × this). The owner's recorded round has him airborne 44 % of the
+/// time and still 41–48 %; a bot planted at its stand-off was still for the whole fight.
+/// A hop is ~0.6 s in the air (`2 × JUMP_VELOCITY / GRAVITY`), so one a second keeps a
+/// fighting bot off the ground about half the time — the human's share.
+pub const BOT_JUKE_S: f32 = 1.0;
 /// T23.26C item 7: how much further from its enemy each leg of a hurt bot's run takes it,
 /// px: half an exploration cell. A leg that ends still inside `BOT_ENGAGE_RANGE` (320)
 /// is followed by another, so two or three legs break contact from a fight's range.

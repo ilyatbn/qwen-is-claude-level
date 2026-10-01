@@ -271,7 +271,9 @@ fn a_bot_steps_out_from_under_a_meteor_it_has_time_to_see() {
         let enemy = Vec2::new(at.x + 60.0, y);
         give(&mut w, 1, PISTOL, 10);
         wield(&mut w, 1, PISTOL);
-        let mut b = Bot::new(1, SEED, 0, 0.6);
+        // No fight hop: a bot in the air when the meteor lands is a different question
+        // (T23.26C item 6's hop made the late control's meteor miss).
+        let mut b = Bot::new(1, SEED, 0, 0.6).without_juke();
         if !dodge {
             b = b.without_dodge();
         }
@@ -653,4 +655,60 @@ fn a_winged_bot_flies_round_to_an_enemy_a_thousand_px_off() {
     );
     let (got, _) = run(false);
     assert!(!got, "control: the unrouted winged bot got there too");
+}
+
+/// **D11 (T23.26C item 6): a bot holding its ground in a fight keeps moving.** A healthy
+/// armed bot on a flat shelf, its enemy at a pistol's stand-off: over four seconds it is
+/// still (a whole `BOT_STUCK_WINDOW` under `BOT_STUCK_PX`) for under a quarter of them,
+/// and it keeps shooting. Control: the fight hop planted out (`without_juke`) — still
+/// for most of it, the stand the owner watched.
+#[test]
+fn a_fighting_bot_hops_rather_than_standing_still() {
+    let run = |juke: bool| {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        let y = flat_shelf(&mut w, at, 240);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = Vec2::new(at.x, y);
+        }
+        let enemy = Vec2::new(at.x + 60.0, y);
+        give(&mut w, 1, PISTOL, crate::constants::PISTOL_AMMO);
+        wield(&mut w, 1, PISTOL);
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !juke {
+            b = b.without_juke();
+        }
+        let mut bots = vec![b];
+        let ticks = 4 * SIM_HZ;
+        for t in 0..ticks {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = enemy;
+                p.health = 100.0;
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let s = bots[0].stats();
+        (
+            s.ticks_still.iter().sum::<u32>() as f32 / ticks as f32,
+            s.fires,
+        )
+    };
+    let (still, fires) = run(true);
+    assert!(
+        still < 0.25 && fires > 0,
+        "a fighting bot was still {:.0} % of the fight ({fires} shots)",
+        still * 100.0
+    );
+    let (still, _) = run(false);
+    assert!(
+        still > 0.5,
+        "control: with no hop it was still only {:.0} % — the fixture",
+        still * 100.0
+    );
 }
