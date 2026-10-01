@@ -216,6 +216,15 @@ pub fn drive(world: &mut World, bots: &mut [Bot], now: f32, dt: f32) -> Vec<Driv
         if let Some(slot) = b.wants_use() {
             let _ = world.use_item(b.player, slot, now);
         }
+        // T23.26E step 6: the medkit and battery counters (§C9's `Q` and `R`) — commands
+        // too, and nothing sent them for a bot, so a bot never healed from a pickup and
+        // never charged: lasers were 0 % of its fires.
+        if b.want_heal {
+            let _ = world.use_heal(b.player);
+        }
+        if b.want_charge {
+            let _ = world.use_battery_pack(b.player);
+        }
     }
     for d in out.iter_mut() {
         d.held = world
@@ -266,6 +275,9 @@ pub struct Bot {
     flight: space::Flight,
     want_use: Option<u8>,
     want_select: Option<u8>,
+    /// T23.26E step 6: spend a medkit / a battery pack from the counters this tick.
+    want_heal: bool,
+    want_charge: bool,
     /// T23.26's stuck counter: seconds into the current pressing window, and where the
     /// body was when it opened (`count_pressing_still`).
     press_window: f32,
@@ -336,6 +348,8 @@ impl Bot {
             flight: space::Flight::default(),
             want_use: None,
             want_select: None,
+            want_heal: false,
+            want_charge: false,
             press_window: 0.0,
             press_from: Vec2::ZERO,
             ended_for: 0.0,
@@ -451,6 +465,8 @@ impl Bot {
             self.believed = None;
             self.want_use = None;
             self.want_select = None;
+            self.want_heal = false;
+            self.want_charge = false;
             self.press_window = 0.0;
             self.still_window = 0.0;
             self.route.clear();
@@ -678,6 +694,10 @@ impl Bot {
 
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(me);
+        // T23.26E step 6: the counters, by `choose_item`'s own thresholds.
+        self.want_heal = me.heals > 0 && me.health < crate::constants::BOT_HEAL_BELOW;
+        self.want_charge =
+            me.batteries > 0 && me.battery <= BATTERY_MAX * crate::constants::BOT_CHARGE_BELOW;
         // **A dig step holds the shovel**: `choose_weapon` re-decides every tick and would
         // switch back to the best gun the tick after.
         self.want_select = match nav {

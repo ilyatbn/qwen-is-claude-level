@@ -391,3 +391,64 @@ fn pad(w: &mut World, id: u8, x: i32, feet: i32) {
             },
         });
 }
+
+/// **F7 (step 6, "lasers were 0 % of fires — find why"): a bot spends its counters.**
+/// Medkits and battery packs are counters since §C9 (`Q`, `R`), not bag slots, and
+/// nothing sent those commands for a bot: it never healed from a pickup and never charged,
+/// so a laser was never firable. A hurt bot with one medkit in its counter heals; a bot
+/// with a laser, a flat battery and one pack charges and **fires the laser** at an enemy
+/// in range. Controls: at full health the medkit is kept; with no pack the laser is never
+/// fired.
+#[test]
+fn a_bot_spends_its_counters_and_fires_a_laser() {
+    use crate::items::registry::LASER_PISTOL;
+    let run = |packs: bool, hurt: bool| {
+        let mut w = world_with(&[1, 2]);
+        let at = clear_line(&w);
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        let y = flat_shelf(&mut w, at, 240);
+        give(&mut w, 1, LASER_PISTOL, 1);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = Vec2::new(at.x, y);
+            p.battery = 0.0;
+            p.health = if hurt { 20.0 } else { 100.0 };
+            let _ = p.take_heal();
+            if packs {
+                let _ = p.take_battery_pack();
+            }
+        }
+        let enemy = Vec2::new(at.x + 100.0, y);
+        let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+        for t in 0..(2 * SIM_HZ) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = enemy;
+                p.health = 100.0;
+            }
+            if let Some(p) = w.player_mut(1) {
+                if !hurt {
+                    p.health = 100.0;
+                }
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let p = w.player(1).expect("bot");
+        (p.heals, bots[0].stats().fires_by_kind[2])
+    };
+    let (heals, lasers) = run(true, true);
+    assert_eq!(heals, 0, "a bot at 20 health kept its medkit");
+    assert!(
+        lasers > 0,
+        "a bot with a battery pack never fired its laser"
+    );
+    let (heals, lasers) = run(false, false);
+    assert_eq!(heals, 1, "control: a bot at full health spent its medkit");
+    assert_eq!(
+        lasers, 0,
+        "control: a laser fired with no charge to fire it"
+    );
+}
