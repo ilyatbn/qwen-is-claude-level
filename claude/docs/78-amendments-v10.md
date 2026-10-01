@@ -66,3 +66,35 @@ Task: `T23.26C`.
   cover and lift it when the round starts.
 - A respawn sends the player's inventory.
 Task: `T23.28`.
+
+## A5 — Map shapes (a lobby setting)
+
+**Owner, 2026-10-01:** *"change the map generator to have map shapes. the current map generator is fine but i want to
+make it more diverse and also simpler for bots to play. lets call the current one "random"."* Reference silhouettes:
+`tasks/M23/map-shapes/*.png` (black = rock, grey = open space). Every shape is still generated per seed.
+
+A lobby setting **map shape**, beside gravity, for standard and low gravity (space keeps its own map):
+- **Random** — today's generator, unchanged (its golden tables must not move). The default.
+- **Hill** — less random: mostly flat ground with a few hills of varying size; still some floating islands.
+- **Mostly flat** — an almost flat ground (gentle undulation only); items, objects and islands as usual.
+- **Multilevel** — two levels, each a hilly-or-flat ground: an upper band of rock with sky above it, an open gap below
+  it, and a lower ground. **No islands.** Teleport pads are **paired across levels**: a pad on the bottom always sends
+  you to the top, and a top pad to the bottom. Players may also dig between levels. **Meteor showers hit the top level
+  only**; the **bottom level gets drifting toxic clouds** instead (the existing toxic hazard, passing through).
+- **Islands** — no ground: only floating islands, high in the clouds; fall off and you die. **No meteor showers** on
+  this shape (the owner will choose a replacement). It **looks** high up: a sea of cloud below the islands, the sky
+  around and beneath them.
+The shape is in `MapMeta`, `map_init` and the replay header; every client and bot reads it from there.
+Task: `T23.30`.
+
+## A6 — Bots seek open ground and each other (sharpens §A2–§A3)
+
+**Owner, 2026-10-01:** *"lets make them stop shoveling … their top priority is to find as much open ground and each
+other. make them even more open space aware by calculating the best path to places outside of caves so they find each
+other better and battle more."*
+- A bot's standing priority is **open ground and finding enemies**: exploration and routing aim at open, sky-exposed
+  ground, and a bot in a cave or enclosed pocket routes **out** to it.
+- **Melee is a last resort**: a bot with no ranged weapon goes to get one (or avoids close fights) rather than closing to
+  swing; it swings only when cornered at point blank or when no ranged weapon exists anywhere it can reach.
+- Digging is for when no open route exists (§A2), never a fighting style.
+Task: `T23.26F`.
