@@ -104,8 +104,8 @@ impl Movement {
     /// One line of the human-vs-bot table.
     pub fn row(&self) -> String {
         format!(
-            "{:>6.0} {:>5.0}% {:>5.0}% {:>5.0}% {:>7.0} {:>6.1} {:>5.2} {:>4.1} {:>5.1} {:>5.1} \
-             {:>6.0} {:>6} | {:>5.0}% {:>7.0} {:>5.0}%",
+            "{:>6.0} {:>5.0}% {:>5.0}% {:>5.0}% {:>7.0} {:>6.1} {:>5.2} {:>4.1}% {:>4.1} {:>5.1} \
+             {:>5.1} {:>6.0} {:>6} | {:>5.0}% {:>7.0} {:>5.0}%",
             self.alive_s,
             100.0 * self.air_share(),
             100.0 * self.jet_share(),
@@ -113,6 +113,7 @@ impl Movement {
             self.per_min(self.dist_px),
             self.per_min(self.burns as f32),
             self.mean_burn_fuel(),
+            100.0 * self.dry_s / self.alive_s.max(1e-6),
             self.per_min(self.teleports as f32),
             self.per_min(self.shovel_swings as f32),
             self.per_min(self.shots as f32),
@@ -126,8 +127,8 @@ impl Movement {
 
     /// The header [`row`](Self::row) lines up under.
     pub fn header() -> &'static str {
-        "alive_s   air   jet still  px/min burn/m fuel@ tp/m dig/m shot/m fightd deaths | \
-         shower: air  px/min still"
+        "alive_s   air   jet still  px/min burn/m fuel@   dry tp/m dig/m shot/m fightd deaths \
+         | shower: air  px/min still"
     }
 }
 

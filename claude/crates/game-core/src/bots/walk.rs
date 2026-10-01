@@ -5,8 +5,8 @@
 use super::{space, Bot, Goal};
 use crate::constants::{
     GravityMode, BOT_HAZARD_CLEARANCE, BOT_HAZARD_LOOKAHEAD, BOT_JETPACK_RISE, BOT_STUCK_PX,
-    BOT_STUCK_WINDOW, BOT_WANDER_GIVE_UP, BOT_WINGED_SWEEP_LEGS, JETPACK_MAX_FUEL, PICKUP_RADIUS,
-    STEP_UP, WINGS_FLY_SPEED,
+    BOT_STUCK_WINDOW, BOT_WANDER_GIVE_UP, BOT_WINGED_SWEEP_LEGS, JETPACK_DRAIN, JETPACK_MAX_FUEL,
+    JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, PICKUP_RADIUS, STEP_UP, WINGS_FLY_SPEED,
 };
 use crate::math::Vec2;
 use crate::player::input::button;
@@ -225,8 +225,15 @@ impl Bot {
         }
 
         // Jetpack for a real climb, and only with fuel to spare — a bot that
-        // empties its tank hovering is a bot that cannot escape.
-        if rise > BOT_JETPACK_RISE && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5 {
+        // empties its tank hovering is a bot that cannot escape. T23.26C item 4 (§A3):
+        // **only a climb the tank can finish** — the rise at the pack's top speed, its
+        // drain, and what starting the pack again needs held back — the half-tank rule
+        // pressed on climbs a half tank could not make, and the bot fell back to try again.
+        let climb = rise / JETPACK_MAX_SPEED * JETPACK_DRAIN + JETPACK_MIN_FUEL_TO_ENGAGE;
+        if rise > BOT_JETPACK_RISE
+            && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5
+            && me.jetpack.fuel >= climb
+        {
             buttons |= button::JUMP | button::UP;
         } else if rise < -BOT_JETPACK_RISE * 2.0 && !me.body.grounded {
             buttons |= button::DOWN;

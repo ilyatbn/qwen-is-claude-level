@@ -15,7 +15,7 @@ use crate::constants::{
     GravityMode, BOT_FLEE_COST_MAX, BOT_FLEE_GAIN, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF,
     BOT_NAV_CELL, BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK,
     BOT_NAV_RETRY, BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED,
-    JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
+    JETPACK_DRAIN, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
 };
 use crate::items::registry::SHOVEL;
 use crate::math::Vec2;
@@ -156,6 +156,12 @@ pub(super) struct Route {
     /// Without this the first swing went along the old aim: a slash at the floor
     /// toward the goal, measured, that left the bot on a slope it could not walk off.
     last_aim: Option<Vec2>,
+    /// T23.26C: plans dropped because the tank held less than a jet step expected.
+    pub tank_replans: u32,
+    /// Tests only: the tank rule planted out (`Bot::without_tank_rule`).
+    pub tank_rule_off: bool,
+    /// Where the body was last tick (a teleport is a jump in it).
+    last_pos: Vec2,
 }
 
 impl Route {
@@ -208,6 +214,13 @@ impl Route {
     ) -> Option<NavStep> {
         let pos = me.body.pos;
         let grid = Grid::new(&world.map);
+        // A body that moved further than any step in one tick was teleported (or thrown by
+        // a vortex, or respawned): a pad sends you to a random other one, and the plan
+        // may not be where it landed. Plan again from here.
+        if (pos - self.last_pos).len() > 8.0 * BOT_NAV_CELL {
+            self.clear();
+        }
+        self.last_pos = pos;
 
         // A new goal, or the goal moved off the end of the route: plan again.
         if !self.target.is_some_and(|t| same_target(&t, &target)) && !self.searching_for(&target) {
@@ -306,12 +319,36 @@ impl Route {
             self.clear();
             return None;
         }
+        // **The jetpack is a tank** (T23.26C item 4, `docs/78` §A3). The plan priced every
+        // jet against the fuel it expected the bot to hold here; a body that holds less —
+        // physics is not the plan, and a fight or a dodge burns fuel the plan never saw —
+        // does not press on a climb it cannot finish. It stands (on the ground the pack
+        // refills) and plans again from what the tank holds: the new plan rests here
+        // first, or goes another way, or finds nothing and the goal is given up
+        // (`refused`). In the air it plans again only once the shortfall is a second.
+        let burns = matches!(s.how, Move::Jet)
+            || (s.how == Move::Dig && s.fuel < self.path[self.next - 1].fuel);
+        if burns && !self.tank_rule_off {
+            let expected = self.path[self.next - 1].fuel;
+            let slack = if me.body.grounded {
+                BOT_NAV_FUEL_STEP
+            } else {
+                JETPACK_DRAIN
+            };
+            if me.jetpack.fuel + slack < expected {
+                self.tank_replans += 1;
+                self.clear();
+                return Some(NavStep::default());
+            }
+        }
         let mut out = self.buttons(&grid, me, s, here, now);
         // **Stuck on a step: swing at it, hop, and lean in.** A cell may hold
         // `BOT_NAV_AIR_PX` of rock, and a sliver of it standing up is a wall to a body; a
         // body the plan has falling can sit on a ledge's corner. Not moving for
         // `BOT_STUCK_WINDOW` on any step but a rest is either.
-        if s.how == Move::Rest || (pos - self.stall_at).len() >= BOT_STUCK_PX {
+        if matches!(s.how, Move::Rest | Move::Teleport)
+            || (pos - self.stall_at).len() >= BOT_STUCK_PX
+        {
             self.stalled = 0.0;
             self.stall_at = pos;
         } else {
@@ -428,7 +465,7 @@ impl Route {
                     out.buttons |= button::UP;
                 }
             }
-            Move::Rest => {}
+            Move::Rest | Move::Teleport => {}
             Move::Dig => {
                 let rock = dig_rock(grid, s, here);
                 match rock {
@@ -502,7 +539,7 @@ fn same_target(a: &Target, b: &Target) -> bool {
 fn still_good(g: &Grid, s: &Step) -> bool {
     match s.how {
         Move::Dig => true,
-        Move::Walk | Move::Hop | Move::Rest => g.stands(s.x, s.y),
+        Move::Walk | Move::Hop | Move::Rest | Move::Teleport => g.stands(s.x, s.y),
         _ => g.node(s.x, s.y),
     }
 }

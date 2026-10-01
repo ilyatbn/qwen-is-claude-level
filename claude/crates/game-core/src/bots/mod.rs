@@ -139,6 +139,8 @@ pub struct BotStats {
     pub lip_swings: u32,
     /// T23.26C (§A3): ticks a bot stepped sideways out from under a falling meteor.
     pub ticks_dodging: u32,
+    /// T23.26C item 4: routes dropped at a jet step the tank could not pay for.
+    pub tank_replans: u32,
     /// T23.26C item 2: ticks alive spent **still** — a whole `BOT_STUCK_WINDOW` in which
     /// the body moved under `BOT_STUCK_PX`, in 2D, whatever was pressed — by what the bot
     /// was doing when the window closed ([`STILL_CAUSES`] names the slots). Every bot
@@ -321,6 +323,13 @@ impl Bot {
     #[cfg(test)]
     pub(crate) fn without_dodge(mut self) -> Self {
         self.dodge_off = true;
+        self
+    }
+
+    /// T23.26C: the same bot with the follower's tank rule planted out — its control.
+    #[cfg(test)]
+    pub(crate) fn without_tank_rule(mut self) -> Self {
+        self.route.tank_rule_off = true;
         self
     }
 
@@ -531,7 +540,7 @@ impl Bot {
             1
         } else if nav.is_some_and(|n| n.how == nav::Move::Dig || n.unstick) {
             2
-        } else if nav.is_some_and(|n| n.how == nav::Move::Rest) {
+        } else if nav.is_some_and(|n| matches!(n.how, nav::Move::Rest | nav::Move::Teleport)) {
             3
         } else if me.move_mods().flying {
             4
@@ -604,8 +613,11 @@ impl Bot {
         } else {
             self.ended_for = 0.0;
         }
-        self.route
-            .step(world, me, target, dig, now, dt, &mut self.stats.nav_plans)
+        let out = self
+            .route
+            .step(world, me, target, dig, now, dt, &mut self.stats.nav_plans);
+        self.stats.tank_replans = self.route.tank_replans;
+        out
     }
 
     /// T23.26: the population's stuck measure. A window opens on the first tick a
@@ -1622,6 +1634,7 @@ pub(crate) mod harness {
             dig_swings: a.dig_swings + b.dig_swings,
             lip_swings: a.lip_swings + b.lip_swings,
             ticks_dodging: a.ticks_dodging + b.ticks_dodging,
+            tank_replans: a.tank_replans + b.tank_replans,
             ticks_still: std::array::from_fn(|i| a.ticks_still[i] + b.ticks_still[i]),
         }
     }

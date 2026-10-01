@@ -462,3 +462,126 @@ fn a_hurt_bot_runs_out_of_sight_and_digs_in_only_when_cornered() {
         "control, cornered: in sight {seen}, {digs} swings — it should dig in"
     );
 }
+
+/// Put a teleport pad with its surface on the floor under nav cell `(x, feet)`.
+fn pad_at(w: &mut World, id: u8, x: i32, feet: i32) {
+    let c = stand_at(x, feet);
+    w.map
+        .meta
+        .teleport_pads
+        .push(crate::map::meta::TeleportPad {
+            id,
+            pos: crate::math::Point {
+                x: c.x as i32,
+                y: (feet + 1) * BOT_NAV_CELL as i32,
+            },
+        });
+}
+
+/// **D8 (T23.26C item 4, §A3 "teleport gates are routes"): a pistol in a sealed room
+/// the bot cannot dig into (its shovel taken) is reached through a pad pair.** With a pad
+/// in each room it gets the pistol; the control — the same rooms with no pads — never
+/// does, and **gives the goal up** (§A3: "or gives the goal up"): its goal leaves the
+/// item within `BOT_NAV_RETRY` of the start, where before T23.26 a sealed item was a goal
+/// it pressed at forever.
+#[test]
+fn a_sealed_room_is_reached_by_a_pad_and_given_up_without_one() {
+    use crate::constants::BOT_NAV_RETRY;
+    let run = |pads: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 40, 12);
+        let feet = oy + 9;
+        // Two rooms, ten cells of rock apart.
+        fill(&mut w, ox + 1, feet - 4, ox + 12, feet, false);
+        fill(&mut w, ox + 23, feet - 4, ox + 38, feet, false);
+        if pads {
+            pad_at(&mut w, 0, ox + 9, feet);
+            pad_at(&mut w, 1, ox + 26, feet);
+        }
+        seal(&mut w);
+        let _ = scenario(&mut w, (ox + 3, feet), (ox + 33, feet));
+        if let Some(p) = w.player_mut(1) {
+            let _ = p.inventory.take_slot(0);
+        }
+        let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+        let mut gave_up_at = None;
+        for t in 0..((SCENARIO_S * SIM_HZ as f32) as u32) {
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            if gave_up_at.is_none() && !matches!(bots[0].goal, Goal::Item(_)) {
+                gave_up_at = Some(t as f32 * SIM_DT);
+            }
+            if w.player(1).expect("bot").inventory.count_of(PISTOL) > 0 {
+                return (true, gave_up_at);
+            }
+        }
+        (false, gave_up_at)
+    };
+    let (got, _) = run(true);
+    assert!(
+        got,
+        "a bot with a pad in each room never reached the pistol"
+    );
+    let (got, gave_up) = run(false);
+    assert!(!got, "control: the sealed pistol was reached with no pad");
+    assert!(
+        gave_up.is_some_and(|t| t <= BOT_NAV_RETRY),
+        "control: with no way in, the bot kept the item as its goal ({gave_up:?})"
+    );
+}
+
+/// **D9 (T23.26C item 4): the jetpack is a tank.** A wall twelve cells tall, the pistol on
+/// top, the bot at its foot with a full tank — and once its route is under way the tank
+/// is drained to a fifth (a fight or a dodge burns fuel the plan never saw). It gets the
+/// pistol **without ever flying the tank dry** (airborne under what starting the pack
+/// takes): it stood, refilled and climbed. Control: the follower's tank rule planted out
+/// (`without_tank_rule`) — it presses on, and flies dry.
+#[test]
+fn a_climb_the_tank_cannot_finish_waits_for_a_refill() {
+    use crate::constants::{JETPACK_MAX_FUEL, JETPACK_MIN_FUEL_TO_ENGAGE};
+    let run = |rule: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 14, 20);
+        let feet = oy + 18;
+        fill(&mut w, ox + 1, oy + 1, ox + 12, feet, false);
+        fill(&mut w, ox + 7, oy + 6, ox + 12, feet, true);
+        seal(&mut w);
+        let _ = scenario(&mut w, (ox + 3, feet), (ox + 10, oy + 5));
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if !rule {
+            b = b.without_tank_rule();
+        }
+        let mut bots = vec![b];
+        let (mut drained, mut dry) = (false, 0u32);
+        for t in 0..((SCENARIO_S * SIM_HZ as f32) as u32) {
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            if !drained && bots[0].route.following() {
+                drained = true;
+                if let Some(p) = w.player_mut(1) {
+                    p.jetpack.fuel = JETPACK_MAX_FUEL * 0.2;
+                }
+            }
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            let p = w.player(1).expect("bot");
+            dry += u32::from(!p.body.grounded && p.jetpack.fuel < JETPACK_MIN_FUEL_TO_ENGAGE);
+            if p.inventory.count_of(PISTOL) > 0 {
+                return (true, dry, drained);
+            }
+        }
+        (false, dry, drained)
+    };
+    let (got, dry, drained) = run(true);
+    assert!(
+        drained,
+        "the fixture never drained the tank: no route was followed"
+    );
+    assert!(
+        got && dry == 0,
+        "with the tank rule: got the pistol {got}, {dry} ticks flying dry"
+    );
+    let (_, dry, _) = run(false);
+    assert!(
+        dry > 0,
+        "control: without the rule it never flew dry — the fixture"
+    );
+}

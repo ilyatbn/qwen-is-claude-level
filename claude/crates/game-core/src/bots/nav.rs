@@ -35,7 +35,8 @@ use crate::constants::{
     BOT_LOS_STEP, BOT_NAV_AIR_PX, BOT_NAV_CELL, BOT_NAV_DIG_S, BOT_NAV_FLOOR_BAND,
     BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS, COARSE_CELL, GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY,
     JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL,
-    JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, WALK_SPEED, WALL_W,
+    JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, TELEPORT_CHARGE, TELEPORT_COOLDOWN, WALK_SPEED,
+    WALL_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -94,6 +95,9 @@ pub(super) enum Move {
     Rest,
     /// Swing at the step's cell until it is air, then move into it.
     Dig,
+    /// T23.26C item 4: stand on a teleport pad until it fires, arriving at this step's
+    /// node — another pad's (`Search::pads`).
+    Teleport,
 }
 
 /// One step of a route: arrive at cell `(x, y)` (feet) by `how`.
@@ -334,6 +338,14 @@ pub(super) struct Search {
     /// goes past it (T23.26C: an arc over its head stayed outside `avoid` and ended
     /// behind it, 44 px off).
     pub side: Option<(Vec2, Vec2)>,
+    /// T23.26C item 4 (`docs/78` §A3: "teleport gates are routes"): the node standing on
+    /// each teleport pad, and what a ride from one to a chosen other costs. A pad sends
+    /// you to a **random** other pad (`world::teleport::destination`), so with `n` others
+    /// reaching a chosen one takes `n` charges and `n − 1` cooldowns on average — on a
+    /// two-pad map one charge, on a six-pad map ~28 s, over `BOT_NAV_COST_MAX`: there a
+    /// pad is not a route, which is the truth about a lottery.
+    pads: Vec<(i32, i32)>,
+    pad_s: f32,
 }
 
 impl Search {
@@ -361,7 +373,23 @@ impl Search {
             dig: true,
             avoid: None,
             side: None,
+            pads: Vec::new(),
+            pad_s: 0.0,
         };
+        let pads: Vec<(i32, i32)> = map
+            .meta
+            .teleport_pads
+            .iter()
+            .filter_map(|p| {
+                let centre = Vec2::new(p.pos.x as f32, p.pos.y as f32 - PLAYER_H * 0.5);
+                g.locate(centre).filter(|&(x, y)| g.stands(x, y))
+            })
+            .collect();
+        if pads.len() >= 2 {
+            let n = (pads.len() - 1) as f32;
+            s.pad_s = TELEPORT_CHARGE * n + TELEPORT_COOLDOWN * (n - 1.0);
+            s.pads = pads;
+        }
         let fuel = fuel.clamp(0.0, JETPACK_MAX_FUEL);
         let k = s.key(x, y, fuel);
         s.seen.insert(
@@ -443,6 +471,13 @@ impl Search {
             }
             edges.clear();
             successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
+            if self.pads.contains(&(x, y)) {
+                for &(px, py) in &self.pads {
+                    if (px, py) != (x, y) {
+                        edges.push((px, py, Move::Teleport, self.pad_s, rec.fuel));
+                    }
+                }
+            }
             for &(nx, ny, how, secs, fuel) in &edges {
                 let c = Grid::centre(nx, ny);
                 if self.avoid.is_some_and(|(p, r)| (c - p).len() < r)
