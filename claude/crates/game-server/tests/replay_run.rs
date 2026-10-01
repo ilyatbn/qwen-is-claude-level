@@ -234,6 +234,70 @@ fn a_recorded_round_replays_to_the_same_state_hash() {
     );
 }
 
+/// T23.27C F2 (`docs/78` §A1: "a recorded watched match replays identically"): **a round with spectators replays to
+/// the same state hash** — one seated in the lobby, one joining mid-round, the human loading the map as a client does.
+/// Falsified: `to_command` mapping `JoinSpectator` to a plain `Join` gives the replay a body the live round never had,
+/// and this goes red (T23.27C's task file has the output).
+#[test]
+fn a_watched_round_replays_to_the_same_state_hash() {
+    let s = Scratch::new("watched");
+    let mut room = Room::new(cfg());
+    room.start_recording(s.path(), "000000000001");
+    let spectate = |room: &mut Room, name: &str| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        room.apply_for_test(Command::Spectate {
+            name: name.into(),
+            reply: tx,
+        });
+        rx.blocking_recv().ok().flatten().expect("a spectator seat")
+    };
+    spectate(&mut room, "early");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        look: Default::default(),
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::StartWithBots(id));
+    let ticks = 900u32;
+    for t in 1..=ticks {
+        let buttons = if t % 90 < 45 {
+            button::RIGHT
+        } else {
+            button::LEFT
+        };
+        room.apply_for_test(Command::Input(id, vec![Input::new(t, buttons, 0)]));
+        if t == 300 {
+            spectate(&mut room, "late");
+        }
+        load(&mut room);
+        room.tick_inline(SIM_DT);
+    }
+    assert!(
+        room.spectator_count() == 2,
+        "the premise: two spectators seated"
+    );
+    let expected = room.world_for_test().state_hash();
+    let at = room.tick();
+    room.finish_recording();
+    let file = replay::read_file(&s.only_file()).expect("decode");
+    assert_eq!(
+        file.body
+            .iter()
+            .filter(|(_, c)| matches!(c, ReplayCommand::JoinSpectator { .. }))
+            .count(),
+        2,
+        "the premise: both spectators are in the file"
+    );
+    let mut replayed = resimulate(&file, at);
+    assert_eq!(
+        replayed.world_for_test().state_hash(),
+        expected,
+        "a watched round did not reproduce"
+    );
+}
+
 /// The test above proves nothing unless a *changed* round produces a *different*
 /// hash. Without this control, a `state_hash` that ignored most of the world
 /// would pass.

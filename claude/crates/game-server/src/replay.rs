@@ -12,6 +12,15 @@
 //! **Not recorded:** snapshots and outbound events. They are derived from the
 //! state the commands produce, and writing them would multiply the file size for
 //! no diagnostic value.
+//!
+//! **Known gap — round two and later carry no roster** (T23.27C F2, for the coordinator: fixing it is a format
+//! change). `Room::restart` opens a **new file** per round (`start_recording`) and writes no seat list into it, so
+//! only round one's file holds the `Join`s and `JoinSpectator`s that seated everyone. Replaying a later round's file
+//! seats nobody: it has no reserved spectator id, so `seat_bots` allocates different ids than the live round did, and
+//! the humans are missing altogether. A watched room never returns to a lobby, so after its first round it produces
+//! nothing but files of this kind; human rounds two and later have the same hole (`tests/replay.rs` checks only round
+//! two's *header*). Round one replays identically, spectators included
+//! (`tests/replay_run.rs::a_watched_round_replays_to_the_same_state_hash`). The fix is a roster preamble per file.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};

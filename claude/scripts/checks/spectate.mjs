@@ -15,8 +15,17 @@
  * 3. **Tab moves it to B; Shift+Tab back to A.** After Tab `watching` is a different living player B, the viewpoint is
  *    B's drawn place and the camera centre moved to B — and away from A, when the two stand far enough apart for that
  *    to mean anything (Tab is pressed until such a B comes up; the distance is logged). Shift+Tab returns to A.
- * 4. The spectate line names the watched player; no page errors. A screenshot of the view.
+ * 4. The spectate line names the watched player — **by name**, B's after Tab and A's after Shift+Tab (T23.27C F5a) —
+ *    and the HUD's health is the watched player's: B's snapshot health, and not A's when theirs differ (F5b; logged when
+ *    they do not, since then the leg cannot tell them apart). No page errors. A screenshot of the view.
  * 5. **The control:** ana's Tab, in the same match, toggles her scoreboard and steps no camera.
+ * 6. **Alive is the watched player's** (T23.27C F9): the watcher watches ana, ana is put below the map (`debugPlace`,
+ *    the void death), and while the camera lingers on her death the watcher's `death.meAlive` is false — it read its
+ *    own seat's row, which a spectator never has, and stayed true. The control: true while she was alive.
+ *
+ * **What the viewpoint leg (`dv <= VIEW_TOL`) can and cannot show** (T23.27C F5c): `viewAt` and `drawnPlayers` come
+ * from the same `sampled` map in one frame (`GameScene.update` → `viewer(sampled)` / `renderRemotes(sampleAt, sampled)`),
+ * so it is close to a tautology. The camera-centre leg (`dc <= CAMERA_TOL`) is the real evidence that the view moved.
  *
  *   node scripts/checks/spectate.mjs
  */
@@ -37,7 +46,8 @@ const stack = await startStack({
   port: await freePort(),
   label: 'spectate',
   // Nobody dies (`DEV_START_HEALTH`): the Tab order is the living players', and a death between presses would move it.
-  env: { BOT_COUNT: '3', FIXED_SEED: '4242', WEATHER: 'off', DEV_WARMUP_SECONDS: '2', ROUND_SECONDS: '300', DEV_START_HEALTH: '100000' },
+  // `DEV_PROBE` for leg 6's `debugPlace`.
+  env: { BOT_COUNT: '3', FIXED_SEED: '4242', WEATHER: 'off', DEV_WARMUP_SECONDS: '2', ROUND_SECONDS: '300', DEV_START_HEALTH: '100000', DEV_PROBE: '1' },
 })
 let watcher = null
 let ana = null
@@ -65,6 +75,8 @@ try {
   const anaBody = await ana.page.evaluate(() => window.__game.debug().player)
   console.log(`  watcher id ${d0.me}, snapshot ids ${JSON.stringify(d0.playerIds)}; ana id ${anaMe}`)
   if (d0.spectating !== true) fail('the watcher is not in spectate mode')
+  // T23.27C F5d: a `-1` would pass "not in its own snapshot" vacuously.
+  if (!(d0.me >= 0)) fail(`the watcher has no seat (me ${d0.me}) — the no-body leg below proves nothing`)
   if (d0.playerIds.includes(d0.me)) fail(`the spectator's id ${d0.me} is in its own snapshot — it has a body`)
   else ok(`no body: the spectator's id ${d0.me} is not among the ${d0.playerIds.length} players`)
   if (!d0.playerIds.includes(anaMe)) fail(`the control: ana's id ${anaMe} is not in the spectator's snapshot (not the same room?)`)
@@ -86,6 +98,9 @@ try {
       steps: d.watchSteps,
       line: document.getElementById('spectate-line')?.textContent ?? null,
       hud: document.getElementById('game-hud')?.textContent ?? '',
+      names: Object.fromEntries(d.scores.map((r) => [r.id, r.name])),
+      viewed: d.viewed,
+      rows: d.playerRows,
     }
   })
   const clampTo = (p, s) => ({
@@ -147,8 +162,18 @@ try {
     if (atB && fromA > CAMERA_TOL) ok(`Tab moved the camera to player ${B}, ${fromA.toFixed(0)} px from A's place`)
     else fail(`after Tab the camera is still ${fromA.toFixed(0)} px from A`)
     const name = b.s.line ?? ''
-    if (!name.includes('SPECTATING') || name.includes('waiting')) fail(`the spectate line does not name the watched player: ${JSON.stringify(name)}`)
-    else ok(`spectate line: ${JSON.stringify(name)}`)
+    const nameB = b.s.names[B]
+    if (!nameB || !name.includes(nameB)) fail(`the spectate line does not name the watched player ${B} (${JSON.stringify(nameB)}): ${JSON.stringify(name)}`)
+    else ok(`spectate line names B: ${JSON.stringify(name)}`)
+    // T23.27C F5b: the HUD's numbers are B's — its health and jet fuel are B's row, and (where A's differ) not A's.
+    // Fuel is in it because health alone is the cap for everyone here (`DEV_START_HEALTH`); the bots jet, ana stands.
+    const rB = b.s.rows[B]
+    const rA = b.s.rows[A]
+    const v = b.s.viewed
+    const same = (x, y) => x.health === y.health && x.fuel === y.fuel
+    if (!rB || !same(v, rB)) fail(`the HUD shows ${JSON.stringify(v)}, watched player ${B}'s row is ${JSON.stringify(rB)}`)
+    else if (!rA || same(rA, rB)) console.log(`  note: A and B both at ${JSON.stringify(rB)} — the HUD leg cannot tell them apart this run`)
+    else ok(`the HUD shows B's numbers ${JSON.stringify(rB)}, not A's ${JSON.stringify(rA)}`)
     // The scoreboard did not open on Tab in spectate (it is the held key's there).
     if (/\d+ \S+:-?\d+/.test(b.s.hud)) fail(`Tab opened the scoreboard in spectate: ${JSON.stringify(b.s.hud)}`)
     await watcher.shot('spectate-b')
@@ -158,6 +183,8 @@ try {
     const back = await read()
     if (back.watching !== A) fail(`${presses} Shift+Tab did not return to A (${A}): watching ${back.watching}`)
     else if (onPlayer(back, A, 'back')) ok(`Shift+Tab ×${presses} returned to player ${A}`)
+    const nameA = back.names[A]
+    if (!nameA || !(back.line ?? '').includes(nameA)) fail(`after Shift+Tab the line does not name A (${JSON.stringify(nameA)}): ${JSON.stringify(back.line)}`)
   }
 
   // ------------------------------------------------------------------ 5. the control: Tab in a match is the scoreboard
@@ -177,6 +204,28 @@ try {
   if (board(closed.hud) || !board(open.hud) || board(shut.hud)) fail(`the control: Tab did not toggle ana's scoreboard: ${JSON.stringify([closed.hud, open.hud, shut.hud])}`)
   else if (open.steps !== 0) fail(`the control: ana's Tab stepped a camera (${open.steps})`)
   else ok("control: in a match Tab toggles the scoreboard and steps nothing")
+
+  // ------------------------------------------------------------------ 6. alive is the watched player's (F9)
+  for (let i = 0; i < 6 && (await read()).watching !== anaMe; i++) {
+    await w.keyboard.press('Tab')
+    await sleep(300)
+  }
+  if ((await read()).watching !== anaMe) fail(`Tab never reached ana (${anaMe}) — leg 6 cannot run`)
+  else {
+    const before = await w.evaluate(() => window.__game.debug().death.meAlive)
+    const mapH = await ana.page.evaluate(() => window.__game.debug().mapH)
+    await ana.page.evaluate((h) => window.__game.debugPlace(300, h + 400), mapH)
+    const died = await w
+      .waitForFunction((id) => {
+        const d = window.__game.debug()
+        return d.watching === id && d.death.meAlive === false
+      }, anaMe, { timeout: 5000, polling: 'raf' })
+      .then(() => true)
+      .catch(() => false)
+    if (before !== true) fail(`the control: watching ana alive, the watcher's meAlive read ${before}`)
+    else if (!died) fail("ana died on camera and the watcher's meAlive never went false — it is not the watched player's")
+    else ok("alive follows the watched player: true while ana lived, false on her death")
+  }
 } catch (e) {
   fail(`spectate: ${e?.stack ?? e}`)
 }

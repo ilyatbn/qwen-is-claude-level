@@ -411,6 +411,81 @@ async fn quick_match_makes_a_new_lobby_rather_than_being_refused() {
     h.stack.shutdown_all(Duration::from_secs(2)).await;
 }
 
+/// T23.27C F3 (`docs/78` §A1: "a spectator may join at any time"): **a spectator joins a started match** — by code,
+/// the one verb that can name a started room — and is sent `welcome`, the map, the world on the ground (`item_spawn`)
+/// and, once it says `ready`, snapshots; its id is in no world's player list. The control, the same join unflagged,
+/// is refused `in_progress` (§E4 unchanged for players).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spectator_joins_a_started_match_and_a_player_is_refused() {
+    const WATCH: &[&str] = &[
+        "welcome",
+        "map_init",
+        "item_spawn",
+        "snapshot",
+        "join_error",
+    ];
+    let h = spawn_server().await;
+    let addr = h.addr;
+    let reg = h.stack.registry.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let (code, room_id, a) = host_and_start(addr, &ia);
+        // The control first: a player with the right code is refused.
+        let ib: Inbox = Arc::default();
+        let b = connect(addr, ib.clone());
+        b.emit(
+            "join_room",
+            serde_json::json!({ "name": "bo", "code": code }),
+        )
+        .expect("emit");
+        wait_for(&ib, "join_error", 1, "bo");
+        let refused = last(&ib, "join_error", "reason");
+        // The spectator, the same verb and code.
+        let iw: Inbox = Arc::default();
+        let w = common::connect(addr, WATCH, &iw);
+        w.emit(
+            "join_room",
+            serde_json::json!({ "name": "watcher", "code": code, "spectate": true }),
+        )
+        .expect("emit");
+        wait_for(&iw, "welcome", 1, "watcher");
+        wait_for(&iw, "map_init", 1, "watcher");
+        wait_for(&iw, "item_spawn", 1, "watcher (the ground)");
+        w.emit("ready", serde_json::json!({})).expect("emit");
+        wait_for(&iw, "snapshot", 1, "watcher (snapshots after ready)");
+        let id = last(&iw, "welcome", "player_id").as_u64().expect("an id") as u8;
+        (refused, id, room_id, count(&iw, "join_error"), a, b, w)
+    })
+    .await
+    .expect("blocking");
+    let (refused, id, room_id, watcher_errors, ..) = out;
+    assert_eq!(
+        refused.as_str(),
+        Some("in_progress"),
+        "the control: a player joined a started match"
+    );
+    assert_eq!(watcher_errors, 0, "the spectator was refused");
+    let handle = reg
+        .lock()
+        .expect("registry")
+        .get(room_id)
+        .map(|e| e.handle.clone())
+        .expect("the room");
+    let bodies = handle
+        .inspect(|w| w.players.iter().map(|p| p.id).collect::<Vec<_>>())
+        .await
+        .expect("a world");
+    assert!(
+        !bodies.contains(&id),
+        "the spectator {id} has a body: {bodies:?}"
+    );
+    assert!(
+        !bodies.is_empty(),
+        "the control: the world has nobody in it at all"
+    );
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
 /// **The seed is stated, not inherited** (T20.18/T20.20).
 #[test]
 fn the_fixture_states_its_seed() {

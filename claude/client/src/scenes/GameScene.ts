@@ -1907,8 +1907,7 @@ export class GameScene extends Phaser.Scene {
     // The overlay's visibility follows the **server's** alive flag rather than
     // the countdown reaching zero, so a respawn that lands early or late is
     // still what closes it (§B4).
-    const meNow = s.players.find((p) => p.id === this.me)
-    if (meNow) this.meAlive = flag(meNow.flags, FLAG.alive)
+    // (`meAlive` is read off the viewed row below — T23.27C F9: in spectate it is the watched player's.)
     this.serverDarkness = s.darkness
     if (s.darkness < this.observed.darknessMin) this.observed.darknessMin = s.darkness
     if (s.darkness > this.observed.darknessMax) this.observed.darknessMax = s.darkness
@@ -1938,6 +1937,10 @@ export class GameScene extends Phaser.Scene {
     if (this.spectating) this.watch.update(this.watchCandidates(s.players), now)
     const mine = s.players.find((p) => p.id === this.viewId())
     if (mine) {
+      // T23.27C F9: alive off the **same** row as every other number here. It came off `this.me`'s row alone, which a
+      // spectator never has, so it stayed `true` while `irradiated`, `health` and `vision` followed the watched player:
+      // the radiation feedback (`irradiated && meAlive`) went on through that player's death.
+      this.meAlive = flag(mine.flags, FLAG.alive)
       this.serverPos = { x: mine.x, y: mine.y }
       this.health = mine.health
       // §C26. **Already in fuel units.** `codec.ts` dequantises the wire byte
@@ -1982,6 +1985,19 @@ export class GameScene extends Phaser.Scene {
       // which cloud you are standing in. This replaced a hardcoded 1, which is
       // why heavy fog changed nothing in the real game for four milestones.
       this.vision = mine.vision
+    } else if (this.spectating) {
+      // T23.27C F9: nobody to watch (`viewId()` is -1: no one alive) — the bars go blank rather than keep the last
+      // player's numbers.
+      this.meAlive = false
+      this.health = 0
+      this.fuel = 0
+      this.battery = 0
+      this.heals = 0
+      this.batteries = 0
+      this.teleportCharge = 0
+      this.shieldOn = false
+      this.poisoned = false
+      this.irradiated = false
     }
     if (mine && this.predictor) {
       // T22.12C F5: before the reconcile replays, so a replayed input past the bell
@@ -4346,6 +4362,12 @@ export class GameScene extends Phaser.Scene {
             burning: v.burning,
           })),
           health: self.health,
+          /**
+           * T23.27C F5: every player's health and jet fuel as the last snapshot carried them, and the HUD's (`viewed`) —
+           * a spectate check's two ends.
+           */
+          playerRows: Object.fromEntries([...self.mirror.players].map(([id, p]) => [id, { health: p.health, fuel: p.jetpackFuel }])),
+          viewed: { health: self.health, fuel: self.fuel },
           scores: [...self.scores.entries()].map(([id, s]) => ({
             id,
             name: s.name,

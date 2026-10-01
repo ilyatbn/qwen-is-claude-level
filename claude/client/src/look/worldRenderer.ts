@@ -476,6 +476,11 @@ export class WorldRenderer implements SceneRenderer {
     this.placeTerrain(view)
     this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden)
     this.actorLayer.rimOn = this.desc.actorRim !== false
+    // **Two light lists, and it is a known disagreement** (T23.27C F10, filed for the coordinator): the terrain above
+    // draws `pickedLights` — culled to the view and capped to the tier's slots (`pickLights`: 12 gates + a muzzle + an
+    // impact against 10 on the low tier) — while the figures, gates and pickups here are lit by the **whole** held
+    // list. So past the cap a gate's orb can glow from a light whose rock is unlit. Kept as is until ruled on: one list
+    // (`this.pickedLights` here) is the other answer, and it changes how figures are lit near every evicted light.
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)

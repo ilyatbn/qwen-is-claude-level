@@ -7721,3 +7721,8 @@ Coordinator: `new_round` wire event unlisted in docs/40; partial pickups (`resol
 ## T23.27B — watch follow-ups (builder4, 2026-10-01)
 Stale wasm: cargo rebuilds by mtime only; a changed file with an older mtime is never compiled (reproduced: content 240, pkg 238). `wasm-build.mjs` now keeps a content manifest (`lib/wasm-inputs.mjs`) and freshens changed inputs; plant (241, old mtime) reaches `__game.constants()`; no-change rebuild compiles nothing. Watched room's results lines say the next round starts on its own (no "0 of 0"). `full-round`: ana had died and lost `DEV_LOADOUT` (shovel only) → void fallback.
 Done-when: plant test as above; `e2e --only spectate,space-sky,full-round` 3/3 (full-round: 18 deaths, 2 self). Gate shared with T23.27C (next), as the coordinator asked them done together. Coordinator: wire `wasm-inputs.test.mjs` into check.sh.
+
+## T23.27C — what the spectate review found (builder4, 2026-10-01)
+F1 one guard (`refuse_bodiless`) before every arm: a bodiless seat's body commands are neither applied nor recorded (Ready/Leave/ResyncMap pass). F2 watched-round replay test; round-two roster gap stated in `replay.rs`. F3 spectator join into a started match tested (`in_progress.rs`), dormant comments rewritten. F4 watched room starts on its own timeout. F5/F9 spectate legs (names, HUD = watched row, alive follows the watched player). F7 `MAX_SPECTATORS`. F8 docs. F10 stated at `worldRenderer.ts`.
+Plants red: F1 (two tests), F2 (hash), F4, F9 (spectate leg 6). Done-when: `cargo test -p game-server` ok, `e2e --only spectate` 1/1.
+Coordinator: F3(c) spectator quick match → started room?; F7 quick-match occupancy counting; F10 one light list?; F2 roster preamble (format change).

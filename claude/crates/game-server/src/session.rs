@@ -1560,22 +1560,12 @@ async fn seat(
     // and `map_init` is sent to everyone seated at the moment the match starts.
     // That is what makes the lobby a place rather than an overlay on a battle
     // already under way.
-    // **Dormant since §E4 for players** (T23.27: a spectator may join a running match, `docs/78` §A1, and takes
-    // this path — the catch-up below is live again for it).
-    // **Dormant since §E4, and deliberately so.**
-    //
-    // This block and the two below it (`item_spawn`, `tombstone_spawn`) are the
-    // mid-round joiner's catch-up: they are all gated on the room having a
-    // world, and a seating socket can now only seat into a lobby, where
-    // `inspect` answers `None`. So all three take the `None` arm every time and
-    // are unreachable in production.
-    //
-    // They are kept, not deleted. §E4 leaves reconnection open on purpose, and
-    // reconnection needs exactly these three — a player rejoining a match they
-    // were already in arrives to a damaged map, items already on the ground and
-    // graves already standing. `CLAUDE.md` asks that a mechanism wired to
-    // nothing be *stated* rather than discovered; this is the one case where
-    // dormant is the intended state, so it is stated here and in the journal.
+    // **Who reaches this with a map** (rewritten for T23.27C F3; it said "unreachable in production"). Since §E4 a
+    // *player* can only seat into a lobby, where there is no map. A **spectator** may join a running match
+    // (`docs/78` §A1) and takes this path, with the world catch-up and the inventory below: by code
+    // (`join_room` with `"spectate": true`) today — the client's own spectate join is quick match, which skips started
+    // rooms, so `make watch` always makes a room of its own. `in_progress.rs::a_spectator_joins_a_started_match_and_a_
+    // player_is_refused` is the path's test. Reconnection, which §E4 leaves open, would need the same three.
     //
     // `encode_map_init_at` itself is **not** dormant: `encode_map_init`
     // delegates to it, `room.rs`'s match-start broadcast calls it, and the
@@ -1707,8 +1697,9 @@ async fn seat(
     // no test can reach (§E4 refuses the join that would; `integration.rs`'s note).
     // What stays untested is this one call, which carries all three.
     //
-    // Dormant with the `map_init` catch-up above, for the same reason and kept for
-    // the same one: reconnection needs the world as it stands.
+    // Reached with the `map_init` catch-up above, by the same joiner: a spectator seated into a running match
+    // (T23.27C F3). A new world's own ground is sent by the room task to everyone seated when it is built
+    // (`room.rs::send_the_ground`, T23.28) — the same function, so the two lists cannot differ.
     //
     // **Gated on the snapshot `welcome` described, not on the room as it is now**
     // (T22.00F). `welcome` goes out before these reads, so a lobby started in
@@ -1861,9 +1852,11 @@ fn catch_up_item(
 /// announced as a crate, not as its contents** (T19.21, `catch_up_item`).
 ///
 /// **The graveyard** (§A39): without it a joiner's map has no graves on it while
-/// everyone else's does. The third of the dormant catch-ups — the block
-/// `a_mid_round_joiner_sees_the_graves_that_are_already_there` was written against
-/// before §E4 closed its path.
+/// everyone else's does. (`a_mid_round_joiner_sees_the_graves_that_are_already_there` was written against this
+/// before §E4 closed the path to players; a spectator's join reaches it again — T23.27C F3.)
+///
+/// **Two callers** (T23.28): `seat`, for one joiner, and `room.rs::send_the_ground`, for everyone seated when a
+/// world is built.
 ///
 /// **The weather already running** (T22.08D F4): `effect_start` is an event, so a
 /// socket that arrives mid-effect was never told a flare exists — it would draw no

@@ -380,6 +380,11 @@ pub const CYCLE_TRANSITION: f32 = 8.0;
 // ---------------------------------------------------------------------------
 
 pub const MAX_PLAYERS: usize = 6;
+/// T23.27C F7 (`docs/78` §A1): spectators a room seats beside its players. **Basis:** a spectator is a socket sent
+/// the same 20 Hz snapshot stream a player is, and a room's send cost was budgeted at `MAX_PLAYERS` sockets
+/// (`game-server/tests/capacity.rs`); as many watchers as players at most doubles it. Without a cap the only limit was
+/// the room's 256 `u8` ids — enough watchers made every later `Join` "full" and stopped `seat_bots`.
+pub const MAX_SPECTATORS: usize = MAX_PLAYERS;
 pub const WARMUP_SECONDS: f32 = 10.0;
 pub const ROUND_SECONDS: f32 = 240.0;
 /// The bounds a **private lobby's** host may set the round length between, and
