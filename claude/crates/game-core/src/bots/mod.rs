@@ -20,6 +20,8 @@ mod dodge;
 mod explore;
 #[cfg(test)]
 mod fights;
+#[cfg(test)]
+mod meet;
 pub mod movement;
 mod nav;
 mod open;
@@ -319,6 +321,15 @@ pub struct Bot {
     /// Tests only: T23.26E's open-ground-first planted out — a fight routes with dig
     /// steps from the start, as before (`with_dig_first`).
     dig_first: bool,
+    /// T23.26F (`docs/78` §A6): the openness field this bot steers by (`open.rs`), whether
+    /// its wander target is the way out of the cave it is in, and the test-only plant of
+    /// that escape (`without_escape`).
+    open: open::Openness,
+    escaping: bool,
+    escape_off: bool,
+    /// Tests only: T23.26F's drift to the middle planted out (`without_converge`).
+    converge_off: bool,
+    escape_to: Option<Vec2>,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -371,6 +382,11 @@ impl Bot {
             pad_ride: None,
             pad_ride_at: f32::NEG_INFINITY,
             prev_pos: Vec2::ZERO,
+            open: open::Openness::default(),
+            escaping: false,
+            escape_off: false,
+            converge_off: false,
+            escape_to: None,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -403,6 +419,20 @@ impl Bot {
     #[cfg(test)]
     pub(crate) fn with_dig_first(mut self) -> Self {
         self.dig_first = true;
+        self
+    }
+
+    /// T23.26F: the same bot exploring from inside a cave rather than leaving it first.
+    #[cfg(test)]
+    pub(crate) fn without_escape(mut self) -> Self {
+        self.escape_off = true;
+        self
+    }
+
+    /// T23.26F: the same bot exploring nearest-first, with no drift to the middle.
+    #[cfg(test)]
+    pub(crate) fn without_converge(mut self) -> Self {
+        self.converge_off = true;
         self
     }
 
@@ -748,6 +778,11 @@ impl Bot {
             Goal::Item(_) => route::item_target(aim_at),
             // T23.26E step 5: onto the pad, not near it.
             Goal::Wander if self.pad_ride.is_some() => route::item_target(aim_at),
+            // T23.26F: the way out of a cave is reached on the spot — a wander target's
+            // quarter-cell slack ended the route four cells short, still inside the mouth.
+            Goal::Wander if self.escaping && self.wander_to == self.escape_to => {
+                route::spot_target(aim_at)
+            }
             Goal::Wander => route::wander_target(aim_at),
             // An enemy with rock between: route to where the fight can be seen — a node
             // within the weapon's hold with a clear line. The shot rule still fires
@@ -999,6 +1034,16 @@ impl Bot {
             && world
                 .player(self.player)
                 .is_some_and(|me| route::navigates(world, me));
+        // T23.26F (`docs/78` §A6): **out of the cave first.** A bot not in the open — the
+        // volume rule, `open.rs` — with nothing to fight or fetch goes to the nearest open
+        // ground through the air (the cave's mouth) before it explores. It still shops
+        // there: refusing items while closed in (the task's "before shopping") measured
+        // kills 11.6 → 8.1 and pickups 65 → 55 a round — the buried slots are in caves.
+        if routes {
+            self.open.refresh(world);
+        }
+        let closed_in =
+            routes && !self.escape_off && !self.open.open_at(&nav::Grid::new(&world.map), pos);
         // T22.03B: **a suit running flat is the one errand that beats a fight** — an
         // unsealed suit loses `RADIATION_DPS` for the rest of the round, and the bot
         // that ignored it was radiation's commonest victim (0.54 deaths a bot a round,
@@ -1022,7 +1067,15 @@ impl Bot {
                 // cannot see. Without them a bot walked the width of the map
                 // toward an item on the far side of a mountain, which is the
                 // behaviour exploration is supposed to replace.
-                if d > BOT_ENGAGE_RANGE {
+                // T23.26F (`docs/78` §A6): **an unarmed bot sees a gun as far as a person
+                // does by day** (`BOT_ARM_SIGHT`) — the gun is what it needs, and a gun
+                // 600 px off over open ground beats closing on someone with a shovel. In
+                // the open only: one buried in a cave is seen no further than before.
+                let far_gun = !armed
+                    && d <= crate::constants::BOT_ARM_SIGHT
+                    && arms::ranged(it.item)
+                    && (!routes || self.open.open_at(&nav::Grid::new(&world.map), it.pos));
+                if d > BOT_ENGAGE_RANGE && !far_gun {
                     continue;
                 }
                 if routes {
@@ -1082,7 +1135,16 @@ impl Bot {
                 //
                 // Fleeing is exempt: a hurt bot running away is not shopping, and
                 // an unarmed one has more reason to run than most.
-                best = None;
+                //
+                // T23.26F (`docs/78` §A6): **melee is the last resort** — an unarmed bot
+                // swings only when cornered at point blank (an enemy inside the shovel's
+                // reach) or when no ranged weapon lies anywhere on the map to go and get.
+                let reach = arms::band(crate::items::registry::SHOVEL).unwrap_or(0.0);
+                let cornered = best.is_some_and(|(d, _)| d <= reach);
+                let gun_anywhere = world.items.iter().any(|it| arms::ranged(it.item));
+                if gun_anywhere && !cornered {
+                    best = None;
+                }
             }
         }
 
@@ -1114,7 +1176,10 @@ impl Bot {
                 });
                 if !near {
                     let spot = if routes {
-                        open_spot(&nav::Grid::new(&world.map), at)
+                        {
+                            let g = nav::Grid::new(&world.map);
+                            open_spot(&g, Some(&self.open), at).or_else(|| open_spot(&g, None, at))
+                        }
                     } else {
                         Some(at)
                     };
@@ -1129,7 +1194,10 @@ impl Bot {
             let last = self.believed.filter(|_| armed && !flee && !self.chase_off);
             if let Some(at) = last {
                 let spot = if routes {
-                    open_spot(&nav::Grid::new(&world.map), at)
+                    {
+                        let g = nav::Grid::new(&world.map);
+                        open_spot(&g, Some(&self.open), at).or_else(|| open_spot(&g, None, at))
+                    }
                 } else {
                     Some(at)
                 };
@@ -1138,6 +1206,25 @@ impl Bot {
                     self.wander_for = 0.0;
                 }
             }
+        }
+        // T23.26F: the way out of the cave replaces the wander target once, when the bot
+        // finds itself closed in; out in the open it explores again. Sealed in (no air way
+        // out within `BOT_OPEN_SEARCH`), exploration's own route digs.
+        if !closed_in || self.goal != Goal::Wander {
+            self.escaping = false;
+        } else if !self.escaping && self.pad_ride.is_none() {
+            let grid = nav::Grid::new(&world.map);
+            // The same mouth again (arrived and still closed in): explore from here.
+            let mouth = self
+                .open
+                .nearest_ground(&grid, pos)
+                .map(|(x, y)| nav::Grid::centre(x, y));
+            if mouth.is_some() && mouth != self.escape_to {
+                self.wander_to = mouth;
+                self.wander_for = 0.0;
+                self.escape_to = mouth;
+            }
+            self.escaping = true;
         }
         // T23.26C (`docs/78` §A3): **a meteor shower changes no goal.** T23.26 C sent
         // every bot under rock for the whole shower and the owner watched them stand in
@@ -1166,11 +1253,27 @@ impl Bot {
             // Arrived, or gave up. Both mark the cell: "seen" means "been there
             // or tried", because a cell whose middle is buried in rock can never
             // be entered and a bot that insists on it stops exploring.
+            // T23.26F: the way out of a cave is usually in the cell the bot is in, so it
+            // is arrived at only on its node.
+            let out_to = self.escape_to.filter(|_| self.escaping);
             let arrived = self.wander_to.is_some_and(|w| {
-                cov.cell_of(w) == (cx, cy)
-                    || (w - pos).len() < BOT_WANDER_ARRIVED
-                    || (routes && self.route.finished(&route::wander_target(w)))
+                if out_to == Some(w) {
+                    // On the node itself: a cell short is still in the cave (measured — a
+                    // cell's slack arrived one cell inside the mouth, and re-planned there).
+                    let g = nav::Grid::new(&world.map);
+                    g.locate(pos) == g.locate(w)
+                } else {
+                    cov.cell_of(w) == (cx, cy)
+                        || (w - pos).len() < BOT_WANDER_ARRIVED
+                        || (routes && self.route.finished(&route::wander_target(w)))
+                }
             });
+            // At the mouth and still closed in (it moved, or the body settled a cell off):
+            // look for the way out again from here.
+            let heading_out = out_to.is_some() && out_to == self.wander_to;
+            if arrived && heading_out {
+                self.escaping = false;
+            }
             // T22.03D: a cell in a space keep-out (a permanent vortex's disc, the
             // hole's reach) is one `space::steer` will not approach, so the bot sat
             // out `BOT_WANDER_GIVE_UP` against whatever rock it was on — "seen" at once.
@@ -1179,9 +1282,14 @@ impl Bot {
             // T23.26: a route is given the time it was priced at (twice over, the same
             // slack a step gets), and a target the planner refused is given up at once.
             let refused = routes
-                && self
-                    .wander_to
-                    .is_some_and(|w| self.route.refused(&route::wander_target(w), now));
+                && self.wander_to.is_some_and(|w| {
+                    let t = if heading_out {
+                        route::spot_target(w)
+                    } else {
+                        route::wander_target(w)
+                    };
+                    self.route.refused(&t, now)
+                });
             let patience = BOT_WANDER_GIVE_UP.max(2.0 * self.route.planned_s());
             let gave_up = self.wander_for > patience || barred || refused;
             if self.wander_to.is_some() && !riding {
@@ -1215,13 +1323,33 @@ impl Bot {
                 self.wander_to = if routes && !self.route.open_ground_off {
                     let grid = nav::Grid::new(&world.map);
                     let mut found = None;
-                    for (i, c) in cov.unseen_by_distance(pos) {
-                        match open_spot(&grid, c) {
-                            Some(p) => {
-                                found = Some(p);
-                                break;
+                    let mut unseen = cov.unseen_by_distance(pos);
+                    // T23.26F (`docs/78` §A6, *"find each other"*): **drift toward the
+                    // middle of the open ground** — each cell's distance plus
+                    // `BOT_CONVERGE_WEIGHT` × its distance from there, so bots work inward
+                    // and cross where everybody's tours do, not round the map's rim.
+                    if let Some(mid) = self.open.centre().filter(|_| !self.converge_off) {
+                        let k = crate::constants::BOT_CONVERGE_WEIGHT;
+                        let key = |c: Vec2| (c - pos).len() + k * (c - mid).len();
+                        unseen.sort_by(|a, b| key(a.1).total_cmp(&key(b.1)).then(a.0.cmp(&b.0)));
+                    }
+                    // T23.26F: open ground by the volume rule first; where no unseen cell
+                    // has any (a map of caves), T23.26E's unenclosed standing ground.
+                    for &(_, c) in &unseen {
+                        if let Some(p) = open_spot(&grid, Some(&self.open), c) {
+                            found = Some(p);
+                            break;
+                        }
+                    }
+                    if found.is_none() {
+                        for (i, c) in unseen {
+                            match open_spot(&grid, None, c) {
+                                Some(p) => {
+                                    found = Some(p);
+                                    break;
+                                }
+                                None => cov.mark(i),
                             }
-                            None => cov.mark(i),
                         }
                     }
                     found
@@ -1339,10 +1467,11 @@ fn pad_near(world: &World, id: PlayerId, pos: Vec2, now: f32) -> Option<Vec2> {
         .min_by(|a, b| (*a - pos).len().total_cmp(&(*b - pos).len()))
 }
 
-/// T23.26E step 4: the open ground in the exploration cell round `centre` — the standing,
-/// unenclosed node nearest it, in rings out to the cell's edge — as a body centre; `None`
-/// for a cell that is rock, tunnel or air with no floor.
-fn open_spot(grid: &nav::Grid, centre: Vec2) -> Option<Vec2> {
+/// T23.26E step 4: the open ground in the exploration cell round `centre` — the standing
+/// node nearest it, in rings out to the cell's edge — as a body centre; `None` for a cell
+/// that is rock, cave or air with no floor. T23.26F: open by the volume rule
+/// (`open::Openness::ground`), not only unenclosed round the head.
+fn open_spot(grid: &nav::Grid, open: Option<&open::Openness>, centre: Vec2) -> Option<Vec2> {
     let cell = crate::constants::BOT_NAV_CELL;
     let (cx, cy) = (
         (centre.x / cell).floor() as i32,
@@ -1356,7 +1485,8 @@ fn open_spot(grid: &nav::Grid, centre: Vec2) -> Option<Vec2> {
                     continue;
                 }
                 let (x, y) = (cx + dx, cy + dy);
-                if grid.stands(x, y) && !grid.enclosed(x, y) {
+                let ground = open.map_or(grid.stands(x, y), |o| o.ground(grid, x, y));
+                if ground && !grid.enclosed(x, y) {
                     return Some(nav::Grid::centre(x, y));
                 }
             }

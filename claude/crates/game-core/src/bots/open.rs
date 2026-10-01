@@ -38,6 +38,9 @@ pub(super) struct Openness {
     roof: Vec<i32>,
     /// The carve counter and round time of the last build; `None` never built.
     built: Option<(u32, f32)>,
+    /// T23.26F: the middle of the map's open ground — the mean of its open standing
+    /// nodes' centres, `None` with none. Where bots drift to meet (`Bot::choose_goal`).
+    centre: Option<Vec2>,
 }
 
 impl Openness {
@@ -83,6 +86,24 @@ impl Openness {
                 self.air[i] = self.air[i - w] + row;
             }
         }
+        let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0u32);
+        for y in 0..ny {
+            for x in 0..nx {
+                if self.ground(grid, x, y) {
+                    let c = Grid::centre(x, y);
+                    sx += f64::from(c.x);
+                    sy += f64::from(c.y);
+                    n += 1;
+                }
+            }
+        }
+        self.centre =
+            (n > 0).then(|| Vec2::new((sx / f64::from(n)) as f32, (sy / f64::from(n)) as f32));
+    }
+
+    /// T23.26F: the middle of the open ground (see the field).
+    pub(super) fn centre(&self) -> Option<Vec2> {
+        self.centre
     }
 
     /// Air cells and all cells in the box, clamped to the map.
@@ -113,7 +134,6 @@ impl Openness {
     }
 
     /// Open **ground**: a node a body stands on, in the open.
-    #[allow(dead_code)] // T23.26F step 1 measures; step 2 steers by it.
     pub(super) fn ground(&self, grid: &Grid, x: i32, y: i32) -> bool {
         grid.stands(x, y) && self.open(x, y)
     }
@@ -128,7 +148,6 @@ impl Openness {
     /// answer is the mouth of the cave the body is in, not the open ground on the far side
     /// of its wall. How to get there (climb, jet, dig a lip) is the planner's. `None` when
     /// no open ground is reachable through air within the count — sealed in.
-    #[allow(dead_code)] // T23.26F step 1 measures; step 2 steers by it.
     pub(super) fn nearest_ground(&self, grid: &Grid, from: Vec2) -> Option<(i32, i32)> {
         let start = grid.locate(from)?;
         if self.ground(grid, start.0, start.1) {

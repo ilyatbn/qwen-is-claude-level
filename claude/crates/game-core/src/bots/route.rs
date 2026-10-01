@@ -83,6 +83,21 @@ pub(super) fn item_target(at: Vec2) -> Target {
     }
 }
 
+/// T23.26F: a node to stand on exactly — the way out of a cave (`Bot::choose_goal`).
+pub(super) fn spot_target(at: Vec2) -> Target {
+    let (x, y) = cell_of(at);
+    Target {
+        want: Want::Near {
+            x,
+            y,
+            r: 0,
+            sight: None,
+        },
+        at,
+        dig: true,
+    }
+}
+
 /// A wander point: anywhere within `BOT_WANDER_ARRIVED` of it.
 pub(super) fn wander_target(at: Vec2) -> Target {
     let (x, y) = cell_of(at);

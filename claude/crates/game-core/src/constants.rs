@@ -4371,6 +4371,18 @@ pub const BOT_PAD_RIDE_S: f32 = BOT_WANDER_GIVE_UP + TELEPORT_CHARGE;
 /// goes to where it heard one (`Bot::choose_goal`). Hearing, not seeing: §A5's fairness —
 /// a bot knows only what a player at its seat could.
 pub const BOT_HEAR_RANGE: f32 = FOV_DAY;
+/// T23.26F (`docs/78` §A6, *"stop shoveling"*): how far an **unarmed** bot sees a ranged
+/// weapon on the ground, px — a person's day sight (`FOV_DAY`), past `BOT_ENGAGE_RANGE`:
+/// the one errand that beats closing on an enemy with the shovel is going to get a gun,
+/// and a human sees one that far.
+pub const BOT_ARM_SIGHT: f32 = FOV_DAY;
+/// T23.26F (`docs/78` §A6, *"find each other"*): how much an exploration cell's distance
+/// from the middle of the open ground weighs against its distance from the bot, when the
+/// next cell to explore is chosen. Measured over 96 seeds (`bot_terrain_report`'s round):
+/// 0 → engaged 13 %, kills 11.8 a round; 0.5 → 14 %, 12.2; 1.0 → 15 %, 12.1 but time
+/// closed in 19.7 → 21.3 % (the middle is reached through tunnels). 0.5 takes the gain
+/// without that cost.
+pub const BOT_CONVERGE_WEIGHT: f32 = 0.5;
 /// T23.26F (`docs/78` §A6, `bots/open.rs`): **open ground** is a nav cell whose box —
 /// `BOT_OPEN_REACH` cells either side, `BOT_OPEN_HEAD` rows above the feet — is at least
 /// `BOT_OPEN_AIR_SHARE` air, or `BOT_OPEN_SKY_SHARE` air with the sky straight above it.

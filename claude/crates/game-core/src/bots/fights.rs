@@ -213,7 +213,10 @@ fn a_bot_goes_to_a_shot_it_hears() {
         seal(&mut w);
         let off = ((BOT_HEAR_RANGE * 0.85) / crate::constants::BOT_NAV_CELL) as i32;
         let (_, enemy) = duel(&mut w, (ox + 3, feet), (ox + 3 + off, feet));
-        let mut b = Bot::new(1, SEED, 0, 0.6);
+        // T23.26F: exploration nearest first in both arms — the drift to the middle of the
+        // open ground walks a deaf/forgetful bot toward the fight too, and this is about
+        // what it heard or saw.
+        let mut b = Bot::new(1, SEED, 0, 0.6).without_converge();
         if !chase {
             b = b.without_chase();
         }
@@ -271,7 +274,10 @@ fn a_lost_enemy_is_chased_to_where_it_was_seen() {
         let seen = (ox + 45 + 18, feet);
         let (_, enemy) = duel(&mut w, (ox + 45, feet), seen);
         let gone = Vec2::new(enemy.x, enemy.y + 4.0 * BOT_ENGAGE_RANGE);
-        let mut b = Bot::new(1, SEED, 0, 0.6);
+        // T23.26F: exploration nearest first in both arms — the drift to the middle of the
+        // open ground walks a deaf/forgetful bot toward the fight too, and this is about
+        // what it heard or saw.
+        let mut b = Bot::new(1, SEED, 0, 0.6).without_converge();
         if !chase {
             b = b.without_chase();
         }

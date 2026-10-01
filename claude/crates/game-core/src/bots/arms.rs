@@ -229,6 +229,11 @@ pub fn weapon_kind(item: ItemId) -> Option<usize> {
     })
 }
 
+/// T23.26F: a weapon that is not melee — what an unarmed bot goes to get.
+pub(super) fn ranged(item: ItemId) -> bool {
+    weapon_kind(item).is_some_and(|k| k != 0)
+}
+
 /// T23.26E: **how far a held weapon hits from**, px — a swing's `effective_reach`, a
 /// stream's [`stream_reach`], a round's `range`; a weapon with no stated range (thrown and
 /// launched rounds) is good to the sight range, `BOT_ENGAGE_RANGE`. `None` for what is not
@@ -560,6 +565,13 @@ impl Bot {
         // further: 55.6 % of fighting ticks with the shovel in hand while a loaded gun
         // sat in the bag (measured, 8 seeds).
         let mut best_ranged: Option<(f32, u8)> = None;
+        // T23.26F (`docs/78` §A6, *"stop shoveling"*): and any firable ranged weapon at all,
+        // marked down or not, beats the shovel **out of its reach**. A flamethrower or a
+        // grenade out of its band scored the shovel's own out-of-reach mark-down and lost the
+        // tie to slot 0: 36.6 % of engaged ticks had the shovel in hand with a ranged weapon
+        // firable (measured, 8 seeds). The swing is for point blank.
+        let mut any_ranged: Option<(f32, u8)> = None;
+        let mut melee_reach = 0.0f32;
         for slot in 0..INVENTORY_SLOTS as u8 {
             let Some(stack) = me.inventory.slot(slot) else {
                 continue;
@@ -624,13 +636,19 @@ impl Bot {
                 best = Some((score, slot));
             }
             // In its band: ranged, and nothing above marked it down.
+            if let Delivery::Melee { reach, .. } = w.delivery {
+                melee_reach = melee_reach.max(crate::weapons::melee::effective_reach(reach));
+            } else if any_ranged.is_none_or(|(bs, _)| score > bs) {
+                any_ranged = Some((score, slot));
+            }
             let in_band = !matches!(w.delivery, Delivery::Melee { .. }) && score >= dps;
             if in_band && best_ranged.is_none_or(|(bs, _)| score > bs) {
                 best_ranged = Some((score, slot));
             }
         }
         // T23.26D item 2: a ranged weapon that can fire from here beats any swing.
-        let best = best_ranged.or(best);
+        let point_blank = dist <= melee_reach;
+        let best = best_ranged.or(any_ranged.filter(|_| !point_blank)).or(best);
         // Only ask for a change: `select_slot` on the slot already held is a
         // no-op, but reporting it every tick makes the intent unreadable.
         best.and_then(|(_, slot)| (slot != me.inventory.selected()).then_some(slot))
