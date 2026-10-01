@@ -32,10 +32,10 @@ use std::collections::{BinaryHeap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::constants::{
-    BOT_LOS_STEP, BOT_NAV_AIR_PX, BOT_NAV_CELL, BOT_NAV_DIG_S, BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS,
-    COARSE_CELL, GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY, JETPACK_MAX_FUEL, JETPACK_MAX_SPEED,
-    JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL, JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H,
-    WALK_SPEED, WALL_W,
+    BOT_LOS_STEP, BOT_NAV_AIR_PX, BOT_NAV_CELL, BOT_NAV_DIG_S, BOT_NAV_FLOOR_BAND,
+    BOT_NAV_FUEL_STEP, BOT_NAV_HOP_ROWS, COARSE_CELL, GRAVITY, JETPACK_DRAIN, JETPACK_HOLD_DELAY,
+    JETPACK_MAX_FUEL, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, JETPACK_REFILL,
+    JETPACK_REFILL_DELAY, JUMP_VELOCITY, PLAYER_H, WALK_SPEED, WALL_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -120,6 +120,8 @@ pub(super) enum Want {
     },
     /// A standing node with `above` cells of rock over its head; with `hide`, one with
     /// no clear line to that point as well (§A2's cover).
+    // T23.26 step 5 (cover) is its caller; the planner and its tests have it already.
+    #[allow(dead_code)]
     Cover { above: i32, hide: Option<Vec2> },
 }
 
@@ -150,14 +152,15 @@ impl<'a> Grid<'a> {
             + c.count_at(cx + 1, cy + 1) as u32
     }
 
-    /// Would the carve refuse every pixel of this cell's dig? The side walls
-    /// (`carve.rs` clamps to `WALL_W`), the bottom `PLAYER_H` (no bedrock: a hole there
-    /// is a hole into the void), and the pads' and platforms' footings (§C5, T21.11).
+    /// Would the carve refuse every pixel of this cell's dig — or should a bot never ask?
+    /// The side walls (`carve.rs` clamps to `WALL_W`), the bottom `BOT_NAV_FLOOR_BAND`
+    /// (no bedrock: a hole there is a hole into the void), and the pads' and platforms'
+    /// footings (§C5, T21.11).
     fn hard(&self, x: i32, y: i32) -> bool {
         let (w, h) = (self.map.mask.w as i32, self.map.mask.h as i32);
         let (x0, y0) = (x * CELL, y * CELL);
         let (x1, y1) = (x0 + CELL - 1, y0 + CELL - 1);
-        if x0 < WALL_W as i32 || x1 >= w - WALL_W as i32 || y1 >= h - PLAYER_H as i32 {
+        if x0 < WALL_W as i32 || x1 >= w - WALL_W as i32 || y1 >= h - BOT_NAV_FLOOR_BAND as i32 {
             return true;
         }
         let meta = &self.map.meta;
@@ -201,6 +204,15 @@ impl<'a> Grid<'a> {
 
     pub fn stands(&self, x: i32, y: i32) -> bool {
         self.node(x, y) && self.solid(x, y + 1)
+    }
+
+    /// Would a body at `pos` be over the void — no rock anywhere under its feet before
+    /// the map's bottom? The planner's own rule (`floored`), for the walking model's
+    /// greedy step to share (T23.26).
+    pub fn over_void(&self, pos: Vec2) -> bool {
+        let x = (pos.x / BOT_NAV_CELL).floor() as i32;
+        let y = ((pos.y + PLAYER_H * 0.5 - 1.0) / BOT_NAV_CELL).floor() as i32;
+        x >= 0 && x < self.nx && !self.floored(x, y - 1)
     }
 
     /// Is there ground somewhere under `(x, y)` before the bottom? A fall into a
@@ -358,6 +370,7 @@ impl Search {
     }
 
     /// Nodes expanded so far.
+    #[cfg(test)]
     pub fn expanded(&self) -> u32 {
         self.expanded
     }
@@ -522,7 +535,12 @@ fn successors(
     let jet = |secs: f32, from_ground: bool| -> Option<f32> {
         let t = secs + if from_ground { JETPACK_HOLD_DELAY } else { 0.0 };
         let drain = secs * JETPACK_DRAIN;
+        // Never plan a jet that leaves less than starting the pack takes: what is left is
+        // the brake a fall needs (`Bot::think`), and a plan that flies the tank dry over
+        // a drop is the void death it was meant to avoid (measured: most routed void
+        // deaths were bots at 0.0–0.5 s of fuel).
         let need = drain
+            + JETPACK_MIN_FUEL_TO_ENGAGE
             + if from_ground {
                 JETPACK_MIN_FUEL_TO_ENGAGE
             } else {
@@ -605,6 +623,14 @@ fn successors(
             JETPACK_REFILL_DELAY + (JETPACK_MAX_FUEL - fuel) / JETPACK_REFILL,
             JETPACK_MAX_FUEL,
         ));
+    }
+    // **Never over the void.** A node in the air with no floor anywhere under it is a
+    // fall out of the map the moment anything goes wrong — the tank, a blast, the
+    // brake — and most of the void deaths routes added were exactly that (bots crossing
+    // bottomless gaps on the pack). Such a node is not a step into it.
+    // A node already over the void may move through more of it: that is the way out.
+    if stands || g.floored(x, y) {
+        out.retain(|&(nx, ny, ..)| g.solid(nx, ny + 1) || g.floored(nx, ny));
     }
 }
 

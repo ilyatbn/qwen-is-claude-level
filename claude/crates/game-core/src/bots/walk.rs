@@ -143,6 +143,23 @@ impl Bot {
             }
         }
 
+        // T23.26: **never walk off into the void.** The planner refuses a step over a
+        // column with no floor under it; the greedy step, which drives while a search
+        // runs and after one fails, shares the rule (`nav::Grid::over_void`). Every void
+        // death in the first routed population was a bot on the greedy step (19 of 19,
+        // none hit), and routes leave bots near the map's low edges more often.
+        if buttons & (button::LEFT | button::RIGHT) != 0 && super::route::navigates(world, me) {
+            let dir = if buttons & button::RIGHT != 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            let ahead = Vec2::new(pos.x + dir * crate::constants::BOT_NAV_CELL, pos.y);
+            if super::nav::Grid::new(&world.map).over_void(ahead) {
+                buttons &= !(button::LEFT | button::RIGHT);
+            }
+        }
+
         // T22.03I F4: a winged bot that gave its way up hovers instead of pressing.
         if winged && now < self.sweep_refused_until {
             buttons &= !(button::LEFT | button::RIGHT);

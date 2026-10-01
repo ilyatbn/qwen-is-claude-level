@@ -17,19 +17,19 @@ use rand_chacha::ChaCha8Rng;
 
 mod arms;
 mod explore;
-// T23.26 step 2: the planner lands first, with its own tests; step 4's follower is
-// its production caller, and this allow goes with that commit.
-#[allow(dead_code)]
 mod nav;
+mod route;
+#[cfg(test)]
+mod scenarios;
 mod space;
 mod walk;
 
 use explore::Coverage;
 
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_ENGAGE_RANGE, BOT_FLEE_HEALTH, BOT_HAZARD_CLEARANCE,
-    BOT_SUIT_SHOP_BELOW, BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP, FLAME_RADIUS, INVENTORY_SLOTS,
-    PICKUP_RADIUS,
+    GravityMode, BATTERY_MAX, BOT_ENGAGE_RANGE, BOT_FALL_BRAKE, BOT_FLEE_HEALTH,
+    BOT_HAZARD_CLEARANCE, BOT_SUIT_SHOP_BELOW, BOT_WANDER_ARRIVED, BOT_WANDER_GIVE_UP,
+    FALL_SAFE_SPEED, FLAME_RADIUS, INVENTORY_SLOTS, PICKUP_RADIUS,
 };
 
 use crate::items::registry::{def, ItemKind};
@@ -128,6 +128,13 @@ pub struct BotStats {
     /// cell, or a route refused) — the goal reach rate's two ends.
     pub wander_arrived: u32,
     pub wander_gave_up: u32,
+    /// T23.26: route searches started, ticks a route drove the bot, and trigger pulls
+    /// that were a dig step's swing rather than a shot.
+    pub nav_plans: u32,
+    pub ticks_routed: u32,
+    pub dig_swings: u32,
+    /// T23.26: swings at a lip a route step stuck on (the follower's stuck response).
+    pub lip_swings: u32,
 }
 
 /// What one bot did on one [`drive`] tick — what a measuring caller needs and the
@@ -231,6 +238,11 @@ pub struct Bot {
     /// body was when it opened (`count_pressing_still`).
     press_window: f32,
     press_from: Vec2,
+    /// T23.26 (`docs/78` §A2): the planned route to the goal and how far along it.
+    route: route::Route,
+    /// Tests only: the route planted out, so a scenario's control is the greedy walking
+    /// model alone (`without_routes`). Never set in a round.
+    routes_off: bool,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
@@ -262,6 +274,8 @@ impl Bot {
             want_select: None,
             press_window: 0.0,
             press_from: Vec2::ZERO,
+            route: route::Route::default(),
+            routes_off: false,
             stats: BotStats::default(),
             frenzy: false,
         }
@@ -272,6 +286,13 @@ impl Bot {
     /// real round's default.
     pub fn frenzied(mut self, on: bool) -> Self {
         self.frenzy = on;
+        self
+    }
+
+    /// T23.26: the same bot with its route planner planted out — the scenarios' control.
+    #[cfg(test)]
+    pub(crate) fn without_routes(mut self) -> Self {
+        self.routes_off = true;
         self
     }
 
@@ -308,12 +329,13 @@ impl Bot {
             self.want_use = None;
             self.want_select = None;
             self.press_window = 0.0;
+            self.route.clear();
             return Input::default();
         }
         let pos = me.body.pos;
         self.stats.ticks += 1;
 
-        self.choose_goal(world, pos, dt);
+        self.choose_goal(world, pos, now, dt);
         if matches!(self.goal, Goal::Enemy(_)) {
             self.stats.ticks_engaged += 1;
         }
@@ -338,7 +360,58 @@ impl Bot {
         });
         let aim_at = self.believed.unwrap_or(pos);
 
-        let mut buttons = self.walk_buttons(world, me, pos, aim_at, now, dt);
+        // **The route drives when there is one** (T23.26 B); the walking model's greedy
+        // step drives while a search runs, when none was found, at the route's end, and
+        // whenever the bot stands in fire — leaving fire beats any plan.
+        let nav = if self.hazard_at(world, pos, BOT_HAZARD_CLEARANCE).is_none() {
+            self.navigate(world, me, pos, aim_at, now, dt)
+        } else {
+            None
+        };
+        let mut buttons = match nav {
+            Some(n) => {
+                self.stats.ticks_routed += 1;
+                // The greedy model's stuck clock restarts when it gets the bot back.
+                self.still_for = 0.0;
+                self.stuck_window = 0.0;
+                self.stuck_from = pos.x;
+                n.buttons
+            }
+            None => self.walk_buttons(world, me, pos, aim_at, now, dt),
+        };
+
+        // T23.26: **brake a fall before it hurts.** A bot that routes climbs — jets up
+        // walls and over ridges — and comes down again, and a landing over
+        // `FALL_SAFE_SPEED` is damage: standard self-damage went from 16 to 86 a bot a
+        // round when routes first drove (measured, `space_bots_report`'s natural arm),
+        // and self-kills from 0.08 to 0.38. Thrust up once falling at
+        // `BOT_FALL_BRAKE` of the safe speed, if the tank can start the pack.
+        //
+        // **And over the void, climb, whatever the speed**: a bot in the air with no rock
+        // anywhere under it is falling out of the map, and every void death in the first
+        // routed population was one hovering or drifting over a bottomless shaft until it
+        // let go (traced: one hovered at 0 px/s with 2.5 s of fuel, released, and fell).
+        // The sideways buttons are left to the route or the greedy step — the planner
+        // routes out of the void from inside it.
+        if !me.body.grounded
+            && me.jetpack.fuel >= crate::constants::JETPACK_MIN_FUEL_TO_ENGAGE
+            && route::navigates(world, me)
+            && (me.body.vel.y > FALL_SAFE_SPEED * BOT_FALL_BRAKE
+                || nav::Grid::new(&world.map).over_void(pos))
+        {
+            buttons |= button::JUMP | button::UP;
+            buttons &= !button::DOWN;
+        }
+
+        // T23.26: **a rider on an empty platform gets off** — holding jump is the dismount
+        // (`world::mount`). Nothing did this, and a bot that routes stands on platforms
+        // more often: one rode an empty gun for 30 s refusing every shot as unarmed
+        // (`a_bot_stuck_on_a_flat_laser_still_fights`, seed 99).
+        if let Some(plat) = me.mount.mounted {
+            if world.platform_ammo(plat).unwrap_or(0) == 0 {
+                buttons |= button::JUMP;
+            }
+        }
 
         // **In space the walking model's buttons are replaced, not amended**
         // (T22.03B, R5): the goal and the point it resolves to are the same, and
@@ -349,7 +422,13 @@ impl Bot {
 
         // --- aim --------------------------------------------------------
         let err = (self.rng.gen::<f32>() - 0.5) * 2.0 * self.aim_error;
-        let angle = (aim_at.y - pos.y).atan2(aim_at.x - pos.x) + err;
+        // A dig step aims at its rock, and without the skill's error: nobody misses a
+        // wall they are standing at, and a swing off the bore leaves a lip.
+        let dig_at = nav.and_then(|n| n.aim);
+        let angle = match dig_at {
+            Some(p) => (p.y - pos.y).atan2(p.x - pos.x),
+            None => (aim_at.y - pos.y).atan2(aim_at.x - pos.x) + err,
+        };
         let aim = ((angle.rem_euclid(TAU) / TAU) * 65536.0) as u16;
 
         // --- fire -------------------------------------------------------
@@ -365,16 +444,32 @@ impl Bot {
         // exactly, because a bot in the air has no ground friction to slow it
         // under the threshold. Bots are airborne most of the time, so for most of
         // their lives they could not shoot at all.
+        let mut fighting = false;
         if let Goal::Enemy(_) = self.goal {
-            if self.should_fire(world, me, pos, aim_at, now) {
+            if dig_at.is_none() && self.should_fire(world, me, pos, aim_at, now) {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
+                fighting = true;
+            }
+        }
+        // A dig step swings the same way a shot is fired (`bots::drive` sends it).
+        if let Some(n) = nav.filter(|n| n.fire && !fighting) {
+            buttons |= button::FIRE;
+            if n.unstick {
+                self.stats.lip_swings += 1;
+            } else {
+                self.stats.dig_swings += 1;
             }
         }
 
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(me);
-        self.want_select = self.choose_weapon(world, me, aim_at, pos);
+        // **A dig step holds the shovel**: `choose_weapon` re-decides every tick and would
+        // switch back to the best gun the tick after.
+        self.want_select = match nav {
+            Some(n) if dig_at.is_some() => n.select,
+            _ => self.choose_weapon(world, me, aim_at, pos),
+        };
         self.count_pressing_still(pos, buttons, dt);
 
         Input {
@@ -382,6 +477,38 @@ impl Bot {
             buttons,
             aim,
         }
+    }
+
+    /// T23.26 B: this tick's route step toward the goal, or `None` for the greedy model.
+    fn navigate(
+        &mut self,
+        world: &World,
+        me: &crate::player::state::PlayerState,
+        pos: Vec2,
+        aim_at: Vec2,
+        now: f32,
+        dt: f32,
+    ) -> Option<route::NavStep> {
+        if self.routes_off || !route::navigates(world, me) {
+            self.route.clear();
+            return None;
+        }
+        let target = match self.goal {
+            Goal::Item(_) => route::item_target(aim_at),
+            Goal::Wander => route::wander_target(aim_at),
+            // An enemy the generous shot line already reaches is fought where it is
+            // (every weapon digs, §A3); the route is for one behind a mountain.
+            Goal::Enemy(_) if !self.reachable(world, pos, aim_at) => {
+                route::enemy_target(aim_at, self.hold_off(world))
+            }
+            Goal::Enemy(_) | Goal::Flee(_) => {
+                self.route.clear();
+                return None;
+            }
+        };
+        let dig = route::shovel_slot(me).is_some();
+        self.route
+            .step(world, me, target, dig, now, dt, &mut self.stats.nav_plans)
     }
 
     /// T23.26: the population's stuck measure. A window opens on the first tick a
@@ -480,7 +607,7 @@ impl Bot {
         b
     }
 
-    fn choose_goal(&mut self, world: &World, pos: Vec2, dt: f32) {
+    fn choose_goal(&mut self, world: &World, pos: Vec2, now: f32, dt: f32) {
         let mut best: Option<(f32, Goal)> = None;
 
         let health = world.player(self.player).map_or(0.0, |p| p.health);
@@ -516,6 +643,14 @@ impl Bot {
         // Unarmed, or nothing in sight: go shopping. **Any** firable slot counts,
         // not just the one in hand — see `has_firable_weapon`.
         let armed = self.has_firable_weapon(world);
+        // T23.26 (§A2): where the planner runs, **reachability is a route, not a line of
+        // sight** — an item behind rock is a target until a search for it comes back
+        // empty (`route::Route::refused`). Elsewhere (space, wings, a mount) the old line
+        // of sight still decides.
+        let routes = !self.routes_off
+            && world
+                .player(self.player)
+                .is_some_and(|me| route::navigates(world, me));
         // T22.03B: **a suit running flat is the one errand that beats a fight** — an
         // unsealed suit loses `RADIATION_DPS` for the rest of the round, and the bot
         // that ignored it was radiation's commonest victim (0.54 deaths a bot a round,
@@ -539,7 +674,14 @@ impl Bot {
                 // cannot see. Without them a bot walked the width of the map
                 // toward an item on the far side of a mountain, which is the
                 // behaviour exploration is supposed to replace.
-                if d > BOT_ENGAGE_RANGE || !self.reachable(world, pos, it.pos) {
+                if d > BOT_ENGAGE_RANGE {
+                    continue;
+                }
+                if routes {
+                    if self.route.refused(&route::item_target(it.pos), now) {
+                        continue;
+                    }
+                } else if !self.reachable(world, pos, it.pos) {
                     continue;
                 }
                 // T22.12C F2: never shop inside the black hole's reach (or where a
@@ -616,14 +758,23 @@ impl Bot {
             // or tried", because a cell whose middle is buried in rock can never
             // be entered and a bot that insists on it stops exploring.
             let arrived = self.wander_to.is_some_and(|w| {
-                cov.cell_of(w) == (cx, cy) || (w - pos).len() < BOT_WANDER_ARRIVED
+                cov.cell_of(w) == (cx, cy)
+                    || (w - pos).len() < BOT_WANDER_ARRIVED
+                    || (routes && self.route.finished(&route::wander_target(w)))
             });
             // T22.03D: a cell in a space keep-out (a permanent vortex's disc, the
             // hole's reach) is one `space::steer` will not approach, so the bot sat
             // out `BOT_WANDER_GIVE_UP` against whatever rock it was on — "seen" at once.
             let barred = world.gravity == GravityMode::Space
                 && self.wander_to.is_some_and(|w| space::forbidden(world, w));
-            let gave_up = self.wander_for > BOT_WANDER_GIVE_UP || barred;
+            // T23.26: a route is given the time it was priced at (twice over, the same
+            // slack a step gets), and a target the planner refused is given up at once.
+            let refused = routes
+                && self
+                    .wander_to
+                    .is_some_and(|w| self.route.refused(&route::wander_target(w), now));
+            let patience = BOT_WANDER_GIVE_UP.max(2.0 * self.route.planned_s());
+            let gave_up = self.wander_for > patience || barred || refused;
             if self.wander_to.is_some() {
                 self.stats.wander_arrived += u32::from(arrived);
                 self.stats.wander_gave_up += u32::from(gave_up && !arrived);
@@ -726,9 +877,7 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     pub(super) use super::*;
-    pub(super) use crate::constants::{
-        MapScale, BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP, PLAYER_H, SIM_DT,
-    };
+    pub(super) use crate::constants::{MapScale, PLAYER_H, SIM_DT};
     pub(super) use crate::items::registry::{BAZOOKA, MEDKIT, MOLOTOV, PISTOL};
     // `wield` because §F5 puts a shovel in slot 0 of every player: `give` appends
     // to the first free slot, so a fixture that only gives a weapon is holding a
@@ -836,13 +985,13 @@ mod tests {
         wield(&mut w, 1, PISTOL);
 
         let mut calm = Bot::new(1, SEED, 0, 1.0);
-        calm.choose_goal(&w, a, SIM_DT);
+        calm.choose_goal(&w, a, 0.0, SIM_DT);
         assert!(
             !matches!(calm.goal, Goal::Enemy(_)),
             "control: an ordinary bot engaged an enemy {far} px away (sight {BOT_ENGAGE_RANGE})"
         );
         let mut mad = Bot::new(1, SEED, 0, 1.0).frenzied(true);
-        mad.choose_goal(&w, a, SIM_DT);
+        mad.choose_goal(&w, a, 0.0, SIM_DT);
         assert_eq!(
             mad.goal,
             Goal::Enemy(2),
@@ -851,13 +1000,13 @@ mod tests {
 
         w.player_mut(1).expect("p1").health = BOT_FLEE_HEALTH * 0.5;
         w.player_mut(2).expect("p2").body.pos = a + Vec2::new(BOT_ENGAGE_RANGE * 0.1, 0.0);
-        calm.choose_goal(&w, a, SIM_DT);
+        calm.choose_goal(&w, a, 0.0, SIM_DT);
         assert_eq!(
             calm.goal,
             Goal::Flee(2),
             "control: a hurt ordinary bot did not flee"
         );
-        mad.choose_goal(&w, a, SIM_DT);
+        mad.choose_goal(&w, a, 0.0, SIM_DT);
         assert_eq!(
             mad.goal,
             Goal::Enemy(2),
@@ -1118,46 +1267,47 @@ mod tests {
         assert_eq!(g, Goal::Enemy(2), "control: a full suit should fight");
     }
 
-    /// §E10: an item behind a wall is not a target.
+    /// **§A2 (T23.26), overriding §E10's "an item behind a wall is not a target":
+    /// reachability is a route, not a line of sight.** A bazooka sealed in a pocket of rock
+    /// 190 px off, past `BOT_LOS_MAX_BLOCKED × BOT_LOS_STEP` of rock-free line nowhere —
+    /// the old gate's refusal — is a target for a bot that can dig to it, and stays one
+    /// once the search has answered; for the same bot with no shovel there is no route, and
+    /// it is not. The first half is the presence: without it the second passes for a bot
+    /// that never wants an item at all.
     #[test]
-    fn an_item_behind_solid_rock_is_not_a_target() {
-        let mut w = world_with(&[1]);
-        let at = clear_line(&w);
-        if let Some(p) = w.player_mut(1) {
-            p.body.pos = at;
-        }
-        // Inside `BOT_ENGAGE_RANGE` (320) — an item further than that is invisible and
-        // the presence half below would fail for the wrong reason, which the
-        // first version of this fixture did — and far enough that a wall between
-        // can exceed `BOT_LOS_MAX_BLOCKED * BOT_LOS_STEP` (192 px).
-        let clear = drop_at(&mut w, BAZOOKA, Vec2::new(at.x + 300.0, at.y));
-        let mut b = Bot::new(1, SEED, 0, 0.6);
-        b.think(&w, 0.0, SIM_DT);
-        // The presence half: with a clear line the bot wants it. Without this
-        // the absence below passes for a bot that never targets an item at all.
-        assert_eq!(
-            b.goal,
-            Goal::Item(clear),
-            "a bot ignored an item in plain sight"
-        );
-
-        // Now wall it off. The tolerance is a **count**: `BOT_LOS_MAX_BLOCKED`
-        // samples at `BOT_LOS_STEP` px is 192 px of rock, so a 160 px wall passes it
-        // — which the first version of this test discovered by failing. This one
-        // is 300 px along the line, "behind a mountain" rather than "over a
-        // hill", and it is derived from the two constants rather than picked.
-        let thick = (BOT_LOS_MAX_BLOCKED as f32 * BOT_LOS_STEP * 1.25) as i32;
-        for dx in 30..(30 + thick) {
-            for dy in -200..200 {
-                w.map.mask.set(at.x as i32 + dx, at.y as i32 + dy);
+    fn an_item_sealed_in_rock_is_a_target_while_a_route_to_it_exists() {
+        use super::nav::tests::{block, fill, seal, stand_at};
+        let goal = |shovel: bool| {
+            let (mut w, ox, oy) = block(MapScale::Small, 24, 14);
+            fill(&mut w, ox + 1, oy + 1, ox + 8, oy + 12, false);
+            fill(&mut w, ox + 15, oy + 9, ox + 17, oy + 12, false);
+            seal(&mut w);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "p1".into());
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
             }
-        }
-        let mut walled = Bot::new(1, SEED, 0, 0.6);
-        walled.think(&w, 0.0, SIM_DT);
+            if let Some(p) = w.player_mut(1) {
+                p.body = crate::physics::body::Body::new(stand_at(ox + 4, oy + 12));
+                if !shovel {
+                    let _ = p.inventory.take_slot(0);
+                }
+            }
+            let gun = drop_at(&mut w, BAZOOKA, stand_at(ox + 16, oy + 12));
+            let mut b = Bot::new(1, SEED, 0, 0.6);
+            for t in 0..crate::constants::SIM_HZ {
+                b.think(&w, t as f32 * SIM_DT, SIM_DT);
+            }
+            (b.goal, gun)
+        };
+        let (g, gun) = goal(true);
+        assert_eq!(g, Goal::Item(gun), "an item a dig away was not a target");
+        let (g, gun) = goal(false);
         assert_ne!(
-            walled.goal,
-            Goal::Item(clear),
-            "a bot targeted an item behind {thick} px of solid rock",
+            g,
+            Goal::Item(gun),
+            "with nothing to dig with, an item sealed in rock stayed a target"
         );
     }
 
@@ -1353,6 +1503,10 @@ pub(crate) mod harness {
             stuck_hops: a.stuck_hops + b.stuck_hops,
             wander_arrived: a.wander_arrived + b.wander_arrived,
             wander_gave_up: a.wander_gave_up + b.wander_gave_up,
+            nav_plans: a.nav_plans + b.nav_plans,
+            ticks_routed: a.ticks_routed + b.ticks_routed,
+            dig_swings: a.dig_swings + b.dig_swings,
+            lip_swings: a.lip_swings + b.lip_swings,
         }
     }
 

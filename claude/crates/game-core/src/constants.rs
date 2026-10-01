@@ -4112,6 +4112,10 @@ pub const BOT_NAV_HOP_ROWS: i32 =
 /// costs ≈ 0.44 s, about four walked cells. That ratio is what decides "dig through or
 /// go round" (`nav::successors`).
 pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
+/// The bottom of the map no bot digs into, px: a body's height of rock under the
+/// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
+/// There is no bedrock (§C15), so a hole here is a hole into the void.
+pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
 /// The search keys the tank in steps of this, s — a twentieth of it.
 pub const BOT_NAV_FUEL_STEP: f32 = JETPACK_MAX_FUEL / 20.0;
 /// Nodes one bot's search may expand per tick. A **count**, never a clock: the server
@@ -4125,6 +4129,10 @@ pub const BOT_NAV_NODES_MAX: u32 = 20 * BOT_NAV_NODES_PER_TICK;
 pub const BOT_NAV_COST_MAX: f32 = 20.0;
 /// After "no route", the same target is not asked about again for this long, s.
 pub const BOT_NAV_RETRY: f32 = 3.0;
+/// A walking bot falling faster than this share of `FALL_SAFE_SPEED` thrusts up to brake
+/// (T23.26): four fifths leaves three ticks of gravity (1400 px/s² × 3/60 ≈ 70 px/s,
+/// under the fifth's 136) for the pack to bite before a landing would hurt.
+pub const BOT_FALL_BRAKE: f32 = 0.8;
 /// A step may take twice its price plus this before the route is planned again, s: two
 /// swings, so a dig that needed a second swing is not a failed plan.
 pub const BOT_NAV_STEP_SLACK: f32 = 2.0 * SHOVEL_COOLDOWN;
