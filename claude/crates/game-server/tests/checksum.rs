@@ -26,6 +26,8 @@ fn test_config() -> Config {
 struct Server {
     addr: SocketAddr,
     room: game_server::room::RoomHandle,
+    /// For a test that makes a room of its own (a private one, to watch by code).
+    registry: std::sync::Arc<std::sync::Mutex<game_server::registry::RoomRegistry>>,
     _shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -62,6 +64,7 @@ async fn spawn_server() -> Server {
     Server {
         addr,
         room: started.clone(),
+        registry: stack.registry.clone(),
         _shutdown: stack.shutdown,
     }
 }
@@ -742,8 +745,8 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
     drop(c1);
 }
 
-/// A client that joins **while carves are happening** and delays `ready` must
-/// still receive every carve after the mask it was given.
+/// A client that is seated, has its map and has **not** sent `ready` must still
+/// receive every carve after the mask it was given.
 ///
 /// The bug (§A40): `map_init` is stamped `carve_seq = N`, so the client picks the
 /// stream up at `N+1` — but broadcasts were gated on `ready`, so every carve in
@@ -751,51 +754,106 @@ async fn a_client_flooding_inputs_does_not_outrun_one_sending_normally() {
 /// cannot fill the hole, and refetches the whole map two seconds later
 /// (`docs/42` §6). Measured on a live round: 1–2 resyncs per client.
 ///
-/// Joining mid-firefight is a normal path (`docs/41` §4), and it is exactly when
-/// the window is widest.
+/// ## Who can be in that window now (restated for T23.28)
+///
+/// This used to seat a second *player* in the lobby and have it not ready. Since
+/// T23.28 (`docs/78` §A4) **that window cannot hold a carve**: the world is parked
+/// in `Lobby` until every seated body has sent `ready`, so nothing steps and
+/// nothing digs. Measured on the old fixture: at bo's `ready` the server read
+/// `tick 239, Lobby, carve_seq 0`. Every carve it then counted was made *after*
+/// bo was ready — by the bots, whose fighting since T23.26C/D pauses for more
+/// than the old 400 ms "settle", so the count read 6 and failed. It was passing
+/// on bots that happened to shoot continuously, not on the window.
+///
+/// The one seat that **is** mapped and not ready while the world steps is a
+/// spectator joining a started match by code (`docs/78` §A1: spectators never
+/// hold a round). That is the path here. And the counts are the server's, not a
+/// floor on whoever happened to shoot: the window's carves are `(baked, at_ready]`,
+/// read off the map's own stamp and the server's sequence at `ready`, so the test
+/// does not care whether a bot or ana made them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_joiner_that_delays_ready_still_gets_every_carve() {
     let s = spawn_server().await;
     let addr = s.addr;
-    let room = s.room.clone();
-    let arm = room.clone();
+    let registry = s.registry.clone();
 
     let out = tokio::task::spawn_blocking(move || {
-        let evs = ["welcome", "map_init", "carve", "carve_capsule"];
+        let evs = [
+            "welcome",
+            "room_created",
+            "map_init",
+            "carve",
+            "carve_capsule",
+        ];
+        let handle = tokio::runtime::Handle::current();
 
-        // §E2 moved *when* the joiner can arrive, not what is under test.
-        //
-        // The claim is the **ready window**: a client that is seated and has its
-        // map but has not sent `ready` must still receive every carve. That
-        // window is unchanged. What changed is that a client can no longer
-        // arrive mid-firefight — §E4 closes a started match, and `quick_match`
-        // now skips one — so bo seats into the lobby alongside ana and simply
-        // does not ready. Seated, mapped, not ready: the same three conditions,
-        // reached the way §E2 lets a player reach them.
-        let (c1, _i1, r1) = connect(addr, &evs);
-        emit_when_ready(&c1, "join", serde_json::json!({ "name": "ana" }));
-        wait_for(&r1, "welcome", 15);
-
-        let (c2, i2, r2) = connect(addr, &evs);
-        emit_when_ready(&c2, "join", serde_json::json!({ "name": "bo" }));
-        wait_for(&r2, "welcome", 15);
+        // ana hosts a private room (it has a code to watch by) and starts it.
+        let i1: Inbox = Default::default();
+        let c1 = common::connect_and_emit(
+            addr,
+            &evs,
+            &i1,
+            "create_room",
+            serde_json::json!({ "name": "ana" }),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while got(&i1, "room_created").is_empty() || got(&i1, "welcome").is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ana never got her room"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let created = got(&i1, "room_created").remove(0);
+        let code = created["code"]
+            .as_str()
+            .expect("a private room has a code")
+            .to_string();
+        let room_id = created["room_id"].as_u64().expect("a room id") as u32;
+        let room = registry
+            .lock()
+            .expect("registry")
+            .get(room_id)
+            .map(|e| e.handle.clone())
+            .expect("the room ana created");
 
         emit_when_ready(&c1, "start_with_bots", serde_json::json!({}));
-        wait_for(&r1, "map_init", 30);
-        wait_for(&r2, "map_init", 30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while got(&i1, "map_init").is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ana never got the map"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         emit_when_ready(&c1, "ready", serde_json::json!({}));
+        // The round is under way once the load hold lets go: a spectator joining
+        // before that would be in the carve-free window this test is not about.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let phase = handle
+                .block_on(room.inspect(|w| w.phase))
+                .expect("room alive");
+            if phase != game_core::world::RoundPhase::Lobby {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the round never started"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
-        let handle = tokio::runtime::Handle::current();
+        // Arm ana, so the window has carves of her making whatever the bots do.
         handle
-            .block_on(arm.inspect(|w| {
+            .block_on(room.inspect(|w| {
                 let ids: Vec<_> = w.players.iter().map(|p| p.id).collect();
                 for id in ids {
                     for _ in 0..10 {
                         game_core::world::give(w, id, game_core::items::registry::SMG, 60);
                     }
                     // §F5's shovel is slot 0; without this the "firefight" below
-                    // is a melee swing. It carves, so this fixture would still
-                    // have passed — measuring the wrong weapon.
+                    // is a melee swing.
                     game_core::world::wield(w, id, game_core::items::registry::SMG);
                 }
             }))
@@ -818,118 +876,111 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             c1.emit("fire", serde_json::json!({})).ok();
         };
 
-        // Carve the map for a while so the joiner arrives mid-firefight.
+        // Carve for a while so the watcher arrives mid-firefight.
         for i in 0..12 {
             fire(i);
             std::thread::sleep(Duration::from_millis(110));
         }
 
-        // bo is seated and mapped from here, and has **not** sent `ready` —
-        // the window under test.
+        let (c2, i2, r2) = connect(addr, &evs);
+        emit_when_ready(
+            &c2,
+            "join_room",
+            serde_json::json!({ "name": "bo", "code": code, "spectate": true }),
+        );
+        wait_for(&r2, "welcome", 15);
+        wait_for(&r2, "map_init", 30);
 
-        // Keep shooting while bo is seated, mapped and *not* ready. Every one of
-        // these is a carve that used to be dropped on the floor.
+        // bo is seated and mapped from here, and has **not** sent `ready` — the
+        // window under test. Every carve in it used to be dropped on the floor.
         for i in 12..32 {
             fire(i);
             std::thread::sleep(Duration::from_millis(110));
         }
+        let at_ready = handle
+            .block_on(room.inspect(|w| w.carve_seq()))
+            .expect("room alive");
         emit_when_ready(&c2, "ready", serde_json::json!({}));
 
-        // Wait for the carve stream to **settle**, not for a fixed duration.
-        //
-        // This used to sleep 1200 ms and then read whatever had arrived, which
-        // made it load-sensitive: with other builds running on the box the last
-        // carve landed after the deadline and the replayed mask diverged, about
-        // one run in four. A gate that fails on a coin flip gates nothing
-        // (§A28), and "the box was busy" is not a defect in the carve stream —
-        // it is a defect in how the test decides it has seen everything.
-        let mut last = 0usize;
-        let mut stable = 0;
-        for _ in 0..120 {
-            std::thread::sleep(Duration::from_millis(50));
-            let n = carves(&i2).len();
-            if n == last && n > 0 {
-                stable += 1;
-                // 400 ms with nothing new, well past the 110 ms firing cadence.
-                if stable >= 8 {
-                    break;
-                }
-            } else {
-                stable = 0;
-                last = n;
+        // Wait for the client to reach the server's sequence at `ready`, not for
+        // the stream to go quiet: with bots in the room it need never go quiet,
+        // and a pause in their fighting is not the end of the window's carves.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let reached = carves(&i2)
+                .iter()
+                .filter_map(|c| c["seq"].as_u64())
+                .max()
+                .unwrap_or(0);
+            if reached >= u64::from(at_ready) {
+                break;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the watcher never received the window's carves: at seq {reached}, \
+                 the server was at {at_ready} when it sent ready"
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         let m2 = got(&i2, "map_init");
-        let carves2 = carves(&i2);
         // The inbox comes back too: the socket stays connected, so it keeps
         // filling, and the comparison below waits for it to catch up with the
-        // server rather than trusting the settle loop above to have caught
-        // everything. Kept alive for the same reason as the test above — §E1
-        // drops the world when the last human leaves.
-        (m2, carves2, c1, c2, i2)
+        // server. Kept alive because §E1 drops the world when the last human
+        // leaves.
+        (m2, at_ready, room, c1, c2, i2)
     })
     .await
     .expect("client thread");
 
-    let (m2, carves2, c1, c2, i2) = out;
+    let (m2, at_ready, room, c1, c2, i2) = out;
     assert_eq!(
         m2.len(),
         1,
         "the joiner got exactly one map_init, not a resync"
     );
     let b2 = m2[0].as_str().expect("map_init is base64 text");
+    let baked = u64::from(
+        game_server::codec::decode_map_init_parts(
+            &game_server::codec::b64_decode(b2).expect("map_init decodes"),
+        )
+        .expect("map_init decodes")
+        .carve_seq,
+    );
 
-    // The control: without carves in the window this test passes against a server
-    // that drops every one of them.
-    //
-    // **Measured under load, not fixed** (T22.00F): 3/130 and 1/48 read 7–8 here.
-    // The count is taken when the stream has been quiet for the settle loop's
-    // 400 ms (8 x 50 ms), and a loaded room can stall that long mid-stream. So a
-    // short count also reports what arrived after the settle and the server's own
-    // sequence, which is what tells a stalled read from carves never sent.
-    if carves2.len() < 10 {
-        std::thread::sleep(Duration::from_secs(3));
-        let later = carves(&i2).len();
-        let server = room.inspect(|w| w.carve_seq()).await;
-        panic!(
-            "the joiner should have seen the fires during its ready window; got {} at \
-             the settle, {later} three seconds later, server carve_seq {server:?}",
-            carves2.len()
-        );
-    }
+    // The control: the window had carves in it at all. Without this the test
+    // passes against a server that drops every one of them, in a window that
+    // happened to be empty — which is exactly what T23.28 made the old fixture's
+    // window, and nothing said so.
+    assert!(
+        u64::from(at_ready) > baked,
+        "the control: no carve happened while the watcher was mapped and not \
+         ready (map stamped {baked}, server at {at_ready} at ready)"
+    );
 
-    // No hole in the sequence. This is the property, not a count: one missing
-    // `seq` is what costs a full map resync.
-    let mut seqs: Vec<u64> = carves2
+    // Every one of them, and no hole after. This is the property, not a count:
+    // one missing `seq` is what costs a full map resync.
+    let mut seqs: Vec<u64> = carves(&i2)
         .iter()
-        .map(|c| c["seq"].as_u64().unwrap_or(0))
+        .filter_map(|c| c["seq"].as_u64())
+        .filter(|&q| q > baked)
         .collect();
     seqs.sort_unstable();
     seqs.dedup();
-    let first = *seqs.first().expect("checked non-empty");
-    let last = *seqs.last().expect("checked non-empty");
+    let last = *seqs
+        .last()
+        .expect("the control above proves there were carves");
     assert_eq!(
-        seqs.len() as u64,
-        last - first + 1,
-        "the joiner's carve stream has a hole: {first}..={last} but only {} distinct seqs",
-        seqs.len()
+        seqs,
+        ((baked + 1)..=last).collect::<Vec<_>>(),
+        "the joiner's carve stream after its map (stamped {baked}) has a hole"
     );
 
     // And the mask it ends up with is the server's, byte for byte — the check a
-    // carve count cannot make.
-    // **Compared at the same instant, not at two.**
-    //
-    // The settle loop above waits for the client's stream to go quiet, and quiet
-    // is not the same as finished: a projectile still in flight lands after it,
-    // carves, and the server is then ahead of the snapshot the client took.
-    // Measured, that is exactly what this was — `client at seq 116, server at
-    // seq 117`, one carve behind, on about one run in eight.
-    //
-    // So the reads are aligned instead of hoped about: take the server's
-    // sequence, wait for the client to reach it, and only then compare. That
-    // asserts *more* than before — the client must actually receive everything
-    // the server has — and it cannot pass by looking early.
+    // carve count cannot make. **Compared at the same instant, not at two**: take
+    // the server's sequence, wait for the client to reach it, and only then
+    // compare at that sequence, so carves still landing cannot make it pass or
+    // fail by timing.
     let mut server_hash;
     let mut server_seq;
     let mut client_hash;
@@ -949,7 +1000,6 @@ async fn a_joiner_that_delays_ready_still_gets_every_carve() {
             .filter_map(|c| c["seq"].as_u64())
             .max()
             .unwrap_or(0);
-        // Cut at the server's sequence, for the reason the test above gives.
         client_hash = client_hash_at(b2, &now, server_seq);
 
         if client_seq >= u64::from(server_seq) {
