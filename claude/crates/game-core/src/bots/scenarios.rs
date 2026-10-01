@@ -271,9 +271,9 @@ fn a_bot_steps_out_from_under_a_meteor_it_has_time_to_see() {
         let enemy = Vec2::new(at.x + 60.0, y);
         give(&mut w, 1, PISTOL, 10);
         wield(&mut w, 1, PISTOL);
-        // No fight hop: a bot in the air when the meteor lands is a different question
+        // No fight strafe: a bot stepping when the meteor lands is a different question
         // (T23.26C item 6's hop made the late control's meteor miss).
-        let mut b = Bot::new(1, SEED, 0, 0.6).without_juke();
+        let mut b = Bot::new(1, SEED, 0, 0.6).without_strafe();
         if !dodge {
             b = b.without_dodge();
         }
@@ -409,9 +409,13 @@ fn a_hurt_bot_runs_out_of_sight_and_digs_in_only_when_cornered() {
         let (mut w, ox, oy) = block(MapScale::Small, 40, 20);
         let feet = oy + 17;
         fill(&mut w, ox + 1, feet - 3, ox + 38, feet, false);
+        // T23.26E: the shaft eleven cells from the enemy, not twenty-four — inside
+        // `BOT_ENGAGE_RANGE`, where a run is still a run. At twenty-four the flee ended
+        // at the range's edge in the corridor, and it was the *wander* after it, hopping
+        // and jetting greedily at a point above, that left the enemy's sight.
         if shaft {
-            fill(&mut w, ox + 2, oy + 3, ox + 3, feet - 4, false);
-            fill(&mut w, ox + 2, oy + 3, ox + 14, oy + 5, false);
+            fill(&mut w, ox + 14, oy + 3, ox + 15, feet - 4, false);
+            fill(&mut w, ox + 2, oy + 3, ox + 15, oy + 5, false);
         }
         seal(&mut w);
         w.set_phase(RoundPhase::Playing);
@@ -500,7 +504,11 @@ fn a_sealed_room_is_reached_by_a_pad_and_given_up_without_one() {
             pad_at(&mut w, 1, ox + 26, feet);
         }
         seal(&mut w);
-        let _ = scenario(&mut w, (ox + 3, feet), (ox + 33, feet));
+        // T23.26E: bot and pistol 16 cells (256 px) apart, inside `BOT_ENGAGE_RANGE` —
+        // at 30 (480 px) the pistol was never a goal at all: the control's "gave up" read
+        // `Wander` at tick 0, and the pad arm reached it by wandering onto a pad while
+        // the greedy step hopped at points above (gone with T23.26E step 3).
+        let _ = scenario(&mut w, (ox + 11, feet), (ox + 27, feet));
         if let Some(p) = w.player_mut(1) {
             let _ = p.inventory.take_slot(0);
         }
@@ -527,8 +535,9 @@ fn a_sealed_room_is_reached_by_a_pad_and_given_up_without_one() {
     let (got, gave_up) = run(false);
     assert!(!got, "control: the sealed pistol was reached with no pad");
     assert!(
-        gave_up.is_some_and(|t| t <= BOT_NAV_RETRY),
-        "control: with no way in, the bot kept the item as its goal ({gave_up:?})"
+        gave_up.is_some_and(|t| t > 0.0 && t <= BOT_NAV_RETRY),
+        "control: with no way in, the bot kept the item as its goal, or never had it \
+         ({gave_up:?})"
     );
 }
 
@@ -657,14 +666,17 @@ fn a_winged_bot_flies_round_to_an_enemy_a_thousand_px_off() {
     assert!(!got, "control: the unrouted winged bot got there too");
 }
 
-/// **D11 (T23.26C item 6): a bot holding its ground in a fight keeps moving.** A healthy
-/// armed bot on a flat shelf, its enemy at a pistol's stand-off: over four seconds it is
-/// still (a whole `BOT_STUCK_WINDOW` under `BOT_STUCK_PX`) for under a quarter of them,
-/// and it keeps shooting. Control: the fight hop planted out (`without_juke`) — still
-/// for most of it, the stand the owner watched.
+/// **D11 (T23.26C item 6, restated by T23.26E step 3): a bot holding its ground in a
+/// fight keeps moving — on its feet.** A healthy armed bot on a flat shelf, its enemy at
+/// a pistol's stand-off: over four seconds it is still (a whole `BOT_STUCK_WINDOW` under
+/// `BOT_STUCK_PX`) for under a quarter of them, it keeps shooting, and it **never leaves
+/// the ground** (no take-off counted by `movement::Watcher`, under a tenth airborne).
+/// Control: the strafe planted out (`without_strafe`) — still for most of it, the stand
+/// the owner watched. (Planted red by hand: a JUMP pressed with each strafe leg — the
+/// hop T23.26C shipped — is caught by the jumps half.)
 #[test]
-fn a_fighting_bot_hops_rather_than_standing_still() {
-    let run = |juke: bool| {
+fn a_fighting_bot_strafes_on_the_ground_rather_than_standing_still() {
+    let run = |strafe: bool| {
         let mut w = world_with(&[1, 2]);
         let at = clear_line(&w);
         let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
@@ -679,10 +691,11 @@ fn a_fighting_bot_hops_rather_than_standing_still() {
         give(&mut w, 1, PISTOL, crate::constants::PISTOL_AMMO);
         wield(&mut w, 1, PISTOL);
         let mut b = Bot::new(1, SEED, 0, 0.6);
-        if !juke {
-            b = b.without_juke();
+        if !strafe {
+            b = b.without_strafe();
         }
         let mut bots = vec![b];
+        let mut watch = super::movement::Watcher::default();
         let ticks = 4 * SIM_HZ;
         for t in 0..ticks {
             if let Some(p) = w.player_mut(2) {
@@ -692,23 +705,31 @@ fn a_fighting_bot_hops_rather_than_standing_still() {
             crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
             w.step(SIM_DT);
             let _ = w.drain_events();
+            watch.observe(&w, SIM_DT);
         }
         let s = bots[0].stats();
         (
             s.ticks_still.iter().sum::<u32>() as f32 / ticks as f32,
             s.fires,
+            watch.of(1),
         )
     };
-    let (still, fires) = run(true);
+    let (still, fires, m) = run(true);
     assert!(
         still < 0.25 && fires > 0,
         "a fighting bot was still {:.0} % of the fight ({fires} shots)",
         still * 100.0
     );
-    let (still, _) = run(false);
+    assert!(
+        m.jumps == 0 && m.air_share() < 0.1,
+        "a strafing bot left the ground: {} jumps, {:.0} % airborne",
+        m.jumps,
+        100.0 * m.air_share()
+    );
+    let (still, _, _) = run(false);
     assert!(
         still > 0.5,
-        "control: with no hop it was still only {:.0} % — the fixture",
+        "control: with no strafe it was still only {:.0} % — the fixture",
         still * 100.0
     );
 }

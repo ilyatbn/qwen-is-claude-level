@@ -214,7 +214,15 @@ impl Bot {
 
         let rise = pos.y - move_to.y; // positive when the target is above
         let stuck = self.still_for > BOT_STUCK_WINDOW;
-        let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded);
+        // T23.26E step 3: **where the route planner runs, the greedy step does not climb
+        // at a point above** — no hop, no jet. It drives while a search runs, after one
+        // is refused and in a fight with a clear line, and in all three it hopped and
+        // jetted at whatever was higher: 81 % of the bots' grounded jump presses
+        // (measured: 10116 + 1491 of 17737 ticks, 8 seeds), most of them while a search
+        // ran. Climbing is the route's (hop and jet steps); the stuck hop stays, the
+        // last resort under a route.
+        let planned = !winged && !self.routes_off && super::route::navigates(world, me);
+        let wants_jump = stuck || (rise > STEP_UP as f32 && me.body.grounded && !planned);
         if wants_jump {
             self.stats.stuck_hops += u32::from(stuck && !winged);
             buttons |= button::JUMP;
@@ -231,6 +239,7 @@ impl Bot {
         // pressed on climbs a half tank could not make, and the bot fell back to try again.
         let climb = rise / JETPACK_MAX_SPEED * JETPACK_DRAIN + JETPACK_MIN_FUEL_TO_ENGAGE;
         if rise > BOT_JETPACK_RISE
+            && !planned
             && me.jetpack.fuel > JETPACK_MAX_FUEL * 0.5
             && me.jetpack.fuel >= climb
         {
@@ -488,15 +497,21 @@ mod tests {
             "the healthy control chose to flee, so the two runs differ by something \
              other than health",
         );
-        // It holds: at its stand-off it presses nothing horizontal and shoots.
-        // What matters is that it never *retreats*, which is the behaviour under
-        // test — and that its distance stays inside the range it chose, rather
-        // than growing the way the hurt one's does.
-        let retreating = healthy.iter().filter(|(_, _, t)| *t < 0).count();
-        assert_eq!(
-            retreating, 0,
-            "the healthy control pressed away from the enemy on {retreating} ticks — \
-             it is retreating, so health is not what decides this",
+        // It holds: at its stand-off it shoots, and (T23.26E step 3) strafes — a
+        // `BOT_STRAFE_S` step one way and back, so a press away from the enemy lasts one
+        // leg at most. What matters is that it never *retreats*, which is the behaviour
+        // under test — no longer run away than a leg — and that its distance stays
+        // inside the range it chose, rather than growing the way the hurt one's does.
+        let leg = (crate::constants::BOT_STRAFE_S / SIM_DT).ceil() as usize + 1;
+        let (mut run, mut longest) = (0usize, 0usize);
+        for (_, _, t) in &healthy {
+            run = if *t < 0 { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        assert!(
+            longest <= leg,
+            "the healthy control pressed away from the enemy for {longest} ticks running \
+             (a strafe leg is {leg}) — it is retreating, so health is not what decides this",
         );
         assert!(
             healthy[299].0 < hurt[last].0,
@@ -537,7 +552,10 @@ mod tests {
                 p.body.pos = Vec2::new(at.x + 200.0, y);
             }
             give(&mut w, 1, PISTOL, 10);
-            let mut b = Bot::new(1, SEED, 0, 0.6);
+            // The greedy walking model alone: the counter is what is under test, and with
+            // routes the planner rests for a tank this fixture pins empty and jets over
+            // (T23.26E: once a fight asks for an open route first, it does exactly that).
+            let mut b = Bot::new(1, SEED, 0, 0.6).without_routes();
             let ticks = 2 * crate::constants::SIM_HZ;
             for t in 0..ticks {
                 let inp = b.think(&w, t as f32 * SIM_DT, SIM_DT);

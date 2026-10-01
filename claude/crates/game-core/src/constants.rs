@@ -4135,12 +4135,15 @@ pub const BOT_LOB_SWEEP: u32 = 24;
 /// T23.26D item 3: how often an arc is re-solved, s — six ticks. A solve walks up to
 /// fourteen predicted flights, and a target moves a few px in a tenth of a second.
 pub const BOT_LOB_EVERY: f32 = 0.1;
-/// T23.26C item 6: seconds between a fighting bot's hops on the spot, on average (each
-/// drawn from 0.5–1.5 × this). The owner's recorded round has him airborne 44 % of the
-/// time and still 41–48 %; a bot planted at its stand-off was still for the whole fight.
-/// A hop is ~0.6 s in the air (`2 × JUMP_VELOCITY / GRAVITY`), so one a second keeps a
-/// fighting bot off the ground about half the time — the human's share.
-pub const BOT_JUKE_S: f32 = 1.0;
+/// T23.26E step 3 (replaces T23.26C item 6's hop on the spot — owner: *"bots jump nonstop
+/// now"*): one leg of a fighting bot's strafe, s — a walk of `WALK_SPEED × this` = 30 px,
+/// about two body widths: enough to step a straight round aimed at where it stood (a body
+/// is `PLAYER_W` = 16 px wide) and short enough to hold its stand-off.
+pub const BOT_STRAFE_S: f32 = 0.2;
+/// T23.26E step 3: the pause between strafe legs, s, on average (each 0.5–1.5 × this).
+/// Under `BOT_STUCK_WINDOW` (0.5 s) at its mean, so a strafing bot is never "still" for
+/// a whole window more than now and then, and still most of a second to aim between legs.
+pub const BOT_STRAFE_PAUSE_S: f32 = 0.4;
 /// T23.26C item 7: how much further from its enemy each leg of a hurt bot's run takes it,
 /// px: half an exploration cell. A leg that ends still inside `BOT_ENGAGE_RANGE` (320)
 /// is followed by another, so two or three legs break contact from a fight's range.

@@ -285,10 +285,14 @@ pub struct Bot {
     /// `BOT_LOB_EVERY`, not every tick (a solve walks up to a dozen flights).
     lob: Option<f32>,
     lob_at: f32,
-    /// T23.26C item 6: round time of the next fight hop, and its test-only plant.
-    juke_at: f32,
-    juke_phase: f32,
-    juke_off: bool,
+    /// T23.26E step 3: the fight strafe — round time the current leg or pause ends, the
+    /// leg's direction (0 a pause), the next leg's, the jitter's phase, and its test-only
+    /// plant.
+    strafe_until: f32,
+    strafe_leg: i8,
+    strafe_next: i8,
+    strafe_phase: f32,
+    strafe_off: bool,
     /// Tests only: T23.26E's open-ground-first planted out — a fight routes with dig
     /// steps from the start, as before (`with_dig_first`).
     dig_first: bool,
@@ -332,9 +336,11 @@ impl Bot {
             dodge_off: false,
             lob: None,
             lob_at: f32::NEG_INFINITY,
-            juke_at: 0.0,
-            juke_phase: index as f32 * 0.618_034 % 1.0,
-            juke_off: false,
+            strafe_until: 0.0,
+            strafe_leg: 0,
+            strafe_next: if index.is_multiple_of(2) { 1 } else { -1 },
+            strafe_phase: index as f32 * 0.618_034 % 1.0,
+            strafe_off: false,
             dig_first: false,
             stats: BotStats::default(),
             frenzy: false,
@@ -349,10 +355,10 @@ impl Bot {
         self
     }
 
-    /// T23.26C: the same bot without its fight hop — the juke test's control.
+    /// T23.26E: the same bot without its fight strafe — the strafe test's control.
     #[cfg(test)]
-    pub(crate) fn without_juke(mut self) -> Self {
-        self.juke_off = true;
+    pub(crate) fn without_strafe(mut self) -> Self {
+        self.strafe_off = true;
         self
     }
 
@@ -483,24 +489,21 @@ impl Bot {
         // let go (traced: one hovered at 0 px/s with 2.5 s of fuel, released, and fell).
         // The sideways buttons are left to the route or the greedy step — the planner
         // routes out of the void from inside it.
-        // T23.26C item 6: **a bot holding its ground in a fight does not stand still.**
-        // It hops every `BOT_JUKE_S` or so, on the spot — a moving target, and
-        // never a step away from the enemy, which `walk.rs`'s healthy-holds-its-ground
-        // control forbids. Standing at the stand-off shooting was the largest still cause
-        // left (3.1 s per bot-minute) once the hiding and the item stands were gone.
+        // T23.26E step 3 (owner: *"bots jump nonstop now"*): **a bot holding its ground in
+        // a fight strafes on the ground** — a `BOT_STRAFE_S` step one way, a pause, a step
+        // the other — where T23.26C item 6 hopped on the spot (46 jumps a bot-minute against
+        // the owner's 15, measured). A moving target that keeps its feet, its aim and its
+        // stand-off; a leg whose ground is not there is skipped (`strafe`). Only with a
+        // clear line to the enemy: a bot pressing nothing with rock between (a closed
+        // pocket, a refused way round) is not holding a stand-off.
         if matches!(self.goal, Goal::Enemy(_))
-            && !self.juke_off
+            && !self.strafe_off
             && me.body.grounded
             && route::navigates(world, me)
             && buttons & (button::LEFT | button::RIGHT | button::JUMP) == 0
-            && now >= self.juke_at
+            && nav::Grid::new(&world.map).clear(pos, aim_at)
         {
-            buttons |= button::JUMP;
-            // Spread by a golden-ratio step per hop rather than a draw on `rng`: a draw
-            // here would shift every later aim error, and the population would move for
-            // a reason that is not the hop.
-            self.juke_phase = (self.juke_phase + 0.618_034).fract();
-            self.juke_at = now + crate::constants::BOT_JUKE_S * (0.5 + self.juke_phase);
+            buttons |= self.strafe(world, pos, now);
         }
 
         // T23.26C (§A3): **a meteor coming down on the bot is stepped out from under**,
@@ -737,6 +740,50 @@ impl Bot {
             .step(world, me, target, dig, now, dt, &mut self.stats.nav_plans);
         self.stats.tank_replans = self.route.tank_replans;
         out
+    }
+
+    /// T23.26E step 3: this tick's strafe button, advancing the leg/pause clock. Legs
+    /// alternate; one is walked only while the body's node one cell that way **stands on
+    /// the same row**, out of the void and out of fire — never off a ledge, up a step or
+    /// into a hazard. Jittered by a golden-ratio step, not a draw on `rng`, which would
+    /// shift every later aim error (T23.26C item 6's lesson).
+    fn strafe(&mut self, world: &World, pos: Vec2, now: f32) -> u8 {
+        if now >= self.strafe_until {
+            self.strafe_phase = (self.strafe_phase + 0.618_034).fract();
+            if self.strafe_leg != 0 {
+                self.strafe_leg = 0;
+                self.strafe_until =
+                    now + crate::constants::BOT_STRAFE_PAUSE_S * (0.5 + self.strafe_phase);
+            } else {
+                self.strafe_leg = self.strafe_next;
+                self.strafe_next = -self.strafe_next;
+                self.strafe_until = now + crate::constants::BOT_STRAFE_S;
+            }
+        }
+        if self.strafe_leg == 0 {
+            return 0;
+        }
+        let grid = nav::Grid::new(&world.map);
+        let dir = f32::from(self.strafe_leg);
+        let ahead = Vec2::new(pos.x + dir * crate::constants::BOT_NAV_CELL, pos.y);
+        let level = match (grid.locate(pos), grid.locate(ahead)) {
+            (Some((_, y0)), Some((x1, y1))) => y0 == y1 && grid.stands(x1, y1),
+            _ => false,
+        };
+        if !level
+            || grid.over_void(ahead)
+            || self.hazard_at(world, ahead, BOT_HAZARD_CLEARANCE).is_some()
+        {
+            // No ground that way: the next leg goes the other.
+            self.strafe_next = -self.strafe_leg;
+            self.strafe_leg = 0;
+            return 0;
+        }
+        if self.strafe_leg > 0 {
+            button::RIGHT
+        } else {
+            button::LEFT
+        }
     }
 
     /// T23.26: the population's stuck measure. A window opens on the first tick a
