@@ -4116,6 +4116,19 @@ pub const BOT_NAV_DIG_S: f32 = BOT_NAV_CELL / SHOVEL_REACH * SHOVEL_COOLDOWN;
 /// deepest a down-swing reaches (`SHOVEL_REACH + SHOVEL_CARVE` below the body's centre).
 /// There is no bedrock (§C15), so a hole here is a hole into the void.
 pub const BOT_NAV_FLOOR_BAND: f32 = PLAYER_H + SHOVEL_REACH + SHOVEL_CARVE;
+/// Rows of rock a bot wants over its head to sit out a meteor shower (T23.26 C): a
+/// meteor's crater and a fragment's, and half a body — `METEOR_CARVE_R +
+/// METEOR_FRAG_CARVE_R + PLAYER_H / 2` (≈ 78 px), in whole cells (5).
+pub const BOT_COVER_ROWS: i32 =
+    ((METEOR_CARVE_R + METEOR_FRAG_CARVE_R + PLAYER_H * 0.5) as i32 + BOT_NAV_CELL as i32 - 1)
+        / BOT_NAV_CELL as i32;
+/// The dearest cover a hurt bot looks for, s (§A2: "digging in if none is near"): four
+/// dug cells — a foxhole two cells deep is two. Dearer than this, §E10's retreat stands.
+pub const BOT_HIDE_COST_MAX: f32 = 4.0 * BOT_NAV_DIG_S;
+/// A hurt bot's route to cover never comes nearer its enemy than this share of the
+/// distance it broke contact at (T23.26 C) — measured without it, the cheapest hiding
+/// place was past the enemy and the bot closed to 25 px of it on the way.
+pub const BOT_HIDE_KEEP_OFF: f32 = 0.9;
 /// The search keys the tank in steps of this, s — a twentieth of it.
 pub const BOT_NAV_FUEL_STEP: f32 = JETPACK_MAX_FUEL / 20.0;
 /// Nodes one bot's search may expand per tick. A **count**, never a clock: the server

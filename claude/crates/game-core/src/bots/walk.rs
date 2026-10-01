@@ -76,13 +76,23 @@ impl Bot {
         let winged = me.move_mods().flying;
         let wing_space =
             winged && world.gravity == GravityMode::Space && me.mount.mounted.is_none();
-        let move_to = if wing_space && !matches!(self.goal, Goal::Flee(_)) {
+        // T23.26 C: **in cover, keep still** — out of the enemy's sight (the route got it
+        // there), or sitting out a shower. The goal's point is the enemy, and walking or
+        // hopping toward it (`rise` alone jumped a bot out of its foxhole) would only
+        // show it again.
+        let hidden = matches!(self.goal, Goal::Cover(_))
+            || (matches!(self.goal, Goal::Flee(_))
+                && self.route.finished(&super::route::hide_target(aim_at)));
+        let move_to = if hidden {
+            pos
+        } else if wing_space && !matches!(self.goal, Goal::Flee(_)) {
             space::approach(world, pos, aim_at)
         } else {
             aim_at
         };
         let dx = move_to.x - pos.x;
-        if matches!(self.goal, Goal::Flee(_)) {
+        if hidden {
+        } else if matches!(self.goal, Goal::Flee(_)) {
             // §E10: away, and **not gated on `stand_off`**. Stopping at the
             // stand-off distance is what a bot does when it wants to shoot from
             // there; a retreating bot that stopped at it would flee to exactly
@@ -309,6 +319,8 @@ impl Bot {
             Goal::Item(_) => PICKUP_RADIUS * 0.5,
             Goal::Enemy(_) => self.hold_off(world),
             Goal::Wander | Goal::Flee(_) => self.stand_off(world),
+            // In cover (or on the way, between route steps): never toward the threat.
+            Goal::Cover(_) => f32::INFINITY,
         }
     }
 }
@@ -377,6 +389,13 @@ mod tests {
             // nothing. A weapon with no blast closes to 40 px, which is the walking
             // this control is about.
             give(&mut w, 1, PISTOL, 10);
+            // T23.26 C: **no shovel, so no cover** — this is §A2's "the retreat stands where
+            // no cover is reachable", the no-cover control for
+            // `scenarios::a_hurt_bot_digs_in_out_of_its_enemys_sight`. With a shovel the
+            // hurt bot digs a hole where it stands instead of running.
+            if let Some(p) = w.player_mut(1) {
+                let _ = p.inventory.take_slot(0);
+            }
             let mut b = Bot::new(1, SEED, 0, 0.6);
             let mut d = Vec::new();
             for t in 0..300 {

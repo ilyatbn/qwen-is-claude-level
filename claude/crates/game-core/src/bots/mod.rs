@@ -65,6 +65,9 @@ enum Goal {
     Flee(PlayerId),
     Item(u32),
     Wander,
+    /// T23.26 C (§A2): under rock until a meteor shower is over, still facing — and
+    /// shooting at — the nearest enemy in sight, if there is one.
+    Cover(Option<PlayerId>),
 }
 
 /// Why a bot did not pull the trigger this tick.
@@ -135,6 +138,8 @@ pub struct BotStats {
     pub dig_swings: u32,
     /// T23.26: swings at a lip a route step stuck on (the follower's stuck response).
     pub lip_swings: u32,
+    /// T23.26 C: ticks with the meteor-cover goal.
+    pub ticks_cover: u32,
 }
 
 /// What one bot did on one [`drive`] tick — what a measuring caller needs and the
@@ -339,6 +344,7 @@ impl Bot {
         if matches!(self.goal, Goal::Enemy(_)) {
             self.stats.ticks_engaged += 1;
         }
+        self.stats.ticks_cover += u32::from(matches!(self.goal, Goal::Cover(_)));
         if self.selected_weapon(world).is_some() {
             self.stats.ticks_armed += 1;
         }
@@ -445,7 +451,7 @@ impl Bot {
         // under the threshold. Bots are airborne most of the time, so for most of
         // their lives they could not shoot at all.
         let mut fighting = false;
-        if let Goal::Enemy(_) = self.goal {
+        if let Goal::Enemy(_) | Goal::Cover(Some(_)) = self.goal {
             if dig_at.is_none() && self.should_fire(world, me, pos, aim_at, now) {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
@@ -501,7 +507,12 @@ impl Bot {
             Goal::Enemy(_) if !self.reachable(world, pos, aim_at) => {
                 route::enemy_target(aim_at, self.hold_off(world))
             }
-            Goal::Enemy(_) | Goal::Flee(_) => {
+            // T23.26 C: a meteor shower is sat out under rock; a hurt bot breaks contact
+            // to somewhere out of its enemy's sight (digging in if nothing is near), and
+            // §E10's retreat stands where no such place is reachable (`refused`).
+            Goal::Cover(_) => route::cover_target(pos),
+            Goal::Flee(_) => route::hide_target(aim_at),
+            Goal::Enemy(_) => {
                 self.route.clear();
                 return None;
             }
@@ -591,6 +602,11 @@ impl Bot {
                 at: aim_at,
                 stop: BOT_WANDER_ARRIVED,
             },
+            // Never chosen where bots fly (`choose_goal` asks `route::navigates`); hold.
+            Goal::Cover(_) => space::Dest {
+                at: pos,
+                stop: BOT_WANDER_ARRIVED,
+            },
         };
         let fire = self
             .hazard_at(world, pos, BOT_HAZARD_CLEARANCE)
@@ -639,6 +655,13 @@ impl Bot {
                 ));
             }
         }
+
+        // The nearest enemy in sight, whatever the goal becomes: a bot in cover still
+        // faces it and shoots it.
+        let threat = best.and_then(|(_, g)| match g {
+            Goal::Enemy(id) | Goal::Flee(id) => Some(id),
+            _ => None,
+        });
 
         // Unarmed, or nothing in sight: go shopping. **Any** firable slot counts,
         // not just the one in hand — see `has_firable_weapon`.
@@ -742,6 +765,17 @@ impl Bot {
             Some((_, g)) => g,
             None => Goal::Wander,
         };
+        // T23.26 C (§A2): **a meteor shower beats every errand** — announced or falling,
+        // a bot gets under rock and stays there until it is over. Frenzied bots never
+        // take cover (T99.01), and a shower no route to cover was found for is fought
+        // through (`refused`).
+        if !self.frenzy
+            && routes
+            && route::meteors_coming(world)
+            && !self.route.refused(&route::cover_target(pos), now)
+        {
+            self.goal = Goal::Cover(threat);
+        }
 
         if self.goal == Goal::Wander {
             self.wander_for += dt;
@@ -815,6 +849,9 @@ impl Bot {
             }
             Goal::Item(id) => world.items.iter().find(|i| i.id == id).map(|i| i.pos),
             Goal::Wander => self.wander_to.or(Some(pos)),
+            Goal::Cover(threat) => threat
+                .and_then(|id| world.player(id).filter(|p| p.alive).map(|p| p.body.pos))
+                .or(Some(pos)),
         }
     }
 
@@ -1507,6 +1544,7 @@ pub(crate) mod harness {
             ticks_routed: a.ticks_routed + b.ticks_routed,
             dig_swings: a.dig_swings + b.dig_swings,
             lip_swings: a.lip_swings + b.lip_swings,
+            ticks_cover: a.ticks_cover + b.ticks_cover,
         }
     }
 

@@ -12,9 +12,10 @@
 
 use super::nav::{Grid, Move, Progress, Search, Step, Want};
 use crate::constants::{
-    GravityMode, BOT_NAV_CELL, BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX,
-    BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY, BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW,
-    BOT_WANDER_ARRIVED, JETPACK_MIN_FUEL_TO_ENGAGE, PLAYER_H, WALK_SPEED,
+    GravityMode, BOT_COVER_ROWS, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF, BOT_NAV_CELL,
+    BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY,
+    BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED, JETPACK_MAX_SPEED,
+    JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
 };
 use crate::items::registry::SHOVEL;
 use crate::math::Vec2;
@@ -84,6 +85,39 @@ pub(super) fn wander_target(at: Vec2) -> Target {
         },
         at,
     }
+}
+
+/// Under `BOT_COVER_ROWS` of rock, standing — where a meteor shower is sat out.
+pub(super) fn cover_target(at: Vec2) -> Target {
+    Target {
+        want: Want::Cover {
+            above: BOT_COVER_ROWS,
+            hide: None,
+        },
+        at,
+    }
+}
+
+/// Out of `from`'s line of sight, standing — where a hurt bot breaks contact to (§A2).
+pub(super) fn hide_target(from: Vec2) -> Target {
+    Target {
+        want: Want::Cover {
+            above: 0,
+            hide: Some(from),
+        },
+        at: from,
+    }
+}
+
+/// Is a meteor shower announced or falling? Its telegraph and its active phase both
+/// count: the telegraph is the warning, `EFFECT_TELEGRAPH` before the first drop, and
+/// the time to get under rock. Meteors fall across the whole width of a standard map
+/// (`meteor::spawn_band`), so every bot is within reach of one.
+pub(super) fn meteors_coming(world: &World) -> bool {
+    world.effects.active().iter().any(|e| {
+        e.kind == crate::weapons::explode::EffectKind::MeteorShower
+            && e.phase != crate::effects::scheduler::EffectPhase::Done
+    })
 }
 
 /// An enemy behind rock: a node within `hold` of it with a clear line to it — where the
@@ -189,16 +223,18 @@ impl Route {
                 return None;
             }
             let fuel = me.jetpack.fuel;
-            let s = Search::new(
-                &world.map,
-                pos,
-                fuel,
-                target.want,
-                BOT_NAV_NODES_MAX,
-                BOT_NAV_COST_MAX,
-            );
+            // Cover from an enemy has to be *near* (§A2: "digging in if none is near"):
+            // a hurt bot under fire does not cross the map to hide.
+            let bound = match target.want {
+                Want::Cover { hide: Some(_), .. } => BOT_HIDE_COST_MAX,
+                _ => BOT_NAV_COST_MAX,
+            };
+            let s = Search::new(&world.map, pos, fuel, target.want, BOT_NAV_NODES_MAX, bound);
             let mut s = s?;
             s.dig = can_dig;
+            if let Want::Cover { hide: Some(p), .. } = target.want {
+                s.avoid = Some((p, (pos - p).len() * BOT_HIDE_KEEP_OFF));
+            }
             self.search = Some((s, target));
             *replans += 1;
         }
@@ -227,6 +263,15 @@ impl Route {
             }
         }
         if !self.following() {
+            // In cover, and still? A hiding place the enemy has walked round, or a roof a
+            // meteor took, is not cover any more: plan again (`nav::satisfies`).
+            if let (Some(t), Some((x, y))) = (self.target, grid.locate(pos)) {
+                if matches!(t.want, Want::Cover { .. })
+                    && !super::nav::satisfies(&grid, target.want, x, y)
+                {
+                    self.clear();
+                }
+            }
             return None;
         }
 
@@ -360,8 +405,13 @@ impl Route {
             Move::Fall => out.buttons = toward,
             Move::Jet => {
                 out.buttons = toward | button::JUMP;
-                // Climb while under the step; let gravity's 0.35 settle us onto it.
-                if pos.y > goal.y - PLAYER_H * 0.25 {
+                // Hold the step's height by velocity, as a column is centred on: thrust up
+                // while rising slower than the gap asks, and let the pack's gentler gravity
+                // settle the rest. A height switch (up under it, off over it) bobbed a body
+                // a cell either side of a level jet, and it never arrived.
+                let want =
+                    ((goal.y - pos.y) * CENTRE_GAIN).clamp(-JETPACK_MAX_SPEED, JETPACK_MAX_SPEED);
+                if me.body.vel.y > want + CENTRE_DEADBAND {
                     out.buttons |= button::UP;
                 }
             }

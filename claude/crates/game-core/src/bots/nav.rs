@@ -120,8 +120,6 @@ pub(super) enum Want {
     },
     /// A standing node with `above` cells of rock over its head; with `hide`, one with
     /// no clear line to that point as well (§A2's cover).
-    // T23.26 step 5 (cover) is its caller; the planner and its tests have it already.
-    #[allow(dead_code)]
     Cover { above: i32, hide: Option<Vec2> },
 }
 
@@ -326,6 +324,9 @@ pub(super) struct Search {
     max_cost: f32,
     /// Whether dig edges exist — a body with no digging tool in its bag has none.
     pub dig: bool,
+    /// A point the route keeps this far from (px): a hurt bot hiding from an enemy is not
+    /// routed past it (T23.26 C).
+    pub avoid: Option<(Vec2, f32)>,
 }
 
 impl Search {
@@ -351,6 +352,7 @@ impl Search {
             max_nodes,
             max_cost,
             dig: true,
+            avoid: None,
         };
         let fuel = fuel.clamp(0.0, JETPACK_MAX_FUEL);
         let k = s.key(x, y, fuel);
@@ -403,23 +405,7 @@ impl Search {
     }
 
     fn is_goal(&self, grid: &Grid, x: i32, y: i32) -> bool {
-        match self.want {
-            Want::Near {
-                x: tx,
-                y: ty,
-                r,
-                sight,
-            } => {
-                (x - tx).abs() <= r
-                    && (y - ty).abs() <= r
-                    && sight.is_none_or(|p| grid.clear(Grid::centre(x, y), p))
-            }
-            Want::Cover { above, hide } => {
-                grid.stands(x, y)
-                    && (2..2 + above).all(|k| grid.solid(x, y - k))
-                    && hide.is_none_or(|p| !grid.clear(Grid::centre(x, y), p))
-            }
-        }
+        satisfies(grid, self.want, x, y)
     }
 
     /// Up to `budget` expansions.
@@ -450,6 +436,12 @@ impl Search {
             edges.clear();
             successors(&grid, x, y, rec.fuel, self.dig, &mut edges);
             for &(nx, ny, how, secs, fuel) in &edges {
+                if self
+                    .avoid
+                    .is_some_and(|(p, r)| (Grid::centre(nx, ny) - p).len() < r)
+                {
+                    continue;
+                }
                 // Fuel is not free: a second burned is `1 / JETPACK_REFILL` seconds of
                 // standing still later. Priced in, a flat run is walked and a kerb hopped
                 // rather than flown, because flying is faster only until the tank is owed.
@@ -504,6 +496,34 @@ impl Search {
         }
         out.reverse();
         out
+    }
+}
+
+/// Is node `(x, y)` what `want` asks for? The search's goal test, and the follower's
+/// check that a bot already in cover still is (T23.26 C).
+pub(super) fn satisfies(grid: &Grid, want: Want, x: i32, y: i32) -> bool {
+    match want {
+        Want::Near {
+            x: tx,
+            y: ty,
+            r,
+            sight,
+        } => {
+            (x - tx).abs() <= r
+                && (y - ty).abs() <= r
+                && sight.is_none_or(|p| grid.clear(Grid::centre(x, y), p))
+        }
+        // Rock anywhere over the head counts, not only rock touching it: a meteor
+        // strikes the roof of a cave, however high its ceiling.
+        // Ground under it, not `stands`: a dug pocket is still rock to the grid the
+        // search reads (the dig is planned, not done), and a cover only reachable by
+        // digging is exactly the one a bot with nothing near digs (measured: the foxhole
+        // two cells down was never a goal, so a hurt bot found none).
+        Want::Cover { above, hide } => {
+            grid.solid(x, y + 1)
+                && (2..=y).filter(|k| grid.solid(x, y - k)).count() as i32 >= above
+                && hide.is_none_or(|p| !grid.clear(Grid::centre(x, y), p))
+        }
     }
 }
 

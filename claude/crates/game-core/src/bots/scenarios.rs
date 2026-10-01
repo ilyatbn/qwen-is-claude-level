@@ -149,3 +149,143 @@ fn a_thin_wall_is_dug_and_a_thick_one_is_gone_round_in_play() {
         "control: the greedy model round a thick wall"
     );
 }
+
+/// Cells of rock anywhere over the head of a body with its feet in `(x, y)`.
+fn rock_overhead(w: &World, x: i32, y: i32) -> i32 {
+    let g = super::nav::Grid::new(&w.map);
+    (2..=y)
+        .filter(|k| g.cell(x, y - k) != super::nav::Cell::Air)
+        .count() as i32
+}
+
+/// The body's node, by the planner's own reading.
+fn node_of(w: &World, id: PlayerId) -> Option<(i32, i32)> {
+    super::nav::Grid::new(&w.map).locate(w.player(id)?.body.pos)
+}
+
+/// **D4: a meteor shower is sat out under rock.** Open ground, an overhang of
+/// `BOT_COVER_ROWS + 1` rows six cells off, the bot armed, an enemy on the open side; a
+/// shower is announced. By the end of the telegraph — before the first meteor can fall — the bot
+/// stands under at least `BOT_COVER_ROWS` of rock. Controls, each red where the
+/// behaviour is the reason: no shower (it does not go under the overhang); the route
+/// planted out (it cannot); a frenzied bot (it never takes cover, T99.01).
+#[test]
+fn a_meteor_shower_sends_a_bot_under_rock_before_the_first_impact() {
+    use crate::constants::{BOT_COVER_ROWS, EFFECT_TELEGRAPH};
+    use crate::weapons::explode::EffectKind;
+    let run = |shower: bool, routes: bool, frenzy: bool| -> i32 {
+        let rows = BOT_COVER_ROWS + 1;
+        let (mut w, ox, oy) = block(MapScale::Small, 30, rows + 12);
+        let floor = oy + rows + 10;
+        // A room under an overhang `rows` thick on its right half; the left half open to
+        // the top of the map, so nothing over the bot's start is rock at all.
+        fill(&mut w, ox + 1, oy + rows + 1, ox + 28, floor - 1, false);
+        fill(&mut w, ox + 1, 0, ox + 14, oy + rows, false);
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        w.add_player(2, 0, "post".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(stand_at(ox + 8, floor - 1));
+        }
+        // An enemy on the open side: what the bot does when there is no shower (closes
+        // on it, in the open), and what it keeps shooting at from cover when there is.
+        let post = stand_at(ox + 3, floor - 1);
+        give(&mut w, 1, PISTOL, 10);
+        let mut b = Bot::new(1, SEED, 0, 0.6).frenzied(frenzy);
+        if !routes {
+            b = b.without_routes();
+        }
+        let mut bots = vec![b];
+        if shower {
+            w.force_effect(EffectKind::MeteorShower, 0.0);
+        }
+        for t in 0..((EFFECT_TELEGRAPH * SIM_HZ as f32) as u32) {
+            if let Some(p) = w.player_mut(2) {
+                p.body.pos = post;
+                p.health = 100.0;
+            }
+            crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        node_of(&w, 1).map_or(0, |(x, y)| rock_overhead(&w, x, y))
+    };
+    let covered = run(true, true, false);
+    assert!(
+        covered >= BOT_COVER_ROWS,
+        "a bot told of a meteor shower stood under {covered} rows of rock at the first drop \
+         (wants {BOT_COVER_ROWS})"
+    );
+    assert!(
+        run(false, true, false) < BOT_COVER_ROWS,
+        "control: with no shower it took cover anyway"
+    );
+    assert!(
+        run(true, false, false) < BOT_COVER_ROWS,
+        "control: the greedy model took cover"
+    );
+    assert!(
+        run(true, true, true) < BOT_COVER_ROWS,
+        "control: a frenzied bot took cover"
+    );
+}
+
+/// **D5: a hurt bot breaks contact out of sight, digging in.** The §E10 retreat
+/// fixture (`walk.rs::a_hurt_bot_breaks_contact_and_a_healthy_one_holds_its_ground`) on
+/// a floor of solid rock: a hurt bot with its shovel ends where its enemy has no line to
+/// it. The control is that test itself, kept green with the shovel taken away — no
+/// cover reachable, so it still runs (§A2: "§E10's retreat stands where no cover is
+/// reachable").
+#[test]
+fn a_hurt_bot_digs_in_out_of_its_enemys_sight() {
+    let mut w = world_with(&[1, 2]);
+    let at = clear_line(&w);
+    let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+    for id in ids {
+        w.items.remove(id);
+    }
+    let y = flat_shelf(&mut w, at, 240);
+    // Solid rock under the shelf, so a hole dug in it is a hole in the ground.
+    let floor = y as i32 + PLAYER_H as i32 / 2 + 1;
+    for row in floor..(floor + 160) {
+        w.map
+            .mask
+            .set_run(row, at.x as i32 - 480, at.x as i32 + 240);
+    }
+    w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+    let enemy = Vec2::new(at.x + 120.0, y);
+    if let Some(p) = w.player_mut(1) {
+        p.body.pos = Vec2::new(at.x, y);
+    }
+    give(&mut w, 1, PISTOL, 10);
+    let health = crate::constants::BOT_FLEE_HEALTH - 5.0;
+    let mut bots = vec![Bot::new(1, SEED, 0, 0.6)];
+    let g = |w: &World| super::nav::Grid::new(&w.map).clear(w.player(1).unwrap().body.pos, enemy);
+    for t in 0..((SCENARIO_S * SIM_HZ as f32) as u32) {
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = enemy;
+            p.health = 100.0;
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.health = health;
+        }
+        crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+        w.step(SIM_DT);
+        let _ = w.drain_events();
+    }
+    assert!(
+        !g(&w),
+        "a hurt bot with a shovel ended in its enemy's line of sight (dug {} swings)",
+        bots[0].stats().dig_swings
+    );
+    assert!(
+        bots[0].stats().dig_swings > 0,
+        "it hid without digging — the fixture has cover"
+    );
+}
