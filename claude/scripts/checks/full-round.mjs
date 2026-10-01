@@ -71,6 +71,8 @@ const stack = await startStack({
     // is about the round, not about the search — and an unarmed round produces
     // no deaths to assert on.
     DEV_LOADOUT: '1',
+    // T23.27B item 3: `debugPlace`, the self-kill's fallback below.
+    DEV_PROBE: '1',
   },
 })
 console.log(`  round ${ROUND_SECONDS}s + warmup`)
@@ -218,9 +220,33 @@ let effectShot = false
 async function selfKill(c) {
   pauseA = true
   await sleep(400)
+  const before = (await dbg(c)).health
+  try {
+    await rockets(c)
+  } catch (e) {
+    console.log(`  self-kill: no rockets to fire (${String(e?.message ?? e).split('\n')[0]})`)
+  }
+  // T23.27B item 3: **the fallback that makes this reliable.** Red 2 runs in 3 on the untouched tree: `DEV_LOADOUT`
+  // is granted at spawn and not on respawn (`room.rs::tick_once` re-grants only the start kit), so a player the bots
+  // had already killed came back with a shovel and nothing to fire — or four rockets did not finish 100 health on
+  // cratered ground. Still alive: put the body below the map (`DEV_PROBE`'s `debugPlace`), which is the void death
+  // (§C15) — the death → respawn path this exists to exercise, on the same map, whatever the bag holds.
+  if ((await dbg(c)).health > 0) {
+    const d = await dbg(c)
+    await c.page.evaluate(([x, y]) => window.__game.debugPlace(x, y), [d.player?.x ?? 200, d.mapH + 400])
+    for (let w = 0; w < 25 && (await dbg(c)).health > 0; w++) await sleep(200)
+    console.log('  self-kill: finished by the void')
+  }
+  const after = await dbg(c)
+  console.log(`  self-damage: health ${before} → ${after.health}`)
+  pauseA = false
+  return before !== after.health
+}
+
+/** The rocket route: fire the bazooka into the ground at the player's feet, stepping onto fresh ground between shots. */
+async function rockets(c) {
   await selectWeapon(c.page, 'bazooka')
   await sleep(300)
-  const before = (await dbg(c)).health
   let switched = false
   // Aim down: the camera follows the player, so a point below mid-screen is
   // below the body in world space whatever the camera has done.
@@ -256,10 +282,6 @@ async function selfKill(c) {
     await c.page.evaluate('window.__game.fire()')
     await sleep(1000)
   }
-  const after = await dbg(c)
-  console.log(`  self-damage: health ${before} → ${after.health}`)
-  pauseA = false
-  return before !== after.health
 }
 
 let suicideDone = false

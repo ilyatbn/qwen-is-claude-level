@@ -6,12 +6,12 @@ import {
   parseVoteTally,
   tallyText,
   voteButton,
+  voteSummary,
   phaseDeadline,
   resultsView,
   secondsUntil,
   shouldShowResults,
   voteSecondsLeft,
-  voteSummary,
 } from './results-math'
 import type { ScoreEntry } from './scoreboard'
 
@@ -172,8 +172,8 @@ describe('countdownText (T21.32 item 1, T21.38)', () => {
   it('promises a new round only when every human has said yes', () => {
     // T21.38: one counted yes no longer carries the round, so nothing short of the
     // whole tally may promise one.
-    for (const t of [null, { yes: 0, humans: 1 }, { yes: 2, humans: 3 }, { yes: 0, humans: 0 }]) {
-      expect(countdownText(10, t)).not.toMatch(/new round/i)
+    for (const t of [null, { yes: 0, humans: 1 }, { yes: 2, humans: 3 }]) {
+      expect(countdownText(10, t)).not.toMatch(/new round|next round/i)
     }
     // The control, so "never promises" cannot pass.
     expect(countdownText(10, { yes: 3, humans: 3 })).toBe('New round starting…')
@@ -183,6 +183,27 @@ describe('countdownText (T21.32 item 1, T21.38)', () => {
     // The probe at 1173c70 read `count: ""` past the window.
     expect(countdownText(0, { yes: 1, humans: 2 })).toBe('Vote closed')
     expect(countdownText(-2, null)).toBe('Vote closed')
+  })
+})
+
+/**
+ * T23.27B item 2: a watched room (spectators and bots, `docs/78` §A1) has nobody to vote — its tally is `0 of 0` —
+ * and restarts on its own, so it says that rather than "0 of 0 players want a rematch". The control is a room with a
+ * human, whose lines are the vote's.
+ */
+describe('a watched room (T23.27B)', () => {
+  const watched = { yes: 0, humans: 0 }
+  it('says the next round is coming, not a vote', () => {
+    expect(tallyText(watched)).toBe('No players seated — the next round starts on its own')
+    expect(tallyText(watched)).not.toMatch(/0 of 0/)
+    expect(countdownText(12.2, watched)).toBe('Next round in 13 s')
+    expect(countdownText(0, watched)).toBe('Next round starting…')
+    expect(voteSummary(watched)).toBe('')
+  })
+  it('the control: a room with a human keeps the vote lines', () => {
+    expect(tallyText({ yes: 0, humans: 1 })).toBe('0 of 1 player wants a rematch')
+    expect(countdownText(12.2, { yes: 0, humans: 1 })).toBe('Vote closes in 13 s')
+    expect(voteSummary({ yes: 0, humans: 1 })).toMatch(/every player votes/)
   })
 })
 

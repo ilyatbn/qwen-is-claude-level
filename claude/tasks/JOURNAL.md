@@ -7717,3 +7717,7 @@ Server: `await_load` + load hold (world parked in `Lobby` until every body's `re
 Checks `round-restart`, `respawn-kit` (+3 unit tests), plants red. Done-when: cargo ok; e2e 4/5 then round-over fixed (samples the match as presented) → ok.
 Gate (`gate-builder4-T23.28.txt`) 91/100: radiation-match, space-sky-match (harness `inTheGame` → cover lifted) and look-match (newly drawn pickups animate; cast held empty) fixed and 10/10 rerun; effect-lights, weather-visible, night-view, platforms, smoke-fx, spectate green alone. Net smoke 25/25.
 Coordinator: `new_round` wire event unlisted in docs/40; partial pickups (`resolve_pickups` `Partial`) delete client items the server keeps — game-core, filed in the task. GPU shots `shots/t2328-gpu-*.png`.
+
+## T23.27B — watch follow-ups (builder4, 2026-10-01)
+Stale wasm: cargo rebuilds by mtime only; a changed file with an older mtime is never compiled (reproduced: content 240, pkg 238). `wasm-build.mjs` now keeps a content manifest (`lib/wasm-inputs.mjs`) and freshens changed inputs; plant (241, old mtime) reaches `__game.constants()`; no-change rebuild compiles nothing. Watched room's results lines say the next round starts on its own (no "0 of 0"). `full-round`: ana had died and lost `DEV_LOADOUT` (shovel only) → void fallback.
+Done-when: plant test as above; `e2e --only spectate,space-sky,full-round` 3/3 (full-round: 18 deaths, 2 self). Gate shared with T23.27C (next), as the coordinator asked them done together. Coordinator: wire `wasm-inputs.test.mjs` into check.sh.

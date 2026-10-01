@@ -34,6 +34,7 @@ import {
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { changedInputs, fingerprint, freshen, readManifest, wasmInputs, writeManifest } from './lib/wasm-inputs.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pkgDir = join(root, 'client', 'src', 'core', 'pkg')
@@ -246,6 +247,25 @@ process.on('exit', releaseLock)
 
 acquireLock()
 
+// T23.27B item 1: **content, not mtimes.** Cargo rebuilds a file only if its mtime is past the last build, so a
+// changed source carrying an older mtime (copied in with its times kept) was never compiled — T23.19G measured the
+// browser on `SPACE_MOON_ORBIT` 118 a whole task after it became 236, until a `cargo clean`. Every input whose content
+// differs from what the last successful build saw gets its mtime moved to now, so cargo sees it (`lib/wasm-inputs.mjs`).
+// Read under the lock, written only after the package is verified below: a failed build leaves the old record, and
+// the next build freshens the same files again.
+const manifestPath = join(root, 'target', '.wasm-build-inputs.json')
+const inputs = fingerprint(root, wasmInputs(root))
+const previous = readManifest(manifestPath)
+const changed = changedInputs(previous, inputs)
+if (changed.length) {
+  freshen(root, changed)
+  console.log(
+    previous
+      ? `wasm-build: ${changed.length} input(s) changed since the last build: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ', …' : ''}`
+      : `wasm-build: no record of the last build's inputs — freshening all ${changed.length}, once`,
+  )
+}
+
 // **Absolute.** `wasm-pack` resolves a relative `--out-dir` against the CRATE
 // directory, not against `cwd` — so `client/src/core/pkg` here meant
 // `crates/game-wasm/client/src/core/pkg`, and every build since silently wrote
@@ -296,3 +316,6 @@ if (stale.length) {
   )
   process.exit(1)
 }
+
+// The inputs this package was built from — read before the build, so a file edited during it is seen as changed next time.
+writeManifest(manifestPath, inputs)

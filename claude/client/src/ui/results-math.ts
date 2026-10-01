@@ -184,6 +184,16 @@ export function everyoneSaidYes(tally: VoteTally | null): boolean {
 }
 
 /**
+ * T23.27B item 2: **no human is seated to vote** — a watched room (`docs/78` §A1: only spectators besides the bots),
+ * which the server restarts on its own when the window closes. The tally counts humans and not spectators, so it reads
+ * `0 of 0` there, and "0 of 0 players want a rematch" described a vote nobody could cast over a round that was coming
+ * anyway.
+ */
+export function watchedRoom(tally: VoteTally | null): boolean {
+  return tally !== null && tally.humans === 0
+}
+
+/**
  * The countdown line (T21.32 item 1, reworded by T21.38).
  *
  * "Vote closes in N s" for everyone, voted or not: since T21.38 one counted yes
@@ -195,6 +205,8 @@ export function everyoneSaidYes(tally: VoteTally | null): boolean {
 export function countdownText(timeLeft: number, tally: VoteTally | null): string {
   if (everyoneSaidYes(tally)) return 'New round starting…'
   const s = voteSecondsLeft(timeLeft)
+  // T23.27B: a watched room has no vote to close — its next round comes when the window does.
+  if (watchedRoom(tally)) return s <= 0 ? 'Next round starting…' : `Next round in ${s} s`
   if (s <= 0) return 'Vote closed'
   return `Vote closes in ${s} s`
 }
@@ -204,6 +216,8 @@ export function countdownText(timeLeft: number, tally: VoteTally | null): string
  */
 export function tallyText(tally: VoteTally | null): string {
   if (tally === null) return ''
+  // T23.27B: nobody to want one — the round restarts on its own (`watchedRoom`).
+  if (watchedRoom(tally)) return 'No players seated — the next round starts on its own'
   const who = tally.humans === 1 ? 'player wants' : 'players want'
   return `${tally.yes} of ${tally.humans} ${who} a rematch`
 }
@@ -225,7 +239,9 @@ export function resultsView(
  * leaves is no longer asked. Bots are not mentioned because they are not asked
  * either. The tally is its own line, `tallyText`, from `round_state.votes`.
  */
-export function voteSummary(): string {
+export function voteSummary(tally: VoteTally | null = null): string {
+  // T23.27B: nobody votes in a watched room; the tally line says what happens instead.
+  if (watchedRoom(tally)) return ''
   return 'A new round starts only if every player votes Play again — otherwise everyone goes back to the title.'
 }
 

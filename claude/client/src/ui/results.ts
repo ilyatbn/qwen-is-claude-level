@@ -76,7 +76,7 @@ export class ResultsScreen {
     // T21.32 item 1: a visible countdown with words, not a bare `12s` that went
     // blank the moment the window closed and left the screen up with nothing on it.
     el.querySelector('.results-count')!.textContent = countdownText(this.timeLeft, this.tally)
-    el.querySelector('.results-vote')!.textContent = voteSummary()
+    el.querySelector('.results-vote')!.textContent = voteSummary(this.tally)
     el.querySelector('.results-tally')!.textContent = tallyText(this.tally)
     el.querySelector('.results-rows')!.innerHTML = view.rows
       .map(
