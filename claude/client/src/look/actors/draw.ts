@@ -262,7 +262,7 @@ export function crawler(g: G, x: number, y: number, { s = 1, face = 1, gait = 0,
   withT(g, x, y, s, face, 0, () => {
     const rock = 0.35 * Math.sin(gait * Math.PI * 2)
     const by = -5.2 + rock
-    const reach = [6.2, 4.2, 2.2]
+    const reach = [7.4, 5.0, 2.6]
     for (let i = 0; i < 6; i++) {
       const side = i < 3 ? 1 : -1
       const k = i % 3
@@ -276,8 +276,7 @@ export function crawler(g: G, x: number, y: number, { s = 1, face = 1, gait = 0,
       g.moveTo(...root)
       g.quadraticCurveTo(root[0] + (fx - root[0]) * 0.6, by - 0.8 - k * 0.4, fx, -0.3 - lift)
       // The tip curls back and up — the reference's tentacles.
-      g.quadraticCurveTo(fx + side * 1.6, -0.6 - lift, fx + side * 1.2, -2.0 - lift)
-      g.quadraticCurveTo(fx + side * 0.6, -2.6 - lift, fx + side * 0.3, -1.9 - lift)
+      g.quadraticCurveTo(fx + side * 1.5, -0.4 - lift, fx + side * 1.4, -1.8 - lift)
       g.stroke()
     }
     g.fillStyle = INK

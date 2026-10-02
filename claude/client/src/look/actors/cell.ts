@@ -212,6 +212,11 @@ export function estimateBox(a: Actor): Box {
     const m = 2 * 1.15 * size + 2
     b = [a.x - 11 * s - m, a.y - 8 * s - m, a.x + 11 * s + m, a.y + 8 * s + m]
   }
+  if (a.kind === 'tripod' || a.kind === 'crawler') {
+    // T23.31: `draw.ts::tripod` — feet ±10.5 (a stride's reach), the feeler 18.5 up; `crawler` — curled tips ±9.6, 9 up.
+    const m = 2 * 1.15 * size + 2
+    b = a.kind === 'tripod' ? [a.x - 11 * s - m, a.y - 19 * s - m, a.x + 11 * s + m, a.y + 1 * s + m] : [a.x - 11 * s - m, a.y - 10 * s - m, a.x + 11 * s + m, a.y + 1 * s + m]
+  }
   if (a.lit?.halo) {
     const hy = a.y - 14 * size
     const r = HALO_R * size

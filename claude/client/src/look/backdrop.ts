@@ -21,15 +21,15 @@ import { rng } from './skyLayout'
 
 /** The volcano band's canvas, frame px: wide enough for the volcano, its two side peaks and the mist. */
 export const VOLCANO_W = 1500
-export const VOLCANO_H = 640
+export const VOLCANO_H = 820
 /** The planets' canvas, frame px: the upper sky. */
 export const PLANETS_W = 1280
 export const PLANETS_H = 330
 /** Parallax factors (`skyLayout.ts::LAYER_PARALLAX`'s scale): the planets as far as the moons, the volcano past the ranges. */
 export const PLANET_PARALLAX = 0.01
 export const VOLCANO_PARALLAX = 0.03
-/** The lava's emission, linear (F2's `lava` [1.6, 0.45, 0.08], a little hotter: it is a river, not a seam). */
-export const LAVA: [number, number, number] = [2.2, 0.62, 0.12]
+/** The lava's emission at a river's core, linear — F2's seams' hue (`lava` [1.6, 0.45, 0.08] × `lavaK` 0.6) a little dimmer: it is far away. */
+export const LAVA: [number, number, number] = [1.5, 0.42, 0.075]
 
 /** The painted colours by the volcanic day (`t` 0), × linear — the dusky red day lifts the far shapes; night is 1. */
 export const DAY_TINT: [number, number, number] = [1.9, 1.45, 1.3]
@@ -72,9 +72,9 @@ export function paintVolcano(seed: number): { colour: HTMLCanvasElement; lava: H
   for (let i = left.length - 1; i >= 0; i--) g.lineTo(...left[i]!)
   g.closePath()
   const body = g.createLinearGradient(0, apexY, 0, foot)
-  body.addColorStop(0, '#3a1a14')
-  body.addColorStop(0.5, '#2a120e')
-  body.addColorStop(1, '#1a0b09')
+  body.addColorStop(0, '#4a2018')
+  body.addColorStop(0.5, '#351711')
+  body.addColorStop(1, '#22100c')
   g.fillStyle = body
   g.fill()
   // Faces: the left flank catches the plume's red glow, the right is in shadow; gullies run down both.
@@ -101,17 +101,18 @@ export function paintVolcano(seed: number): { colour: HTMLCanvasElement; lava: H
   // the colour canvas as a hot core so it reads before the bloom does.
   l.lineCap = l.lineJoin = 'round'
   g.lineCap = g.lineJoin = 'round'
-  const rivers = 5
+  const rivers = 4
   for (let k = 0; k < rivers; k++) {
     const side = k % 2 ? 1 : -1
-    const start: [number, number] = [cx + side * (6 + r() * (crater / 2)), apexY + 12 + r() * 10]
-    river(l, g, r, start, side, (foot - apexY) * (0.55 + r() * 0.4), 1)
+    // Two from the crater's lip, two breaking out lower on the flanks (volcanic2.jpg's), inside the cone's outline.
+    const t0 = k < 2 ? 0 : 0.12 + r() * 0.2
+    const half = crater / 2 + Math.pow(t0, 1.35) * 440 + t0 * 30
+    const start: [number, number] = [cx + side * (6 + r() * (half * 0.6)), apexY + 12 + t0 * (foot - apexY) + r() * 10]
+    river(l, g, r, start, side, (foot - apexY) * (0.4 + r() * 0.35), 0)
   }
   // Glow where the rivers reach the plain, and the crater's own.
   for (const [x, y, rad, a] of [
-    [cx, apexY + 8, 50, 0.9],
-    [cx - 380, foot - 4, 90, 0.35],
-    [cx + 360, foot - 4, 80, 0.3],
+    [cx, apexY + 14, 30, 0.22],
   ] as const) {
     const gr = l.createRadialGradient(x, y, 0, x, y, rad)
     gr.addColorStop(0, `rgba(255,255,255,${a})`)
@@ -174,33 +175,45 @@ function gully(g: G, r: () => number, x0: number, y0: number, side: number, len:
 }
 
 function river(l: G, g: G, r: () => number, start: [number, number], side: number, drop: number, depth: number): void {
+  // A course down the flank: it leaves the crater steeply, swings out across the slope as it falls (the cone widens),
+  // meanders, and thins toward its end — volcanic2.jpg's rivers. Each segment is drawn at its own width.
   const pts: [number, number][] = [start]
   let [x, y] = start
-  const steps = 16
+  const steps = 22
+  let drift = 0
+  const phase = r() * 6.28
   for (let i = 0; i < steps; i++) {
+    const t = i / steps
+    // A slope that steepens out as the cone widens, wandering about it, with a meander on top — never a ruled line.
+    drift += (r() - 0.5) * 0.7
+    drift = Math.max(-1.1, Math.min(1.1, drift))
     y += drop / steps
-    x += side * (10 + r() * 26) * (0.5 + i / steps) + (r() - 0.5) * 14
+    x += (side * (0.35 + 0.9 * t) + drift * 0.6) * (drop / steps) + Math.sin(i * 0.9 + phase) * 3.5
     pts.push([x, y])
   }
-  const stroke = (c: G, w: number, style: string, blur: number): void => {
-    c.save()
-    c.strokeStyle = style
-    c.lineWidth = w
-    c.shadowColor = style
-    c.shadowBlur = blur
-    c.beginPath()
-    c.moveTo(...pts[0]!)
-    for (const p of pts.slice(1)) c.lineTo(...p)
-    c.stroke()
-    c.restore()
+  const w0 = (3.2 - depth * 1.1) * (0.8 + r() * 0.4)
+  for (let i = 1; i < pts.length; i++) {
+    const t = i / pts.length
+    const w = Math.max(0.6, w0 * (1 - 0.65 * t))
+    const seg = (c: G, width: number, style: string): void => {
+      c.strokeStyle = style
+      c.lineWidth = width
+      c.beginPath()
+      c.moveTo(...pts[i - 1]!)
+      c.lineTo(...pts[i]!)
+      c.stroke()
+    }
+    seg(l, w + 2.5, 'rgba(255,255,255,0.18)')
+    seg(l, w, `rgba(255,255,255,${0.9 - 0.45 * t})`)
+    seg(g, w, 'rgba(190,80,36,0.9)')
   }
-  const w = 5 - depth * 1.5
-  stroke(l, w + 6, 'rgba(255,255,255,0.25)', 14)
-  stroke(l, w, 'rgba(255,255,255,0.9)', 4)
-  stroke(g, w * 0.7, 'rgba(255,150,70,0.95)', 0)
-  if (depth < 2 && r() < 0.8) {
-    const at = pts[4 + Math.floor(r() * 6)]!
-    river(l, g, r, [at[0], at[1]], side * (r() < 0.5 ? 1 : -1) * 0.6, drop * 0.45, depth + 1)
+  if (depth < 2) {
+    const n = depth === 0 ? 2 : 1
+    for (let k = 0; k < n; k++) {
+      if (r() > 0.75) continue
+      const at = pts[5 + Math.floor(r() * 10)]!
+      river(l, g, r, [at[0], at[1]], r() < 0.6 ? side : -side, drop * (0.3 + r() * 0.3), depth + 1)
+    }
   }
 }
 
@@ -212,11 +225,12 @@ function plume(g: G, r: () => number, x: number, y: number): void {
     const py = y - 10 - t * 300 + (r() - 0.5) * 50
     const rad = 30 + t * 110 + r() * 30
     const lit = Math.max(0, 1 - t * 3)
-    const red = Math.round(28 + lit * 70)
     const gr = g.createRadialGradient(px, py, 0, px, py, rad)
-    gr.addColorStop(0, `rgba(${red},${Math.round(18 + lit * 20)},${16},${0.55 - t * 0.2})`)
-    gr.addColorStop(0.6, `rgba(${red - 6},14,12,${0.3 - t * 0.12})`)
-    gr.addColorStop(1, 'rgba(20,12,10,0)')
+    // Ash: a dark warm grey, lit red from the crater at its root — lighter than F2's near-black upper sky, so it reads.
+    const red = Math.round(52 + lit * 90)
+    gr.addColorStop(0, `rgba(${red},${Math.round(36 + lit * 22)},${Math.round(34 + lit * 6)},${0.6 - t * 0.25})`)
+    gr.addColorStop(0.6, `rgba(${red - 10},${30 + Math.round(lit * 10)},28,${0.32 - t * 0.14})`)
+    gr.addColorStop(1, 'rgba(40,28,26,0)')
     g.fillStyle = gr
     g.fillRect(px - rad, py - rad, rad * 2, rad * 2)
   }
@@ -261,7 +275,7 @@ function ringed(g: G, x: number, y: number, rad: number, tilt: number, r: () => 
     g.beginPath()
     // The near half of the ring (front) or the far half (behind the disc).
     g.ellipse(0, 0, rad * 2.05, rad * 0.42, 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2)
-    g.strokeStyle = 'rgba(112,82,74,0.55)'
+    g.strokeStyle = 'rgba(140,100,88,0.6)'
     g.lineWidth = rad * 0.1
     g.stroke()
     g.beginPath()
@@ -273,9 +287,9 @@ function ringed(g: G, x: number, y: number, rad: number, tilt: number, r: () => 
   }
   ring(false)
   const body = g.createRadialGradient(x - rad * 0.35, y - rad * 0.35, rad * 0.1, x, y, rad)
-  body.addColorStop(0, '#2c2224')
-  body.addColorStop(0.7, '#1a1416')
-  body.addColorStop(1, '#100c0d')
+  body.addColorStop(0, '#3e3234')
+  body.addColorStop(0.7, '#251c1e')
+  body.addColorStop(1, '#161112')
   g.fillStyle = body
   g.beginPath()
   g.arc(x, y, rad, 0, Math.PI * 2)
@@ -286,7 +300,7 @@ function ringed(g: G, x: number, y: number, rad: number, tilt: number, r: () => 
   g.arc(x, y, rad, 0, Math.PI * 2)
   g.clip()
   const rim = g.createRadialGradient(x - rad * 0.2, y + rad * 0.9, rad * 0.2, x, y, rad * 1.4)
-  rim.addColorStop(0, `rgba(170,80,50,${0.25 + r() * 0.1})`)
+  rim.addColorStop(0, `rgba(200,96,60,${0.4 + r() * 0.1})`)
   rim.addColorStop(1, 'rgba(170,80,50,0)')
   g.fillStyle = rim
   g.fillRect(x - rad, y - rad, rad * 2, rad * 2)
@@ -305,8 +319,9 @@ const FS = /* glsl */ `
     vec2 uv = (fp - band.xy) / band.zw;
     if (uv.x < 0. || uv.x > 1. || uv.y < 0. || uv.y > 1.) discard;
     vec4 c = texture2D(colour, vec2(uv.x, 1. - uv.y));
-    float g = lavaOn > 0. ? texture2D(lava, vec2(uv.x, 1. - uv.y)).r : 0.;
-    vec3 col = c.rgb * tint + lavaCol * g * g;
+    // The mask is the canvas's alpha: its colour is white wherever alpha > 0 once un-premultiplied (`.r` read 1 at every faint edge).
+    float g = lavaOn > 0. ? texture2D(lava, vec2(uv.x, 1. - uv.y)).a : 0.;
+    vec3 col = c.rgb * tint + lavaCol * g;
     float a = max(c.a, clamp(g, 0., 1.));
     if (a <= 0.) discard;
     gl_FragColor = vec4(col, a);
