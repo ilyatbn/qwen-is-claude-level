@@ -369,6 +369,13 @@ async function matchLegs(problems, log) {
     if (!jet) problems.push("match: cal never listed a jet light at his view of dee's flame while dee burned")
     else if (jet.held !== 1) problems.push(`match: the remote jet light is in cal's list but his renderer holds it ${jet.held} times`)
     // (b) dee fires the smg in bursts; cal watches every frame's muzzle lights against the drawn bodies.
+    // T23.32: a held Space climbs now, so (a)'s burn left dee in the air, and (b) fired from a moving body: the light
+    // and cal's drawn dee parted by 87 px (red alone at 6c9b306; dee's muzzle y 384–423 against ~452 standing in every
+    // gate before the merge — why a moving gunner's light leaves his drawn body is not measured). (b) is the gun-on-a-standing-body
+    // case it was written for — dee lands first, and cal's view of him settles. A falling gunner's flash is not
+    // measured here (reported to the coordinator).
+    await dee.page.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: 15_000 })
+    await cal.page.waitForTimeout(500)
     await selectWeapon(dee.page, 'smg')
     await dee.page.evaluate(() => {
       window.__burst = setInterval(() => window.__game.fire(), 50)

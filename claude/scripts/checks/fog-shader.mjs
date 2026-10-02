@@ -115,6 +115,18 @@ export default async function ({ page, shot, log }) {
     window.__game.setTime(0)
   })
   await page.waitForTimeout(250)
+  // T23.24: and hide the fireflies — at this hour they fly over the sampled spots on the scene's clock, which
+  // `setTime` does not hold, and the flat veil's stillness control read them as the veil moving (red alone at
+  // 6c9b306: 2.13 over 90 frames, max 2). The fog is what is measured; the swarm is drawn the same under it or not.
+  const flies = await page.evaluate(() => {
+    const before = window.__world?.fireflies() ?? null
+    window.__world?.hideLayers(['fireflies'])
+    return before
+  })
+  await page.waitForTimeout(250)
+  const fliesHidden = await page.evaluate(() => window.__world?.fireflies() ?? null)
+  log(`fireflies: ${flies?.seeded} seeded, ${flies?.drawn} drawn (fade ${flies?.fade}) before the hide; ${fliesHidden?.drawn} under it`)
+  if (fliesHidden && fliesHidden.drawn !== 0) throw new Error(`the fireflies are drawn under the hide (${fliesHidden.drawn})`)
 
   const frame = await page.evaluate(() => {
     const r = document.querySelector('canvas').getBoundingClientRect()
