@@ -189,12 +189,17 @@ export const BED_FROM = 0
 /** The bed's level: dB of gain on the track as mastered (I −15.5 LUFS) — measured, see task. */
 /** Owner, 2026-10-02: "up the music level 10%" — ×1.1 in amplitude on the earlier −8 dB. */
 const BED_DB = -8 + 20 * Math.log10(1.1)
+/** Owner, 2026-10-02: "the final 3 seconds the music should ramp up to max" — the last seconds swell to the track
+ *  at full level (0 dB, as mastered), easing in by dB, with only a click-guard fade at the cut. */
+const BED_SWELL = 3
+const CUT_FADE = 0.12
+const BED_HOLD = 0.5
 /** Ducks under the big moments: [from, to, dB]. */
 const DUCKS = [
   [T.land - 0.1, T.land + 1.4, -7],
   [T.inhale, T.exhale + 1.4, -4],
   [T.alarm, T.turn, -4],
-  [T.turn, T.end, -9],
+  [T.turn, T.end - BED_SWELL, -9],
 ]
 const bedL = buf()
 const bedR = buf()
@@ -214,8 +219,10 @@ const bedR = buf()
     let want = 1
     for (const [a, b, db] of DUCKS) if (s >= a && s < b) want = Math.min(want, Math.pow(10, db / 20))
     duck = want + (duck - want) * k
-    const fade = Math.min(1, s / 2.5) * Math.max(0, Math.min(1, (T.end - s) / 2.5))
-    const g = g0 * duck * fade
+    const fade = Math.min(1, s / 2.5) * Math.max(0, Math.min(1, (T.end - s) / CUT_FADE))
+    // Reaches 0 dB `BED_HOLD` before the cut and holds there: linear in dB from where the bed sits.
+    const swell = Math.max(0, Math.min(1, (s - (T.end - BED_SWELL)) / (BED_SWELL - BED_HOLD)))
+    const g = swell > 0 ? Math.pow(10, ((BED_DB + 20 * Math.log10(duck)) * (1 - swell)) / 20) * fade : g0 * duck * fade
     bedL[i] = (mL[off + i] ?? 0) * g
     bedR[i] = (mR[off + i] ?? 0) * g
   }
