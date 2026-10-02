@@ -319,7 +319,7 @@ const FS = /* glsl */ `
     vec2 uv = (fp - band.xy) / band.zw;
     if (uv.x < 0. || uv.x > 1. || uv.y < 0. || uv.y > 1.) discard;
     vec4 c = texture2D(colour, vec2(uv.x, 1. - uv.y));
-    // The mask is the canvas's alpha: its colour is white wherever alpha > 0 once un-premultiplied (`.r` read 1 at every faint edge).
+    // The mask is the canvas's alpha: its colour is white wherever alpha > 0 once un-premultiplied (its .r read 1 at every faint edge).
     float g = lavaOn > 0. ? texture2D(lava, vec2(uv.x, 1. - uv.y)).a : 0.;
     vec3 col = c.rgb * tint + lavaCol * g;
     float a = max(c.a, clamp(g, 0., 1.));
