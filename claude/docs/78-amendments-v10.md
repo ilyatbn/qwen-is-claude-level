@@ -116,3 +116,13 @@ in-game look), `mapideas/volcanic.jpg` and `mapideas/volcanic2.jpg` (the backgro
   (`mapideas/`); its animals are small alien creatures in the style of the references — a three-legged tripod walker
   and an octopus-like crawler — drawn as ink silhouettes like the stick figures.
 Task: `T23.31`.
+
+## A8 — A look may choose its disasters (narrows §A7's "render-only")
+
+**Owner, 2026-10-02 (parked):** volcanic maps replace heavy fog with **volcanic ash** (a passing dark cloud that blinds
+those inside it) and meteor showers with **lava bursts** (meteor mechanics, lava rocks that set fire instead of
+exploding), with the background volcano erupting as the warning.
+- §A7's "a look is render-only" holds for terrain, collision and objects. A look **may** swap which environmental
+  effects the scheduler rolls; the server already knows the look (it picks it from the seed), so the simulation stays
+  deterministic and every client agrees.
+Task: `tasks/parking-lot/T23.33-volcanic-disasters.md` (after `T23.31`).
