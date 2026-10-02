@@ -133,6 +133,12 @@ export class ItemLayer {
     return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
   }
 
+  /** T99.04 (e2e only): show or hide the pickup labels — a trailer shot carries no signage. Returns what it did. */
+  setLabelsVisible(on: boolean): boolean {
+    this.labels.setVisible(on)
+    return this.labels.visible
+  }
+
   /** T23.19D F3 (dev, checks): the labels up now — text and where each is drawn (world px, its bottom centre). */
   get labelsDrawn(): { text: string; x: number; y: number; resolution: number }[] {
     return this.labels.list.map((o) => {

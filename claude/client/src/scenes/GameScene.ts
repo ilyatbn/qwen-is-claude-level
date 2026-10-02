@@ -2603,6 +2603,9 @@ export class GameScene extends Phaser.Scene {
     }
     // T23.27: a spectator's camera follows the watched player (no body of its own to lead the rig).
     if (this.spectating && this.viewAt) this.world.rig.follow(this.watchPoint ?? this.viewAt)
+    // T99.04: a framed point holds whatever else is (or is not) followed. A spectator watching nobody kept its last
+    // target, and every frame the rig lerped the snapped view back toward it — a directed shot sat 340 px off its mark.
+    if (this.watchPoint) this.world.rig.follow(this.watchPoint)
     this.world.rig.update(dt)
 
     this.renderRemotes(sampleAt, sampled)
@@ -3516,6 +3519,10 @@ export class GameScene extends Phaser.Scene {
       setShakeScale(k: number) {
         self.shakeScale = Math.max(0, k)
         return self.shakeScale
+      },
+      /** e2e only (T99.04): the pickups' name labels, off for a trailer shot. */
+      setItemLabelsVisible(on: boolean) {
+        return self.world?.items.setLabelsVisible(on) ?? null
       },
       /** e2e only (T99.04): draw the animals as every world's creatures at once (`mixedFauna`). */
       setFaunaMix(on: boolean) {

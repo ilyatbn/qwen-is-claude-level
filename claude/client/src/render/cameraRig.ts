@@ -83,7 +83,7 @@ export class CameraRig {
 
   /** Jump straight to a position, for a respawn or a map change. */
   snapTo(p: Vec): void {
-    this.center = clampCenter(p, this.mapW, this.mapH, this.tuning)
+    this.center = clampCenter(p, this.mapW, this.mapH, this.live())
     this.camera.centerOn(this.center.x, this.center.y)
   }
 
@@ -96,13 +96,22 @@ export class CameraRig {
         stepCenter(this.center, want, this.tuning.lerp),
         this.mapW,
         this.mapH,
-        this.tuning,
+        this.live(),
       )
     }
     this.trauma.decay(dt)
 
     const shake = this.trauma.offset(12, this.phase)
     this.camera.centerOn(this.center.x + shake.x, this.center.y + shake.y)
+  }
+
+  /**
+   * T99.04: the tuning at the zoom the camera **has** — the clamp keeps the view it draws inside the map, so it must
+   * measure that view. Measured with the constant's zoom (1.0), a 3x close-up could not get within 360 px of the
+   * map's floor: the half-view it reserved was three times the half-view on screen. Identical while nothing re-zooms.
+   */
+  private live(): CameraTuning {
+    return { ...this.tuning, zoom: this.camera.zoom }
   }
 
   get traumaLevel(): number {
