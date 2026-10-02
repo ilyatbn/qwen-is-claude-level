@@ -200,7 +200,8 @@ export default async function ({ page, shot, log }) {
   await page.evaluate((k) => localStorage.setItem(k, '0'), HIGH_QUALITY_KEY)
   const base = new URL(page.url())
   // T23.11: the sky pinned still at F1's look (`hourFromUrl`) — a moving moon would be read as a band's shift.
-  base.search = '?sandbox=1&seed=4242&hour=1'
+  // T23.31: the classic world — seed 4242 draws volcanic by the server's rule; this check was calibrated on classic.
+  base.search = '?sandbox=1&seed=4242&hour=1&worldlook=classic'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world && window.__world.frames() > 2 && !!window.__world.sky()?.drawn, null, { timeout: 60_000 })
   // T23.11: the sky moves with the clock now (the palettes' blend, the moons on their arcs), so the parallax legs

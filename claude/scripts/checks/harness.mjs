@@ -280,6 +280,17 @@ export async function startStack({ port, env = {}, label = 'check' } = {}) {
  * Returns the page plus the two helpers every check writes anyway, so a check
  * body is assertions and nothing else.
  */
+/**
+ * T23.31 (docs/78 §A7): the server picks a world look from the map's seed, so a fixture seed can come up volcanic —
+ * whose embers drift, whose rock has no grass, whose sky and light are F2's, and which costs SwiftShader more per
+ * frame. The checks were calibrated on the classic look and are about other things, so **a check's client draws the
+ * classic world unless its query names a look** (`worldlook=` — the dev override, `worldLookId.ts`). The volcanic
+ * world is `look-volcanic`'s; the simulation is the same under both (`world_look_tests`).
+ */
+export function classicUnlessNamed(query = '') {
+  return /(^|[?&])(world)?look=/.test(query) ? '' : '&worldlook=classic'
+}
+
 export async function openClient(
   { browser, viteUrl },
   { name = 'ana', query = '', code } = {},
@@ -292,7 +303,8 @@ export async function openClient(
   const url =
     `${viteUrl}/?e2e=1&game=1&name=${encodeURIComponent(name)}` +
     (code ? `&code=${encodeURIComponent(code)}` : '') +
-    query
+    query +
+    classicUnlessNamed(query)
   await page.goto(url)
   // **Seated, not ready** (§E1).
   //
@@ -779,7 +791,7 @@ export async function openAtMenu({ browser, viteUrl }, name, { seed = true, quer
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   // `query` (T22.19): extra URL parameters, e.g. `renderer=canvas` for one player of a match.
-  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}${query ? `&${query}` : ''}`)
+  await page.goto(`${viteUrl}/?e2e=1&menu=1&name=${name}${query ? `&${query}` : ''}${classicUnlessNamed(query)}`)
   await page.waitForFunction('!!window.__menu', null, { timeout: 60_000 })
   const NAME_KEY = clientKey('NAME_KEY')
   if (seed) await page.evaluate((k) => localStorage.setItem(k[0], k[1]), [NAME_KEY, name])

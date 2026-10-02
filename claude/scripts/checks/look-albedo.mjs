@@ -212,7 +212,8 @@ async function run({ page, shot, log }) {
   // ------------------------------------------------------------ 2. live, sandbox
   await page.evaluate((k) => localStorage.setItem(k, '0'), HIGH_QUALITY_KEY)
   const base = new URL(page.url())
-  base.search = '?sandbox=1&seed=4242'
+  // T23.31: the classic world — seed 4242 draws volcanic by the server's rule; this check was calibrated on classic.
+  base.search = '?sandbox=1&seed=4242&worldlook=classic'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => {
     const t = window.__world?.terrain?.()

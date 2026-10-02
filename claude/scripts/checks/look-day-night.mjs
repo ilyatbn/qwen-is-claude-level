@@ -143,7 +143,8 @@ export default async function ({ page, shot, log }) {
 
   // ------------------------------------------------------------------------------------- 2. live: a moon moves
   const base = new URL(page.url())
-  base.search = '?sandbox=1&seed=4242'
+  // T23.31: the classic world — seed 4242 draws volcanic by the server's rule; this check was calibrated on classic.
+  base.search = '?sandbox=1&seed=4242&worldlook=classic'
   await page.goto(base.href, { waitUntil: 'load' })
   await page.waitForFunction(() => !!window.__game && !!window.__world && window.__world.frames() > 2 && !!window.__world.sky()?.drawn, null, { timeout: 60_000 })
   await page.waitForFunction(() => window.__world.litTerrain()?.drawn, null, { timeout: 120_000 })

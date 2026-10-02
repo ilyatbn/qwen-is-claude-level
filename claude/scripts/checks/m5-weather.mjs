@@ -81,7 +81,7 @@ const check = (name, ok, detail) => {
 }
 
 try {
-  await page.goto(`${vite.url}/?sandbox=1&seed=4242&e2e=1`)
+  await page.goto(`${vite.url}/?sandbox=1&seed=4242&e2e=1&worldlook=classic`)
   await page.waitForFunction('window.__game && window.__game.debug().mapW > 0', null, {
     timeout: 90_000,
   })

@@ -13,6 +13,10 @@
  * The suite. `url` is the query string the check needs; a check that regenerates
  * the map itself only needs `?sandbox=1`.
  *
+ * T23.31: every ground sandbox URL names `worldlook=classic` — the look is picked from the seed now (4242 and 12345
+ * draw volcanic), and these checks were calibrated on the classic world; `harness.mjs::classicUnlessNamed` does the
+ * same for match clients. Space has no look. The volcanic world is `look-volcanic`'s.
+ *
  * Ordered cheapest-first, so a broken build fails on `sandbox` in seconds rather
  * than after the two-client round.
  */
@@ -67,7 +71,7 @@ export const CHECKS = [
   },
   // T23.13: rim-lit silhouettes — lit()'s rim passes at Level A on F4's actor boxes (rim-off must fail), then live
   // in the sandbox: a laser light rims the figure's near side only; the dark halo on a cave-wall spot only.
-  { name: 'rim-light', file: 'scripts/checks/rim-light.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'rim-light', file: 'scripts/checks/rim-light.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.04: the sky — the look-lab's F1/F5 sky alone against the mockup's sky alone at Level A
   // (full tier, every look-thresholds.json metric, F5's sky as the must-fail control), then live
   // in the sandbox: each band's pan shift = pan × zoom × parallax, far < near, a moon fixed;
@@ -82,7 +86,7 @@ export const CHECKS = [
   // (sky, world, whole frame; the middle fails against both), and live: advancing the cycle moves a moon.
   // T23.11: `&hour=1` on a check's URL pins F1's still sky (`worldRenderer-math.ts::hourFromUrl`) — the look every
   // check before T23.11 was calibrated on; the scene's own clock (and its night view) runs as before.
-  { name: 'look-day-night', file: 'scripts/checks/look-day-night.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'look-day-night', file: 'scripts/checks/look-day-night.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.11 (T23.04C F5's owed claim): in a live match the world canvas's sky differs day against night, many times more
   // than two readings at one hour (the control).
   { name: 'look-day-night-match', file: 'scripts/checks/look-day-night-match.mjs', standalone: true },
@@ -137,16 +141,16 @@ export const CHECKS = [
   // T23.09B un-parked it: the 313.5 px was the probe column lying along the tall bar with the moon's glow cutting
   // the bar in the three canvas; the search now reads only bar-thick crossings, and the match map is pinned.
   { name: 'world-canvas', file: 'scripts/checks/world-canvas.mjs', standalone: true },
-  { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'sandbox', file: 'scripts/checks/sandbox.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.09: the effects are the lights — a real bazooka blast, laser beam and jetpack burn each raise the
   // lit terrain's luminance near them (the frozen frame read with and without the terrain's point lights)
   // and leave rock beyond the light's radius unchanged (control region); the blast's light decays.
   // T23.09C F6: and §4 through GameScene — a remote's jet lit at its flame, networked rounds flashing at the gun (its
   // own two-client stack).
-  { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242&hour=1' },
+  { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242&hour=1&worldlook=classic' },
   // T23.24: fireflies — at night each drawn firefly changes its patch (ink darker, glint brighter) against the same
   // frozen frame with the layer hidden, the clear patches do not; by day and in space hiding the layer changes nothing.
-  { name: 'fireflies', file: 'scripts/checks/fireflies.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'fireflies', file: 'scripts/checks/fireflies.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
   // GPU process's memory, which other checks' pages would move.
@@ -159,17 +163,17 @@ export const CHECKS = [
   // could not tell the fill from its absence (measured). Seed 7 is grassland with
   // all six pads on ground and four such ends.
   // T23.09A: `&cavewall=1` — its wall control photographs the cave wall, which the game now leaves off by default.
-  { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7&cavewall=1' },
+  { name: 'gate-ground', file: 'scripts/checks/gate-ground.mjs', url: '?sandbox=1&seed=7&cavewall=1&worldlook=classic' },
   // T23.07 retired `terrain-render` (§C0: a crater changes the picture — photographed on Phaser's rock,
   // parked flaky; `look-terrain`'s live half now asserts the crater lit in the very frame it is carved,
   // against a from-scratch repaint). T23.07B (R24) restored `terrain-seed` on the lit terrain: the same
   // deep-rock world rect on two seeds wears different rock (the albedo's per-map offset), and the same
   // seed twice the same.
-  { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'terrain-seed', file: 'scripts/checks/terrain-seed.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.30 (`docs/78` §A5): every map shape loads, says what it is, and is drawn — where a shape has rock
   // and Mostly flat has air, the photograph differs from Flat's (control: the same shape twice does not).
-  { name: 'map-shapes', file: 'scripts/checks/map-shapes.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242&hour=1' },
+  { name: 'map-shapes', file: 'scripts/checks/map-shapes.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
+  { name: 'fog-shader', file: 'scripts/checks/fog-shader.mjs', url: '?sandbox=1&seed=4242&hour=1&worldlook=classic' },
   // T23.04 retired `clouds`, `clouds-canvas` and `cloud-rain` with the clouds (F has haze, not
   // clouds) and the ambient rain that fell from them.
   // T21.02: the boots have to be visible on the player. In the sandbox
@@ -177,31 +181,31 @@ export const CHECKS = [
   // same body, in the same place, before and after picking them up.
   // T23.14: rewritten on the stick figure's world-canvas pixels, the scene frozen (no camera ease between the two
   // frames — the cause it was parked for); unparked.
-  { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'boots-visible', file: 'scripts/checks/boots-visible.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.14: the stick figure — Level A on F7's pose boxes; running redraws and moves the legs, standing does not.
   // T23.14D F12: and §3, identity — two seats side by side wear their own scarf colours on screen (control: two of
   // seat 0 read as seat 0). This is the scarf check `skins-ingame`'s retirement note points at.
-  { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'stick-figure', file: 'scripts/checks/stick-figure.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.16: the firearms are F6's models — Level A on F6's weapon boxes (must fail: knob=actor-rim-off), no two alike
   // at game scale (IoU), each changes the hand when selected (legs the control), and the pickup draws the same model.
-  { name: 'weapons-held', file: 'scripts/checks/weapons-held.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'weapons-held', file: 'scripts/checks/weapons-held.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.09D: your own swing is predicted on the frame of the use (no round trip), a use inside the cooldown or with a
   // gun swings nothing, and the server's echo does not restart it.
   { name: 'melee-swing', file: 'scripts/checks/melee-swing.mjs', standalone: true },
   // T23.19A: the figure on a turret, in a gate and over a pickup, photographed on the page (both canvases).
-  { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337' },
+  { name: 'gunner-visible', file: 'scripts/checks/gunner-visible.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },
   // T23.19: pickups + labels, a grave at night against dark rock, animals and crystals (glow + light) in the world
   // renderer, each on pixels with a control frame and a control region.
-  { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337' },
+  { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },
   // T23.19D F1: the same furniture with no world renderer (`?world=off` — the stub, as without WebGL2): Phaser's, on screen.
-  { name: 'furniture-world-off', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&world=off' },
+  { name: 'furniture-world-off', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&world=off&worldlook=classic' },
   // T23.19C: solid rock hides the sky — deep-rock pixels do not move when the sky is swapped for flat magenta (open
   // air, the control, does), over four seeds × three views × night and noon; the full-tier leg is `rock-opaque-full`.
-  { name: 'rock-opaque', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337' },
-  { name: 'rock-opaque-full', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337&tier=full' },
+  { name: 'rock-opaque', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },
+  { name: 'rock-opaque-full', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337&tier=full&worldlook=classic' },
   // T23.14B: the jet flame — Level A on F4's and F7's flame boxes (must fail: knob=actor-jet-off), and a real burn
   // lighting the rock near the flame against the flame planted off (the light at the flame, both ends).
-  { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'jet-flame', file: 'scripts/checks/jet-flame.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T22.11C / R63: an asteroid's gravity well on **rendered pixels**, with the
   // patch the body moves away from as its control region and the same map with
   // `setAsteroids([])` as its control frame. `?gravity=space` is R22's parameter
@@ -245,13 +249,13 @@ export const CHECKS = [
   // jetpack draws the figure's flame **below** the body (F1's jet sticks, F7's `jet`),
   // against the flame-hidden frame; T22.04B asserted no plume here, when the plume was
   // aimed off velocity. The two entries above are the space arms.
-  { name: 'thrusters-standard', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
+  { name: 'thrusters-standard', file: 'scripts/checks/thrusters.mjs', url: '?sandbox=1&seed=4242&gravity=standard&worldlook=classic' },
   // T22.09B: space's radiation on the rendered frame — the edge glow and the HUD line
   // against a **sealed** control frame, a centre control region, and `Core.irradiated`
   // (bit 7's Rust predicate) read rather than assumed. `-standard` is the absence, with
   // the space entry as its presence control.
   { name: 'radiation', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
-  { name: 'radiation-standard', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
+  { name: 'radiation-standard', file: 'scripts/checks/radiation.mjs', url: '?sandbox=1&seed=4242&gravity=standard&worldlook=classic' },
   // T22.06: the space backdrop — sun, earth, moon and stars each located on the frame
   // against its own hidden-body control frame, moving across a round with the camera and
   // an asteroid patch held still, seeded, and the ground sky (T23.04: the world renderer's) and
@@ -270,11 +274,11 @@ export const CHECKS = [
     url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
     serial: true,
   },
-  { name: 'solar-flare-standard', file: 'scripts/checks/solar-flare.mjs', url: '?sandbox=1&seed=4242&gravity=standard' },
+  { name: 'solar-flare-standard', file: 'scripts/checks/solar-flare.mjs', url: '?sandbox=1&seed=4242&gravity=standard&worldlook=classic' },
   // T21.34: the unicorn wings on the body, same control-frame shape as boots.
   // Possible only since wings hover — under T21.03 the body flew off mid-check.
   // Not parked: a new check that starts on the flaky list gates nothing.
-  { name: 'wings-visible', file: 'scripts/checks/wings-visible.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'wings-visible', file: 'scripts/checks/wings-visible.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.07 retired `objects` (§D1: the scenery's atlas art goes with the carve) with the art: stamped
   // objects are rock in the mask and drawn as the lit rock (R5), so a carve through one is a carve
   // through rock — `look-terrain`'s live crater.
@@ -292,8 +296,8 @@ export const CHECKS = [
   // Parked 2026-10-02 (builder8, `tasks/flaky-test.md`): its sampler catches one round in ~350 ms screenshots — a coin flip.
   { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true, flaky: true },
   // §C6: the weather must reach the screen, not just the simulation.
-  { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
+  { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.04 retired `sky` (the §A4 keyframe gradient's phases), `living-sky` (the ridges) and
   // `canvas-renderer` (every region of it was the ridge band: foot, tint, wrap seam) with the
   // sky they photographed; `look-sky` is the new sky's check. The night/moonlit-day look is T23.11's.
@@ -303,35 +307,35 @@ export const CHECKS = [
   // T23.10 retired `lightmap` and `night_darkens_the_world` (both photographed night as Phaser's MULTIPLY lightmap,
   // `disabled` since T23.07) with the lightmap itself (R7, R13): `night-view` photographs the night view that replaced
   // it — inside sight unchanged, outside faded into the night palette and never black, a jet out there still bright.
-  { name: 'night-view', file: 'scripts/checks/night-view.mjs', url: '?sandbox=1&seed=4242' },
+  { name: 'night-view', file: 'scripts/checks/night-view.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.10 (R7): the night seeing rule in a real match on pixels — a remote at 0.9 × your night sight drawn, one at
   // 1.1 × not, in one frame. Standalone: three humans on a `DEV_PROBE=1` server at night.
   { name: 'night-view-match', file: 'scripts/checks/night-view-match.mjs', standalone: true },
   // T23.27 (`docs/78` §A1): a spectator — no body, the camera on the watched player, Tab / Shift+Tab to switch.
   { name: 'spectate', file: 'scripts/checks/spectate.mjs', standalone: true },
-  { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345' },
+  { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345&worldlook=classic' },
   // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
-  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345&hour=1' },
-  { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345' },
-  { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345' },
+  { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345&hour=1&worldlook=classic' },
+  { name: 'feel', file: 'scripts/checks/feel.mjs', url: '?sandbox=1&seed=12345&worldlook=classic' },
+  { name: 'minimap', file: 'scripts/checks/minimap.mjs', url: '?sandbox=1&seed=12345&worldlook=classic' },
   // `serial` (measured): red in 3 of 4 `--jobs 4` runs — a landing played at
   // 0.250 against a predicted 0.561-0.894, an impact speed from a starved frame
   // clock — and green in both `--jobs 1` runs.
-  { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345', serial: true },
+  { name: 'audio', file: 'scripts/checks/audio.mjs', url: '?sandbox=1&seed=12345&worldlook=classic', serial: true },
   // T23.07 retired `decorations` with the `decor` atlas and `decorations.ts` (R15).
   // T23.19E: un-parked. It was red every run (the band's *mean* moved 6.4 < 8 over F's thin tripod); it now decides
   // on the changed-pixel share (51 % vs a 15 % floor), as `furniture` does — tasks/flaky-test.md's row is closed.
-  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242' },
-  { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1' },
+  { name: 'platforms', file: 'scripts/checks/platforms.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
+  { name: 'm9-checkpoint', file: 'scripts/checks/m9-checkpoint.mjs', url: '?sandbox=1&seed=1&worldlook=classic' },
   // `serial`: it fails on measured frame time (feel-layer ms/frame, fps p50,
   // p99 spikes), and those are exactly what a concurrent check steals.
   // `flaky` (parked, tasks/flaky-test.md): red at 51.3 fps in the serial tail of a
   // full gate, still under the decaying load of the parallel phase; 59.9 and 59.5
   // fps alone on an idle box. `serial` does not wait for the load to fall.
-  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242', serial: true },
+  { name: 'perf', file: 'scripts/checks/perf.mjs', url: '?sandbox=1&seed=4242&worldlook=classic', serial: true },
   // R37's single-chunk rebake budget: moved into `perf` by T22.00C, where the flaky flag
   // meant nothing gated it; its own serial check since the M22 close-out.
-  { name: 'chunk-rebake', file: 'scripts/checks/chunk-rebake.mjs', url: '?sandbox=1&seed=4242', serial: true },
+  { name: 'chunk-rebake', file: 'scripts/checks/chunk-rebake.mjs', url: '?sandbox=1&seed=4242&worldlook=classic', serial: true },
   // §C7: a supply crate falls where you can see it fall. Standalone — it needs a
   // real server, because crates come from the server's spawn schedule and there
   // is no sandbox path to one.
@@ -357,7 +361,7 @@ export const CHECKS = [
   // T23.19E rewrote it (R13): the networked `WEATHER=lava` path cannot start while lava is switched off
   // (LAVA_ENABLED, owner 2026-09-16), so the sandbox stands vents in the world through the same weather layer and
   // effect lights a match uses; the jet covers its burning cone, the ground is lit, both tiers, at night.
-  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', url: '?sandbox=1&seed=31337&hour=1' },
+  { name: 'lava-lights', file: 'scripts/checks/lava-lights.mjs', url: '?sandbox=1&seed=31337&hour=1&worldlook=classic' },
   // §C3: the round ends and you are told. Standalone — it drives a real phase
   // machine on a shortened ROUND_SECONDS, and there is no sandbox path to `Ended`.
   { name: 'round-end', file: 'scripts/checks/round-end.mjs', standalone: true },

@@ -697,7 +697,8 @@ export class WorldRenderer implements SceneRenderer {
     if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000, this.desc?.look.lights ?? [], this.desc?.spaceSky ? SPACE_SMOKE : null)
     // T23.31: a look with embers in its air (F2's `extra2d`) — drifting in the game, the mockup's still sparks in the lab.
     if (this.desc?.palette?.extra2d === 'embers' && !this.hidden.has('embers')) {
-      if (this.desc.id === 'game') emberSprites(f, ambientEmbers(view, performance.now() / 1000))
+      // On the scene's clock (`setClock`), as the fireflies are: a frozen or paused scene's embers hold still.
+      if (this.desc.id === 'game') emberSprites(f, ambientEmbers(view, this.clock))
       // The lab: the mockup draws them on its 2D actor canvas, so they go with the cast (`only=world` has none).
       else this.embersStill = this.desc.actors.length > 0
     } else this.embersStill = false
