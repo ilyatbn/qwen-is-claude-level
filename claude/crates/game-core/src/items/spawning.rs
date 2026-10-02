@@ -4,8 +4,8 @@
 //! All of it is seeded and reproducible. See `docs/32-item-spawning.md`.
 
 use crate::constants::{
-    CRATE_H, CRATE_INTERVAL, CRATE_W, FLOOR_CRUST, ITEM_SPAWN_BATCH_MAX, ITEM_SPAWN_BATCH_MIN,
-    ITEM_SPAWN_INTERVAL, SKY_MARGIN, WALL_W,
+    CRATE_H, CRATE_INTERVAL, CRATE_MAX_ON_MAP, CRATE_W, FLOOR_CRUST, ITEM_SPAWN_BATCH_MAX,
+    ITEM_SPAWN_BATCH_MIN, ITEM_SPAWN_INTERVAL, SKY_MARGIN, WALL_W,
 };
 use crate::items::registry::{def, ItemId, ItemKind, WeightColumn};
 use crate::items::world::{SpawnSource, WorldItemId, WorldItems};
@@ -383,6 +383,12 @@ impl SpawnSchedule {
             return None;
         }
         self.next_crate_at += CRATE_INTERVAL;
+        // T23.36: **a full map skips the drop**, and the clock still advances — the next
+        // crate comes on the next beat after a slot frees, not in a burst making up for the
+        // ones skipped. Checked before any draw, so a skipped beat consumes nothing.
+        if world.iter().filter(|it| it.is_crate()).count() >= CRATE_MAX_ON_MAP {
+            return None;
+        }
 
         // **In space a crate does not come from the sky** (`M22-RULINGS` R16).
         //
@@ -816,6 +822,47 @@ mod tests {
         assert!((s.next_crate_at() - CRATE_INTERVAL * 21.0).abs() < 1e-3);
     }
 
+    /// **T23.36: never more than `CRATE_MAX_ON_MAP` crates, and one on the next beat once
+    /// a slot frees.** Five times the cap's beats with nothing picked up: the map holds
+    /// exactly the cap (the control that the cadence alone would have put
+    /// `5 × CRATE_MAX_ON_MAP` there — every beat below the cap dropped one). Then one is
+    /// opened: the beat after drops exactly one, and the one after that none again.
+    #[test]
+    fn crates_stop_at_the_cap_and_resume_when_one_is_taken() {
+        let map = medium();
+        let mut w = WorldItems::new();
+        let mut s = SpawnSchedule::new(4242, 0.0, 0);
+        let crates = |w: &WorldItems| w.iter().filter(|it| it.is_crate()).count();
+        let beats = 5 * CRATE_MAX_ON_MAP;
+        let mut dropped = 0;
+        for i in 1..=beats {
+            let got = s.tick_crates(&mut w, &map, CRATE_INTERVAL * i as f32);
+            // Below the cap every beat drops (the interval); at it, none do.
+            assert_eq!(got.is_some(), i <= CRATE_MAX_ON_MAP, "beat {i}");
+            dropped += usize::from(got.is_some());
+            assert!(crates(&w) <= CRATE_MAX_ON_MAP, "over the cap at beat {i}");
+        }
+        assert_eq!(dropped, CRATE_MAX_ON_MAP);
+        assert_eq!(crates(&w), CRATE_MAX_ON_MAP);
+        // The clock kept time through the skipped beats: no burst owed.
+        assert!((s.next_crate_at() - CRATE_INTERVAL * (beats + 1) as f32).abs() < 1e-3);
+
+        let first = w
+            .iter()
+            .find(|it| it.is_crate())
+            .map(|it| it.id)
+            .expect("a crate");
+        w.remove(first);
+        let t = CRATE_INTERVAL * (beats + 1) as f32;
+        assert!(s.tick_crates(&mut w, &map, t - 0.1).is_none(), "early");
+        assert!(
+            s.tick_crates(&mut w, &map, t).is_some(),
+            "a freed slot was not refilled"
+        );
+        assert!(s.tick_crates(&mut w, &map, t + CRATE_INTERVAL).is_none());
+        assert_eq!(crates(&w), CRATE_MAX_ON_MAP);
+    }
+
     #[test]
     fn crates_spawn_clear_of_the_walls_at_the_right_height() {
         let map = medium();
@@ -863,7 +910,9 @@ mod tests {
             let mut w = WorldItems::new();
             let mut s = SpawnSchedule::new(77, 0.0, 0);
             let mut crates = 0;
-            for i in 1..=60 {
+            // T23.36: as many as the cap lets onto the map at once (it was 60 beats).
+            let beats = CRATE_MAX_ON_MAP;
+            for i in 1..=beats {
                 let Some(id) = s.tick_crates(&mut w, &map, CRATE_INTERVAL * i as f32) else {
                     continue;
                 };
@@ -889,7 +938,7 @@ mod tests {
                     it.pos
                 );
             }
-            assert_eq!(crates, 60, "{scale:?}: only {crates} crates arrived");
+            assert_eq!(crates, beats, "{scale:?}: only {crates} crates arrived");
 
             // ---------------------------------------------- T22.05C/F2
             //
@@ -926,7 +975,7 @@ mod tests {
             // records twice.
             let mut ctl = WorldItems::new();
             let mut cs = SpawnSchedule::new(77, 0.0, 0);
-            for i in 1..=60 {
+            for i in 1..=beats {
                 cs.tick_crates(&mut ctl, &map, CRATE_INTERVAL * i as f32);
             }
             assert_eq!(

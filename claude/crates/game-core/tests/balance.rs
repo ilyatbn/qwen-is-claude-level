@@ -3038,6 +3038,42 @@ struct TerrainRound {
     /// T23.26D: kills by the killer's held weapon kind at the death (`WEAPON_KINDS`).
     kills_by_kind: [u32; game_core::bots::WEAPON_KINDS.len()],
     moved: game_core::bots::movement::Movement,
+    /// T23.36: crates dropped and crates opened (a pickup of an id a `CrateSpawn` named),
+    /// crates on the map summed per tick and its peak, bot-ticks alive with no firable
+    /// ranged weapon against bot-ticks alive, and the crate wire (`ItemMove` + `CrateSpawn`).
+    crates_dropped: u32,
+    crates_opened: u32,
+    crates_on_map_ticks: u64,
+    crates_on_map_max: u32,
+    ticks: u32,
+    unarmed_ticks: u32,
+    alive_ticks: u32,
+    crate_wire: u32,
+}
+
+/// T23.36: a body holds a weapon it could fire at range right now — the bots' own "armed"
+/// (`Bot::has_firable_weapon`: no melee, an energy weapon only with the charge for a shot).
+fn armed_at_range(p: &game_core::player::state::PlayerState) -> bool {
+    (0..INVENTORY_SLOTS as u8).any(|s| {
+        p.inventory.slot(s).is_some_and(|st| {
+            game_core::bots::weapon_kind(st.item).is_some_and(|k| k != 0)
+                && game_core::items::registry::def(st.item).is_some_and(|d| match d.kind {
+                    ItemKind::Weapon(wid) => {
+                        def(wid).is_some_and(|w| w.energy_cost <= 0.0 || p.battery >= w.energy_cost)
+                    }
+                    _ => false,
+                })
+        })
+    })
+}
+
+/// T23.36: the bot population's seeds — `SEEDS`, or `BOTS_SEEDS=n` seeds `s × 7919`,
+/// s = 1..=n (T23.26F's 96-seed method; 8 seeds sit inside the noise, kills 7–15 a seed).
+fn terrain_seeds() -> Vec<u64> {
+    std::env::var("BOTS_SEEDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(SEEDS.to_vec(), |n| (1..=n).map(|i| i * 7919).collect())
 }
 
 fn terrain_round(seed: u64) -> TerrainRound {
@@ -3055,12 +3091,29 @@ fn terrain_round(seed: u64) -> TerrainRound {
     let mut watch = game_core::bots::movement::Watcher::default();
     let mut last_hit: BTreeMap<u8, Option<game_core::weapons::explode::EffectKind>> =
         BTreeMap::new();
+    let mut crate_ids = std::collections::BTreeSet::new();
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
+        let on_map = w.items.iter().filter(|it| it.is_crate()).count() as u32;
+        r.crates_on_map_ticks += u64::from(on_map);
+        r.crates_on_map_max = r.crates_on_map_max.max(on_map);
+        r.ticks += 1;
+        for p in w.players.iter().filter(|p| p.alive) {
+            r.alive_ticks += 1;
+            r.unarmed_ticks += u32::from(!armed_at_range(p));
+        }
         for e in w.drain_events() {
             match e {
+                GameEvent::CrateSpawn { world_item_id, .. } => {
+                    crate_ids.insert(world_item_id);
+                    r.crates_dropped += 1;
+                    r.crate_wire += 1;
+                }
+                GameEvent::ItemMove { world_item_id, .. } => {
+                    r.crate_wire += u32::from(crate_ids.contains(&world_item_id));
+                }
                 GameEvent::Damage { victim, effect, .. } => {
                     r.meteor_hits += u32::from(
                         effect == Some(game_core::weapons::explode::EffectKind::MeteorShower),
@@ -3091,7 +3144,10 @@ fn terrain_round(seed: u64) -> TerrainRound {
                         _ => {}
                     }
                 }
-                GameEvent::ItemPickup { .. } => r.pickups += 1,
+                GameEvent::ItemPickup { world_item_id, .. } => {
+                    r.pickups += 1;
+                    r.crates_opened += u32::from(crate_ids.contains(&world_item_id));
+                }
                 _ => {}
             }
         }
@@ -3138,6 +3194,13 @@ fn bot_terrain_report() {
     let (mut bots_us, mut tick_us) = (Vec::new(), Vec::new());
     // The control that these are bots playing, not bodies lying dead: alive at the end.
     let mut alive = 0usize;
+    // T23.36: `BOTS_WARM=s` times the same 20 s later in the round — at 50 the crate cap
+    // (`CRATE_MAX_ON_MAP`) has had time to fill; the crates on the map are printed beside.
+    let warm_s: f32 = std::env::var("BOTS_WARM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10.0);
+    let mut crates_timed = Vec::new();
     for &seed in &SEEDS {
         let mut w = World::new(seed, DEFAULT_MAP_SCALE);
         w.set_phase(RoundPhase::Playing);
@@ -3148,7 +3211,7 @@ fn bot_terrain_report() {
             })
             .collect();
         let _ = w.drain_events();
-        let (warm, timed) = ((10.0 / SIM_DT) as u32, (20.0 / SIM_DT) as u32);
+        let (warm, timed) = ((warm_s / SIM_DT) as u32, (20.0 / SIM_DT) as u32);
         for t in 0..(warm + timed) {
             let now = w.round_time;
             let t0 = std::time::Instant::now();
@@ -3158,6 +3221,7 @@ fn bot_terrain_report() {
             let _ = w.drain_events();
             if t == warm + timed - 1 {
                 alive += w.players.iter().filter(|p| p.alive).count();
+                crates_timed.push(w.items.iter().filter(|it| it.is_crate()).count());
             }
             if t >= warm {
                 bots_us.push((t1 - t0).as_secs_f64() * 1e6);
@@ -3182,11 +3246,29 @@ fn bot_terrain_report() {
     println!("  bots (think + commands): mean {bm:.1} µs  p99 {bp:.1}  max {bx:.1}");
     println!("  whole tick             : mean {tm:.1} µs  p99 {tp:.1}  max {tx:.1}");
     println!(
-        "  alive at the end: {alive} of {}",
-        BOT_COUNT_DEFAULT * SEEDS.len()
+        "  alive at the end: {alive} of {} (warm {warm_s} s; crates on the map at the end {:?})",
+        BOT_COUNT_DEFAULT * SEEDS.len(),
+        crates_timed
     );
 
-    let rounds: Vec<TerrainRound> = SEEDS.iter().map(|&s| terrain_round(s)).collect();
+    // T23.36: `BOTS_SEEDS=96` for the wide draw; `BOTS_THREADS` rounds at once (default 1 —
+    // each round is its own world, so the order of the results is the seeds' either way).
+    let seeds = terrain_seeds();
+    let threads = std::env::var("BOTS_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let rounds: Vec<TerrainRound> = std::thread::scope(|sc| {
+        let chunks: Vec<_> = seeds
+            .chunks(seeds.len().div_ceil(threads))
+            .map(|c| sc.spawn(move || c.iter().map(|&s| terrain_round(s)).collect::<Vec<_>>()))
+            .collect();
+        chunks
+            .into_iter()
+            .flat_map(|h| h.join().expect("a terrain round panicked"))
+            .collect()
+    });
     let n = rounds.len() as f32;
     let sum = |f: fn(&TerrainRound) -> u32| rounds.iter().map(f).sum::<u32>() as f32;
     let bot_min = sum(|r| r.stats.ticks) * SIM_DT / 60.0;
@@ -3198,7 +3280,7 @@ fn bot_terrain_report() {
     println!(
         "\n== BOTS ON THE TERRAIN — {} seeds × {ROUND_SECONDS} s, {BOT_COUNT_DEFAULT} bots, skill \
          {BOT_SKILL_DEFAULT}, {DEFAULT_MAP_SCALE:?} ==",
-        SEEDS.len()
+        seeds.len()
     );
     println!(
         "  pressing without moving: {:.1} s per bot-minute ({stuck_s:.0} s over {bot_min:.0} \
@@ -3301,6 +3383,22 @@ fn bot_terrain_report() {
         "  T23.26F: {}, melee {:.0} % of kills",
         moved.meet_row(),
         100.0 * melee_kills / sum(|r| r.kills).max(1.0)
+    );
+    // T23.36: the crates, and the time a bot had nothing to shoot with at range.
+    let ticks = sum(|r| r.ticks).max(1.0);
+    println!(
+        "  T23.36: crates dropped {:.1} / opened {:.1} a round, on the map mean {:.1} max {}, \
+         unarmed {:.1} % of alive bot-time, crate wire {:.2} events/s",
+        sum(|r| r.crates_dropped) / n,
+        sum(|r| r.crates_opened) / n,
+        rounds.iter().map(|r| r.crates_on_map_ticks).sum::<u64>() as f32 / ticks,
+        rounds
+            .iter()
+            .map(|r| r.crates_on_map_max)
+            .max()
+            .unwrap_or(0),
+        100.0 * sum(|r| r.unarmed_ticks) / sum(|r| r.alive_ticks).max(1.0),
+        sum(|r| r.crate_wire) / (ticks * SIM_DT),
     );
     assert!(bot_min > 0.0, "control: no bot was ever alive");
     assert!(

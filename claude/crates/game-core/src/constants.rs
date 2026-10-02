@@ -1600,7 +1600,20 @@ pub const DROP_PICKUP_LOCK: f32 = 1.5;
 pub const ITEM_SPAWN_INTERVAL: f32 = 14.0;
 pub const ITEM_SPAWN_BATCH_MIN: u32 = 1;
 pub const ITEM_SPAWN_BATCH_MAX: u32 = 2;
-pub const CRATE_INTERVAL: f32 = 35.0;
+/// Seconds between supply crates. **35.0 → 2.0** (T23.36), with [`CRATE_MAX_ON_MAP`].
+///
+/// **Basis: the owner's ask, 2026-10-02**, watching a Hill match — *"barely anything drops
+/// and the bots are resorting to shovels again … drop like every 2 seconds as long as there
+/// are less than 20 crates on the map."* A crate is 65 % weapons by crate weight (177 of
+/// 271: medkit 25, shield 18, battery 18, flashlight 12, the three utilities 21 are the
+/// rest), so it was left unweighted. Measured in `bot_terrain_report` (T23.36 row): crates
+/// dropped and opened a round, crates on the map, melee share of kills, unarmed time.
+pub const CRATE_INTERVAL: f32 = 2.0;
+/// T23.36: no crate drops while this many are on the map — falling or landed, unopened. An
+/// opened (picked-up) crate, or one lost through the floor, frees its slot. Under
+/// `MAX_WORLD_ITEMS` (crates are never evicted, so the rest stays for ground items).
+/// **Basis: the owner's "as long as there are less than 20 crates on the map".**
+pub const CRATE_MAX_ON_MAP: usize = 20;
 pub const CRATE_W: f32 = 24.0;
 pub const CRATE_H: f32 = 24.0;
 /// Horizontal drag while falling.

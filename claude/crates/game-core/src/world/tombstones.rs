@@ -57,25 +57,37 @@ pub struct Tombstones {
 }
 
 impl Tombstones {
-    /// Place a grave. Returns the new stone, and any id evicted to make room.
+    /// Place a grave. Returns the new stone, and every id removed to make way for it.
+    ///
+    /// **One grave per player** (T23.36, the owner: *"only show the last one for a
+    /// player"*): the owner's earlier stone goes first. This is the one place that owns
+    /// that rule — the world announces each removed id as a `TombstoneDespawn`, and the
+    /// client's graves are those events (`worldMirror.ts`), so it has no copy to drift.
     ///
     /// The cap is enforced by **freeing a slot** before pushing, not by trimming
     /// afterwards: `while len > MAX` does nothing when `len == MAX`, and the next
     /// push lands on `MAX + 1`. That exact off-by-one shipped in `WorldItems::cull`
-    /// and only showed up as "items stop spawning late in a round".
+    /// and only showed up as "items stop spawning late in a round". With one stone a
+    /// player it binds only past `MAX_TOMBSTONES` players; it stays as the bound.
     pub fn place(
         &mut self,
         owner: PlayerId,
         pos: Vec2,
         skin_id: u16,
         now: f32,
-    ) -> (Tombstone, Option<TombstoneId>) {
-        let evicted = if self.stones.len() >= MAX_TOMBSTONES {
+    ) -> (Tombstone, Vec<TombstoneId>) {
+        let mut removed = Vec::new();
+        self.stones.retain(|t| {
+            let theirs = t.owner == owner;
+            if theirs {
+                removed.push(t.id);
+            }
+            !theirs
+        });
+        if self.stones.len() >= MAX_TOMBSTONES {
             // Oldest first — the graveyard keeps the recent dead.
-            Some(self.stones.remove(0).id)
-        } else {
-            None
-        };
+            removed.push(self.stones.remove(0).id);
+        }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let t = Tombstone {
@@ -89,7 +101,7 @@ impl Tombstones {
             placed_at: now,
         };
         self.stones.push(t);
-        (t, evicted)
+        (t, removed)
     }
 
     pub fn all(&self) -> &[Tombstone] {
@@ -333,11 +345,10 @@ mod tests {
     fn the_cap_evicts_the_oldest_and_never_exceeds_it() {
         let mut ts = Tombstones::default();
         let mut evictions = Vec::new();
+        // One owner each, so the one-a-player rule does not decide it (T23.36).
         for i in 0..(MAX_TOMBSTONES + 5) {
-            let (_, gone) = ts.place(0, Vec2::new(i as f32, 0.0), 0, i as f32);
-            if let Some(id) = gone {
-                evictions.push(id);
-            }
+            let (_, gone) = ts.place(i as PlayerId, Vec2::new(i as f32, 0.0), 0, i as f32);
+            evictions.extend(gone);
             assert!(
                 ts.len() <= MAX_TOMBSTONES,
                 "cap exceeded at {i}: {}",
@@ -349,6 +360,46 @@ mod tests {
         // Oldest first: the evicted ids are 0..5, and the survivors start at 5.
         assert_eq!(evictions, vec![0, 1, 2, 3, 4]);
         assert_eq!(ts.all()[0].id, 5);
+    }
+
+    /// **T23.36: one grave per player.** Two players die three times each, interleaved:
+    /// each keeps exactly one stone, the latest (its position), and every earlier one
+    /// was returned as removed. Control: a third player's single death removes nothing,
+    /// so "removed" is not simply every placement.
+    #[test]
+    fn only_a_players_latest_grave_stays() {
+        let mut ts = Tombstones::default();
+        let mut removed = Vec::new();
+        let mut placed = Vec::new();
+        for round in 0..3 {
+            for owner in [1 as PlayerId, 2] {
+                let at = Vec2::new(100.0 * owner as f32, 10.0 * round as f32);
+                let (t, gone) = ts.place(owner, at, 0, round as f32);
+                placed.push((owner, t.id, at));
+                removed.extend(gone);
+            }
+        }
+        assert_eq!(ts.len(), 2, "one stone each: {:?}", ts.all());
+        for owner in [1 as PlayerId, 2] {
+            let mine: Vec<_> = ts.all().iter().filter(|t| t.owner == owner).collect();
+            assert_eq!(mine.len(), 1);
+            let latest = placed.iter().rfind(|p| p.0 == owner).expect("placed");
+            assert_eq!(
+                (mine[0].id, mine[0].pos),
+                (latest.1, latest.2),
+                "not the latest"
+            );
+        }
+        // Counted at both ends: six placed, two stand, four removed — and they are the
+        // four earlier ids.
+        let mut early: Vec<_> = placed.iter().map(|p| p.1).collect();
+        early.retain(|id| ts.all().iter().all(|t| t.id != *id));
+        removed.sort_unstable();
+        assert_eq!(removed, early);
+        // Control: a first death takes nobody's grave.
+        let (_, gone) = ts.place(3, Vec2::ZERO, 0, 9.0);
+        assert!(gone.is_empty(), "a first grave removed {gone:?}");
+        assert_eq!(ts.len(), 3);
     }
 
     #[test]

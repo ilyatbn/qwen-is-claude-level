@@ -22,6 +22,10 @@ fn duel(w: &mut World, bot: (i32, i32), enemy: (i32, i32)) -> (PlayerId, Vec2) {
     for id in ids {
         w.items.remove(id);
     }
+    // T23.36: and none arrives — a crate every `CRATE_INTERVAL` (2 s) landed inside these
+    // fixtures' few seconds, and an armed bot with nobody in sight shops for one in reach
+    // (F5's forgetful control walked to a crate by the enemy's spot). Rebased a round on.
+    w.spawn_schedule.rebase(crate::constants::ROUND_SECONDS);
     if let Some(p) = w.player_mut(1) {
         p.body = crate::physics::body::Body::new(stand_at(bot.0, bot.1));
     }

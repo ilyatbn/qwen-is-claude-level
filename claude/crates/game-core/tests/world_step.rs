@@ -1334,33 +1334,52 @@ fn a_death_leaves_a_tombstone_where_the_player_fell() {
     );
 }
 
-/// The graveyard is capped, and the eviction is announced.
+/// **One grave per player, and each replaced one is announced** (T23.36; the cap this
+/// replaced is `Tombstones`' own unit test now, with one owner a stone).
 ///
 /// A client that never hears the despawn draws a grave the server has forgotten,
 /// which is the same leak as an item drawn by nothing — just in the other
-/// direction.
+/// direction. Two players: player 1 dies `n` times, player 2 once (the control — a
+/// first death announces no removal).
 #[test]
-fn the_graveyard_is_capped_and_evictions_are_announced() {
+fn a_player_keeps_one_grave_and_each_replacement_is_announced() {
     let mut w = playing();
     spawn_at(&mut w, 1);
+    spawn_at(&mut w, 2);
     let _ = w.drain_events();
-    let cap = game_core::constants::MAX_TOMBSTONES;
+    let n = 4;
 
-    let mut despawns = 0;
-    for _ in 0..(cap + 3) {
-        if let Some(p) = w.player_mut(1) {
+    let (mut spawns, mut despawns) = (0, 0);
+    let mut die = |w: &mut World, id: u8| {
+        if let Some(p) = w.player_mut(id) {
             p.alive = true;
             p.health = 0.0;
         }
         w.step(SIM_DT);
-        despawns += w
-            .drain_events()
-            .iter()
-            .filter(|e| matches!(e, GameEvent::TombstoneDespawn { .. }))
-            .count();
+        for e in w.drain_events() {
+            match e {
+                GameEvent::TombstoneSpawn { .. } => spawns += 1,
+                GameEvent::TombstoneDespawn { .. } => despawns += 1,
+                _ => {}
+            }
+        }
+    };
+    die(&mut w, 2);
+    for _ in 0..n {
+        die(&mut w, 1);
     }
-    assert_eq!(w.tombstones.len(), cap, "the cap holds");
-    assert_eq!(despawns, 3, "three over the cap, three evictions announced");
+    assert_eq!(spawns, n + 1, "every death announces its grave");
+    assert_eq!(
+        despawns,
+        n - 1,
+        "every replaced grave is announced, and only those"
+    );
+    assert_eq!(w.tombstones.len(), 2, "one each: {:?}", w.tombstones.all());
+    assert_eq!(
+        w.tombstones.len(),
+        spawns - despawns,
+        "the announcements add up to the graveyard"
+    );
 }
 
 // ---------------------------------------------------------------------------

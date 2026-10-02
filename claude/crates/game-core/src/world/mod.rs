@@ -4220,8 +4220,10 @@ impl World {
                 // A grave where they fell (§B8). Cosmetic, and it falls if the
                 // ground under it goes.
                 let skin = self.players[i].tombstone_skin_id;
-                let (stone, evicted) = self.tombstones.place(victim, pos, skin, now);
-                if let Some(gone) = evicted {
+                // T23.36: their earlier grave goes — one each, the latest — and is
+                // announced, so every client drops it (`Tombstones::place`).
+                let (stone, removed) = self.tombstones.place(victim, pos, skin, now);
+                for gone in removed {
                     self.events
                         .push(GameEvent::TombstoneDespawn { tick, id: gone });
                 }
