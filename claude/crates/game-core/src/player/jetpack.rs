@@ -131,8 +131,10 @@ pub fn update(
     } else if body.grounded || body.in_coyote_time() {
         // On the ground with Space held but no jump this tick: that is a held key
         // after a jump has already been consumed, so it engages once the delay has
-        // elapsed. A hold that launched no jump (carried across a respawn) does not.
-        state.hold_jumped
+        // elapsed. A hold that launched no jump (carried across a respawn) does not —
+        // unless the signal is fresh this tick: in space a held direction is the engage
+        // signal and arrives as a press every tick (`player::apply_input`), with no jump.
+        state.hold_jumped || engage_pressed
     } else {
         true
     };
@@ -427,7 +429,7 @@ mod tests {
     fn a_grounded_hold_that_never_jumped_does_not_engage() {
         let mut s = JetpackState::default();
         for tick in 0..=HOLD_DELAY_TICKS * 3 {
-            update(&mut s, &grounded(), true, tick == 0, false, SIM_DT);
+            update(&mut s, &grounded(), true, false, false, SIM_DT);
             assert!(
                 !s.active,
                 "a hold that never jumped engaged on the ground at tick {tick}"
