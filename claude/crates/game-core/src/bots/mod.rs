@@ -16,6 +16,7 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 mod arms;
+mod crates;
 mod dodge;
 mod explore;
 #[cfg(test)]
@@ -329,6 +330,9 @@ pub struct Bot {
     escape_off: bool,
     /// Tests only: T23.26F's drift to the middle planted out (`without_converge`).
     converge_off: bool,
+    /// Tests only: T23.36's crates seen map-wide planted out (`without_crates`) — a crate
+    /// is then an item like any other, seen inside `BOT_ENGAGE_RANGE`.
+    crates_off: bool,
     escape_to: Option<Vec2>,
     stats: BotStats,
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
@@ -386,6 +390,7 @@ impl Bot {
             escaping: false,
             escape_off: false,
             converge_off: false,
+            crates_off: false,
             escape_to: None,
             stats: BotStats::default(),
             frenzy: false,
@@ -433,6 +438,13 @@ impl Bot {
     #[cfg(test)]
     pub(crate) fn without_converge(mut self) -> Self {
         self.converge_off = true;
+        self
+    }
+
+    /// T23.36: the same bot blind to crates past its ordinary sight — the crate test's control.
+    #[cfg(test)]
+    pub(crate) fn without_crates(mut self) -> Self {
+        self.crates_off = true;
         self
     }
 
@@ -1068,7 +1080,17 @@ impl Bot {
         if best.is_none() || !armed || charge {
             let mut item_best: Option<(bool, f32, Goal)> = None;
             for it in world.items.iter() {
-                let d = (it.pos - pos).len();
+                // T23.36: a crate is seen map-wide by a bot with no gun (`crates::beacon`)
+                // and is gone to where it will land, not where it hangs in the sky.
+                let beacon = !self.crates_off && crates::beacon(it, armed);
+                let Some(at) = (if beacon {
+                    crates::landing(world, it)
+                } else {
+                    Some(it.pos)
+                }) else {
+                    continue;
+                };
+                let d = (at - pos).len();
                 // §E10, reachability. Two gates, and they are the ones the enemy
                 // search already applies to *people*: you cannot want what you
                 // cannot see. Without them a bot walked the width of the map
@@ -1082,21 +1104,21 @@ impl Bot {
                     && d <= crate::constants::BOT_ARM_SIGHT
                     && arms::ranged(it.item)
                     && (!routes || self.open.open_at(&nav::Grid::new(&world.map), it.pos));
-                if d > BOT_ENGAGE_RANGE && !far_gun {
+                if d > BOT_ENGAGE_RANGE && !far_gun && !beacon {
                     continue;
                 }
                 if routes {
-                    if self.route.refused(&route::item_target(it.pos), now) {
+                    if self.route.refused(&route::item_target(at), now) {
                         continue;
                     }
-                } else if !self.reachable(world, pos, it.pos) {
+                } else if !self.reachable(world, pos, at) {
                     continue;
                 }
                 // T22.12C F2: never shop inside the black hole's reach (or where a
                 // telegraphed one will open, T22.14A H2) — the one line
                 // of avoidance that needs no flight model. Steering out of the pull
                 // is T22.03B's (bots fly in space there, not here).
-                if crate::world::black_hole::clearance(world.black_hole_site(), it.pos) < 0.0 {
+                if crate::world::black_hole::clearance(world.black_hole_site(), at) < 0.0 {
                     continue;
                 }
                 // T22.03G: nothing the pickup would refuse (a full counter or stack) —
@@ -1114,13 +1136,15 @@ impl Bot {
                 let is_weapon = def(it.item).is_some_and(|d| matches!(d.kind, ItemKind::Weapon(_)));
                 let is_charge =
                     def(it.item).is_some_and(|d| matches!(d.kind, ItemKind::Battery { .. }));
+                // T23.36: a crate ranks as the weapon it most likely is (65 % by crate
+                // weight) — the bot does not know what is inside, only that it is a crate.
                 let rank = if charge {
                     is_charge
                 } else {
-                    !armed && is_weapon
+                    !armed && (is_weapon || beacon)
                 };
                 // Space (T22.03B): nothing a flight to it would end in a keep-out disc for.
-                if space::forbidden(world, it.pos) && world.gravity == GravityMode::Space {
+                if space::forbidden(world, at) && world.gravity == GravityMode::Space {
                     continue;
                 }
                 if item_best.is_none_or(|(br, bd, _)| (rank, -d) > (br, -bd)) {
@@ -1148,7 +1172,10 @@ impl Bot {
                 // reach) or when no ranged weapon lies anywhere on the map to go and get.
                 let reach = arms::band(crate::items::registry::SHOVEL).unwrap_or(0.0);
                 let cornered = best.is_some_and(|(d, _)| d <= reach);
-                let gun_anywhere = world.items.iter().any(|it| arms::ranged(it.item));
+                let gun_anywhere = world
+                    .items
+                    .iter()
+                    .any(|it| arms::ranged(it.item) || (!self.crates_off && it.is_crate()));
                 if gun_anywhere && !cornered {
                     best = None;
                 }
@@ -1390,7 +1417,14 @@ impl Bot {
             Goal::Enemy(id) | Goal::Flee(id) => {
                 world.player(id).filter(|p| p.alive).map(|p| p.body.pos)
             }
-            Goal::Item(id) => world.items.iter().find(|i| i.id == id).map(|i| i.pos),
+            // T23.36: a falling crate is gone to where it will land (`crates::landing`).
+            Goal::Item(id) => world.items.iter().find(|i| i.id == id).map(|i| {
+                if i.is_crate() && !i.grounded {
+                    crates::landing(world, i).unwrap_or(i.pos)
+                } else {
+                    i.pos
+                }
+            }),
             Goal::Wander => self.wander_to.or(Some(pos)),
         }
     }
