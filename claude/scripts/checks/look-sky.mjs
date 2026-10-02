@@ -208,7 +208,9 @@ export default async function ({ page, shot, log }) {
   // disc at its place, which the control below locates. The night view (T23.10: outside your sight the scene fades)
   // is hidden: it would dim the bands the legs isolate.
   await page.evaluate((t) => window.__game.setTime(t), await nightMoonT(page))
-  await page.evaluate(() => window.__world.hideLayers(['night']))
+  // T23.24 (T23.31 after the rebase): the fireflies too — they fly on the scene's clock and reseed with the map, so
+  // a sky-only comparison ("the first seed again", 39352 px with them, 0 without — measured) saw them, not the sky.
+  await page.evaluate(() => window.__world.hideLayers(['night', 'fireflies']))
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
   const sky = await page.evaluate(() => window.__world.sky())
   const tier = await page.evaluate(() => window.__world.info())
