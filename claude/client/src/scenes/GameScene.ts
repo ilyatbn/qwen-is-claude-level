@@ -1429,10 +1429,10 @@ export class GameScene extends Phaser.Scene {
       const kind = String(p['kind'] ?? '')
       this.audio.spatial(kind === 'meteor' ? 'meteor' : 'explode', x, y, this.ear())
       // Distance-scaled trauma, from the layer that owns trauma (§A24).
-      // T99.04: from the view when there is no body (a spectator) or a director holds the camera.
+      // T99.04: from the view when there is no body (a spectator).
       const me = this.predictor?.state ?? null
       const view = this.world?.rig.center ?? { x, y }
-      const at = shakeOrigin(me, view, this.watchPoint !== null)
+      const at = shakeOrigin(me, view)
       this.world?.rig.shake(traumaFromExplosion(Math.hypot(at.x - x, at.y - y), r) * this.shakeScale)
     })
     // `damage` is scoped to victim and attacker only (docs/40 §3), so receiving

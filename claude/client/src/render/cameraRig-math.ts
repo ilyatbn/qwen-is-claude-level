@@ -120,17 +120,19 @@ export function traumaFromExplosion(distance: number, radius: number): number {
 }
 
 /**
- * T99.04: **where an explosion's distance is measured from** — the body you play, or,
- * with none (a spectator) or a directed camera (`__game.watch`), the middle of the view.
- * A spectator used to measure from nowhere, which read as distance 0: every blast on the
- * map shook the screen at full strength wherever the camera was.
+ * T99.04: **where an explosion's distance is measured from** — the body you play, or, with none (a spectator), the
+ * middle of the view. A spectator used to measure from nowhere, which read as distance 0: every blast on the map
+ * shook the screen at full strength wherever the camera was.
+ *
+ * **Not the view while a check frames a point (`__game.watch`)**: tried, and eleven browser checks that photograph a
+ * blast through `watch` went red — the shot shook, and their control regions moved with it. A framed point is a
+ * photograph of the world, and a body's ear is where the game has always measured from.
  */
 export function shakeOrigin(
   body: { x: number; y: number } | null,
   view: { x: number; y: number },
-  directed: boolean,
 ): { x: number; y: number } {
-  return directed || !body ? view : body
+  return body ?? view
 }
 
 /**
