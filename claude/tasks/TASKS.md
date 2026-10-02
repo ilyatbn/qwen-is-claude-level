@@ -890,4 +890,5 @@ Not the game: material to show it. Nothing here changes a real round.
 
 - [x] [T99.01](M99/T99.01-frenzied-bots.md) — Frenzied bots for trailer footage — `DEV_BOT_FRENZY=1`: the whole map is in sight, nobody flees; off by default
 - [x] [T99.02](M99/T99.02-trailer.md) — The SHRED trailer (~59 s) — 3D prequel (the landing, the breath, the turn), real match footage cut to a synthesised industrial-metal score, SHRED / COMING SOON (`promo/`)
+- [ ] [T99.03](M99/T99.03-the-intro-reshot.md) — The intro reshot: PLANET DROXILON 7, the ramp to the ground, the tablet, the long breath, helmets off, UNKNOWN SUBSTANCE, the turn (owner)
 
