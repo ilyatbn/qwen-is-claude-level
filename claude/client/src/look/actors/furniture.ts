@@ -55,9 +55,32 @@ export function pickupActor(sprite: string, x: number, y: number): Actor {
 
 /** `draw.ts::grave`'s height at `s` 1 (mound to the stone's top). */
 export const GRAVE_ART_H = 16
-/** A grave standing on the feet line at (x, y), `h` world px tall (`TOMBSTONE_H`), at the scene's `night` (0–1). */
-export function graveActor(x: number, y: number, h: number, night: number): Actor {
-  return { kind: 'grave', x, y, opts: { s: h / GRAVE_ART_H }, lit: { size: 1, ...nightHalo(night), shadow: true }, box: null }
+/**
+ * T23.36 (owner: *"add a glow around the tombstone with the same color as the players"*): a grave's halo is its
+ * owner's scarf colour — **by day too**, faintly, so it reads on lit rock (`GRAVE_GLOW_DAY_A`), rising to
+ * `GRAVE_GLOW_NIGHT_A` at full night in the night halo's steps (`NIGHT_HALO_STEPS`: one atlas cell a step, not one a
+ * frame). It is the night halo's place, tinted: F4's cool `NIGHT_HALO` is what a grave with no glow still wears.
+ */
+export const GRAVE_GLOW_DAY_A = 0.38
+export const GRAVE_GLOW_NIGHT_A = 0.46
+export function graveGlow(night: number, rgb: RgbString): Pick<LitOpts, 'halo' | 'haloAlpha'> {
+  const q = Math.round(Math.min(1, Math.max(0, night)) * NIGHT_HALO_STEPS) / NIGHT_HALO_STEPS
+  return { halo: rgb, haloAlpha: GRAVE_GLOW_DAY_A + (GRAVE_GLOW_NIGHT_A - GRAVE_GLOW_DAY_A) * q }
+}
+
+/** `#rrggbb` → F's `'r,g,b'` (a seat's scarf colour, `SCARF_COLOURS`, as a halo colour). */
+export function rgbOfHex(hex: string): RgbString {
+  const v = parseInt(hex.replace('#', ''), 16)
+  return `${(v >> 16) & 255},${(v >> 8) & 255},${v & 255}`
+}
+
+/**
+ * A grave standing on the feet line at (x, y), `h` world px tall (`TOMBSTONE_H`), at the scene's `night` (0–1);
+ * `glow` (T23.36) its owner's colour, or `null` for none (the night halo only — a check's control, a staged stone).
+ */
+export function graveActor(x: number, y: number, h: number, night: number, glow: RgbString | null = null): Actor {
+  const halo = glow ? graveGlow(night, glow) : nightHalo(night)
+  return { kind: 'grave', x, y, opts: { s: h / GRAVE_ART_H }, lit: { size: 1, ...halo, shadow: true }, box: null }
 }
 
 /** Wire kinds (`animals-math.ts`): 0 spider, 1 beetle. */

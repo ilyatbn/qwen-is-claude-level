@@ -1124,18 +1124,20 @@ export class SandboxScene extends Phaser.Scene {
         self.world.weather.setHazardsVisible(o?.visible ?? true)
         return { drawnBy: self.world.weather.hazardsDrawnBy, vents: o?.vents?.length ?? 0, drops: o?.drops?.length ?? 0 }
       },
-      stageFurniture(o: { graves?: { x: number; y: number }[]; animals?: { kind: number; x: number; y: number; right?: boolean }[]; visible?: boolean } | null) {
+      stageFurniture(o: { graves?: { x: number; y: number; owner?: number }[]; animals?: { kind: number; x: number; y: number; right?: boolean }[]; visible?: boolean; glow?: boolean } | null) {
         if (!self.furniture) {
           const c = C()
           self.furniture = { graves: new TombstoneLayer(self, c.TOMBSTONE_W, c.TOMBSTONE_H), animals: new AnimalLayer(self) }
         }
         const f = self.furniture
-        f.graves.update((o?.graves ?? []).map((g, i) => ({ id: i + 1, owner: 0, x: g.x, y: g.y })))
+        // T23.36: each grave its owner's (its glow's colour); `glow: false` the control — the stones with none.
+        f.graves.update((o?.graves ?? []).map((g, i) => ({ id: i + 1, owner: g.owner ?? 0, x: g.x, y: g.y })))
+        f.graves.setGlow(o?.glow ?? true)
         f.animals.update((o?.animals ?? []).map((a, i) => ({ id: i + 1, kind: a.kind, x: a.x, y: a.y, right: a.right ?? true })), self.time.now)
         const on = o?.visible ?? true
         f.graves.setVisible(on)
         f.animals.setVisible(on)
-        return { graves: f.graves.count, animals: f.animals.drawn, inWorld: f.graves.drawsInWorld && f.animals.drawsInWorld }
+        return { graves: f.graves.count, drawn: f.graves.drawn, animals: f.animals.drawn, inWorld: f.graves.drawsInWorld && f.animals.drawsInWorld }
       },
       /** T23.19, e2e only: the crystals on (default) or off, for a same-frame control; what the map carries. */
       showCrystals(on: boolean) {

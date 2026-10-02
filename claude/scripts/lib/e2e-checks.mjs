@@ -199,6 +199,12 @@ export const CHECKS = [
   { name: 'furniture', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },
   // T23.19D F1: the same furniture with no world renderer (`?world=off` — the stub, as without WebGL2): Phaser's, on screen.
   { name: 'furniture-world-off', file: 'scripts/checks/furniture.mjs', url: '?sandbox=1&seed=31337&world=off&worldlook=classic' },
+  // T23.36: two owners' graves glow in their two scarf colours, at night and at noon — each ring's added colour is its
+  // grave's, against the same stones with the glow off (the control frame) and a patch that does not move.
+  { name: 'graves', file: 'scripts/checks/graves.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },
+  // T23.36: a real server and real deaths (held poison at 1 health): every player who died twice or more keeps exactly
+  // one grave, the latest, and every tracked grave is drawn.
+  { name: 'graves-live', file: 'scripts/checks/graves-live.mjs', standalone: true },
   // T23.19C: solid rock hides the sky — deep-rock pixels do not move when the sky is swapped for flat magenta (open
   // air, the control, does), over four seeds × three views × night and noon; the full-tier leg is `rock-opaque-full`.
   { name: 'rock-opaque', file: 'scripts/checks/rock-opaque.mjs', url: '?sandbox=1&seed=31337&worldlook=classic' },

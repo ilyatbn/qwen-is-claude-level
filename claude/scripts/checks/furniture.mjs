@@ -15,6 +15,9 @@
  * night leg is the noon leg's control). **F3** — the pickup's label is Phaser text at screen resolution, outside the
  * world's post chain: its glyph edges keep a contrast floor on the low tier, which the same crop blurred 3×3 (what
  * the half-resolution world canvas did to it) does not.
+ *
+ * T23.36: graves now glow in their owner's colour by day too (`graves.mjs` checks that); the stones here are staged
+ * with `glow: false`, so F2's night halo is what these legs still measure.
  */
 import { comparePhotos, photo, toScreen, patchRGBA } from './pixels.mjs'
 
@@ -125,7 +128,7 @@ async function worldOff({ page, shot, log }) {
   const ax = me.x - 60
   const ay = await groundBelow(page, ax, me.y - 40)
   if (gy === null || ay === null) throw new Error(`no ground beside the player at ${Math.round(me.x)},${Math.round(me.y)}`)
-  const stage = (on) => page.evaluate(([g, a, v]) => window.__game.stageFurniture({ graves: [g], animals: a, visible: v }), [
+  const stage = (on) => page.evaluate(([g, a, v]) => window.__game.stageFurniture({ graves: [g], animals: a, visible: v, glow: false }), [
     { x: gx, y: gy - k.TOMBSTONE_H / 2 },
     [{ kind: 1, x: ax - 14, y: ay - k.BEETLE_H / 2 }, { kind: 0, x: ax + 14, y: ay - k.SPIDER_H / 2 }],
     on,
@@ -242,7 +245,7 @@ export default async function (ctx) {
   const ay = await groundBelow(page, ax, me.y - 40)
   if (gy === null || ay === null) throw new Error(`no ground beside the player at ${Math.round(me.x)},${Math.round(me.y)}`)
   log(`player ${Math.round(me.x)},${Math.round(me.y)}; grave on ground ${Math.round(gx)},${gy}; animals on ground ${Math.round(ax)},${ay}`)
-  const stage = (on) => page.evaluate(([g, a, v]) => window.__game.stageFurniture({ graves: [g], animals: a, visible: v }), [
+  const stage = (on) => page.evaluate(([g, a, v]) => window.__game.stageFurniture({ graves: [g], animals: a, visible: v, glow: false }), [
     { x: gx, y: gy - k.TOMBSTONE_H / 2 },
     [{ kind: 1, x: ax - 14, y: ay - k.BEETLE_H / 2 }, { kind: 0, x: ax + 14, y: ay - k.SPIDER_H / 2 }],
     on,

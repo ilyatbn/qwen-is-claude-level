@@ -26,6 +26,10 @@ import {
   crystalActors,
   crystalLights,
   graveActor,
+  graveGlow,
+  GRAVE_GLOW_DAY_A,
+  GRAVE_GLOW_NIGHT_A,
+  rgbOfHex,
   isCrystal,
   nearView,
   pickupActor,
@@ -123,6 +127,29 @@ describe('furniture (T23.19)', () => {
     const seen = new Set<number | undefined>()
     for (let i = 0; i <= 100; i++) seen.add(nightHalo(i / 100).haloAlpha)
     expect(seen.size).toBe(NIGHT_HALO_STEPS + 1)
+  })
+
+  it("T23.36: a grave glows in its owner's colour — faint by day, stronger by night, in the night halo's steps", () => {
+    const red = rgbOfHex('#e8482c')
+    expect(red).toBe('232,72,44')
+    const noon = graveActor(10, 100, 18, 0, red)
+    const night = graveActor(10, 100, 18, 1, red)
+    // By day too (the night halo has none at noon: the control just above).
+    expect(noon.lit?.halo).toBe(red)
+    expect(noon.lit?.haloAlpha).toBe(GRAVE_GLOW_DAY_A)
+    expect(night.lit?.halo).toBe(red)
+    expect(night.lit?.haloAlpha).toBe(GRAVE_GLOW_NIGHT_A)
+    expect(GRAVE_GLOW_DAY_A).toBeGreaterThan(0)
+    expect(GRAVE_GLOW_NIGHT_A).toBeGreaterThan(GRAVE_GLOW_DAY_A)
+    // Two owners, two colours: the cell key (`lit` is in it) tells them apart.
+    const teal = graveActor(10, 100, 18, 1, rgbOfHex('#18c2b8'))
+    expect(teal.lit?.halo).not.toBe(night.lit?.halo)
+    // Stepped as the night halo is: one atlas drawing a step through dusk.
+    const seen = new Set<number | undefined>()
+    for (let i = 0; i <= 100; i++) seen.add(graveGlow(i / 100, red).haloAlpha)
+    expect(seen.size).toBe(NIGHT_HALO_STEPS + 1)
+    // Control: no glow given — the night halo exactly as before.
+    expect(graveActor(10, 100, 18, 1)).toEqual({ ...night, lit: { size: 1, ...nightHalo(1), shadow: true } })
   })
 
   it("a weapon pickup is its model at the icon's fitted scale, centred; anything else is an item drawing", () => {

@@ -15,13 +15,25 @@ import { diffTombstones, type TombstoneView } from './tombstones-math'
 import { TOMBSTONE_KEY, ensureTombstoneTexture } from './tombstoneTextures'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws, fxFeed } from '../look/fx/feed'
-import { VIEW_MARGIN, graveActor, nearView } from '../look/actors/furniture'
+import { VIEW_MARGIN, graveActor, nearView, rgbOfHex } from '../look/actors/furniture'
+import { SCARF_COLOURS } from './playerView'
 
 /** `TOMBSTONE_W` × `TOMBSTONE_H` from the shared constants. */
 const FALLBACK_FILL = 0x9aa3ad
+/** T23.36: the Phaser path's glow (no world renderer, space): a disc this many grave heights across, at this alpha. */
+const PHASER_GLOW_R = 1.4
+const PHASER_GLOW_A = 0.35
+
+/** T23.36: the scarf colour of the seat `owner` sits in (`PlayerView.setSeat`: the player id, round the palette). */
+export function graveColour(owner: number): string {
+  const n = SCARF_COLOURS.length
+  return SCARF_COLOURS[((owner % n) + n) % n] ?? SCARF_COLOURS[0]
+}
 
 interface Entry {
   sprite: Phaser.GameObjects.Image | Phaser.GameObjects.Rectangle
+  /** T23.36: the Phaser path's glow behind the stone, in the owner's colour (hidden while the world draws it). */
+  glow: Phaser.GameObjects.Arc
   view: TombstoneView
   /** T23.19: its place in the world renderer's cast, while `useWorld` holds. */
   leave: (() => void) | null
@@ -36,6 +48,8 @@ export class TombstoneLayer {
   private worldOn = false
   /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
   private readonly unfollow: () => void
+  /** T23.36: graves glow in their owner's colour; off only for a check's control frame (`setGlow`). */
+  private glowOn = true
 
   constructor(
     scene: Phaser.Scene,
@@ -65,8 +79,15 @@ export class TombstoneLayer {
     this.container.setVisible(on)
   }
 
+  /** T23.36, a check's control: the stones drawn with no glow of their own (the night halo only). */
+  setGlow(on: boolean): void {
+    this.glowOn = on
+    for (const e of this.entries.values()) e.glow.setVisible(!this.worldOn && on)
+  }
+
   private place(e: Entry): void {
     e.sprite.setVisible(!this.worldOn)
+    e.glow.setVisible(!this.worldOn && this.glowOn)
     if (this.worldOn && !e.leave) {
       const view = this.scene.cameras.main.worldView
       e.leave = joinCast(this.scene, {
@@ -75,7 +96,8 @@ export class TombstoneLayer {
           const { x, y } = e.sprite
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
           // The sprite is centred on the grave's box; the stone stands on its bottom edge.
-          return graveActor(x, y + this.h / 2, this.h, fxFeed(this.scene).night)
+          const glow = this.glowOn ? rgbOfHex(graveColour(e.view.owner)) : null
+          return graveActor(x, y + this.h / 2, this.h, fxFeed(this.scene).night, glow)
         },
       })
     } else if (!this.worldOn && e.leave) {
@@ -89,8 +111,8 @@ export class TombstoneLayer {
   }
 
   /** T23.19: where each grave is drawn, read off the layer's objects (world px, the grave's middle). */
-  get drawn(): { id: number; x: number; y: number }[] {
-    return [...this.entries].map(([id, e]) => ({ id, x: e.sprite.x, y: e.sprite.y }))
+  get drawn(): { id: number; x: number; y: number; owner: number; glow: string | null }[] {
+    return [...this.entries].map(([id, e]) => ({ id, x: e.sprite.x, y: e.sprite.y, owner: e.view.owner, glow: this.glowOn ? graveColour(e.view.owner) : null }))
   }
 
   /** Ids currently drawn. The e2e asserts on this, not on intent (§A15). */
@@ -110,11 +132,15 @@ export class TombstoneLayer {
     for (const id of remove) {
       const e = this.entries.get(id)
       e?.sprite.destroy()
+      e?.glow.destroy()
       e?.leave?.()
       this.entries.delete(id)
     }
     for (const v of add) {
-      const e: Entry = { sprite: this.make(v), view: v, leave: null }
+      const glow = this.scene.add.circle(v.x, v.y, this.h * PHASER_GLOW_R, Phaser.Display.Color.HexStringToColor(graveColour(v.owner)).color, PHASER_GLOW_A)
+      this.container.add(glow)
+      this.container.sendToBack(glow)
+      const e: Entry = { sprite: this.make(v), glow, view: v, leave: null }
       this.entries.set(v.id, e)
       this.place(e)
     }
@@ -123,6 +149,7 @@ export class TombstoneLayer {
       const e = this.entries.get(v.id)
       if (e) {
         e.sprite.setPosition(v.x, v.y)
+        e.glow.setPosition(v.x, v.y)
         e.view = v
       }
     }
@@ -151,6 +178,7 @@ export class TombstoneLayer {
     this.unfollow()
     for (const e of this.entries.values()) {
       e.sprite.destroy()
+      e.glow.destroy()
       e.leave?.()
     }
     this.entries.clear()
