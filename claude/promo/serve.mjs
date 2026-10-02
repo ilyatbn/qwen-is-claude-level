@@ -15,6 +15,7 @@ const TYPES = {
   '.ttf': 'font/ttf',
   '.png': 'image/png',
   '.json': 'application/json',
+  '.wav': 'audio/wav',
 }
 const MOUNTS = [
   ['/three/', join(root, 'client/node_modules/three')],
