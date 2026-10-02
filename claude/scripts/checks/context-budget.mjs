@@ -35,7 +35,7 @@
  * (a frame read back from the world canvas in a match).
  */
 import { readFileSync } from 'node:fs'
-import { startStack, tally, freePort } from './harness.mjs'
+import { startStack, tally, freePort, classicUnlessNamed } from './harness.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
 /** Title → match → results → exit round trips on one page. The review lost Phaser's context in round 7. */
@@ -120,7 +120,9 @@ try {
   })
   // Browser-level: `SystemInfo` answers only there (a page session says "not found", measured).
   const cdp = await ctx.browser().newBrowserCDPSession()
-  await page.goto(`${stack.viteUrl}/?e2e=1`)
+  // T23.31: each quick match rolls a seed, and the seed now picks the world look — the gate's run alternated 24 and 26
+  // programs (2 geometries, 2 textures) cycle by cycle, back down after each 26: a look's own, not a leak. One look.
+  await page.goto(`${stack.viteUrl}/?e2e=1${classicUnlessNamed()}`)
   await page.waitForSelector('#start-game', { timeout: 60_000 })
   await page.evaluate((kv) => localStorage.setItem(kv[0], kv[1]), [clientKey('NAME_KEY'), 'ana'])
 
