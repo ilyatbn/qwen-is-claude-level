@@ -11,6 +11,7 @@
  */
 
 import type { Pose } from './actors/figure'
+import type { AlbedoPaletteName } from './albedo'
 
 export type Rgb = [number, number, number]
 /** `'r,g,b'`, 0–255 sRGB — what `lit()` and the 2D cast read. */
@@ -102,6 +103,12 @@ export interface BgLayer {
   parallax?: number
   period?: number
   seed?: number
+  /**
+   * T23.20, space's sky only (`space.ts`): a moving body — the earth's or the moon's arc — that may sit up to this far
+   * (frame px, x and y) from its baked place, besides its parallax. Baked over the disc's own columns (an arc is
+   * closed in x; clamp-to-edge reads past it as clear sky) and down to the lowest row the frame can then show.
+   */
+  reach?: [number, number]
 }
 
 /** F5's moons in the sky (distinct from `Moon`, the light). */
@@ -427,6 +434,17 @@ export interface SceneDescription {
   litTerrain: boolean
   /** T23.30: the Islands shape's cloud sea — its tops' world y (mask px); absent / null: none. */
   cloudSea?: number | null
+  /**
+   * T23.20: the rock's albedo palette (`albedo.ts::ALBEDO_PALETTES`) — absent: the ground's (`dusk`, R5); `asteroid`
+   * on a space map and in F3 (`SceneData.theme`).
+   */
+  albedo?: AlbedoPaletteName
+  /**
+   * T23.20: a space sky whose bodies move on the round's clock (`space.ts`): where each is baked in `look.bg` (frame
+   * px — the star's centre, the planet's and the moon's arc apexes) and how far the star may move (its moon set's
+   * reach). The scene's `SpaceSky` feeds their places each frame; absent, the sky is still.
+   */
+  spaceSky?: { places: { sun: [number, number]; earth: [number, number]; moon: [number, number] }; reach: [number, number] }
   look: FrameLook
   palette: CombatPalette | null
   actors: Actor[]
@@ -443,6 +461,7 @@ export function describeScene(d: SceneData): SceneDescription {
     world: { w: d.mask.w, h: d.mask.h },
     masks: decodeMask(d.mask),
     litTerrain: true,
+    ...(d.theme === 'asteroid' ? { albedo: 'asteroid' as const } : {}),
     look: d.look,
     palette: d.palette,
     actors: d.actors,

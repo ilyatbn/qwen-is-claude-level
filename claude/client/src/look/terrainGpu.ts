@@ -39,8 +39,9 @@ import {
   Vector4,
   WebGLRenderTarget,
   type WebGLRenderer,
+  FloatType,
 } from 'three'
-import { ALBEDO_FS, HASH_PROBE_FS, HASH_PROBE_N, QUAD_VS, SCORCH_FS, SCORCH_VS } from './albedo'
+import { ALBEDO_FS, ALBEDO_PALETTES, type AlbedoPaletteName, albedoFs, MAX_DISCS, HASH_PROBE_FS, HASH_PROBE_N, QUAD_VS, SCORCH_FS, SCORCH_VS } from './albedo'
 import type { TerrainLook } from './scene'
 import { BAKE_FS, BAKE_REACH, bakeKey, lookUniforms, setLook, setTextures } from './terrainMaterial'
 
@@ -161,6 +162,8 @@ export class TerrainGpu {
   private queue: Work[] = []
   private readonly quad = new PlaneGeometry(2, 2)
   private readonly albedoMat: RawShaderMaterial
+  /** T23.20: space's cores and irons for the albedo (`albedo.ts`): one texel each — x, y, r, hits (< 0: iron). */
+  private readonly discTex = new DataTexture(new Float32Array(MAX_DISCS * 4), MAX_DISCS, 1, RGBAFormat, FloatType)
   private readonly scorchMat: RawShaderMaterial
   private readonly passScene = new Scene()
   private readonly passMesh: Mesh
@@ -172,6 +175,8 @@ export class TerrainGpu {
     readonly h: number,
     /** R24 (T23.07B F2): the map's albedo offset (`albedo.ts::albedoOffset`); (0, 0) in the look-lab. */
     readonly albedoOffset: readonly [number, number] = [0, 0],
+    /** T23.20: the albedo's palette (`albedo.ts::ALBEDO_PALETTES`) — the ground's, or space's asteroid. */
+    readonly palette: AlbedoPaletteName = 'dusk',
   ) {
     // F6: storage only (`texStorage2D`, no data) — `uploadFields` writes it, strip by strip.
     this.field = new DataTexture(null, w, h, RGBAFormat, UnsignedByteType)
@@ -200,8 +205,17 @@ export class TerrainGpu {
     this.albedoMat = new RawShaderMaterial({
       glslVersion: GLSL3,
       vertexShader: QUAD_VS,
-      fragmentShader: ALBEDO_FS,
-      uniforms: { field: { value: this.field }, din2: { value: this.din2 }, scorch: { value: this.scorch.texture }, size: { value: new Vector2(w, h) }, offset: { value: new Vector2(...albedoOffset) } },
+      fragmentShader: palette === 'dusk' ? ALBEDO_FS : albedoFs(ALBEDO_PALETTES[palette]),
+      uniforms: {
+        field: { value: this.field },
+        din2: { value: this.din2 },
+        scorch: { value: this.scorch.texture },
+        size: { value: new Vector2(w, h) },
+        offset: { value: new Vector2(...albedoOffset) },
+        discs: { value: this.discTex },
+        nDiscs: { value: 0 },
+        coreHits: { value: 0 },
+      },
       depthTest: false,
       depthWrite: false,
     })
@@ -434,7 +448,21 @@ export class TerrainGpu {
     return new Uint32Array(px.buffer)
   }
 
+  /**
+   * T23.20: the discs the albedo paints from now on — `flat` as `discs` holds them (x, y, r, hits; hits < 0 for
+   * iron), `n` of them (at most `MAX_DISCS`), `coreHits` the hits that break a core (`CORE_HITS`). Repainting what
+   * changed is the caller's (`TerrainLayer`).
+   */
+  setDiscs(flat: Float32Array, n: number, coreHits: number): void {
+    const k = Math.min(n, MAX_DISCS)
+    ;(this.discTex.image.data as Float32Array).set(flat.subarray(0, k * 4))
+    this.discTex.needsUpdate = true
+    this.albedoMat.uniforms['nDiscs']!.value = k
+    this.albedoMat.uniforms['coreHits']!.value = coreHits
+  }
+
   dispose(): void {
+    this.discTex.dispose()
     this.field.dispose()
     this.din2.dispose()
     this.albedo.dispose()

@@ -16,8 +16,8 @@
  *
  * **What it draws: the sky** (T23.04, `skyMaterial.ts` — the mockup's `bgQuad`), its layers
  * moved per frame by their parallax offsets (`skyLayout.ts::skyOffsets`, from the same view the
- * ortho camera is laid out from); baked once per sky and tier, composited per frame (T23.04B, R21). No sky in space (`look.bg` null): T22.06's backdrop draws there
- * until T23.20. `createWorldRenderer` is the single constructor the look-lab, `GameScene`,
+ * ortho camera is laid out from); baked once per sky and tier, composited per frame (T23.04B, R21). T23.20: space's
+ * sky is F3's, its bodies moved per frame by the scene's space feed (`space.ts`). `createWorldRenderer` is the single constructor the look-lab, `GameScene`,
  * `SandboxScene` and `TitleScene` call.
  */
 import type Phaser from 'phaser'
@@ -50,6 +50,7 @@ import { FireflyLayer } from './fireflyLayer'
 import { FIREFLY_HZ, fieldSampler, fireflyFade, placeFireflies, type Firefly } from './fireflies'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
 import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
+import { EARTH_BAND, MOON_BAND, SPACE_SMOKE, SpaceStars, spaceDescription, spaceFeed, starKey, type SpaceFeed } from './space'
 import { castOf } from './actors/cast'
 import { NIGHT_CIRCLES, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
 import { F1 } from './scenes/F1'
@@ -214,6 +215,14 @@ export class WorldRenderer implements SceneRenderer {
   private sceneFxFrame: FxFrame = emptyFrame()
   private readonly fxFrame: FxFrame = emptyFrame()
   private fxSource: FxFeed | null = null
+  /** T23.20: the scene's space feed (`space.ts`) — the bodies' places and the star field, from its `SpaceSky`. */
+  private spaceSource: SpaceFeed | null = null
+  /** T23.20: the feed's version last drawn, and the star and the bands' hidden state last handed to the sky. */
+  private spaceDrawn = { version: -1, sun: '', hide: '' }
+  /** T23.20: T22.06's star field, drawn into a target the sky composites (`space.ts::SpaceStars`). */
+  private readonly spaceStars = new SpaceStars()
+  /** Dev (`look-sky`): the sky bands a check hid; space's hidden bodies are added to them. */
+  private devSkyHidden: number[] = []
   /** The last built frame had game effects (the scene's own are static: laid out on the frame `setScene` marks). */
   private fxLive = false
   /**
@@ -404,7 +413,10 @@ export class WorldRenderer implements SceneRenderer {
     this.sceneFxFrame = sceneFx(desc.fx)
     this.syncFxDrawer()
     this.stats.scene = sceneCounts(desc)
-    this.sky.setSky(desc.daylight ? desc.daylight.night.bg : desc.look.bg, desc.daylight?.day.bg ?? null, desc.daylight ? MOON_REACH : [0, 0])
+    this.terrain.setPalette(desc.albedo ?? 'dusk')
+    const reach: [number, number] = desc.daylight ? MOON_REACH : desc.spaceSky?.reach ?? [0, 0]
+    this.sky.setSky(desc.daylight ? desc.daylight.night.bg : desc.look.bg, desc.daylight?.day.bg ?? null, reach)
+    this.spaceDrawn = { version: -1, sun: '', hide: '' }
     this.skyNow = desc.look.bg
     if (desc.daylight) this.blendHour()
     // T23.19G F6: every moon-set variant the day's blend will reach, compiled at the map change, not at the first dusk.
@@ -466,6 +478,8 @@ export class WorldRenderer implements SceneRenderer {
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
     // renderer off). An animated layer draws every frame (F3) — that cost returns with T23.04.
+    // T23.20: space's bodies and stars move on the round's clock — a new feed is a new picture.
+    if (this.desc.spaceSky && this.spaceSource && this.spaceSource.version !== this.spaceDrawn.version) this.dirty = true
     if (!mustDraw({ dirty: this.dirty, animated: this.animated, last: this.stats.view, view })) {
       this.stats.skipped++
       return
@@ -486,6 +500,7 @@ export class WorldRenderer implements SceneRenderer {
       // T23.04B (R21): shaded once per sky, tier and extent — a pan only moves the bakes, by
       // whole baked texels.
       const offsets = skyOffsets(bg, view, this.desc.world, frame[0])
+      this.placeSpace(offsets, frame)
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
     }
     this.placeTerrain(view)
@@ -559,8 +574,68 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /**
+   * T23.20: space's moving sky, from the scene's feed — the star moved as a moon set is (a new `setColours`, no
+   * rebake), the planet's and the moon's arcs offset from their baked places to the feed's, the parts a check hid
+   * taken out (the star's set at weight 0, a band skipped as an empty slot is), and T22.06's star field drawn into the
+   * target the sky adds. Nothing on a description without `spaceSky` (the ground; the look-lab's still F3).
+   */
+  private placeSpace(offsets: { layers: Offset[] }, frame: [number, number]): void {
+    const d = this.desc
+    const f = this.spaceSource
+    if (!d?.spaceSky || !f || !d.look.bg) {
+      if (this.spaceDrawn.version !== -2) {
+        this.sky.setStars(null, [this.buf.w, this.buf.h])
+        this.spaceDrawn.version = -2
+      }
+      return
+    }
+    const { places } = d.spaceSky
+    const sunKey = JSON.stringify([f.sun, f.hidden.has('sun')])
+    if (sunKey !== this.spaceDrawn.sun) {
+      const bg = d.look.bg
+      const [x, y] = f.sun
+      const hid = f.hidden.has('sun')
+      this.sky.setColours(
+        {
+          ...bg,
+          ...(bg.sun ? { sun: { ...bg.sun, x, y, vis: hid ? 0 : 1 } } : {}),
+          ...(bg.rays ? { rays: [x, y, hid ? 0 : bg.rays[2], bg.rays[3]] as [number, number, number, number] } : {}),
+        },
+        1,
+      )
+      // The cast's key light comes from the star (F3's `moon`: the rim light's direction).
+      d.look = { ...d.look, moon: starKey(f.sun, frame[0], frame[1]) }
+      this.spaceDrawn.sun = sunKey
+    }
+    offsets.layers[EARTH_BAND] = [f.earth[0] - places.earth[0], f.earth[1] - places.earth[1]]
+    offsets.layers[MOON_BAND] = [f.moon[0] - places.moon[0], f.moon[1] - places.moon[1]]
+    const hide = [...this.devSkyHidden, ...(f.hidden.has('earth') ? [EARTH_BAND] : []), ...(f.hidden.has('moon') ? [MOON_BAND] : [])]
+    const hideKey = JSON.stringify(hide)
+    if (hideKey !== this.spaceDrawn.hide) {
+      this.sky.hideLayers(hide)
+      this.spaceDrawn.hide = hideKey
+    }
+    const stars = this.spaceStars.render(this.renderer, f, frame, [this.buf.w, this.buf.h])
+    this.sky.setStars(stars ? this.spaceStars.target.texture : null, [this.buf.w, this.buf.h])
+    this.spaceDrawn.version = f.version
+  }
+
+  /** T23.20: the scene's space feed (`space.ts::spaceFeed`) — read on a space description, every frame it draws. */
+  setSpaceFeed(feed: SpaceFeed): void {
+    this.spaceSource = feed
+    this.dirty = true
+  }
+
+  /** Dev (T23.20): what the space sky last drew — the bodies' places (frame px) and the stars — or null off space. */
+  spaceDrawnInfo(): { sun: [number, number]; earth: [number, number]; moon: [number, number]; stars: number; hidden: string[] } | null {
+    const f = this.spaceSource
+    if (!this.desc?.spaceSky || !f?.shown) return null
+    return { sun: [...f.sun], earth: [...f.earth], moon: [...f.moon], stars: this.spaceStars.drawn, hidden: [...f.hidden] }
+  }
+
+  /**
    * T23.18: this scene's game effects come from `feed` (the ordnance layers' records). From now on this renderer draws
-   * them — `worldDraws` — wherever the map has a sky (space's backdrop hides this canvas until T23.20).
+   * them — `worldDraws` — wherever the map has a sky (T23.20: space included).
    */
   setFxFeed(feed: FxFeed): void {
     this.fxSource = feed
@@ -599,7 +674,7 @@ export class WorldRenderer implements SceneRenderer {
     const f = this.fxFrame
     clearFrame(f)
     if (this.hidden.has('fx')) return false
-    if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000, this.desc?.look.lights ?? [])
+    if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000, this.desc?.look.lights ?? [], this.desc?.spaceSky ? SPACE_SMOKE : null)
     const live = f.smoke.length + f.ink.length + f.soft.length + f.ribbons.length + f.discs.length > 0
     const s = this.sceneFxFrame
     f.smoke.push(...s.smoke)
@@ -995,7 +1070,9 @@ export class WorldRenderer implements SceneRenderer {
 
   /** Dev (`look-sky`): draw only the sky layers not listed — one band isolated at a time. */
   hideSkyLayers(hide: number[]): void {
+    this.devSkyHidden = [...hide]
     this.sky.hideLayers(hide)
+    this.spaceDrawn.hide = ''
     this.dirty = true
   }
 
@@ -1058,8 +1135,10 @@ export class WorldRenderer implements SceneRenderer {
     samples: number
     exposure: number
     animated: boolean
-    /** T23.04: whether the sky is drawn (false on a space map). */
+    /** T23.04: whether the sky is drawn. */
     sky: boolean
+    /** T23.20: whether it is space's sky (F3's, its bodies moved by the scene's space feed). */
+    spaceSky: boolean
     /** T23.04B (R21): sky bakes made so far, and the bytes the current bakes hold. */
     skyBakes: number
     skyBakeBytes: number
@@ -1082,6 +1161,7 @@ export class WorldRenderer implements SceneRenderer {
       exposure: this.desc?.look.exposure ?? this.renderer.toneMappingExposure,
       animated: this.animated,
       sky: this.sky.mesh.visible,
+      spaceSky: this.sky.mesh.visible && !!this.desc?.spaceSky,
       skyBakes: this.sky.bakeStats.bakes,
       skyBakeBytes: this.sky.bakeStats.bytes,
       skyRayBytes: this.sky.bakeStats.rayBytes,
@@ -1111,6 +1191,7 @@ export class WorldRenderer implements SceneRenderer {
       ;(m.material as MeshBasicMaterial).dispose()
     }
     this.sky.dispose()
+    this.spaceStars.dispose()
     this.atmos.dispose()
     this.actorLayer.dispose()
     this.glowLayer.dispose()
@@ -1155,7 +1236,7 @@ export interface GameMap {
   h: number
   /** The map seed's low 32 bits — `welcome`'s in a match, so every client of a round lays out one sky. */
   seed: number
-  /** A space map (`MapGenerator.Space`): no sky is drawn; T22.06's backdrop is (until T23.20). */
+  /** A space map (`MapGenerator.Space`): T23.20's space description (`space.ts`), F3's look. */
   space: boolean
   /**
    * T23.30: the Islands shape — the tops of a sea of cloud below the islands (world y, mask px), and a sky with
@@ -1167,45 +1248,40 @@ export interface GameMap {
 /**
  * The game's scene description until the sim fills more of it: F1's night look and F5's moonlit day (R7 —
  * T23.11: `setDaylight` blends them by darkness) with its sky laid out as seeded parallax bands for this map
- * (`skyLayout.ts::gameSky`), none on a space map; the map's size for the y flip; no mask yet
+ * (`skyLayout.ts::gameSky`) — a space map is `space.ts::spaceDescription`; the map's size for the y flip; no mask yet
  * (T23.07), no actors (T23.12+). Rebuild it when the map changes.
  */
 export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): SceneDescription {
+  // T23.20: space is its own world — `P_space`, the asteroid rock, the moving sky (`space.ts`); no day to blend.
+  if (map.space) return spaceDescription(map, caveWall)
   const f1 = F1.look.bg as Background
   const f5 = F5.look.bg as Background
   // T23.11 (R7): night is F1's look, the moonlit day F5's, one seeded sky layout for both (the shapes are equal, so
   // `gameSky` lays both out alike); `setDaylight` blends them. F1's lights are the mockup scene's, not this map's.
   const end = (look: FrameLook, bg: Background): FrameLook => ({
     ...look,
-    bg: map.space ? null : gameSky(map.seed, map.cloudSea != null ? { ...bg, layers: [] } : bg),
+    bg: gameSky(map.seed, map.cloudSea != null ? { ...bg, layers: [] } : bg),
     lights: [],
     fg: null,
-    ...(map.space ? { fogBack: null, fogFront: null } : {}),
   })
   const night = end(F1.look, f1)
   return {
-    // T23.19G F5: **space keeps F1's look at every hour**, as it had before T23.11 — no daylight to blend, so
-    // `setDaylight` leaves `look` and `palette` F1's. Space has no day (`sky-math.ts::sceneDarkness` is 0 there), so
-    // blending by darkness handed it F5's moonlit day for good: its bloom, grade, exposure and combat palette. Its own
-    // look is T23.20's.
-    ...(map.space ? {} : { daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette } }),
+    daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette },
     id: 'game',
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },
     masks: null,
-    // T23.07: the lit terrain draws the rock — not on a space map, whose cores and iron are drawn into
-    // Phaser's rock and which T23.20 brings into the new look. F1's lights are the mockup scene's, not
-    // this map's: none here — the scenes hand over their effect lights each frame (T23.09, `setLights`).
-    litTerrain: !map.space,
-    cloudSea: map.space ? null : (map.cloudSea ?? null),
+    // T23.07: the lit terrain draws the rock. F1's lights are the mockup scene's, not this map's: none here — the
+    // scenes hand over their effect lights each frame (T23.09, `setLights`).
+    litTerrain: true,
+    cloudSea: map.cloudSea ?? null,
     // T23.09A: off by default pending the owner's verdict (`CAVE_WALL_DEFAULT`); the lab's scenes keep F1's walls.
     caveWall,
-    // T23.24: fireflies at night, seeded by the map — none in space (and none in the look-lab, which builds no game map).
-    ...(map.space ? {} : { fireflies: { seed: map.seed } }),
+    // T23.24: fireflies at night, seeded by the map — none in space (`spaceDescription`) or the look-lab.
+    fireflies: { seed: map.seed },
     // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
     // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
-    // Space has no fog (F3 draws none); its bloom and grade stay F1's until T23.20 gives space its look.
     look: { ...night },
     palette: F1.palette,
     actors: [],
@@ -1279,6 +1355,8 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   if (renderer instanceof WorldRenderer) {
     // T23.18: the scene's effects, from its ordnance layers' records (`fx/feed.ts`).
     renderer.setFxFeed(fxFeed(scene))
+    // T23.20: the scene's space sky (its `SpaceSky` writes the bodies and the stars each frame).
+    renderer.setSpaceFeed(spaceFeed(scene))
     // T23.24: and the scene's clock, which a paused scene stops — the fireflies hold still in a frozen frame.
     const gather = (): void => {
       renderer.setActors(castOf(scene))

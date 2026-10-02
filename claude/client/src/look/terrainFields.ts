@@ -42,6 +42,11 @@ export interface TerrainFeed {
   din2(): Uint16Array | null
   /** Since the last take: `full` (a pass was installed) or the rects rewritten; and the blasts. */
   take(): { full: boolean; rects: Rect[]; scorches: [number, number, number][] }
+  /**
+   * T23.20: the map's space rocks the albedo paints — the cores (`[x, y, r, hits, …]`, `Core.coreDiscs`) and the
+   * irons (`[x, y, r, …]`, `Core.ironDiscs`); absent or empty off a space map.
+   */
+  discs?(): { cores: ArrayLike<number>; irons: ArrayLike<number> }
 }
 
 /** What the fields read of the game core — `Core`'s own methods; a fake in the tests. */
@@ -56,6 +61,9 @@ export interface FieldsCore {
   renderFieldsInstall(wall: Uint32Array, rgba: Uint8Array, din2: Uint16Array): number[]
   renderFieldsFull(): number[]
   takeCarveBoxes(): Int32Array
+  /** T23.20: `Core.coreDiscs` / `Core.ironDiscs` (a fake may leave them out: no space rocks). */
+  coreDiscs?(): ArrayLike<number>
+  ironDiscs?(): ArrayLike<number>
 }
 
 /** Runs a fields job somewhere; returns the job's cancel. `onResult` is called at most once. */
@@ -236,6 +244,12 @@ export class TerrainFields implements TerrainFeed {
 
   din2(): Uint16Array | null {
     return this.ready && !this.disposed ? this.core.renderFieldsDin2View() : null
+  }
+
+  discs(): { cores: ArrayLike<number>; irons: ArrayLike<number> } {
+    const none: number[] = []
+    if (this.disposed) return { cores: none, irons: none }
+    return { cores: this.core.coreDiscs?.() ?? none, irons: this.core.ironDiscs?.() ?? none }
   }
 
   take(): { full: boolean; rects: Rect[]; scorches: [number, number, number][] } {

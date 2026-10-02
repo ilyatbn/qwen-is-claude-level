@@ -15,7 +15,8 @@
  *   to its own clock. The standard stack at the same moment is the presence control:
  *   byte and frame both dark.
  * - **The ground sky is off and the space sky is up**, in `GameScene`; the bodies move
- *   as the round's clock advances, which is waited on as the clock itself.
+ *   as the round's clock advances, which is waited on as the clock itself. T23.20: F3's look —
+ *   the world renderer draws the space sky (`info().spaceSky`, `debug().sky.space.drawer` 'world').
  *
  * The pixels of the backdrop are `space-sky`'s: `GameScene` has no hide-a-body seam, and
  * the same `SkyLayer` draws both scenes. This check photographs both matches for a
@@ -68,6 +69,7 @@ try {
     if (d.roundSeed !== SEED) fail(`welcome carried seed "${d.roundSeed}", the server was set to ${SEED}`)
     else if (sky.seed !== wire) fail(`the space sky is seeded ${sky.seed}, the wire seed is ${d.roundSeed}`)
     else ok(`the space sky is seeded off the wire: ${sky.seed} = welcome's ${d.roundSeed}`)
+    if (sky.drawer !== 'world') fail(`the space sky is drawn by ${sky.drawer}, not the world renderer (T23.20)`)
     if (!(sky.starsDrawn > 0) || !sky.earth.visible || !sky.sun.visible || !sky.moon.visible) {
       fail(`the space sky drew nothing: ${JSON.stringify({ stars: sky.starsDrawn, earth: sky.earth.visible, sun: sky.sun.visible, moon: sky.moon.visible })}`)
     } else ok(`stars ${sky.starsDrawn}, sun, earth and moon up`)
@@ -76,9 +78,9 @@ try {
   else if (d.drawnDarkness !== 0) fail(`the frame was drawn at darkness ${d.drawnDarkness} in space`)
   else ok(`at round time ${d.roundTime.toFixed(1)} (the ground's night): darkness byte 0, drawn 0`)
   // T23.04: the ground's sky is the world renderer's; the old ridge and clouds are retired.
-  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, drawn: window.__world?.info()?.sky ?? null }))
-  if (ground.sky !== false || ground.drawn !== false) fail(`the ground's sky is up in a space match: ${JSON.stringify(ground)}`)
-  else ok('no ground sky in the space match (world renderer draws none)')
+  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, space: window.__world?.info()?.spaceSky ?? null }))
+  if (ground.sky !== false || ground.space !== true) fail(`the ground's sky is up in a space match, or space's is not: ${JSON.stringify(ground)}`)
+  else ok("no ground sky in the space match: the world renderer draws space's (F3)")
 
   // The bodies move as the round's clock does — waited on as the clock, not a sleep.
   if (sky) {
@@ -97,7 +99,7 @@ try {
       const de = dist(sky.earth, s1.earth)
       const dm = dist(sky.moon, s1.moon)
       if (!(de > 0) || !(dm > 0)) fail(`over ${(s1.clock - c0).toFixed(1)} s the earth moved ${de} and the moon ${dm} camera px`)
-      else ok(`over ${(s1.clock - c0).toFixed(1)} round s: earth ${de.toFixed(2)}, moon ${dm.toFixed(2)} camera px`)
+      else ok(`over ${(s1.clock - c0).toFixed(1)} round s: earth ${de.toFixed(2)}, moon ${dm.toFixed(2)} frame px`)
     }
   }
   await page.screenshot({ path: join(shotsDir, 'space-sky-match.png') })
@@ -117,8 +119,8 @@ try {
   if (!(d.darkness > 0) || !(d.drawnDarkness > 0)) {
     fail(`control: the standard match at round time ${d.roundTime} is not dark: byte ${d.darkness}, drawn ${d.drawnDarkness}`)
   } else ok(`control: standard at ${d.roundTime.toFixed(1)} s — darkness byte ${d.darkness.toFixed(2)}, drawn ${d.drawnDarkness.toFixed(2)}`)
-  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, drawn: window.__world?.info()?.sky ?? null }))
-  if (ground.sky !== true || ground.drawn !== true) fail(`control: the standard match draws no ground sky: ${JSON.stringify(ground)}`)
+  const ground = await page.evaluate(() => ({ sky: window.__game.debug().sky?.ground ?? null, drawn: window.__world?.info()?.sky ?? null, space: window.__world?.info()?.spaceSky ?? null }))
+  if (ground.sky !== true || ground.drawn !== true || ground.space !== false) fail(`control: the standard match draws no ground sky: ${JSON.stringify(ground)}`)
   else ok('control: the standard match draws its ground sky')
   await page.screenshot({ path: join(shotsDir, 'space-sky-match-standard-night.png') })
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`)

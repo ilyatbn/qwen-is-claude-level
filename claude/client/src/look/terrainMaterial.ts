@@ -29,6 +29,7 @@
  * but the bake's 8-bit quantisation. The bake depends on `sunDir`, `bevel` and `pixel`: a look that
  * changes them rebakes (`bakeKey`).
  */
+import { CORE_HEART_A, CORE_RIM_A } from './albedo'
 import { GLSL3, ShaderMaterial, Vector2, Vector3, Vector4, type Texture } from 'three'
 import type { Light, TerrainLook } from './scene'
 import { TERRAIN_LIGHTS, TERRAIN_LIGHTS_LOW, toLin } from './terrainLights'
@@ -86,6 +87,16 @@ float backShadow(vec2 p) {
 `
 
 /**
+ * T23.20: how much a space rock's core adds of its own colour (linear, × albedo) — its heart's amber past the bloom
+ * threshold (F3's 0.7) so the core reads as a light in the dark rock, its ember rim a glow under it. The albedo marks
+ * the pixels (`albedo.ts::CORE_HEART_A` 250, `CORE_RIM_A` 253 of 255; between them `CORE_A_MID`).
+ */
+export const CORE_GLOW = { heart: 1.6, rim: 0.6 } as const
+const CORE_A_LO = ((CORE_HEART_A - 1) / 255).toFixed(4)
+const CORE_A_MID = ((CORE_HEART_A + CORE_RIM_A) / 2 / 255).toFixed(4)
+const CORE_A_HI = ((CORE_RIM_A + 1) / 255).toFixed(4)
+
+/**
  * The shading, shared by both tiers: `n`, `sh` (front) and `shB` (cave wall) are computed (full) or
  * read from the bake (low). Writes `fragColor` or discards. `slots`: the light loops' bound — the tier's
  * (`TERRAIN_LIGHTS` full, `TERRAIN_LIGHTS_LOW` low): SwiftShader runs a loop to its bound whatever `nl` is.
@@ -130,6 +141,8 @@ void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
     col += lipCol * lipK * smoothstep(5., 0., s) * smoothstep(0.5, 2.5, upv);
     // grass tips catching light on top edges
     col += a * sunCol * 0.25 * smoothstep(0.4, 0.9, n.y) * sh;
+    // T23.20: a space rock's core glows — its heart (albedo alpha CORE_HEART_A), its ember rim (CORE_RIM_A) less.
+    if (alb.a > ${CORE_A_LO} && alb.a < ${CORE_A_HI}) col += a * (alb.a < ${CORE_A_MID} ? ${CORE_GLOW.heart.toFixed(2)} : ${CORE_GLOW.rim.toFixed(2)});
   }
   if (isBack) {
     // backdrop wall: set back behind the front face; the front casts shadow onto it

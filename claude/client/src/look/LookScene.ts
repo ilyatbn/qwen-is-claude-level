@@ -20,8 +20,8 @@
  * list as blasts — for `look-albedo` to compare with the mockup's own albedo
  * (`reference/controls/F1-albedo.png`). `ready` waits for every albedo tile.
  *
- * T23.07: every scene whose mask the fields can take (`labFields.ts`: whole chunks wide, solid bottom
- * row — F1, F2, F5) draws its **lit terrain** from those fields, with the scene's own lights; `ready`
+ * T23.07: every scene whose mask the fields can take (`labFields.ts`: whole chunks wide — F1, F2, F5;
+ * T23.20: F3 too, its padding mirrored) draws its **lit terrain** from those fields, with the scene's own lights; `ready`
  * waits for the terrain (and the low tier's bake). `&only=world` describes the sky and terrain alone —
  * actors, fx, labels and HUD out of the data — for `look-terrain` to compare with the mockup's sky and
  * terrain alone (`reference/controls/F1-terrain.png`). `&knob=rim-off|bevel-off|lights-off` changes
@@ -125,6 +125,7 @@ export class LookScene extends Phaser.Scene {
     let jetOff = false
     let fxOff = false
     let gameBlast = false
+    let albedoDusk = false
     // T23.11: the knobs and `only=` applied to a look — the scene's, or each end of the `&t=` blend.
     const lookOf = (src: FrameLook): FrameLook => {
       const terrainLook = { ...src.terrain }
@@ -155,6 +156,8 @@ export class LookScene extends Phaser.Scene {
         // by `fx/game.ts::blastFx` from the scene's fx feed (`gameFrame`), as a match draws one, with the mockup's stream —
         // instead of the scene's still (`sceneFx`). `&blastk=` is its age as a share of its life (default: the peak, R27).
         else if (knob === 'game-blast') gameBlast = true
+        // T23.20: F3's rock painted with the ground's palette — look-gate-f3's control that the asteroid's is drawn.
+        else if (knob === 'albedo-dusk') albedoDusk = true
         else handle.error = `unknown knob "${knob}"`
       }
       // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).
@@ -174,6 +177,7 @@ export class LookScene extends Phaser.Scene {
       desc.daylight = { day: lookOf(f5.look), night: lookOf(f1.look), dayPalette: f5.palette, nightPalette: f1.palette }
     }
     desc.actorRim = actorRim
+    if (albedoDusk) desc.albedo = 'dusk'
     if (fxOff) desc.fx = []
     const staged = gameBlast ? desc.fx.find((f) => f.kind === 'explosion') : undefined
     if (gameBlast) {
@@ -224,7 +228,7 @@ export class LookScene extends Phaser.Scene {
         try {
           lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
         } catch (e) {
-          // F3 (space): no solid bottom row to pad — no lit terrain (only=albedo: an error). F4 pads (T23.12 draws its cast on it).
+          // A strip the fields cannot take: no lit terrain (only=albedo: an error). T23.20: F3 mirrors its padding.
           if (only === 'albedo') {
             handle.error = String(e)
             return

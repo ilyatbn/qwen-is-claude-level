@@ -144,7 +144,23 @@ export function bakeExtents(
     const top = Math.max(0 - my, Math.floor(clear / texel) * texel)
     return { org: [0 - mx, top + 0], ext: [frame[0] + 2 * mx, frame[1] + my - top] }
   }
-  return { layers: bg.layers.map((l) => at(l.parallax ?? 0, clearAbove(l, texel))), horizon: at(bg.parallax ?? 0) }
+  // T23.20: a moving arc (a space body) — its disc's columns with two texels of clear sky either side (an arc is
+  // closed in x, so wherever it moves, clamp-to-edge reads clear sky past them), from the row above its apex
+  // (`clearAbove`: clear above, repeated by the clamp) down to the frame's bottom row with the band risen as far as
+  // it may (its reach's y and its parallax).
+  const body = (l: BgLayer): Extent => {
+    const f = l.parallax ?? 0
+    const my = up((f ? dy * zoom * f : 0) + (l.reach?.[1] ?? 0) + texel)
+    // The rows' jitter moves the edge sideways by up to a step × jitter (`bgMaterial`'s `xj`), and the edge is soft.
+    const r = up((l.r ?? 1) + (l.step ?? 6) * (l.jitter ?? 0.8) + (l.soft ?? 1) + 2 * texel)
+    const x0 = Math.floor((l.x - r) / texel) * texel
+    const top = Math.floor(clearAbove(l, texel) / texel) * texel
+    return { org: [x0, top], ext: [2 * r + texel, Math.max(texel, frame[1] + my - top)] }
+  }
+  return {
+    layers: bg.layers.map((l) => (l.reach && l.shape === 'arc' ? body(l) : at(l.parallax ?? 0, clearAbove(l, texel)))),
+    horizon: at(bg.parallax ?? 0),
+  }
 }
 
 /**

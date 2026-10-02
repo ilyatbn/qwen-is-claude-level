@@ -17,6 +17,9 @@ import type { WebGLRenderer } from 'three'
 import type { TerrainLook } from './scene'
 import type { TerrainFeed } from './terrainFields'
 import { TerrainGpu } from './terrainGpu'
+import type { AlbedoPaletteName } from './albedo'
+import type { Rect } from './terrainGpu'
+import { C } from '../core'
 
 export class TerrainLayer {
   feed: TerrainFeed | null = null
@@ -38,6 +41,8 @@ export class TerrainLayer {
   measure = false
   /** T23.07: the look the low tier's bake is shaded for, or `null` (the full tier: no bake). */
   private bakeLook: TerrainLook | null = null
+  /** T23.20: the albedo palette every GPU side is made with (the scene description's `albedo`). */
+  palette: AlbedoPaletteName = 'dusk'
 
   constructor(private readonly renderer: WebGLRenderer) {}
 
@@ -64,9 +69,73 @@ export class TerrainLayer {
     this.gpu?.setBake(look)
   }
 
+  /** T23.20: the discs last handed to the GPU side (`syncDiscs`), as their flat key. */
+  private discKey = ''
+  private discFlat = new Float32Array(0)
+
+  /**
+   * T23.20: hand the albedo the map's cores and irons when they change (a core struck, a core gone, a new map), and
+   * repaint each disc that changed — a hit dims a whole heart, which the carve's own rect need not cover. Whether
+   * anything was repainted.
+   */
+  private syncDiscs(feed: TerrainFeed, g: TerrainGpu): boolean {
+    const d = feed.discs?.()
+    const cores = d?.cores ?? []
+    const irons = d?.irons ?? []
+    const n = Math.floor(cores.length / 4) + Math.floor(irons.length / 3)
+    const flat = new Float32Array(n * 4)
+    let k = 0
+    for (let i = 0; i + 3 < cores.length; i += 4) flat.set([cores[i]!, cores[i + 1]!, cores[i + 2]!, cores[i + 3]!], 4 * k++)
+    for (let i = 0; i + 2 < irons.length; i += 3) flat.set([irons[i]!, irons[i + 1]!, irons[i + 2]!, -1], 4 * k++)
+    const key = flat.join(',')
+    if (g === this.discGpu && key === this.discKey) return false
+    const prev = g === this.discGpu ? this.discFlat : null
+    this.discGpu = g
+    this.discKey = key
+    this.discFlat = flat
+    g.setDiscs(flat, n, C().CORE_HITS)
+    if (!prev || !g.painted) return false
+    // Repaint every disc that is new, gone or changed, old and new places both.
+    const same = (a: Float32Array, i: number, b: Float32Array, j: number): boolean => a[i] === b[j] && a[i + 1] === b[j + 1] && a[i + 2] === b[j + 2] && a[i + 3] === b[j + 3]
+    const rect = (a: Float32Array, i: number): Rect => {
+      const r = Math.ceil(a[i + 2]!) + 1
+      return { x: Math.floor(a[i]!) - r, y: Math.floor(a[i + 1]!) - r, w: 2 * r + 1, h: 2 * r + 1 }
+    }
+    let painted = false
+    for (const [a, b] of [[flat, prev], [prev, flat]] as const) {
+      for (let i = 0; i < a.length; i += 4) {
+        let found = false
+        for (let j = 0; j < b.length && !found; j += 4) found = same(a, i, b, j)
+        if (!found) {
+          g.paintNow(rect(a, i))
+          painted = true
+        }
+      }
+    }
+    return painted
+  }
+  private discGpu: TerrainGpu | null = null
+
+  /**
+   * T23.20: paint the albedo with `palette` (a space map: the asteroid's). The scenes describe the map before they
+   * feed its fields, so this normally lands before `setFeed`; a change under a whole feed remakes the GPU side and
+   * queues its full pass.
+   */
+  setPalette(palette: AlbedoPaletteName): void {
+    if (palette === this.palette) return
+    this.palette = palette
+    const feed = this.feed
+    if (!feed || !this.gpu) return
+    this.gpu.dispose()
+    this.gpu = new TerrainGpu(this.renderer, feed.w, feed.h, feed.albedoOffset, palette)
+    if (this.bakeLook) this.gpu.setBake(this.bakeLook)
+    if (feed.ready) this.gpu.queueAll()
+  }
+
   /** Hand over the scene's fields (`null`: none). `units`: work per frame while a full pass is queued. */
   setFeed(feed: TerrainFeed | null, units: number): void {
-    const same = !!feed && !!this.gpu && this.feed?.mapKey === feed.mapKey && this.gpu.w === feed.w && this.gpu.h === feed.h
+    const same =
+      !!feed && !!this.gpu && this.feed?.mapKey === feed.mapKey && this.gpu.w === feed.w && this.gpu.h === feed.h && this.gpu.palette === this.palette
     this.feed = feed
     this.units = units
     this.stats.maxPumpMs = 0
@@ -76,7 +145,7 @@ export class TerrainLayer {
     }
     this.gpu?.dispose()
     const t0 = performance.now()
-    this.gpu = feed ? new TerrainGpu(this.renderer, feed.w, feed.h, feed.albedoOffset) : null
+    this.gpu = feed ? new TerrainGpu(this.renderer, feed.w, feed.h, feed.albedoOffset, this.palette) : null
     if (this.gpu && this.bakeLook) this.gpu.setBake(this.bakeLook)
     if (feed) this.stats.makeMs = performance.now() - t0
   }
@@ -93,6 +162,7 @@ export class TerrainLayer {
     const feed = this.feed
     const g = this.gpu
     if (!feed || !g) return false
+    const discsChanged = this.syncDiscs(feed, g)
     const t = feed.take()
     if (t.full) g.queueAll()
     const t0 = performance.now()
@@ -111,7 +181,7 @@ export class TerrainLayer {
       this.stats.lastUpdateMs = performance.now() - t0
       this.stats.maxUpdateMs = Math.max(this.stats.maxUpdateMs, this.stats.lastUpdateMs)
     }
-    let changed = t.full || t.rects.length > 0 || t.scorches.length > 0
+    let changed = discsChanged || t.full || t.rects.length > 0 || t.scorches.length > 0
     if (g.pending > 0) {
       g.step(this.units, () => {
         const view = feed.view()

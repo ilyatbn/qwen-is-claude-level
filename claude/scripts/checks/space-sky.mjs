@@ -2,6 +2,14 @@
  * T22.06 — **the space backdrop, on the rendered frame** (`docs/72` §C2), in the sandbox
  * at `?gravity=space` (R22), and the ground sky it replaces as the presence control.
  *
+ * **T23.20: rewritten for F3's look** (R13). T22.06's behaviour is kept and measured the same way — seeded, moving on
+ * the round's clock, the stars drifting — but the world renderer draws it now (`look/space.ts`): the sun is F3's
+ * distant star with its god rays, the earth and the moon are F3's giant stepped arcs, so `debug().spaceSky` reports
+ * each arc's **apex** (the top of its limb) and a body is located by its **limb**, not its centroid: the frame with
+ * that body hidden is the control, and the top row of the pixels that change, over the columns at the apex, must sit
+ * on the reported apex (the sun keeps its centroid). The night-side shades and the moon's going behind the earth are
+ * retired with the Phaser planets (the moon's arc is composited in front); `space-sky-canvas` with the Canvas path.
+ *
  * The owner: *"there's no day/light in space but the sun and moon and the earth and
  * stars can be the background and should move. there are no clouds or fog or anything
  * like that."* So, on one page, one camera, one frozen round clock at a time:
@@ -9,7 +17,7 @@
  * 1. **Each body is drawn where it says it is.** For the sun, the earth and the moon
  *    separately: the frame with that body hidden (`setSpaceBodiesVisible(false, name)`)
  *    is its control frame, the pixels that differ are that body and no other, and their
- *    centroid must sit on the screen position `debug()` reports.
+ *    centroid (the sun) or limb (an arc, T23.20) must sit on the screen position `debug()` reports.
  * 2. **They move across a round.** The same measurement `DT` round-seconds later: each
  *    body's *pixel* centroid moved, by about what `debug()` says it moved. **The camera
  *    did not do it**: the camera's view is asserted identical, and a patch of asteroid clear
@@ -20,8 +28,8 @@
  *    the same moment is the control that they are not simply flickering.
  * 4. **Seeded.** Re-seeding the sky alone (`setSkySeed`) moves the stars and bodies; the
  *    first seed again gives the first frame back.
- * 5. **Absences, each beside its presence.** In space: the ground's sky not drawn (T23.04:
- *    the world renderer's `info().sky`; the ridge band, clouds and ambient rain this used to
+ * 5. **Absences, each beside its presence.** In space: space's sky drawn, not the ground's (T23.20:
+ *    the world renderer's `info().spaceSky`; the ridge band, clouds and ambient rain this used to
  *    assert absent are retired), darkness 0 at the ground's night, and the frame no darker at
  *    `T0 + DT` (the ground's night) than at `T0`. Then the **same page regenerated standard**:
  *    the ground sky drawn, darkness > 0 and the frame much darker at night — the same
@@ -65,6 +73,28 @@ const BODY_PIXEL_FLOOR = 40
  * earth and moon under 3 on the review's logs. It was `R/2 + 6` — 70 px on the earth.
  */
 const POSITION_TOL = 6
+/** T23.20: the sun's measuring box, in its radii (F3's star: an 8 px disc and its glow). */
+const SUN_REACH = 3
+/**
+ * T23.20: an arc's limb is located `ARC_DEPTH` px below its top, where it is wide enough to cross (the planet's
+ * 620 px arc: 2·√(2·620·20 − 20²) ≈ 312 px; the moon's 260: ≈ 243), within `LIMB_TOL` of its apex — F3's arcs are
+ * stepped (`step` 5–6 px) and their rows jittered (`jitter` × step), so the edge sits up to a step off the circle.
+ */
+const ARC_DEPTH = { earth: 20, moon: 30 }
+const LIMB_MARGIN = 24
+const LIMB_ABOVE = 24
+const LIMB_BELOW = 12
+const LIMB_TOL = 10
+/**
+ * T23.20: the laser leg's numbers — `effect-lights`' (T23.09, measured there on the ground): the near patch within
+ * this share of the light's radius gains at least `LASER_NEAR_MIN` mean luminance; rock past the radius + the margin
+ * moves no channel more than `LASER_FAR_MAX`; each region needs `LASER_MIN_ROCK` px to mean anything.
+ */
+const LASER_NEAR_FRAC = 0.6
+const LASER_NEAR_MIN = 4
+const LASER_FAR_MARGIN = 120
+const LASER_FAR_MAX = 3
+const LASER_MIN_ROCK = 150
 /** Ten-frame looks for the sandbox player to come to rest before a control patch is chosen. */
 const SETTLE_TRIES = 60
 /**
@@ -181,11 +211,8 @@ export default async function ({ page, shot, log }) {
     const pb = await playerBox()
     const shown = await photo()
     const again = await photo()
-    // Located with both night sides off (F3): under the shade the earth's dark half
-    // sits below THR against black sky, and the centroid slid toward the lit half.
-    await g(() => window.__game.setSpaceBodiesVisible(false, 'shade'))
-    await frames(2)
-    const lit = await photo()
+    // T23.20: no night sides in F3's look — the frame as shown is the one each body is located in.
+    const lit = shown
     const without = {}
     for (const name of ['sun', 'earth', 'moon']) {
       await g((n) => window.__game.setSpaceBodiesVisible(false, n), name)
@@ -193,7 +220,6 @@ export default async function ({ page, shot, log }) {
       without[name] = await photo()
       await g((n) => window.__game.setSpaceBodiesVisible(true, n), name)
     }
-    await g(() => window.__game.setSpaceBodiesVisible(true, 'shade'))
     await g(() => window.__game.setSpaceBodiesVisible(false, 'all'))
     await frames(2)
     const bare = await photo()
@@ -248,6 +274,47 @@ export default async function ({ page, shot, log }) {
         }
         return { n, compared, cx: n ? sx / n : null, cy: n ? sy / n : null }
       }
+      if (j.kind === 'limb') {
+        // T23.20: an arc's limb — per column of the box, the first changed row from the top; their median row and
+        // column, and how many columns found one (an arc's whole column below its limb is the arc).
+        const A = await load(j.a)
+        const B = await load(j.b)
+        const { width: W, height: H } = A
+        const x0 = Math.max(0, Math.floor(j.box.x))
+        const y0 = Math.max(0, Math.floor(j.box.y))
+        const x1 = Math.min(W, Math.ceil(j.box.x + j.box.w))
+        const y1 = Math.min(H, Math.ceil(j.box.y + j.box.h))
+        const tops = []
+        for (let x = x0; x < x1; x++) {
+          for (let y = y0; y < y1; y++) {
+            if (inAny(x, y, j.exclude)) continue
+            const i = (y * W + x) * 4
+            const m = Math.max(Math.abs(A.data[i] - B.data[i]), Math.abs(A.data[i + 1] - B.data[i + 1]), Math.abs(A.data[i + 2] - B.data[i + 2]))
+            if (m > j.thr) {
+              tops.push(y)
+              break
+            }
+          }
+        }
+        // The limb's top: the highest rows found, less the staircase's step (`tops` sorted, the lowest decile).
+        const ys = [...tops].sort((p, q) => p - q)
+        const top = ys.length ? ys[Math.floor(ys.length / 10)] : null
+        if (top === null) return { n: 0, compared: (x1 - x0) * (y1 - y0), cx: null, cy: null, columns: 0 }
+        // Its centre column: where the limb crosses the row `depth` below the top, left and right — the middle.
+        const row = Math.min(y1 - 1, top + j.depth)
+        let left = null
+        let right = null
+        for (let x = x0; x < x1; x++) {
+          const i = (row * W + x) * 4
+          const m = Math.max(Math.abs(A.data[i] - B.data[i]), Math.abs(A.data[i + 1] - B.data[i + 1]), Math.abs(A.data[i + 2] - B.data[i + 2]))
+          if (m > j.thr && !inAny(x, row, j.exclude)) {
+            left ??= x
+            right = x
+          }
+        }
+        const cx = left === null || right === null ? null : (left + right) / 2
+        return { n: tops.length * Math.max(0, y1 - top), compared: (x1 - x0) * (y1 - y0), cx, cy: cx === null ? null : top, columns: tops.length, left, right }
+      }
       if (j.kind === 'stars') {
         // A star is a point light on the dark: bright itself, dark around it. Rock and
         // a daytime sky fail the second half, which is what makes the standard frame a
@@ -278,34 +345,39 @@ export default async function ({ page, shot, log }) {
       throw new Error(`unknown job ${j.kind}`)
     }, job)
 
-  const bodyBox = (b, scale) => {
-    const r = b.screenR * scale
-    return { x: b.screenX - r, y: b.screenY - r, w: 2 * r, h: 2 * r }
-  }
   /**
-   * The box each body is measured in, in radii: the disc and its rim of glow. The sun's
-   * glow reaches `SPACE_SUN_GLOW` radii but fades out long before that on the frame.
+   * T23.20: the box each body is measured in. The sun: its disc and glow, `SUN_REACH` radii. An arc (`ARC_DEPTH`): its
+   * limb's top and the row `depth` below it, where the limb is `2√(2rd − d²)` wide — the box that wide and a margin,
+   * from `LIMB_ABOVE` over the apex to `LIMB_BELOW` under that row.
    */
-  const REACH = { sun: 2, earth: 1.05, moon: 1.1 }
+  const bodyBox = (b, name) => {
+    if (name === 'sun') {
+      const r = b.screenR * SUN_REACH
+      return { x: b.screenX - r, y: b.screenY - r, w: 2 * r, h: 2 * r }
+    }
+    const d = ARC_DEPTH[name]
+    const half = Math.sqrt(2 * b.screenR * d - d * d) + LIMB_MARGIN
+    return { x: b.screenX - half, y: b.screenY - LIMB_ABOVE, w: 2 * half, h: LIMB_ABOVE + d + LIMB_BELOW }
+  }
 
   const locate = async (m) => {
     const out = {}
     const sky = m.d.spaceSky
     if (!sky) throw new Error(`t=${m.t}: debug().spaceSky is null — the space sky is not up`)
-    const earthDisc = bodyBox(sky.earth, 1)
+    if (sky.drawer !== 'world') throw new Error(`t=${m.t}: the space sky is drawn by ${sky.drawer}, not the world renderer (T23.20)`)
     for (const name of ['sun', 'earth', 'moon']) {
       const b = sky[name]
-      const box = bodyBox(b, REACH[name])
-      const r = await measure({ kind: 'diff', a: m.lit, b: m.without[name], box, exclude, thr: THR })
+      const box = bodyBox(b, name)
+      const r =
+        name === 'sun'
+          ? await measure({ kind: 'diff', a: m.lit, b: m.without[name], box, exclude, thr: THR })
+          : await measure({ kind: 'limb', a: m.lit, b: m.without[name], box, exclude, thr: THR, depth: ARC_DEPTH[name] })
       // Located only where the whole box is on the canvas and clear of every overlay:
       // a box clipped on one side has its centroid pulled to the other.
-      // The one legitimate way for a clear body to draw nothing: the moon on the far
-      // side of its orbit, behind the earth's disc.
-      const behind = name === 'moon' && sky.moon.front === false && overlaps(bodyBox(b, 1), earthDisc)
       // T23.10: and clear of the rock drawn over the sky — at zoom 1 the view holds four times the asteroids, and a
       // glow half under one pulled the centroid 8 px (the disc's on-screen size is unchanged, R6).
       const rock = await overRock(box)
-      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box), rock, behind }
+      out[name] = { ...r, want: { x: b.screenX, y: b.screenY }, R: b.screenR, box, clear: onScreen(box) && !overlapsAny(box), rock }
     }
     return out
   }
@@ -324,10 +396,6 @@ export default async function ({ page, shot, log }) {
       for (let y = bx.y; y <= bx.y + bx.h; y += 4) for (let x = bx.x; x <= bx.x + bx.w; x += 4) if (c.solidAt(Math.round(v.x + x / d.zoom), Math.round(v.y + y / d.zoom))) return true
       return false
     }, bx)
-  // T23.10B F3: the moon's widest clearance of the earth's disc over the search (screen px, rim to rim). At zoom 1 the
-  // earth's radius doubled and the orbit did not, so the moon circled inside the earth, and this check's moon leg went
-  // quiet ("behind the earth") instead of red.
-  let moonClear = -Infinity
   const searchMoments = async () => {
     const clearAt = new Map()
     for (let t = 0; t <= SEARCH_SPAN + DT; t += SEARCH_STEP) {
@@ -335,10 +403,9 @@ export default async function ({ page, shot, log }) {
       await frames(2)
       const sky = (await dbg()).spaceSky
       if (!sky) throw new Error('debug().spaceSky is null at ?gravity=space — the space sky never came up')
-      moonClear = Math.max(moonClear, Math.hypot(sky.moon.screenX - sky.earth.screenX, sky.moon.screenY - sky.earth.screenY) - sky.earth.screenR - sky.moon.screenR)
       const clear = []
       for (const n of ['sun', 'earth', 'moon']) {
-        const box = bodyBox(sky[n], REACH[n])
+        const box = bodyBox(sky[n], n)
         if (onScreen(box) && !overlapsAny(box) && !(await overRock(box))) clear.push(n)
       }
       clearAt.set(t, clear)
@@ -392,10 +459,6 @@ export default async function ({ page, shot, log }) {
   const { T0, best } = found
   log(`control rock at ${rock.x},${rock.y} r ${rock.r}: patch ${rockRect.x},${rockRect.y} ${rockRect.w}×${rockRect.h}${tried.length ? ` (passed over ${tried.join('; ')})` : ''}`)
   log(`moments: t0 = ${T0} s, t1 = ${T0 + DT} s (${best} bodies clear at both)`)
-  // T23.10B F3: over the search's span (several `SPACE_MOON_PERIOD`s) the moon has to clear the earth at some moment —
-  // an orbit inside the earth's disc is a moon nobody sees.
-  log(`the moon's widest clearance of the earth's disc over ${SEARCH_SPAN + DT} s: ${moonClear.toFixed(1)} px, rim to rim (must be > 0)`)
-  if (!(moonClear > 0)) throw new Error(`the moon never clears the earth's disc (best ${moonClear.toFixed(1)} px, rim to rim) — its orbit sits inside the earth`)
 
   const a = await moment(T0, 't0')
   const b = await moment(T0 + DT, 't1')
@@ -426,14 +489,10 @@ export default async function ({ page, shot, log }) {
     log(`${name}: t0 ${fmt(p)} want ${p.want.x.toFixed(0)},${p.want.y.toFixed(0)} | t1 ${fmt(q)} want ${q.want.x.toFixed(0)},${q.want.y.toFixed(0)}`)
     // "Not clear" and "drew nothing" are different answers (F1): only the first may
     // skip a body. A body whose box is on screen and clear of every overlay at both
-    // moments **must** draw, unless it is the moon behind the earth.
+    // moments **must** draw.
     if (!(p.clear && q.clear)) {
       if (name === 'earth') throw new Error(`the earth cannot be measured: clear ${p.clear} / ${q.clear}`)
       log(`${name}: not clear on screen at both moments, not measured`)
-      continue
-    }
-    if (p.behind || q.behind) {
-      log(`${name}: behind the earth at ${p.behind ? 't0' : 't1'}, not measured`)
       continue
     }
     // T23.10: a body with an asteroid over part of its box is not where its pixels centre (the rock hides some).
@@ -446,8 +505,10 @@ export default async function ({ page, shot, log }) {
       throw new Error(`${name}: clear on screen at both moments but hiding it changed only ${p.n} / ${q.n} px (want ≥ ${BODY_PIXEL_FLOOR}) — it is not drawn`)
     }
     for (const [r, when] of [[p, 't0'], [q, 't1']]) {
+      const tol = name === 'sun' ? POSITION_TOL : LIMB_TOL
+      if (r.cx === null) throw new Error(`${name} at ${when}: hiding it changed pixels but no limb crossing was found in its box`)
       const off = Math.hypot(r.cx - r.want.x, r.cy - r.want.y)
-      if (off > POSITION_TOL) throw new Error(`${name} at ${when}: its pixels centre ${off.toFixed(1)} px from where debug() puts it (tolerance ${POSITION_TOL})`)
+      if (off > tol) throw new Error(`${name} at ${when}: its pixels sit ${off.toFixed(1)} px from where debug() puts it (tolerance ${tol})`)
     }
     const seen = Math.hypot(q.cx - p.cx, q.cy - p.cy)
     const said = Math.hypot(q.want.x - p.want.x, q.want.y - p.want.y)
@@ -497,12 +558,13 @@ export default async function ({ page, shot, log }) {
   const nightMean = sNight.mean - sDay.mean
   if (Math.abs(nightMean) > 3) throw new Error(`the space frame changed brightness by ${nightMean.toFixed(1)} between the ground's day and night`)
   if (nightBare.d.darkness !== 0) throw new Error(`darkness at the ground's night in space is ${nightBare.d.darkness}, not 0`)
-  const groundSky = await g(() => window.__world?.info()?.sky ?? null)
-  if (groundSky !== false) throw new Error(`the ground's sky is drawn in space (world renderer sky: ${groundSky})`)
+  // T23.20: the world renderer draws space's own sky (F3's), not the ground's.
+  const groundSky = await g(() => window.__world?.info()?.spaceSky ?? null)
+  if (groundSky !== true) throw new Error(`the world renderer does not draw space's sky in space (spaceSky: ${groundSky})`)
   if (b.d.caveBackdrop !== false) throw new Error(`the cave backdrop is on for a space map (R33)`)
   const refused = await g(() => window.__game.caveBackdrop(true))
   if (refused !== false) throw new Error('a space map accepted the cave backdrop toggle')
-  log(`space: darkness ${nightBare.d.darkness} at the ground's night, frame Δ ${nightMean.toFixed(2)} day→night, ground sky not drawn, no cave`)
+  log(`space: darkness ${nightBare.d.darkness} at the ground's night, frame Δ ${nightMean.toFixed(2)} day→night, space's sky drawn, no cave`)
 
   // --- 4: seeded -------------------------------------------------------------------
   await g((t) => {
@@ -534,6 +596,98 @@ export default async function ({ page, shot, log }) {
   }
   log(`seeded: another seed changes ${dOther.n} px, the first again ${dBack.n} px`)
 
+  // --- 6 (T23.20): the fight lights the asteroids — a laser's impact on the rock it hits ------------------------------
+  // F3's rock is lit by the star and by the fight. The same frozen frame read twice from the world canvas — as drawn,
+  // and with only the laser-impact light taken out of the lights the terrain drew — so the only difference is that
+  // light: rock near it brightens (the patch), rock past its radius does not move (the far patch, the control).
+  await g(() => window.__game.watch(null))
+  await frames(SETTLE_FRAMES)
+  const slot = await g(() => window.__game.giveLaser())
+  if (!(slot >= 0)) throw new Error('the sandbox would not give a laser pistol')
+  await g((sl) => window.__game.selectSlot(sl), slot)
+  await g(() => window.__game.holdTracers(true))
+  const me = (await dbg()).player
+  // Into the rock the player stands on, beside the feet (a space player is on an asteroid: `settled` above).
+  const target = await g(([x, y]) => {
+    const c = window.__game.core
+    for (let r = 30; r < 200; r += 6) for (let a = 0; a < 16; a++) {
+      const tx = Math.round(x + r * Math.cos((a / 16) * Math.PI * 2))
+      const ty = Math.round(y + r * Math.sin((a / 16) * Math.PI * 2))
+      if (c.solidAt(tx, ty) && !c.solidAt(Math.round(x + (r - 6) * Math.cos((a / 16) * Math.PI * 2)), Math.round(y + (r - 6) * Math.sin((a / 16) * Math.PI * 2)))) return [tx, ty]
+    }
+    return null
+  }, [Math.round(me.x), Math.round(me.y - k.PLAYER_H / 2)])
+  if (!target) throw new Error('no rock within 200 px of the player to shoot the laser at')
+  const aimAt = await toScreen(page, target[0], target[1])
+  await page.mouse.move(aimAt.x, aimAt.y)
+  await frames(3)
+  const beam = await g(async () => {
+    const t0 = performance.now()
+    const raf = () => new Promise((r) => requestAnimationFrame(r))
+    while (performance.now() - t0 < 5000) {
+      const ev = window.__game.fire()
+      if (ev?.hitscan?.length) break
+      await raf()
+    }
+    while (performance.now() - t0 < 8000) {
+      await raf()
+      const l = window.__game.effectLights().find((e) => e.kind === 'laser')
+      if (l) {
+        await raf()
+        window.__game.freeze(true)
+        await raf()
+        return window.__game.effectLights().find((e) => e.kind === 'laser') ?? null
+      }
+    }
+    return null
+  })
+  if (!beam) throw new Error('laser: no laser-impact light reached the list in space')
+  const decodeF = (f) => ({ width: f.w, height: f.h, data: Uint8Array.from(Buffer.from(f.rgba, 'base64')), view: f.view })
+  const drawnL = await g(() => window.__world.drawnLights())
+  const heldL = await g(() => window.__world.lights())
+  const sameL = (l) => l.x === beam.x && l.y === beam.y && l.r === beam.r && l.i === beam.i
+  if (drawnL.filter(sameL).length !== 1) throw new Error(`laser: the terrain did not draw the impact light once: ${JSON.stringify(beam)} in ${JSON.stringify(drawnL)}`)
+  await g(() => window.__world.setActors([]))
+  const lOn = decodeF(await g(() => window.__world.readFrame()))
+  await g((l) => window.__world.setLights(l), drawnL.filter((l) => !sameL(l)))
+  const lOff = decodeF(await g(() => window.__world.readFrame()))
+  await g((l) => window.__world.setLights(l), heldL)
+  await g(() => window.__world.setActors(null))
+  await g(() => window.__game.holdTracers(false))
+  await g(() => window.__game.freeze(false))
+  const rockMask = await g(([v, w, h]) => {
+    const c = window.__game.core
+    const kk = w / v.w
+    let out = ''
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out += c.solidAt(Math.floor(v.x + (x + 0.5) / kk), Math.floor(v.y + (y + 0.5) / kk)) ? '1' : '0'
+    return out
+  }, [lOn.view, lOn.width, lOn.height])
+  const kk = lOn.width / lOn.view.w
+  const near = { n: 0, gain: 0 }
+  const far = { n: 0, max: 0 }
+  const lumaAt = (d, o) => 0.2126 * d[o] + 0.7152 * d[o + 1] + 0.0722 * d[o + 2]
+  for (let y = 0; y < lOn.height; y++) {
+    for (let x = 0; x < lOn.width; x++) {
+      if (rockMask[y * lOn.width + x] !== '1') continue
+      const dd = Math.hypot(lOn.view.x + (x + 0.5) / kk - beam.x, lOn.view.y + (y + 0.5) / kk - beam.y)
+      const o = (y * lOn.width + x) * 4
+      if (dd < beam.r * LASER_NEAR_FRAC) {
+        near.n++
+        near.gain += lumaAt(lOn.data, o) - lumaAt(lOff.data, o)
+      } else if (dd > beam.r + LASER_FAR_MARGIN) {
+        far.n++
+        for (let c = 0; c < 3; c++) far.max = Math.max(far.max, Math.abs(lOn.data[o + c] - lOff.data[o + c]))
+      }
+    }
+  }
+  near.gain = near.n ? near.gain / near.n : 0
+  log(`laser impact in space ${JSON.stringify(beam)}: near ${near.n} rock px, gain ${near.gain.toFixed(2)} (min ${LASER_NEAR_MIN}); far ${far.n} rock px, max change ${far.max} (max ${LASER_FAR_MAX})`)
+  await shot('space-sky-laser')
+  if (near.n < LASER_MIN_ROCK) throw new Error(`laser: only ${near.n} rock px near the impact (min ${LASER_MIN_ROCK})`)
+  if (!(near.gain >= LASER_NEAR_MIN)) throw new Error(`laser: the asteroid near the impact gains only ${near.gain.toFixed(2)} luminance — the fight does not light the rock in space`)
+  if (far.n < LASER_MIN_ROCK) throw new Error(`laser: control — only ${far.n} rock px beyond the light's radius (min ${LASER_MIN_ROCK})`)
+  if (far.max > LASER_FAR_MAX) throw new Error(`laser: control — rock beyond the light's radius changed by ${far.max}; the whole frame moved`)
+
   // ================= standard: the same instruments, the other answer ===============
   await g(() => window.__game.regenerate(undefined, undefined, 'standard'))
   await page.waitForFunction(() => window.__game.core.meta.asteroids.length === 0 && !!window.__game.debug().player, null, {
@@ -551,7 +705,7 @@ export default async function ({ page, shot, log }) {
     return { d: await dbg(), p: await photo() }
   }
   const day = await std(DAY_T)
-  const groundUp = await g(() => window.__world?.info()?.sky ?? null)
+  const groundUp = await g(() => (window.__world?.info()?.spaceSky === false ? window.__world.info().sky : null))
   const night = await std(NIGHT_T)
   await shot(`space-sky-${renderer}-standard-night`)
   const dm = await measure({ kind: 'stars', a: day.p, exclude })

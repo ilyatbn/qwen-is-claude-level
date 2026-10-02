@@ -17,11 +17,45 @@
  * `1 − r / R`, max over every blast (`terrainGpu.ts`), which is the mockup's per-scorch falloff for
  * one scorch and the strongest of them where two overlap (the mockup mixes them in turn).
  *
- * **One palette (R5):** `world.js::THEMES.dusk`, the theme F1 and F5 are derived with. `MapMeta.theme`
- * is not read for terrain colour.
+ * **One palette per world (R5):** `world.js::THEMES.dusk`, the theme F1 and F5 are derived with, on every
+ * ground map; `MapMeta.theme` is not read for terrain colour. **T23.20: space is a world of its own** —
+ * `THEMES.asteroid`, the theme F3 is derived with (`variant_F3.js`), chosen by the scene description
+ * (`SceneDescription.albedo`), never by the theme byte.
  */
 
-/** `world.js::THEMES.dusk` — the one terrain palette (R5), sRGB bytes. */
+import { CORE_DIM_TOWARD_RIM, CORE_HEART, CORE_HEART_FRAC, CORE_RIM, IRON_TINT, IRON_TINT_ALPHA } from '../render/chunkBake-math'
+
+/** A `world.js::THEMES` entry as the albedo pass reads it, sRGB bytes. */
+export interface AlbedoPalette {
+  grass: readonly (readonly number[])[]
+  soil: readonly (readonly number[])[]
+  rock: readonly (readonly number[])[]
+  pebble: readonly number[]
+  back: readonly (readonly number[])[]
+  scorch: readonly number[]
+  /** The boulder id threshold — `derive`'s `T.boulders ?? 0.62`. */
+  boulders: number
+  /** `T.noTop`: no soil and no grass on the rock's top faces (asteroid). */
+  noTop: boolean
+  /** No grass fringe drawn into the air (`derive`: `themeName !== 'asteroid' && !T.noGrass`). */
+  noFringe: boolean
+}
+
+/**
+ * T23.20: space's rocks carry what the sim gave them (`docs/77`): **iron** (R113) drawn darker — `IRON_TINT` at
+ * `IRON_TINT_ALPHA` over the rock, as the Phaser bake drew it — and each ordinary rock's **core** (R102): an ember rim
+ * and an amber heart (`CORE_HEART_FRAC` of the core's radius) whose glow dims per hit toward the rim
+ * (`coreHeartColour`'s mix). Their pixels are marked in the albedo's alpha (`CORE_RIM_A`, `CORE_HEART_A`, between the
+ * grass fringe's 200 and rock's 255) so the lit terrain makes them glow (`terrainMaterial.ts`, `CORE_GLOW`): F3's
+ * rocks are lit by the star and the fight, and a core is a light of its own. Discs are a texture (`discs`, one texel
+ * each: x, y, r, hits — hits < 0 for iron), read only where the rock is.
+ */
+export const CORE_RIM_A = 253
+export const CORE_HEART_A = 250
+/** The most discs a map's albedo reads (cores + irons; a Large map seats well under this many rocks). */
+export const MAX_DISCS = 256
+
+/** `world.js::THEMES.dusk` — the ground's terrain palette (R5), sRGB bytes. */
 export const TERRAIN_PALETTE = {
   grass: [[52, 70, 58], [74, 92, 70]],
   soil: [[70, 52, 44], [56, 42, 36]],
@@ -30,7 +64,26 @@ export const TERRAIN_PALETTE = {
   back: [[52, 46, 48], [40, 36, 40]],
   scorch: [20, 16, 16],
   boulders: 0.8,
-} as const
+  noTop: false,
+  noFringe: false,
+} as const satisfies AlbedoPalette
+
+/** T23.20: `world.js::THEMES.asteroid` — space's (F3's), sRGB bytes; `boulders` is `derive`'s default. */
+export const ASTEROID_PALETTE = {
+  grass: [[120, 116, 130], [150, 144, 160]],
+  soil: [[92, 86, 100], [76, 70, 84]],
+  rock: [[118, 110, 116], [98, 92, 100], [134, 124, 124], [88, 84, 94]],
+  pebble: [160, 150, 150],
+  back: [[40, 38, 50], [30, 28, 40]],
+  scorch: [22, 18, 20],
+  boulders: 0.62,
+  noTop: true,
+  noFringe: true,
+} as const satisfies AlbedoPalette
+
+/** The albedo palettes by name (`SceneDescription.albedo`). */
+export const ALBEDO_PALETTES = { dusk: TERRAIN_PALETTE, asteroid: ASTEROID_PALETTE } as const
+export type AlbedoPaletteName = keyof typeof ALBEDO_PALETTES
 
 /**
  * R24 (T23.07B F2): the albedo's per-map offset, world px, added to the position every noise reads
@@ -65,7 +118,10 @@ export function probeInput(i: number): [number, number, number] {
 }
 
 const v3 = (c: readonly number[]): string => `vec3(${c.map((n) => n.toFixed(1)).join(', ')})`
-const P = TERRAIN_PALETTE
+const hexBytes = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16))
+const IRON_RGB = hexBytes(IRON_TINT)
+const HEART_RGB = hexBytes(CORE_HEART)
+const RIM_RGB = hexBytes(CORE_RIM)
 
 /** `world.js`'s noise, GLSL ES 3.00. `hash` returns the mockup's `[0, 1)` value. */
 export const NOISE_GLSL = /* glsl */ `
@@ -115,16 +171,19 @@ void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }
 const MAX_BLADE = 19
 
 /**
- * The albedo pass. `gl_FragCoord` is the world px (row 0 = mask row 0 — the field texture is
+ * The albedo pass for palette `P`. `gl_FragCoord` is the world px (row 0 = mask row 0 — the field texture is
  * uploaded that way up and the target is written the same way). Branch for branch `world.js::derive`.
  */
-export const ALBEDO_FS = /* glsl */ `
+export const albedoFs = (P: AlbedoPalette): string => /* glsl */ `
 precision highp float; precision highp int;
 uniform sampler2D field;
 uniform highp usampler2D din2;
 uniform sampler2D scorch;
 uniform ivec2 size;
 uniform ivec2 offset; // R24: the map's albedo offset (albedoOffset), 0 in the look-lab
+uniform sampler2D discs; // T23.20: space's cores and irons, one texel each — x, y, r, hits (< 0: iron)
+uniform int nDiscs;
+uniform float coreHits;
 out vec4 outColor;
 ${NOISE_GLSL}
 int W, H;
@@ -172,12 +231,12 @@ void main() {
     float crack = cell(vec2(p.x * 0.018 + warp, p.y * 0.03), 15);
     if (crack > 0.62 && crack < 0.65) c = mix(c, c * 0.7, 0.35);
     float soilDepth = 26.0 + warp * 16.0;
-    if (up > 0.25 && d < soilDepth) {
+    if (${!P.noTop} && up > 0.25 && d < soilDepth) {
       float st = min(1.0, (soilDepth - d) / 8.0) * min(1.0, (up - 0.25) * 3.0);
       c = mix(c, mix(${v3(P.soil[0])}, ${v3(P.soil[1])}, grain), st);
     }
     float grassDepth = 5.0 + fbm(vec2(p.x * 0.3, 0.0), 2, 16) * 7.0;
-    if (up > 0.35 && d < grassDepth) {
+    if (${!P.noTop} && up > 0.35 && d < grassDepth) {
       float gt = min(1.0, (up - 0.35) * 4.0);
       c = mix(c, mix(${v3(P.grass[0])}, ${v3(P.grass[1])}, fbm(p * 0.1, 2, 17)), gt);
     }
@@ -185,7 +244,24 @@ void main() {
       float t = min(1.0, sc * 2.2) * (0.75 + fbm(p * 0.1, 3, 18) * 0.35);
       c = mix(c, ${v3(P.scorch)}, min(1.0, t));
     }
-    outColor = vec4(c / 255.0, 1.0);
+    // T23.20: iron darkened; a core's rim and heart, marked for the lit terrain's glow (gl_FragCoord: world px).
+    float a = 255.0;
+    vec2 w = vec2(float(x) + 0.5, float(y) + 0.5);
+    for (int k = 0; k < ${MAX_DISCS}; k++) {
+      if (k >= nDiscs) break;
+      vec4 dk = texelFetch(discs, ivec2(k, 0), 0);
+      float dd = length(w - dk.xy);
+      if (dd >= dk.z) continue;
+      if (dk.w < 0.0) { c = mix(c, ${v3(IRON_RGB)}, ${IRON_TINT_ALPHA}); continue; }
+      if (dd < dk.z * ${CORE_HEART_FRAC}) {
+        c = mix(${v3(HEART_RGB)}, ${v3(RIM_RGB)}, coreHits > 0.0 ? clamp(dk.w / coreHits, 0.0, 1.0) * ${CORE_DIM_TOWARD_RIM} : 0.0);
+        a = ${CORE_HEART_A}.0;
+      } else {
+        c = ${v3(RIM_RGB)};
+        a = ${CORE_RIM_A}.0;
+      }
+    }
+    outColor = vec4(c / 255.0, a / 255.0);
     return;
   }
   vec4 o = vec4(0.0);
@@ -200,7 +276,7 @@ void main() {
   // T23.06B F8: skipped where the nearest rock is farther than a blade — dOut (G, ×4 truncated) > 19
   // px means no rock within 19 straight down, so the loop could only fall through: the output is
   // unchanged and open sky costs one texel read instead of nineteen.
-  if (f.g <= ${4 * MAX_BLADE}) for (int k = 1; k <= ${MAX_BLADE}; k++) {
+  if (${!P.noFringe} && f.g <= ${4 * MAX_BLADE}) for (int k = 1; k <= ${MAX_BLADE}; k++) {
     int ys = y + k;
     if (ys >= H) break;
     if (!solidAt(x, ys)) continue;
@@ -218,6 +294,9 @@ void main() {
   outColor = o;
 }
 `
+
+/** The ground's albedo pass (`TERRAIN_PALETTE`). */
+export const ALBEDO_FS = albedoFs(TERRAIN_PALETTE)
 
 /** Scorch: `1 − r / R` inside the blast's circle, drawn over its bounding box with MAX blending. */
 export const SCORCH_VS = /* glsl */ `

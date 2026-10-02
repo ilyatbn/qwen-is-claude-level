@@ -242,6 +242,9 @@ const COMPOSITE = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
   uniform vec3 C[${N}], skyTop, skyBottom, haze, glowC, sunC, rayC;
   uniform float lin, grainK, t; uniform vec2 RES, skyOff, sets;
   uniform vec4 flatC; // dev (T23.19C, rock-opaque): a = 1 draws the whole sky this one linear colour
+#if SSTARS
+  uniform sampler2D ST; uniform vec2 STt; // T23.20: space's drifting star field (look/space.ts::SpaceStars), buffer px
+#endif
   float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
   void main(){
     if (flatC.a > 0.5) { gl_FragColor = vec4(flatC.rgb, 1.); return; }
@@ -253,6 +256,10 @@ const COMPOSITE = /* glsl */ `varying vec2 vUv; varying vec4 T0, T1, T2, T3;
 #endif
     // Stars: each end's set (baked in G: z night's, w day's) at its end's weight — alpha follows t (R7).
     col += vec3(g.z*t + g.w*(1. - t));
+#if SSTARS
+    // T23.20: T22.06's seeded field, where F3 adds its dust — before the bands, which cover it as they cover the dust.
+    col += texture2D(ST, gl_FragCoord.xy*STt).rgb;
+#endif
     // The day set (F5's moons) at its weight (sets.y: 1 − t).
 #if DSET
     vec4 d = texture2D(DF, gl_FragCoord.xy*DFt.xy + DFt.zw); col = mix(col, col*d.a + d.rgb, sets.y);
@@ -408,12 +415,14 @@ export class SkyQuad {
         RES: { value: new Vector2(1280, 720) },
         skyOff: { value: new Vector2() },
         flatC: { value: new Vector4(0, 0, 0, 0) },
+        ST: { value: null },
+        STt: { value: new Vector2(1, 1) },
       },
       vertexShader: COMPOSITE_V,
       fragmentShader: COMPOSITE,
       // T23.11: the band slots compiled are the sky's own (`setSky`): SwiftShader runs every slot's arithmetic even
       // when its uniform switch skips it (the game's sky has four bands in six slots).
-      defines: { NB: N, NSET: 1, DSET: 1 },
+      defines: { NB: N, NSET: 1, DSET: 1, SSTARS: 0 },
       depthTest: false,
       depthWrite: false,
     })
@@ -667,8 +676,10 @@ export class SkyQuad {
     this.packSet(night, null)
     u['NF']!.value = bake(MODE.night, sets)
     this.packSet(null, day)
-    u['DF']!.value = bake(MODE.fixed, sets)
-    u['DR']!.value = bake(MODE.rays, sets)
+    // T23.20: a sky with no day moons (space) never reads the day set (`DSET` 0) — one texel each, not two frames' worth.
+    const daySets: Extent = day?.moons?.length ? sets : { org: [0, 0], ext: [RAY_TEXEL, RAY_TEXEL] }
+    u['DF']!.value = bake(MODE.fixed, daySets)
+    u['DR']!.value = bake(MODE.rays, daySets)
     this.setsExtent = sets
     for (let i = 0; i < N; i++) {
       const e = x.layers[i]
@@ -690,6 +701,16 @@ export class SkyQuad {
   hideLayers(hide: number[]): void {
     this.hidden = new Set(hide)
     this.packLayers()
+  }
+
+  /**
+   * T23.20: add `stars` (a buffer-sized texture of the sky's pre-`lin` colour — `space.ts::SpaceStars`) where the dust
+   * goes; `null`: none (compiled out). `buffer`: the drawing buffer's size, which the texture matches.
+   */
+  setStars(stars: Texture | null, buffer: [number, number]): void {
+    this.define('SSTARS', stars ? 1 : 0)
+    this.u['ST']!.value = stars
+    ;(this.u['STt']!.value as Vector2).set(1 / Math.max(1, buffer[0]), 1 / Math.max(1, buffer[1]))
   }
 
   /**

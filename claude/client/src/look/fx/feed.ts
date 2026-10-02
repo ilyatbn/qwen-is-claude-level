@@ -5,15 +5,15 @@
  * read where they are kept, not copied into a second list.
  *
  * **Who draws them** is one derived fact, `worldDraws`: the world renderer sets it when it draws this scene's effects
- * (a map with a sky — not space, whose opaque M22 backdrop hides the world canvas until T23.20), and the ordnance
- * layers draw their old flat Phaser picture only while it is false (space; `?world=off`; no WebGL2). One flag, set by
+ * (a map with a sky — T23.20: space's too, F3's), and the ordnance layers draw their old flat Phaser picture only
+ * while it is false (`?world=off`; no WebGL2). One flag, set by
  * the drawer, so the two can never both draw or both not.
  */
 import { LOOK, type OrdnanceState } from '../../render/ordnance-state'
 import { OrdnanceFxState } from '../../render/ordnanceFx-math'
 import type { Light } from '../scene'
 import { MUZZLE_LIGHT } from '../effectLights'
-import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, smokeLook, swingFx } from './game'
+import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, smokeLook, swingFx, type SmokeLook } from './game'
 import { clearFrame, type FxFrame } from './kit'
 import { weatherFrame, type WeatherSource } from './hazards'
 
@@ -100,10 +100,10 @@ export const MINE_FAR = 300
  * This frame's game effects from `feed` into `out` (cleared first). `seconds`: the clock the fire and smoke move on;
  * `lights`: this frame's effect lights, whose muzzle lights are where the muzzle glows go.
  */
-export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: readonly Light[] = []): void {
+export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: readonly Light[] = [], look: SmokeLook | null = null): void {
   clearFrame(out)
-  // T23.11 (R7): the smoke in the palette of the scene's hour.
-  const smoke = smokeLook(feed.night)
+  // T23.11 (R7): the smoke in the palette of the scene's hour — T23.20: or the world's own (`look`: space's, F3's).
+  const smoke = look ?? smokeLook(feed.night)
   const z = feed.zones
   if (z?.visible) {
     const st = z.state

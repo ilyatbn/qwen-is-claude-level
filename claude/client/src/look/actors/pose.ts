@@ -217,7 +217,9 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
   let J: Pose
   let rot = 0
   let helmet = inp.space
-  if (!inp.space || !inp.alive) st.rot = 0
+  // T23.20 (T23.14 review F7): the space pose is free flight's — a body standing or walking on an asteroid walks.
+  const flying = inp.space && !inp.grounded
+  if (!flying || !inp.alive) st.rot = 0
   let shadow = inp.grounded
   // T23.14D F8: the state is `deriveAnimState`'s — the table `PlayerView.state` reports — and the pose follows it.
   const state = deriveAnimState({ alive: inp.alive, grounded: inp.grounded, jetpack: inp.jetpack, vx: inp.vx, vy: inp.vy })
@@ -228,7 +230,7 @@ export function stepFigure(st: FigureState, inp: FigureInputs): Drawn {
     J = { legs: [[0.25, -0.35], [0.6, 0.65]], arms: [[1.9, 0.7], [0.35, -0.5]], scarf: [0, -0.6], wave: 0.3, toe: [0.6, 1.4], boots: inp.boots, wings: false, weapon: null }
     rot = -1.5
     shadow = false
-  } else if (inp.space) {
+  } else if (flying) {
     // F7 `space`: the body leans along the push (its feet away from it); a coasting body floats upright.
     const push = inp.thrust
     const on = inp.jetpack && !!push && Math.hypot(push.x, push.y) > 1e-3

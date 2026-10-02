@@ -99,6 +99,43 @@ export function spaceBodies(
   return { sun, earth, moon, sunward }
 }
 
+/**
+ * T23.20 — **F3's composition** for the same motion. In the new look the earth is F3's giant stepped planet arc and
+ * the moon its smaller arc (`look/space.ts`), so a body's place is its arc's **apex** (the top of its limb) and the
+ * sun is F3's distant star. Each body keeps T22.06's path, speed and phase (`spaceBodies`); only the path's centre
+ * moves to where F3 draws it — composition, as `SUN_PATH`/`EARTH_PATH` are: the star high and left of centre, the
+ * planet's limb high on the right with the planet filling the lower right, the moon circling F3's place for it,
+ * down and left of the planet (`variant_F3.js`: star (150, 60), planet apex (980, 130), moon apex (240, 330)).
+ */
+export const F3_SUN_PATH = { cx: 0.45, cy: 0.17 }
+export const F3_EARTH_PATH = { cx: 0.6, cy: 0.2 }
+/** F3's moon apex from its planet apex, frame px — the centre the moon's T22.06 orbit circles in the new look. */
+export const F3_MOON_FROM_EARTH: readonly [number, number] = [240 - 980, 330 - 130]
+
+/** Where each body is drawn this frame in the new look, frame px (the sun's centre, each arc's apex). */
+export interface SpaceScreen {
+  sun: [number, number]
+  earth: [number, number]
+  /** Always drawn in front of the planet: the new look composites the moon's arc after the planet's (T22.06's `front` is not drawn). */
+  moon: [number, number]
+}
+
+/**
+ * `spaceBodies` in F3's composition, on a `frameW × frameH` frame at camera `zoom`, every body moved by `pan` (frame
+ * px: the camera's distance from the map's centre × zoom × −`SPACE_BODY_PARALLAX`, which the scene supplies — T22.06's
+ * parallax, unchanged). The moon's orbit is in camera px, so it is scaled by the zoom like everything else.
+ */
+export function spaceScreen(b: SpaceBodies, frameW: number, frameH: number, zoom: number, pan: [number, number]): SpaceScreen {
+  const at = (fx: number, fy: number, c: { cx: number; cy: number }, p: { cx: number; cy: number }): [number, number] => [
+    (fx - p.cx + c.cx) * frameW + pan[0],
+    (fy - p.cy + c.cy) * frameH + pan[1],
+  ]
+  const sun = at(b.sun.fx, b.sun.fy, F3_SUN_PATH, SUN_PATH)
+  const earth = at(b.earth.fx, b.earth.fy, F3_EARTH_PATH, EARTH_PATH)
+  const moon: [number, number] = [earth[0] + F3_MOON_FROM_EARTH[0] + b.moon.dx * zoom, earth[1] + F3_MOON_FROM_EARTH[1] + b.moon.dy * zoom]
+  return { sun, earth, moon }
+}
+
 export interface SpaceStar {
   /** `0..1` of the field. */
   u: number

@@ -183,7 +183,7 @@ test('a check file registered by several entries selects every one of them', () 
 test('the real shared check files select all their entries', () => {
   const want = {
     'scripts/checks/radiation.mjs': ['radiation', 'radiation-standard'],
-    'scripts/checks/space-sky.mjs': ['space-sky', 'space-sky-canvas'],
+    'scripts/checks/space-sky.mjs': ['space-sky'],
     'scripts/checks/thrusters.mjs': ['thrusters', 'thrusters-canvas', 'thrusters-standard'],
   }
   for (const [file, names] of Object.entries(want)) {

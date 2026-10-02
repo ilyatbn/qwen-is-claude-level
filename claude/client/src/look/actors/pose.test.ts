@@ -211,6 +211,27 @@ describe('the stick figure animation (T23.14)', () => {
       expect(Math.abs(mean(null) - JET_LEN * JET_MIN_FRACTION)).toBeLessThan(JET_LEN * FLICKER * 0.5)
       expect(Math.abs(mean(UP) - JET_LEN)).toBeLessThan(JET_LEN * FLICKER * 0.5)
     })
+    it('T23.20 (T23.14 review F7): a figure standing or walking on an asteroid walks; the space pose is free flight only', () => {
+      // Walking on the rock in space: the run cycle's legs move and the body stays upright (no float, no frozen legs).
+      const st = newFigureState()
+      const legs: string[] = []
+      let d = stepFigure(st, inp({ space: true, grounded: true, vx: 120 }))
+      for (let i = 0; i < 30; i++) {
+        d = stepFigure(st, inp({ space: true, grounded: true, vx: 120 }))
+        legs.push(JSON.stringify(d.J.legs))
+      }
+      expect(new Set(legs).size).toBeGreaterThan(5)
+      expect(d.rot).toBe(0)
+      expect(d.helmet).toBe(true)
+      expect(d.shadow).toBe(true)
+      // The control: the same body off the rock floats in the space pose (shadowless, its legs F7's float).
+      const fl = newFigureState()
+      const flLegs: string[] = []
+      for (let i = 0; i < 30; i++) flLegs.push(JSON.stringify(stepFigure(fl, inp({ space: true, grounded: false, vx: 120 })).J.legs))
+      expect(new Set(flLegs).size).toBe(1)
+      expect(stepFigure(fl, inp({ space: true, grounded: false, vx: 120 })).shadow).toBe(false)
+    })
+
     it('T23.14D F4: space turns against the push it is given, never the travel (a braking body)', () => {
       // Drifting right (vx > 0) while braking with LEFT: the push is left, so the flame points right, behind the push.
       const st = newFigureState()

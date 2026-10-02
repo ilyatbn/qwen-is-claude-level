@@ -6,8 +6,14 @@
  * Built by the scenes and shown **only on a space map** (T23.04: `SkyLayer`, which used to own
  * this and swap it with the ground's day, is retired; the ground's sky is the world renderer's,
  * which draws none in space). The space gradient moved here with it. Everything here sits at
- * `DEPTH.sky`, under the terrain, the thruster plume and the radiation edge glow. Restyled to F3
- * by T23.20.
+ * `DEPTH.sky`, under the terrain, the thruster plume and the radiation edge glow.
+ *
+ * **T23.20: in the new look this computes and the world renderer draws.** While the scene's world renderer draws
+ * it (`fx/feed.ts::followWorldDraws` — the one flag the effects and the furniture follow), every Phaser object here
+ * stays hidden and `update` hands the frame's places to the scene's space feed (`look/space.ts`): the star, the
+ * planet's and the moon's arcs in F3's composition (`spaceSky-math.ts::spaceScreen`) and T22.06's star field, the
+ * same seed, clock, paths, drift and parallax. The Phaser sprites below draw only where no world renderer does
+ * (`?world=off`, no WebGL2).
  *
  * **Both render paths draw the same thing**: every colour is baked into a texture, so
  * nothing depends on `setTint` (which Canvas ignores), and the glows are `ADD`, which
@@ -17,6 +23,8 @@
 import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
+import { followWorldDraws } from '../look/fx/feed'
+import { F3_RADII, spaceFeed, type SpaceFeed, type SpacePart } from '../look/spaceFeed'
 import {
   SPACE_SKY_BOTTOM,
   SPACE_SKY_TOP,
@@ -25,6 +33,7 @@ import {
   shadowPixels,
   spaceBodies,
   spaceSkySeed,
+  spaceScreen,
   spaceStars,
   starAt,
   type SpaceSkySeed,
@@ -56,6 +65,8 @@ export interface SpaceSkyDebug {
   /** The clock the last frame was placed at. */
   clock: number
   hidden: SpaceSkyPart[]
+  /** T23.20: who draws the sky — `world` (the new look: F3's star and arcs, the places are frame px) or `phaser`. */
+  drawer: 'world' | 'phaser'
 }
 
 let generation = 0
@@ -69,7 +80,7 @@ export type SpaceBodyName = 'sun' | 'earth' | 'moon'
  * disc. T22.06B F3: with the shade up, the earth's night side sits under the
  * changed-pixel threshold and its centroid was pulled ~25 px toward the lit side.
  */
-export type SpaceSkyPart = SpaceBodyName | 'shade'
+export type SpaceSkyPart = SpaceBodyName | 'shade' | 'stars'
 const BODY_NAMES: readonly SpaceBodyName[] = ['sun', 'earth', 'moon']
 
 export class SpaceSky {
@@ -95,6 +106,10 @@ export class SpaceSky {
   /** A check's control frame: these bodies off, everything else left on. */
   private readonly hiddenBodies = new Set<SpaceSkyPart>()
   private clock = 0
+  /** T23.20: the scene's space feed, and whether its world renderer draws the sky (then nothing here is shown). */
+  private readonly feed: SpaceFeed
+  private worldDraws = false
+  private readonly unfollow: () => void
   /** `getBounds` fills this rather than allocating a rectangle every frame (T22.06B F4). */
   private readonly boundsOut = new Phaser.Geom.Rectangle()
 
@@ -133,6 +148,11 @@ export class SpaceSky {
     this.moonShade = body(this.pixels('moon_shade', shadowPixels(shade(c.SPACE_MOON_RADIUS), 0.9), shade(c.SPACE_MOON_RADIUS)), DEPTH.sky + 3)
     // A real texture before the first map arrives, not Phaser's missing-texture square.
     this.setSeed(0)
+    this.feed = spaceFeed(scene)
+    this.unfollow = followWorldDraws(scene, (on) => {
+      this.worldDraws = on
+      this.setShown(this.shown)
+    })
   }
 
   /** Point the sky at a map: its seed decides the arrangement, the stars and the planets. */
@@ -177,6 +197,10 @@ export class SpaceSky {
     const scrollY = cam0.scrollY
     this.clock = t
     const b = spaceBodies(t, this.phases, c, view.w, view.h)
+    if (this.worldDraws) {
+      this.feedWorld(t, b)
+      return
+    }
     // A body at view fraction (fx, fy) lands there when the camera is centred on the
     // map; flying away from the centre shifts it by the scroll times its parallax. The
     // map's size is the camera's bounds (`CameraRig` sets them to it) — derived, so no
@@ -207,6 +231,41 @@ export class SpaceSky {
     this.drawStars(t, view, scrollX, scrollY)
   }
 
+  /**
+   * T23.20: this frame for the world renderer — the bodies in F3's composition and the star field, frame px (Phaser
+   * canvas px: a scroll-factor-0 point at camera px `p` lands at `p × zoom`), the parallax T22.06's (`SPACE_BODY_PARALLAX`
+   * on the camera's distance from the map's centre, `SPACE_STAR_PARALLAX` on its scroll).
+   */
+  private feedWorld(t: number, b: ReturnType<typeof spaceBodies>): void {
+    const c = C()
+    const cam = this.scene.cameras.main
+    const z = cam.zoom || 1
+    const map = cam.useBounds ? cam.getBounds(this.boundsOut) : { width: cam.width, height: cam.height }
+    const mid = cam.midPoint
+    const pan: [number, number] = [0 - (mid.x - map.width / 2) * z * c.SPACE_BODY_PARALLAX, 0 - (mid.y - map.height / 2) * z * c.SPACE_BODY_PARALLAX]
+    const at = spaceScreen(b, cam.width, cam.height, z, pan)
+    const f = this.feed
+    f.sun = at.sun
+    f.earth = at.earth
+    f.moon = at.moon
+    const n = this.stars.length
+    if (f.stars.length < n * 4) {
+      f.stars = new Float32Array(n * 4)
+      f.starRgb = new Float32Array(n * 3)
+    }
+    const view = this.view()
+    for (let i = 0; i < n; i++) {
+      const s = this.stars[i]!
+      const p = starAt(s, t, c.SPACE_STAR_DRIFT, cam.scrollX, cam.scrollY, c.SPACE_STAR_PARALLAX, view.w, view.h)
+      f.stars.set([p.x * z, p.y * z, p.a, s.size * z], i * 4)
+      f.starRgb.set([((s.color >> 16) & 255) / 255, ((s.color >> 8) & 255) / 255, (s.color & 255) / 255], i * 3)
+    }
+    f.starCount = n
+    this.starsDrawn = n
+    f.hidden = new Set([...this.hiddenBodies].filter((h): h is SpacePart => h !== 'shade'))
+    f.version++
+  }
+
   private drawStars(t: number, view: { left: number; top: number; w: number; h: number }, sx: number, sy: number): void {
     const c = C()
     const g = this.starGfx
@@ -223,10 +282,14 @@ export class SpaceSky {
   /** Show or hide the whole space sky — the scene does, from the map (shown iff a space map). */
   setShown(on: boolean): void {
     this.shown = on
-    this.gradient.setVisible(on)
-    this.starGfx.setVisible(on)
+    this.feed.shown = on
+    this.feed.version++
+    // T23.20: drawn by the world renderer — nothing of Phaser's shows.
+    const phaser = on && !this.worldDraws
+    this.gradient.setVisible(phaser)
+    this.starGfx.setVisible(phaser)
     this.applyVisibility()
-    if (!on) this.starGfx.clear()
+    if (!phaser) this.starGfx.clear()
   }
 
   /**
@@ -236,6 +299,7 @@ export class SpaceSky {
    */
   setBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all'): void {
     for (const n of which === 'all' ? BODY_NAMES : [which]) {
+      this.feed.version++
       if (on) this.hiddenBodies.delete(n)
       else this.hiddenBodies.add(n)
     }
@@ -247,7 +311,7 @@ export class SpaceSky {
     for (const n of BODY_NAMES) {
       for (const o of this.body(n)) {
         const hidden = this.hiddenBodies.has(n) || (shades.has(o) && this.hiddenBodies.has('shade'))
-        o.setVisible(this.shown && !hidden)
+        o.setVisible(this.shown && !this.worldDraws && !hidden)
       }
     }
   }
@@ -260,6 +324,7 @@ export class SpaceSky {
 
   debug(): SpaceSkyDebug {
     const cam = this.scene.cameras.main
+    if (this.worldDraws) return this.worldDebug()
     const z = cam.zoom || 1
     const par = C().SPACE_BODY_PARALLAX
     // Phaser's own transform for a scroll-factor object: scroll it, then zoom about
@@ -286,6 +351,37 @@ export class SpaceSky {
       moon: { ...place(this.moon, c.SPACE_MOON_RADIUS), front: this.moonFront },
       clock: this.clock,
       hidden: [...this.hiddenBodies],
+      drawer: 'phaser',
+    }
+  }
+
+  /**
+   * T23.20: the new look's places — what the world renderer was handed this frame (frame px = Phaser canvas px; at
+   * the canvas's own scale `cameras.main` x/y are 0). Radii are F3's: the star's disc, each arc's.
+   */
+  private worldDebug(): SpaceSkyDebug {
+    const f = this.feed
+    const place = (p: [number, number], rad: number, n: SpaceBodyName): SpaceBodyDebug => ({
+      x: p[0],
+      y: p[1],
+      screenX: p[0],
+      screenY: p[1],
+      screenR: rad,
+      visible: this.shown && !this.hiddenBodies.has(n),
+    })
+    let hash = 0
+    for (const s of this.stars) hash = (Math.imul(hash, 31) + Math.round(s.u * 1e6) + Math.round(s.v * 1e6)) | 0
+    return {
+      seed: this.seed,
+      stars: this.stars.length,
+      starsDrawn: this.shown && !this.hiddenBodies.has('stars') ? this.starsDrawn : 0,
+      starHash: hash,
+      sun: place(f.sun, F3_RADII.sun, 'sun'),
+      earth: place(f.earth, F3_RADII.earth, 'earth'),
+      moon: { ...place(f.moon, F3_RADII.moon, 'moon'), front: true },
+      clock: this.clock,
+      hidden: [...this.hiddenBodies],
+      drawer: 'world',
     }
   }
 
@@ -294,6 +390,8 @@ export class SpaceSky {
   }
 
   destroy(): void {
+    this.unfollow()
+    this.feed.shown = false
     this.gradient.destroy()
     this.starGfx.destroy()
     for (const o of this.bodies()) o.destroy()

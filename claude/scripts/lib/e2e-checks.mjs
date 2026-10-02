@@ -113,6 +113,15 @@ export const CHECKS = [
     url: '?look=F1&only=world',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.20: space in the new look — the look-lab's F3 world (space sky, asteroid-lit rock, fog, bloom, grade) against
+  // the mockup's (`controls/F3-world.png`) at Level A, full tier; fog/exposure/bloom/grade off and the ground's rock
+  // palette must fail; the whole F3 (cast + fx) against the picture with its actor boxes pasted.
+  {
+    name: 'look-gate-f3',
+    file: 'scripts/checks/look-gate-f3.mjs',
+    url: '?look=F3&only=world',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.
@@ -237,14 +246,10 @@ export const CHECKS = [
   // T22.06: the space backdrop — sun, earth, moon and stars each located on the frame
   // against its own hidden-body control frame, moving across a round with the camera and
   // an asteroid patch held still, seeded, and the ground sky (T23.04: the world renderer's) and
-  // night absent in space beside their presence after a regenerate to standard. Both paths.
+  // night absent in space beside their presence after a regenerate to standard. T23.20: F3's look —
+  // the world renderer draws it (the star by its centroid, the arcs by their limbs); `space-sky-canvas`
+  // retired with the Phaser path it photographed (R2, R13).
   { name: 'space-sky', file: 'scripts/checks/space-sky.mjs', url: '?sandbox=1&seed=4242&gravity=space' },
-  {
-    name: 'space-sky-canvas',
-    file: 'scripts/checks/space-sky.mjs',
-    url: '?sandbox=1&seed=4242&gravity=space&renderer=canvas',
-    serial: true,
-  },
   // T22.08B: the solar flare — every damage sample point under painted flare in both
   // render paths against a hidden-flare frame and a clear control point, a ghost in the
   // telegraph, a wander counted in drawn frames (R69), and a burning player on fire clear

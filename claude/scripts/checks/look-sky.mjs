@@ -34,12 +34,12 @@
  * `TOL_PX`, and they must increase far → near. **Control: the moon** (F1's `sun` disc, parallax 0)
  * is located in the all-hidden frames at both positions and must not move.
  *
- * ## 3. Seeded, and none in space
+ * ## 3. Seeded, and space's own sky in space
  *
  * Another sky seed changes the frame and the first seed gives it back byte for byte (every client
- * of a round lays out one sky). Regenerated as a space map, the world renderer draws no sky
- * (`info().sky` false, and its canvas reads back black) — the presence control is the standard
- * map just measured.
+ * of a round lays out one sky). Regenerated as a space map, the world renderer draws **space's** sky,
+ * not the ground's (T23.20: `info().spaceSky` true — F3's, held by `space-sky` and `look-gate-f3`; it was no
+ * sky at all, the M22 backdrop's, until then), and its frame differs from the ground sky's.
  */
 import { writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -382,13 +382,16 @@ export default async function ({ page, shot, log }) {
   }
   const groundMax = maxLuma(same)
   await page.evaluate(() => window.__game.regenerate(undefined, undefined, 'space'))
-  await page.waitForFunction(() => window.__game.core.meta.generator === 'Space' && window.__world.sky()?.drawn === false, null, { timeout: 60_000 }).catch(() => {})
+  await page.waitForFunction(() => window.__game.core.meta.generator === 'Space' && window.__world.info().spaceSky === true, null, { timeout: 60_000 }).catch(() => {})
   const spaceInfo = await page.evaluate(() => window.__world.info())
   const spaceFrame = await frame([])
   const spaceMax = maxLuma(spaceFrame)
+  let changed = 0
+  for (let i = 0; i < spaceFrame.data.length; i += 4) if (Math.abs(spaceFrame.data[i] - same.data[i]) + Math.abs(spaceFrame.data[i + 2] - same.data[i + 2]) > 20) changed++
   await shot('look-sky-space')
-  log(`space map: sky drawn ${spaceInfo.sky}, world canvas brightest channel ${spaceMax} (standard map: ${groundMax})`)
-  if (spaceInfo.sky !== false || spaceMax > 2) problems.push(`the ground sky draws on a space map (sky ${spaceInfo.sky}, brightest ${spaceMax})`)
+  log(`space map: sky drawn ${spaceInfo.sky}, space's ${spaceInfo.spaceSky}; ${changed} px differ from the ground sky's frame; brightest channel ${spaceMax} (standard map: ${groundMax})`)
+  if (spaceInfo.sky !== true || spaceInfo.spaceSky !== true) problems.push(`a space map does not draw space's sky (sky ${spaceInfo.sky}, spaceSky ${spaceInfo.spaceSky})`)
+  if (!(changed > spaceFrame.data.length / 4 / 10)) problems.push(`the space map's frame differs from the ground sky's in only ${changed} px — the ground sky draws in space`)
   if (!(groundMax > 40)) problems.push(`control: the standard map's sky read back only as bright as ${groundMax}`)
 
   if (problems.length) throw new Error(`look-sky:\n  - ${problems.join('\n  - ')}`)
