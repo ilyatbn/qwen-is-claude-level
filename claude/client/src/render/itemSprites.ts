@@ -133,6 +133,13 @@ export class ItemLayer {
     return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
   }
 
+  /** T99.04 (e2e only): show or hide the pickups themselves and their beams (both drawers read this container's flag). */
+  setVisible(on: boolean): boolean {
+    this.container.setVisible(on)
+    this.chutes.setVisible(on)
+    return this.container.visible
+  }
+
   /** T99.04 (e2e only): show or hide the pickup labels — a trailer shot carries no signage. Returns what it did. */
   setLabelsVisible(on: boolean): boolean {
     this.labels.setVisible(on)

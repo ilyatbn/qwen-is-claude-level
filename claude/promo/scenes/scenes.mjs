@@ -123,6 +123,86 @@ export const SCENES = {
     // From the upside-down fight, the pan, to the bot dragged into the hole (~5–7 s into the take).
     cut: { dur: 7, in: 0.3 },
   },
+  scene4: {
+    // Islands (seed 9: three high islands with open air between, measured). The bots start on the facing edges of
+    // the west and middle islands and one in the air between, so the fight is across the gap — on jetpacks. At the
+    // cue one bot is put on the middle island's teleport pad (1104,238) and held there (anchored) while it charges;
+    // the camera closes on it, it vanishes, and the clip fades to black (`cut.fadeOut`).
+    env: { ...ARMED, FIXED_SEED: '9', DEV_MAP_SHAPE: 'islands', DEV_ROUND_CLOCK: '30', WEATHER: 'off' },
+    director: 'busy',
+    zoom: 1.2,
+    seconds: 16,
+    stage: async (page) => {
+      await place(page, [[470, 225], [520, 255], [930, 260], [990, 225], [720, 170]], 2)
+      return { focus: { x: 730, y: 260 } }
+    },
+    cues: [
+      { at: 3, what: 'free the camera', run: (page) => focus(page, null) },
+      {
+        at: 4.2,
+        what: 'close in on the pad',
+        run: async (page) => {
+          // The pad, not the bot: the camera must stay where it vanishes, not follow it to the far pad.
+          await focus(page, { x: 1104, y: 222, lift: 10 }, 0.07)
+          await zoomTo(page, 2, 1.8)
+        },
+      },
+      {
+        at: 5.6,
+        what: 'a bot on the pad',
+        run: async (page) => {
+          const ids = (await server(page)).players.map((p) => p.id).sort((a, b) => a - b)
+          const id = ids[3]
+          await page.evaluate(([id]) => window.__game.debugPlace(1104, 222, id, 5), [id])
+          const t0 = Date.now()
+          // Watch the server for the jump (a pad moves you to another pad): the cut ends just after it.
+          for (let i = 0; i < 40; i++) {
+            await sleep(100)
+            const me = (await server(page)).players.find((p) => p.id === id)
+            if (me && Math.hypot(me.x - 1104, me.y - 222) > 200) {
+              console.log(`teleported ${((Date.now() - t0) / 1000 + 5.6).toFixed(2)} s into the take`)
+              break
+            }
+          }
+        },
+      },
+    ],
+    caption: { text: 'MILLIONS OF RANDOMIZED MAPS' },
+    // Take 2: the bot stands in the gate and is gone at ~7.1 s (by the frames' own clock); the fade follows it.
+    cut: { dur: 8, in: 0.6, fadeOut: [-0.75, -0.02] },
+  },
+  final: {
+    // Every creature on one moonlit hillside: seed 7's bowl (x 560–880) from dusk into night, the classic beetle and spider
+    // beside the volcanic tripod and crawler (`setFaunaMix`: alternate ids drawn as the other world's), birds flying
+    // over both ways, re-launched as they leave, and the night's fireflies. No fight: the one bot a match needs is
+    // parked far off and held (anchored). Recorded 30 s, played three times as fast.
+    // From dusk (67 s: the moons up, the fireflies coming in) into full night — at 3x, the light falls as you watch.
+    env: { ...ARMED, BOT_COUNT: '1', FIXED_SEED: '7', DEV_ROUND_CLOCK: '67', WEATHER: 'off' },
+    director: 'busy',
+    zoom: 1.3,
+    seconds: 32,
+    stage: async (page) => {
+      await place(page, [[1950, 700]], 120)
+      await page.evaluate(() => {
+        const g = window.__game
+        g.setFaunaMix(true)
+        g.setItemsVisible(false)
+        g.debugFauna(720, 5, 5, 4)
+      })
+      return { focus: { x: 720, y: 640, lift: 0 } }
+    },
+    cues: [5, 10, 15, 20, 25].map((at) => ({
+      at,
+      what: 'more birds',
+      run: (page) => page.evaluate(() => window.__game.debugFauna(720, 0, 0, 3)),
+    })),
+    lines: [
+      { text: 'SHRED', at: 1.0, char: 0.12, hold: 1.0, erase: 0.5, center: true },
+      { text: 'COMING SOON', at: 3.6, char: 0.1, center: true },
+    ],
+    // Night is dark by design; the clip is lifted a little so the creatures read under the type.
+    cut: { dur: 10, in: 0.5, speed: 3, fadeOut: [-0.8, -0.02], grade: 'brightness(1.3) contrast(1.05) saturate(1.1)' },
+  },
   scene2: {
     // Seed 8 is volcanic. `WEATHER=meteor` keeps a shower falling (one every `METEOR_EVERY`), restarted the moment
     // one ends; the camera shakes on every impact near it (`shakeOrigin`, doubled for the shot).

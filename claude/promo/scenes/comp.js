@@ -14,8 +14,11 @@ const img = document.getElementById('frame')
 const typeEl = document.getElementById('type')
 const txt = typeEl.querySelector('.txt')
 const cur = typeEl.querySelector('.cur')
+const rest = typeEl.querySelector('.rest')
 const black = document.getElementById('black')
 const FPS = 60
+// A scene's grade (a CSS filter on the game frame only — the caption stays as typed).
+if (plan.grade) img.style.filter = plan.grade
 
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v))
 const smooth = (a, b, t) => {
@@ -66,6 +69,8 @@ function caption(t) {
   if (line.fadeOut) opacity *= 1 - smooth(line.fadeOut[0], line.fadeOut[1], t)
   const blink = typing || Math.floor((t - line.at) * 2.4) % 2 === 0
   txt.textContent = shown
+  // The untyped rest holds the line's final width, so a centred line types in place (the cursor takes no width).
+  rest.textContent = t >= eraseAt ? '' : line.text.slice(shown.length)
   cur.style.visibility = blink && t < eraseAt ? 'visible' : 'hidden'
   typeEl.style.opacity = String(opacity)
   const base = line.center ? 'translateY(-50%)' : ''

@@ -73,6 +73,7 @@ const plan = {
     return `/build/raw/${take}/frames/${String(i).padStart(6, '0')}.jpg`
   }),
   fadeIn: cut.fadeIn ?? [0, 0.25],
+  grade: cut.grade ?? null,
   fadeOut: cut.fadeOut ? cut.fadeOut.map((v) => (v < 0 ? dur + v : v)) : null,
   lines: (scene.lines ?? (scene.caption ? [{ text: scene.caption.text }] : [])).map((l) => ({
     at: 0.35,

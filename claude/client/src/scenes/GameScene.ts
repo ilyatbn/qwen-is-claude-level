@@ -3520,6 +3520,10 @@ export class GameScene extends Phaser.Scene {
         self.shakeScale = Math.max(0, k)
         return self.shakeScale
       },
+      /** e2e only (T99.04): the pickups, off for the trailer's wildlife shot. */
+      setItemsVisible(on: boolean) {
+        return self.world?.items.setVisible(on) ?? null
+      },
       /** e2e only (T99.04): the pickups' name labels, off for a trailer shot. */
       setItemLabelsVisible(on: boolean) {
         return self.world?.items.setLabelsVisible(on) ?? null

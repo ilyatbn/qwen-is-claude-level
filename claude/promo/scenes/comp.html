@@ -26,12 +26,15 @@
     font-size: 150px; font-weight: 700; letter-spacing: .12em;
     text-shadow: 0 0 34px rgba(90, 255, 190, .55), 0 0 4px rgba(0, 0, 0, .9), 0 4px 24px rgba(0, 0, 0, .9);
   }
+  /* The letters still to come, laid out but unseen, so a centred line types in place rather than drifting left. */
+  .type .rest { visibility: hidden; }
+  .type.center .cur { margin-right: -0.74em; }
   .type .ghost { position: absolute; left: 0; right: 0; top: 0; pointer-events: none; mix-blend-mode: screen; }
 </style>
 </head>
 <body>
 <img id="frame" />
-<div id="type" class="type"><span class="pr">&gt;</span><span class="txt"></span><span class="cur"></span></div>
+<div id="type" class="type"><span class="pr">&gt;</span><span class="txt"></span><span class="cur"></span><span class="rest"></span></div>
 <div id="black"></div>
 <script type="module" src="./comp.js"></script>
 </body>
