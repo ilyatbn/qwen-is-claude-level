@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPECTATE_DEATH_LINGER_MS, stepWatch, WatchState } from './spectate'
+import { stepWatch, WatchState } from './spectate'
 
 const P = (id: number, alive = true) => ({ id, alive })
 
@@ -16,23 +16,23 @@ describe('T23.27: whom a spectator watches', () => {
     expect(stepWatch([P(2, false)], 2, 1)).toBe(2)
   })
 
-  it('watches the first living player, stays on a death for the linger, then moves on', () => {
+  it('watches the first living player and keeps them through death and respawn; only a leaver is replaced', () => {
     const w = new WatchState()
     expect(w.update([P(3), P(5)], 0)).toBe(3)
-    // Dies: held through the linger (the control — it does not jump at once)…
+    // Dies and stays dead for a long time: still watched (owner, 2026-10-02 — no hopping on every death).
     expect(w.update([P(3, false), P(5)], 100)).toBe(3)
-    expect(w.update([P(3, false), P(5)], 100 + SPECTATE_DEATH_LINGER_MS - 1)).toBe(3)
-    // …and moved on after it.
-    expect(w.update([P(3, false), P(5)], 100 + SPECTATE_DEATH_LINGER_MS)).toBe(5)
-    // A watched player who leaves is replaced at once.
-    expect(w.update([P(3)], 5000)).toBe(3)
+    expect(w.update([P(3, false), P(5)], 60_000)).toBe(3)
+    // Respawns: still watched.
+    expect(w.update([P(3), P(5)], 61_000)).toBe(3)
+    // Control: a watched player who leaves is replaced at once.
+    expect(w.update([P(5)], 62_000)).toBe(5)
   })
 
-  it('a respawn inside the linger keeps the camera on them', () => {
+  it('Tab still steps to the next living player while the watched one is dead', () => {
     const w = new WatchState()
     w.update([P(3), P(5)], 0)
     w.update([P(3, false), P(5)], 10)
-    expect(w.update([P(3), P(5)], 500)).toBe(3)
-    expect(w.update([P(3), P(5)], 10 + SPECTATE_DEATH_LINGER_MS * 2)).toBe(3)
+    expect(w.step([P(3, false), P(5)], 1)).toBe(5)
   })
+
 })
