@@ -15,11 +15,13 @@ import { toWorld } from './worldRenderer-math'
 
 export const FIREFLY_ORDER = 6
 /** Half the quad, px: the halo's reach. */
-export const FIREFLY_QUAD = 12
+export const FIREFLY_QUAD = 14
 /** The glint's colour (linear), its core's HDR peak and the halo's peak (of the glint). Tuned by eye (t2324 shots). */
 export const FIREFLY_GLINT_RGB: readonly [number, number, number] = [1.0, 0.86, 0.38]
 export const FIREFLY_CORE = 3.2
-export const FIREFLY_HALO = 0.07
+export const FIREFLY_HALO = 0.14
+/** The bug's size: the body below is drawn in px at 1, scaled by this (zoom 1 needs ~7 px of bug to read as one). */
+export const FIREFLY_SCALE = 1.5
 
 const VS = /* glsl */ `
 attribute vec2 aBody; attribute vec4 aParam;
@@ -28,20 +30,20 @@ void main(){ vBody = aBody; vParam = aParam; gl_Position = projectionMatrix * mo
 
 // vBody: px in the body's frame (x along the heading, y across). vParam: glint, fade, wing, unused.
 const FS = /* glsl */ `
-uniform vec3 glintRgb; uniform float core; uniform float halo;
+uniform vec3 glintRgb; uniform float core; uniform float halo; uniform float scale;
 varying vec2 vBody; varying vec4 vParam;
 float ell(vec2 p, vec2 c, vec2 r){ vec2 q = (p - c) / r; return (length(q) - 1.) * min(r.x, r.y); }
 void main(){
-  vec2 p = vBody;
+  vec2 p = vBody / scale;
   float glint = vParam.x, fade = vParam.y, wing = vParam.z;
   float body = min(ell(p, vec2(-0.5, 0.), vec2(2.1, 1.25)), ell(p, vec2(1.9, 0.), vec2(0.95, 0.9)));
   float ink = smoothstep(0.55, -0.55, body);
   vec2 wr = vec2(1.7, 0.8 + 0.5 * wing);
   float wings = min(ell(p, vec2(0.2, 1.5), wr), ell(p, vec2(0.2, -1.5), wr));
-  ink = max(ink, 0.45 * smoothstep(0.6, -0.6, wings));
+  ink = max(ink, 0.55 * smoothstep(0.6, -0.6, wings));
   float d = length(p - vec2(-1.7, 0.));
   float spot = smoothstep(1.3, 0.2, d) * core;
-  float pool = exp(-d * d / 26.) * halo + exp(-d / 3.) * halo * 0.6;
+  float pool = exp(-d * d / 20.) * halo + exp(-d / 2.5) * halo * 0.6;
   float a = ink * fade;
   vec3 light = glintRgb * glint * fade * (spot + pool * (1. - a));
   gl_FragColor = vec4(light, a);
@@ -66,6 +68,7 @@ export class FireflyLayer {
         glintRgb: { value: [...FIREFLY_GLINT_RGB] },
         core: { value: FIREFLY_CORE },
         halo: { value: FIREFLY_HALO },
+        scale: { value: FIREFLY_SCALE },
       },
       vertexShader: VS,
       fragmentShader: FS,

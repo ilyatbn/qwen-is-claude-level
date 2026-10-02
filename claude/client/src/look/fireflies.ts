@@ -32,7 +32,7 @@ export const FIREFLY_FLIT = 2.5
 export const FIREFLY_PERIOD: readonly [number, number] = [1.6, 4.2]
 export const FIREFLY_FLASH = 0.32
 /** The glint between flashes (of its flash): always some shine, as the owner's "black with some shine". */
-export const FIREFLY_GLINT_FLOOR = 0.22
+export const FIREFLY_GLINT_FLOOR = 0.35
 /** The fade with the hour `t` (0 moonlit day, 1 night): none under `FADE[0]`, all over `FADE[1]` — in at dusk, out by day. */
 export const FIREFLY_FADE: readonly [number, number] = [0.45, 0.9]
 /** Steps per second the swarm is redrawn at (a moved firefly ends the renderer's redraw skip at most this often). */
