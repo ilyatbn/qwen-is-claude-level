@@ -163,7 +163,8 @@ export class TerrainGpu {
   private readonly quad = new PlaneGeometry(2, 2)
   private readonly albedoMat: RawShaderMaterial
   /** T23.20: space's cores and irons for the albedo (`albedo.ts`): one texel each — x, y, r, hits (< 0: iron). */
-  private readonly discTex = new DataTexture(new Float32Array(MAX_DISCS * 4), MAX_DISCS, 1, RGBAFormat, FloatType)
+  private readonly discData = new Float32Array(MAX_DISCS * 4)
+  private readonly discTex = new DataTexture(this.discData, MAX_DISCS, 1, RGBAFormat, FloatType)
   private readonly scorchMat: RawShaderMaterial
   private readonly passScene = new Scene()
   private readonly passMesh: Mesh
@@ -455,7 +456,7 @@ export class TerrainGpu {
    */
   setDiscs(flat: Float32Array, n: number, coreHits: number): void {
     const k = Math.min(n, MAX_DISCS)
-    ;(this.discTex.image.data as Float32Array).set(flat.subarray(0, k * 4))
+    this.discData.set(flat.subarray(0, k * 4))
     this.discTex.needsUpdate = true
     this.albedoMat.uniforms['nDiscs']!.value = k
     this.albedoMat.uniforms['coreHits']!.value = coreHits

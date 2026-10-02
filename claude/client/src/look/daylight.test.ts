@@ -228,15 +228,18 @@ describe('T23.11: the moons move with the cycle', () => {
   })
 })
 
-describe('T23.19G F5: space keeps F1 at every hour', () => {
+describe('T23.19G F5 → T23.20: space is P_space at every hour', () => {
   const map = (space: boolean) => ({ w: 4000, h: 2000, seed: 7, space })
-  it('a space map has nothing to blend, so its look stays F1\'s grade and bloom; a ground map at t = 0 is F5\'s (the control)', async () => {
+  it('a space map has nothing to blend, so its look is F3\'s grade and bloom; a ground map at t = 0 is F5\'s (the control)', async () => {
     const { gameDescription } = await import('./worldRenderer')
+    const { F3 } = await import('./scenes/F3')
+    const { P_SPACE } = await import('./space')
     const space = gameDescription(map(true))
     expect(space.daylight).toBeUndefined()
-    expect(space.look.grade).toEqual(F1.look.grade)
-    expect(space.look.bloom).toEqual(F1.look.bloom)
-    expect(space.palette).toEqual(F1.palette)
+    expect(space.look.grade).toEqual(F3.look.grade)
+    expect(space.look.bloom).toEqual(F3.look.bloom)
+    expect(space.palette).toEqual(P_SPACE)
+    expect(F3.look.grade).not.toEqual(F1.look.grade)
     const ground = gameDescription(map(false))
     const d = ground.daylight
     expect(d).toBeDefined()

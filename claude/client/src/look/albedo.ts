@@ -26,13 +26,14 @@
 import { CORE_DIM_TOWARD_RIM, CORE_HEART, CORE_HEART_FRAC, CORE_RIM, IRON_TINT, IRON_TINT_ALPHA } from '../render/chunkBake-math'
 
 /** A `world.js::THEMES` entry as the albedo pass reads it, sRGB bytes. */
+type B3 = readonly [number, number, number]
 export interface AlbedoPalette {
-  grass: readonly (readonly number[])[]
-  soil: readonly (readonly number[])[]
-  rock: readonly (readonly number[])[]
-  pebble: readonly number[]
-  back: readonly (readonly number[])[]
-  scorch: readonly number[]
+  grass: readonly [B3, B3]
+  soil: readonly [B3, B3]
+  rock: readonly [B3, B3, B3, B3]
+  pebble: B3
+  back: readonly [B3, B3]
+  scorch: B3
   /** The boulder id threshold — `derive`'s `T.boulders ?? 0.62`. */
   boulders: number
   /** `T.noTop`: no soil and no grass on the rock's top faces (asteroid). */
