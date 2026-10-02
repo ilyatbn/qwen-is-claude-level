@@ -219,7 +219,15 @@ pub fn drive(world: &mut World, bots: &mut [Bot], now: f32, dt: f32) -> Vec<Driv
     }
     for b in bots.iter() {
         if let Some(slot) = b.wants_select() {
-            world.select_slot(b.player, slot);
+            // T99.04 (promo): the rotation reaches the whole bag, and only the quick bar can
+            // be held — a weapon in the backpack is swapped into the bar's last slot first,
+            // as a player would drag it. A real bot only ever picks from what it can hold.
+            let quick = crate::constants::QUICK_SLOTS as u8;
+            if b.arsenal.is_some() && slot >= quick && world.move_item(b.player, slot, quick - 1) {
+                world.select_slot(b.player, quick - 1);
+            } else {
+                world.select_slot(b.player, slot);
+            }
         }
     }
     for b in bots.iter() {

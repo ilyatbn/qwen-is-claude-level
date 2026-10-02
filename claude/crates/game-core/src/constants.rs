@@ -4560,6 +4560,13 @@ pub const BOT_REFUSED_SCORE: f32 = 0.1;
 /// before switching to the next. Short enough that a five-second shot shows switching,
 /// long enough that each weapon gets a few trigger pulls.
 pub const BOT_ARSENAL_ROTATE: f32 = 2.0;
+/// T99.04: an arsenal bot takes the flamethrower on one pass of its rotation in this many (and
+/// the kind rotation puts at most one bot on it at a time) — the owner: fire is an accent;
+/// the stream's ground fire outlives the turn, and every pass walled the shot off in flame.
+pub const BOT_ARSENAL_FLAME_EVERY: usize = 3;
+/// T99.04: ...and only for this many seconds at the start of that turn: a burst, not a hose —
+/// each flame burns `FLAME_LIFE` on the ground, so a two-second spray is a seven-second wall.
+pub const BOT_ARSENAL_FLAME_BURST: f32 = 0.6;
 /// T99.04 (promo, `World::dev_spawn_fauna`): px between the animals it stands on one
 /// hillside — a body and a hop apart, so a crowd reads as a crowd and not a pile.
 pub const DEV_FAUNA_SPACING: f32 = 48.0;

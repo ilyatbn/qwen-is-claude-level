@@ -448,13 +448,17 @@ impl Bot {
         }
         // Along a solved arc the landing is the target's (that is what solved means), so
         // of the zone guard only "too close" is left to ask.
+        // T99.04 (promo, `DEV_BOT_ARSENAL`): the rotation's bot is reckless — no self-safety
+        // refusal (blast guard, too close, landing on itself); reach and sight still hold —
+        // a flamethrower sprayed at any range walled a whole shot in fire (measured on film).
+        let reckless = self.arsenal.is_some();
         let refusal = match self.lob.filter(|_| arcs) {
             Some(_) => {
                 zone_refusal(world, w, wid, pos, target).filter(|r| *r == ZoneRefusal::TooClose)
             }
             None => zone_refusal(world, w, wid, pos, target),
         };
-        match refusal {
+        match refusal.filter(|_| !reckless) {
             Some(ZoneRefusal::TooClose) => {
                 self.stats.rej_blast_guard += 1;
                 return false;
@@ -484,7 +488,7 @@ impl Bot {
             // Never fire at something inside our own blast radius: a bot that
             // rockets its own feet is not a difficulty setting, it is a bug that
             // looks like one.
-            if w.blast_radius > 0.0 && dist < w.blast_radius * BOT_BLAST_GUARD {
+            if !reckless && w.blast_radius > 0.0 && dist < w.blast_radius * BOT_BLAST_GUARD {
                 self.stats.rej_blast_guard += 1;
                 return false;
             }
@@ -647,17 +651,63 @@ impl Bot {
             if in_band && best_ranged.is_none_or(|(bs, _)| score > bs) {
                 best_ranged = Some((score, slot));
             }
-            if in_band {
+            // T99.04 (promo): the rotation's band is **reach only** — a reckless bot (1000 health
+            // in the trailer) fires its rocket at point blank and its flamethrower into its own
+            // fire, which every refusal above exists to stop in a real round. Nothing placed:
+            // a mine on the ground is not a shot.
+            let reaches = reach <= 0.0 || dist <= reach;
+            // Nor what leaves a lasting cloud or a carpet of fire (smoke, toxic, molotov): on
+            // film three of them walled the whole fight off within seconds (measured).
+            let placed = matches!(w.delivery, Delivery::Placed { .. })
+                || (!matches!(w.delivery, Delivery::Flames { .. })
+                    && zone_reach(w, world.gravity).is_some())
+                || w.damage <= 0.0 && !matches!(w.delivery, Delivery::Flames { .. });
+            if self.arsenal.is_some()
+                && reaches
+                && !placed
+                && !matches!(w.delivery, Delivery::Melee { .. })
+            {
                 band.push(slot);
             }
         }
         // T99.04 (promo, `DEV_BOT_ARSENAL`): not the best weapon but the one this bot's
         // turn in the rotation names — still only from the band, so nothing it would
         // refuse to fire or could not reach.
+        // By **kind** (gun, laser, flame, arc, rocket), not by slot: five guns in a row would be
+        // ten seconds of muzzle flash, and five bots offset by seat over five kinds is every
+        // kind at once. Within a kind, the slots take turns too.
         if let (Some(offset), false) = (self.arsenal, band.is_empty()) {
             let turn = (world.round_time / crate::constants::BOT_ARSENAL_ROTATE).max(0.0) as usize;
-            let slot = band[(turn + offset as usize) % band.len()];
-            return (slot != me.inventory.selected()).then_some(slot);
+            let kind_of = |slot: u8| me.inventory.slot(slot).and_then(|s| weapon_kind(s.item));
+            let mut kinds: Vec<usize> = band.iter().filter_map(|s| kind_of(*s)).collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            let mut k = (turn + offset as usize) % kinds.len().max(1);
+            // The stream's fire lingers on the ground long after the turn: held every round it
+            // carpeted the whole shot (measured on film), so it is one short burst
+            // (`BOT_ARSENAL_FLAME_BURST`) on one pass in `BOT_ARSENAL_FLAME_EVERY`.
+            let flame = WEAPON_KINDS.iter().position(|n| *n == "flame");
+            let into_turn = world
+                .round_time
+                .rem_euclid(crate::constants::BOT_ARSENAL_ROTATE);
+            let flame_pass = (turn / kinds.len().max(1))
+                .is_multiple_of(crate::constants::BOT_ARSENAL_FLAME_EVERY);
+            if kinds.get(k).copied() == flame
+                && !(flame_pass && into_turn < crate::constants::BOT_ARSENAL_FLAME_BURST)
+            {
+                k = (k + 1) % kinds.len();
+            }
+            let of_kind: Vec<u8> = band
+                .iter()
+                .copied()
+                .filter(|s| kind_of(*s) == kinds.get(k).copied())
+                .collect();
+            if let Some(slot) = of_kind
+                .get((turn / kinds.len().max(1)) % of_kind.len().max(1))
+                .copied()
+            {
+                return (slot != me.inventory.selected()).then_some(slot);
+            }
         }
         // T23.26D item 2: a ranged weapon that can fire from here beats any swing.
         let point_blank = dist <= melee_reach;
@@ -1352,15 +1402,14 @@ mod tests {
         }
     }
 
-    /// T99.04: **`DEV_BOT_ARSENAL` rotates the weapon in hand, and offsets it by seat.**
-    /// Three guns in the band at mid range. The control is the same bot with the
-    /// rotation off: one weapon, whatever the clock says. With it on, every gun of the
-    /// three comes round, and two bots seated next to each other never hold the same
-    /// one at the same moment.
+    /// T99.04: **`DEV_BOT_ARSENAL` rotates the weapon in hand by kind, offset by seat.**
+    /// A gun, a laser and a bazooka, the enemy where all three reach. The control is the same
+    /// bot with the rotation off: one weapon, whatever the clock says. With it on, every kind
+    /// comes round, and two bots seated next to each other never hold the same kind at once.
     #[test]
-    fn the_arsenal_rotation_cycles_the_band_and_offsets_each_bot() {
+    fn the_arsenal_rotation_cycles_the_kinds_and_offsets_each_bot() {
         use crate::constants::{MapScale, BOT_ARSENAL_ROTATE};
-        use crate::items::registry::{MACHINEGUN, SMG};
+        use crate::items::registry::{BAZOOKA, LASER_PISTOL};
         let mut w = World::with_gravity(
             SEED,
             MapScale::Small,
@@ -1370,9 +1419,12 @@ mod tests {
         );
         w.set_phase(RoundPhase::Playing);
         w.add_player(1, 0, "bot".into());
-        for item in [PISTOL, SMG, MACHINEGUN] {
+        for item in [PISTOL, LASER_PISTOL, BAZOOKA] {
             let max = crate::items::registry::def(item).expect("def").max_stack;
             give(&mut w, 1, item, max);
+        }
+        if let Some(p) = w.player_mut(1) {
+            p.battery = crate::constants::BATTERY_MAX;
         }
         let me = w.player(1).expect("bot").clone();
         let pistol = crate::weapons::defs::def(
@@ -1387,7 +1439,7 @@ mod tests {
             let slot = b
                 .choose_weapon(w, &me, target, me.body.pos)
                 .unwrap_or(me.inventory.selected());
-            me.inventory.slot(slot).map(|s| s.item)
+            me.inventory.slot(slot).and_then(|s| weapon_kind(s.item))
         };
         let turns = 6;
         let mut plain = std::collections::BTreeSet::new();
@@ -1399,7 +1451,7 @@ mod tests {
                 held(&Bot::new(1, SEED, 0, 1.0).arsenal(true), &w),
                 held(&Bot::new(1, SEED, 1, 1.0).arsenal(true), &w),
             );
-            assert_ne!(a, b, "two seats held the same weapon at turn {k}");
+            assert_ne!(a, b, "two seats held the same kind at turn {k}");
             rotated.insert(a);
         }
         assert_eq!(
@@ -1410,8 +1462,70 @@ mod tests {
         assert_eq!(
             rotated.len(),
             3,
-            "the rotation did not come round to every gun: {rotated:?}"
+            "the rotation did not come round to every kind: {rotated:?}"
         );
+    }
+
+    /// T99.04: **an arsenal bot with the whole kit fires every kind in turn** — counted off
+    /// the shots the world accepted, by the kind in hand. The rotation reaches the backpack
+    /// (the flamethrower lands past the quick bar in the full kit) by swapping into the bar,
+    /// and fires reckless (the bazooka at 90 px). The control is the same bot, same bag, the
+    /// rotation off: it holds what it scores best and never reaches the backpack.
+    #[test]
+    fn an_arsenal_bot_fires_every_kind_in_its_bag() {
+        use super::super::tests::{clear_line, flat_shelf};
+        use crate::constants::{BOT_ARSENAL_ROTATE, SIM_DT};
+        let kinds_fired = |arsenal: bool| {
+            let mut w = World::for_test(SEED, crate::constants::MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "bot".into());
+            w.add_player(2, 0, "post".into());
+            let at = clear_line(&w);
+            let y = flat_shelf(&mut w, at, 400);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+            }
+            for d in crate::items::registry::live_weapons() {
+                give(&mut w, 1, d.id, d.max_stack);
+            }
+            let mut b = Bot::new(1, SEED, 0, 1.0).arsenal(arsenal);
+            let mut fired = std::collections::BTreeSet::new();
+            for t in 0..(BOT_ARSENAL_ROTATE * 5.0 / SIM_DT) as u32 {
+                let now = t as f32 * SIM_DT;
+                w.round_time = now;
+                // Full health and a full battery: what is measured is the choice, not attrition.
+                if let Some(p) = w.player_mut(1) {
+                    p.battery = crate::constants::BATTERY_MAX;
+                    p.health = crate::constants::BASE_HEALTH;
+                }
+                if let Some(p) = w.player_mut(2) {
+                    p.body.pos = Vec2::new(at.x + stream_reach() * 0.8, y);
+                    p.body.vel = Vec2::ZERO;
+                    p.health = crate::constants::BASE_HEALTH;
+                }
+                let d = crate::bots::drive(&mut w, std::slice::from_mut(&mut b), now, SIM_DT)[0];
+                if d.fired.is_some_and(|r| r.is_ok()) {
+                    if let Some(k) = d.held.and_then(weapon_kind) {
+                        fired.insert(WEAPON_KINDS[k]);
+                    }
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+            }
+            fired
+        };
+        let plain = kinds_fired(false);
+        let rotated = kinds_fired(true);
+        assert!(
+            !plain.contains("flame") && plain.len() < rotated.len(),
+            "the control: a real bot reached the backpack's flamethrower or as many kinds: {plain:?} vs {rotated:?}"
+        );
+        for k in ["gun", "laser", "flame", "arc"] {
+            assert!(
+                rotated.contains(k),
+                "the rotation never fired a {k}: {rotated:?}"
+            );
+        }
     }
 
     /// T21.43: **a bot riding a gun platform fires it** — a stream at the
