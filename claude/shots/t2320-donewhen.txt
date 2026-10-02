@@ -1,0 +1,106 @@
+   control (terrain silhouette): 50.7% aligned
+
+
+ Test Files  96 passed (96)
+      Tests  1200 passed (1200)
+   Start at  12:27:29
+   Duration  97.01s (transform 4.06s, setup 0ms, collect 9.18s, tests 273.75s, environment 14ms, prepare 5.58s)
+
+vitest exit 0
+building wasm before starting the clock (T19.16)
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+    Finished `release` profile [optimized] target(s) in 0.04s
+[INFO]: ⬇️  Installing wasm-bindgen...
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: Optional field missing from Cargo.toml: 'repository'. This is not necessary, but recommended
+[INFO]: License key is set in Cargo.toml but no LICENSE file(s) were found; Please add the LICENSE file(s) to your project directory
+[INFO]: ✨   Done in 15.87s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/ilya/code/qwen-is-claude-level/.claude/worktrees/agent-a9633619be12d9d9b/claude/client/src/core/pkg.
+building game-server before starting the clock
+
+running 3 check(s) 4 at a time, then 0 serial
+
+[1;34m=== space-sky-match ===[0m
+  stack: server :40303  vite http://localhost:5173 (shared)
+  ok   the space sky is seeded off the wire: 4242 = welcome's 4242
+  ok   stars 320, sun, earth and moon up
+  ok   at round time 90.2 (the ground's night): darkness byte 0, drawn 0
+  ok   no ground sky in the space match: the world renderer draws space's (F3)
+  ok   over 2.0 round s: earth 29.59, moon 9.66 frame px
+  predictor: worst jump 0.00 px, worst ack error 0.00 px (1 corrections; 1 relocations and 13 post-relocation/ack-gap snapshots excluded)
+  stack: server :41795  vite http://localhost:5173 (shared)
+  ok   control: standard at 90.3 s — darkness byte 0.82, drawn 0.82
+  ok   control: the standard match draws its ground sky
+  predictor: worst jump 0.00 px, worst ack error 0.03 px (1 corrections; 1 relocations and 1 post-relocation/ack-gap snapshots excluded)
+space-sky-match ok
+  [1;32mok[0m (25.2s)
+
+[1;34m=== look-gate-f3 ===[0m
+  renderer "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)" → the swiftshader threshold set (R25)
+  shot: shots/look-gate-f3.png
+     (R24 craters in: deltaE_cave 0.24542, paletteDE 1.083 — reported, not gating)
+  1. Level A — look-lab F3 world vs reference/controls/F3-world.png (full tier, 11 metrics):
+    F3 dssim              0.00006  max 0.002693  ok
+    F3 deltaE             0.00867  max 0.3004    ok
+    F3 lumaW1             0.00000  max 0.002796  ok
+    F3 p50                0.00000  max 1         ok
+    F3 p95                0.00000  max 2.5       ok
+    F3 paletteDE          1.34442  max 0.815     reported
+    F3 satW1              0.00001  max 0.002141  ok
+    F3 edgeDensity        0.00001  max 0.0008479 ok
+    F3 deltaE_sky         0.00366  max 0.1216    ok
+    F3 deltaE_terrain     0.03294  max 0.472     ok
+    F3 deltaE_cave        0.00101  max 0.01251   ok
+  side by side (lab | mockup): shots/look-gate-f3-vs-reference.png
+  2. control fog-off: fails 5/11 (dssim, deltaE, lumaW1, satW1, deltaE_sky), dssim 0.0647, deltaE_terrain 0.033
+  2. control exposure-up: fails 9/11 (dssim, deltaE, lumaW1, p95, satW1, edgeDensity, deltaE_sky, deltaE_terrain, deltaE_cave), dssim 0.0046, deltaE_terrain 1.390
+  2. control exposure-down: fails 10/11 (dssim, deltaE, lumaW1, p50, p95, satW1, edgeDensity, deltaE_sky, deltaE_terrain, deltaE_cave), dssim 0.0056, deltaE_terrain 1.460
+  2. control bloom-off: fails 4/11 (dssim, satW1, deltaE_sky, deltaE_cave), dssim 0.0136, deltaE_terrain 0.082
+  2. control grade-off: fails 9/11 (dssim, deltaE, lumaW1, p95, satW1, edgeDensity, deltaE_sky, deltaE_terrain, deltaE_cave), dssim 0.0395, deltaE_terrain 5.600
+  2. control albedo-dusk: fails 9/11 (dssim, deltaE, lumaW1, p95, satW1, edgeDensity, deltaE_sky, deltaE_terrain, deltaE_cave), dssim 0.0731, deltaE_terrain 8.424
+  3. the whole lab F3 (cast + fx) vs F3-space.png, the 11 actor boxes pasted in both; beside it the mockup's own F3-world the same way:
+     dssim              0.01399  max 0.002693  over  world-only 0.13483
+     deltaE             0.08908  max 0.3004    ok    world-only 2.58686
+     lumaW1             0.00075  max 0.002796  ok    world-only 0.02611
+     p50                0.00000  max 1         ok    world-only 8.00000
+     p95                1.00000  max 2.5       ok    world-only 25.00000
+     paletteDE          0.47737  max 0.815     ok    world-only 2.17626
+     satW1              0.00063  max 0.002141  ok    world-only 0.07265
+     edgeDensity        0.00406  max 0.0008479 over  world-only 0.00505
+     deltaE_sky         0.05805  max 0.1216    ok    world-only 2.13748
+     deltaE_terrain     0.26245  max 0.472     ok    world-only 3.32696
+     deltaE_cave        0.00388  max 0.01251   ok    world-only 15.04649
+  side by side (lab | F3): shots/look-gate-f3-vs-F3.png
+  [1;32mok[0m (72.0s)
+
+[1;34m=== space-sky ===[0m
+  renderer: webgl
+  overlays excluded: 
+  control rock at 1741,921 r 151: patch 600,320 80×80 (passed over 1454,635: no moment with the earth clear; 1737,640: no moment with the earth clear)
+  moments: t0 = 160 s, t1 = 220 s (2 bodies clear at both)
+  shot: shots/space-sky-webgl-t0.png
+  shot: shots/space-sky-webgl-t1.png
+  controls: camera still at 1101,561; asteroid patch 0 of 6400 px changed; same-moment pair 0 px
+  sun: t0 404,183 (2401 px) want 405,184 | t1 243,167 (2401 px) want 244,167
+  sun: moved 161.8 px on the frame over 60 s (debug 162.0)
+  earth: t0 845,200 (9386 px) want 843,194 | t1 541,189 (9774 px) want 539,183
+  earth: moved 304.2 px on the frame over 60 s (debug 304.0)
+  moon: t0 315,477 (11760 px) want 315,476 | t1 195,327 (6336 px) want 147,321
+  moon: an asteroid over its box at t0, not measured
+  stars: 144 star pixels; 100 % in place in a second photograph, 0 % after 60 s
+  space: darkness 0 at the ground's night, frame Δ 0.00 day→night, space's sky drawn, no cave
+  seeded: another seed changes 65557 px, the first again 0 px
+  laser impact in space {"kind":"laser","x":2470.4892578125,"y":126.58589172363281,"z":30,"r":170,"rgb":"40,225,210","i":2.4}: near 6401 rock px, gain 16.36 (min 4); far 94108 rock px, max change 1 (max 3)
+  shot: shots/space-sky-laser.png
+  shot: shots/space-sky-webgl-standard-night.png
+  standard: night darkened the frame's mean by 41.8 (min 15)
+  standard control: ground sky drawn, night darkness 0.82, frame darkened 41.8, 690 star pixels by day; control: a flat day sky (#9ec9ff, mean luminance 192.7) counts 0 (< 3.75)
+  [1;32mok[0m (249.9s)
+
+[1;34m=== e2e summary ===[0m
+  [1;32mok  [0m look-gate-f3                 72.0s
+  [1;32mok  [0m space-sky                    249.9s
+  [1;32mok  [0m space-sky-match              25.2s
+  3/3 passed
+e2e exit 0
