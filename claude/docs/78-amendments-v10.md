@@ -98,3 +98,21 @@ other better and battle more."*
   swing; it swings only when cornered at point blank or when no ranged weapon exists anywhere it can reach.
 - Digging is for when no open route exists (§A2), never a fighting style.
 Task: `T23.26F`.
+
+## A7 — World looks: classic and volcanic, picked at random per map (overrides `M23-art.md` R5 for this purpose)
+
+**Owner, 2026-10-02:** *"do the volcanic textures … it should alternate between current and volcanic at random on map
+load. might add some more setups later so keep it open."* References: `tasks/M23/reference/F2-volcanic-night.png` (the
+in-game look), `mapideas/volcanic.jpg` and `mapideas/volcanic2.jpg` (the background idea and the small alien creatures).
+
+- A **world look** is chosen per map, at random from the map's seed (so every client and a replay agree), and carried
+  in `MapMeta` / `map_init`. Looks are an **open list**: `Classic` (today's F1/F5 look) and `Volcanic` now; adding one
+  later is adding an entry, not a new mechanism.
+- A look is **render-only plus fauna**: palettes for the day/night blend (T23.11), terrain albedo/cracks, sky and
+  background layers, fog/haze colour, ambient particles, and which animals live there. It never changes collision,
+  the mask, objects' shapes or anything the simulation reads — R5's rule that the theme must not stamp collision holds.
+- **Volcanic**: F2's palette — near-black rock with glowing lava cracks, red-orange haze, drifting embers; a background
+  of a smoking volcano with lava rivers and ash cloud, ringed planets in a dark sky, red mist at the horizon
+  (`mapideas/`); its animals are small alien creatures in the style of the references — a three-legged tripod walker
+  and an octopus-like crawler — drawn as ink silhouettes like the stick figures.
+Task: `T23.31`.

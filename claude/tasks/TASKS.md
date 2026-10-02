@@ -874,6 +874,8 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.26E](M23/T23.26E-bots-fight-on-open-ground.md) — **Regression:** bots hop nonstop and dig instead of fighting — fighting first, open ground, no hopping in place, use pads; measured against the owner's play
 - [ ] [T23.26F](M23/T23.26F-bots-seek-open-ground-and-each-other.md) — Bots seek open ground and each other: an openness field, out of caves first, converge; the shovel only as a last resort
 - [ ] [T23.30](M23/T23.30-map-shapes.md) — Map shapes: random (today's), hill, mostly flat, multilevel (paired pads, meteors top / toxic clouds bottom), islands in the clouds
+- [ ] [T23.31](M23/T23.31-the-volcanic-world.md) — The volcanic world: a second look picked at random per map (open list), F2's lava-cracked rock, a volcano background, tripod and octopus creatures
+- [ ] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner)
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [ ] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
