@@ -120,6 +120,20 @@ export function traumaFromExplosion(distance: number, radius: number): number {
 }
 
 /**
+ * T99.04: **where an explosion's distance is measured from** — the body you play, or,
+ * with none (a spectator) or a directed camera (`__game.watch`), the middle of the view.
+ * A spectator used to measure from nowhere, which read as distance 0: every blast on the
+ * map shook the screen at full strength wherever the camera was.
+ */
+export function shakeOrigin(
+  body: { x: number; y: number } | null,
+  view: { x: number; y: number },
+  directed: boolean,
+): { x: number; y: number } {
+  return directed || !body ? view : body
+}
+
+/**
  * Trauma-based shake.
  *
  * The offset is `trauma²`, so small shakes stay subtle and large ones are

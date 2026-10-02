@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Core, C } from '../core'
-import { BEETLE, SPIDER, bodyColor, bodySize, legPhase } from './animals-math'
+import { BEETLE, SPIDER, bodyColor, bodySize, legPhase, mixedFauna } from './animals-math'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const wasmBytes = readFileSync(join(here, '../core/pkg/game_wasm_bg.wasm'))
@@ -65,5 +65,14 @@ describe('animals-math', () => {
     // A beetle plods and a spider skitters. Same clock, different period, or
     // the kind argument is decoration.
     expect(legPhase(200, 0, BEETLE)).not.toBeCloseTo(legPhase(200, 0, SPIDER), 3)
+  })
+})
+
+describe('mixedFauna', () => {
+  it('draws a crowd as both worlds, half each', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => i)
+    const looks = ids.map(mixedFauna)
+    expect(looks.filter((l) => l === 'classic').length).toBe(ids.length / 2)
+    expect(looks.filter((l) => l === 'volcanic').length).toBe(ids.length / 2)
   })
 })

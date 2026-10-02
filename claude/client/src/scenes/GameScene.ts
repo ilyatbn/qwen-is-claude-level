@@ -117,7 +117,7 @@ import { energyBar, healthBar, inRefillDelay, jetpackBar } from '../ui/bars-math
 import { DebugHud } from '../ui/debugHud'
 import { ITEM_ATLAS } from '../render/itemSprites'
 import { artFor } from '../render/itemSprites-math'
-import { traumaFromExplosion } from '../render/cameraRig-math'
+import { shakeOrigin, traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { FlareClock, FogClock, LavaClock, ServerClock } from '../render/weather-math'
@@ -315,6 +315,8 @@ export class GameScene extends Phaser.Scene {
   private fx!: OrdnanceFxLayer
   /** e2e only: point the camera here instead of at the player. */
   private watchPoint: { x: number; y: number } | null = null
+  /** T99.04 (promo, `__game.setShakeScale`): explosion trauma's multiplier — 1 in every real round. */
+  private shakeScale = 1
   private localView: PlayerView | null = null
   private remotes = new Map<number, RemoteView>()
   private localInput!: LocalInput
@@ -1425,9 +1427,11 @@ export class GameScene extends Phaser.Scene {
       const kind = String(p['kind'] ?? '')
       this.audio.spatial(kind === 'meteor' ? 'meteor' : 'explode', x, y, this.ear())
       // Distance-scaled trauma, from the layer that owns trauma (§A24).
-      const me = this.predictor?.state
-      const dist = me ? Math.hypot(me.x - x, me.y - y) : 0
-      this.world?.rig.shake(traumaFromExplosion(dist, r))
+      // T99.04: from the view when there is no body (a spectator) or a director holds the camera.
+      const me = this.predictor?.state ?? null
+      const view = this.world?.rig.center ?? { x, y }
+      const at = shakeOrigin(me, view, this.watchPoint !== null)
+      this.world?.rig.shake(traumaFromExplosion(Math.hypot(at.x - x, at.y - y), r) * this.shakeScale)
     })
     // `damage` is scoped to victim and attacker only (docs/40 §3), so receiving
     // one already means it concerns me — no filtering needed here.
@@ -3508,6 +3512,19 @@ export class GameScene extends Phaser.Scene {
         self.cameras.main.setZoom(z)
         return self.cameras.main.zoom
       },
+      /** e2e only (T99.04): a trailer shot's explosion shake, as a multiple of the game's (1). */
+      setShakeScale(k: number) {
+        self.shakeScale = Math.max(0, k)
+        return self.shakeScale
+      },
+      /** e2e only (T99.04): draw the animals as every world's creatures at once (`mixedFauna`). */
+      setFaunaMix(on: boolean) {
+        self.animals?.setFaunaMix(on)
+      },
+      /** e2e only (`DEV_PROBE=1`, T99.04): a crowd of animals and birds around column `x`. */
+      debugFauna(x: number, spiders: number, beetles: number, birds: number) {
+        self.conn.sendRaw('debug_fauna', { x, spiders, beetles, birds })
+      },
       /** e2e only (T99.02): the trailer's shots carry no crosshair. */
       setCrosshairVisible(on: boolean) {
         self.crosshair.setVisible(on)
@@ -3619,9 +3636,10 @@ export class GameScene extends Phaser.Scene {
        * rest — `World::dev_relocate`, announced as a relocation like a pad's. The
        * answer lands in `debug().stand.lastPlace`.
        */
-      debugPlace(x: number, y: number) {
+      debugPlace(x: number, y: number, id?: number, anchor?: number) {
         self.observed.lastPlace = null
-        self.conn.sendRaw('debug_place', { x, y })
+        // T99.04: `id` places a bot instead (a spectator's staged shot); `anchor` seconds hold it there, fighting.
+        self.conn.sendRaw('debug_place', { x, y, ...(id === undefined ? {} : { id }), ...(anchor === undefined ? {} : { anchor }) })
       },
       /**
        * e2e only (T22.19, §C2): redraw the local figure at `tilt` (radians) for a frozen
@@ -3650,11 +3668,13 @@ export class GameScene extends Phaser.Scene {
         }
         return n
       },
-      debugBlackHole(dist?: number, warn?: boolean) {
+      debugBlackHole(dist?: number, warn?: boolean, id?: number) {
         self.observed.lastBlackHole = null
         self.conn.sendRaw('debug_black_hole', {
           ...(dist === undefined ? {} : { dist }),
           ...(warn ? { warn: true } : {}),
+          // T99.04: near player `id` (a bot) instead of the asker.
+          ...(id === undefined ? {} : { id }),
         })
       },
       /** e2e only (§C2, T22.08B): hide the flare — ribbon and flames — for a same-instant control frame. */

@@ -42,3 +42,12 @@ export function legPhase(nowMs: number, id: number, kind: number): number {
   const t = (nowMs + id * 137) / period
   return Math.sin(t * Math.PI * 2)
 }
+
+/**
+ * T99.04 (promo, `__game.setFaunaMix`): the creature an animal is drawn as when every
+ * world's fauna share one hillside — alternate ids classic and volcanic, so a crowd shows
+ * the beetle and spider beside the tripod and the crawler.
+ */
+export function mixedFauna(id: number): 'classic' | 'volcanic' {
+  return id % 2 === 0 ? 'classic' : 'volcanic'
+}

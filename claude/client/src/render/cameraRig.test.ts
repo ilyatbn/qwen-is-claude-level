@@ -5,6 +5,7 @@ import {
   Trauma,
   TRAUMA_DECAY,
   traumaFromExplosion,
+  shakeOrigin,
   clampCenter,
   desiredCenter,
   stepCenter,
@@ -207,5 +208,22 @@ describe('traumaFromExplosion', () => {
     expect(t.roll(3)).toBe(t.roll(3))
     expect(Math.abs(t.roll(3))).toBeLessThanOrEqual(TRAUMA_MAX_ROLL)
     expect(t.roll(3)).not.toBe(t.roll(4))
+  })
+})
+
+describe('shakeOrigin', () => {
+  const body = { x: 100, y: 50 }
+  const view = { x: 100 + TRAUMA_MAX_DISTANCE * 2, y: 50 }
+  it('measures from the body you play', () => {
+    expect(shakeOrigin(body, view, false)).toBe(body)
+  })
+  it('measures from the view with no body, so a far blast does not shake a spectator', () => {
+    const at = shakeOrigin(null, view, false)
+    expect(at).toBe(view)
+    // The effect, not the choice: a blast at the absent body's old spot is out of range.
+    expect(traumaFromExplosion(Math.hypot(at.x - body.x, at.y - body.y), TRAUMA_MAX_DISTANCE)).toBe(0)
+  })
+  it('measures from the view while a director holds the camera', () => {
+    expect(shakeOrigin(body, view, true)).toBe(view)
   })
 })

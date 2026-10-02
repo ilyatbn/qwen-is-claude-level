@@ -19,7 +19,7 @@
  */
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { BEETLE, bodyColor, bodySize, legPhase } from './animals-math'
+import { BEETLE, bodyColor, bodySize, legPhase, mixedFauna } from './animals-math'
 import type { AnimalView } from '../net/worldMirror'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws, fxFeed } from '../look/fx/feed'
@@ -29,6 +29,7 @@ import { VIEW_MARGIN, animalActor, nearView } from '../look/actors/furniture'
 const GAIT_PERIOD_MS = [360, 900]
 
 interface Entry {
+  id: number
   root: Phaser.GameObjects.Container
   body: Phaser.GameObjects.Ellipse
   legs: Phaser.GameObjects.Rectangle[]
@@ -48,6 +49,8 @@ export class AnimalLayer {
   private readonly seen = new Set<number>()
   /** T23.19: the animals are the world renderer's — F4's beetle and spider, rim-lit, behind the figures (not in space). */
   private worldOn = false
+  /** T99.04 (promo): every world's creatures at once (`mixedFauna`), whatever this world's look. */
+  private faunaMix = false
   /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
   private readonly unfollow: () => void
 
@@ -77,7 +80,8 @@ export class AnimalLayer {
           const { x, y } = e.root
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
           const feed = fxFeed(this.scene)
-          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, feed.night, feed.fauna, e.gait)
+          const fauna = this.faunaMix ? mixedFauna(e.id) : feed.fauna
+          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, feed.night, fauna, e.gait)
         },
       })
     } else if (!this.worldOn && e.leave) {
@@ -93,6 +97,11 @@ export class AnimalLayer {
 
   get count(): number {
     return this.entries.size
+  }
+
+  /** T99.04 (promo): draw alternate animals as the other world's creatures. */
+  setFaunaMix(on: boolean): void {
+    this.faunaMix = on
   }
 
   /** Show or hide the whole layer, for a check's control frame (§C2). */
@@ -176,7 +185,7 @@ export class AnimalLayer {
     }
     root.add([...legs, body])
     this.container.add(root)
-    return { root, body, legs, kind: a.kind, right: a.right, gait: (a.id * 0.37) % 1, lastX: a.x, lastMs: 0, leave: null }
+    return { id: a.id, root, body, legs, kind: a.kind, right: a.right, gait: (a.id * 0.37) % 1, lastX: a.x, lastMs: 0, leave: null }
   }
 
   destroy(): void {
