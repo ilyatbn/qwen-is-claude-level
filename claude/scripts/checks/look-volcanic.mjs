@@ -44,6 +44,15 @@ const { PNG } = createRequire(join(root, 'client/package.json'))('pngjs')
 const ref = (p) => join(root, 'tasks/M23/reference', p)
 const RAW = JSON.parse((await import('node:fs')).readFileSync(join(root, 'scripts/lib/look-thresholds.json'), 'utf8'))
 
+/**
+ * §1's one named gap (filed for the coordinator): the terrain's **relief** channel is computed in Rust
+ * (`game-wasm/src/render_fields.rs::relief_at`, `BOULDER_MIN_ID` 0.8 = `THEMES.dusk.boulders`), not per theme, so a
+ * volcanic plate whose id is in (0.75, 0.8] gets its albedo but no bevel. Measured: dssim 0.0070 (swiftshader) /
+ * 0.0079 (Arc D3D12) against F2-world, every other metric within; the mockup re-rendered with only that relief at 0.8
+ * (`controls/F2-world-relief08.png`: `world.js::derive`, `rel = bid > 0.8 ? √dome : 0` for volcanic) matches the lab
+ * on every metric — the control below. Fixing it is `game-wasm` (outside T23.31's Touch only): a theme's boulder id.
+ */
+const RELIEF_GAP = { dssim: 'relief channel at dusk\'s boulder threshold (render_fields.rs)' }
 /** §4: mean |Δ| per channel (0–255) over the volcano's band the backdrop must make, at least. */
 const BACKDROP_MIN = 2
 /** §4: the hidden frame against F2's own over the same band — no more than this (the control). */
@@ -99,7 +108,7 @@ function sideBySide(a, b, name) {
   writeFileSync(join(root, 'shots', name), PNG.sync.write(out))
 }
 
-export default async function ({ page, log }) {
+export default async function ({ page, shot, log }) {
   const problems = []
   await page.evaluate((k) => localStorage.setItem(k, '1'), HIGH_QUALITY_KEY)
   const regions = withActors(loadPng(ref('controls/regions-F1.png')), actorBoxes('F2'))
@@ -110,12 +119,23 @@ export default async function ({ page, log }) {
   const TH = thresholdsFor(RAW, f2.info.gpu)
   log(`renderer ${JSON.stringify(f2.info.gpu)} → the ${TH.backEnd} threshold set (R25); tier ${f2.info.tier}`)
   if (f2.info.tier !== 'full') throw new Error(`want the full tier, got ${f2.info.tier}`)
+  await shot('look-volcanic')
   save(f2.frame, 'look-volcanic-lab.png')
   const m = compare(f2.frame, world, { regions })
-  const bad = failures(m, TH)
+  const bad = failures(m, TH).filter((k) => !(k in RELIEF_GAP))
   log('1. Level A — look-lab F2 world vs reference/controls/F2-world.png:')
-  for (const [k, t] of Object.entries(TH.metrics)) log(`  F2 ${k.padEnd(15)} ${m[k].toFixed(5).padStart(10)}  max ${String(t.threshold).padEnd(9)} ${bad.includes(k) ? 'FAIL' : 'ok'}`)
+  for (const [k, t] of Object.entries(TH.metrics)) {
+    const gap = k in RELIEF_GAP ? ` (named gap: ${RELIEF_GAP[k]} — gated against F2-world-relief08 below)` : ''
+    log(`  F2 ${k.padEnd(15)} ${m[k].toFixed(5).padStart(10)}  max ${String(t.threshold).padEnd(9)} ${bad.includes(k) ? 'FAIL' : failures(m, TH).includes(k) ? 'over' : 'ok'}${gap}`)
+  }
   if (bad.length) problems.push(`F2 world outside its thresholds: ${bad.join(', ')}`)
+  // The gap's control: the mockup with its relief at dusk's boulder threshold — what `render_fields.rs` computes — must
+  // match the lab on **every** metric. So the whole of the dssim miss is that one channel, and nothing else is.
+  const relief08 = loadPng(ref('controls/F2-world-relief08.png'))
+  const r8 = compare(f2.frame, relief08, { regions })
+  const r8bad = failures(r8, TH)
+  log(`   vs controls/F2-world-relief08.png (relief at 0.8): fails ${r8bad.length}/${Object.keys(TH.metrics).length} (${r8bad.join(', ') || 'none'}); dssim ${r8.dssim.toFixed(5)}`)
+  if (r8bad.length) problems.push(`against the relief-0.8 mockup the lab still differs on ${r8bad.join(', ')}: the miss is not only the relief channel`)
   sideBySide(f2.frame, world, 'look-volcanic-vs-reference.png')
 
   // ------------------------------------------------------------------ 2. must-fail
