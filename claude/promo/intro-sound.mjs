@@ -5,6 +5,10 @@
  *
  *   node promo/intro-sound.mjs  ->  promo/build/intro.wav  (+ intro-sfx.wav, intro-bed.wav stems)
  *
+ * Owner, 2026-10-02: kept: the landing, the tablet (readings + alarm), the helmet seals, the breath, the heartbeats
+ * and the final hit. Cut: footsteps, the door and ramp, the drone/wind, the calm chord, the twitch riser and crackles,
+ * the ringing tone. Music +10 %.
+ *
  * Every sound is placed on `intro/beats.js`'s clock — the same numbers the picture reads — so the
  * alarm beeps on the frames the tablet flashes and the ramp clunks on the frame it lands.
  */
@@ -130,46 +134,10 @@ function heartbeat(t, vel = 1) {
 
 // --- the sound design ----------------------------------------------------------------------
 
-// Drone: thin and low — the track carries the music; this is the planet's hum under it.
-{
-  const len = at(T.end)
-  let a = 0
-  let b = 0
-  const o = shaped(len, (i, s) => {
-    a += 32.7 / SR
-    b += 49.0 / SR
-    return (a % 1) * 2 - 1 + ((b % 1) * 2 - 1) * 0.6
-  }, (u, s) => Math.min(1, s / 3) * (1 - Math.min(1, Math.max(0, s - (T.end - 1)) / 1)) * (s > T.twitch ? 1 + (s - T.twitch) * 0.25 : 1))
-  svf(o, 'lp', (i) => 140 + 90 * Math.sin(i / SR * 0.4), 0.8)
-  biquad(o, 'hp', 40, 0.7)
-  put(o, 0, 0.09, 0, 0.2)
-}
-// Wind.
-sweep(0, T.end, 280, 520, 0.05, (u) => Math.min(1, u * 8) * (0.6 + 0.4 * Math.sin(u * 23)) * (1 - u * 0.4), -0.3)
-
 // The descent and touchdown.
 sweep(0.2, T.land - 0.2, 80, 420, 0.42, (u) => u * u)
 impact(T.land, 0.9, 38)
 sweep(T.land, 1.6, 3000, 600, 0.12, (u) => Math.exp(-u * 4)) // debris
-
-// The door: the hatch's ram, a clunk as it lands flat; the ramp's ram, a clunk on the ground.
-hydraulic(T.door, T.hatchOpen - T.door, 1, 95, 140)
-sweep(T.door, 0.5, 6000, 3000, 0.1, (u) => Math.sin(Math.PI * u)) // seal breaking
-clank(T.hatchOpen, 0.85, 0.05)
-hydraulic(T.rampOut, T.rampDown - T.rampOut, 0.9, 150, 210)
-sweep(T.rampOut, T.rampDown - T.rampOut, 900, 1300, 0.06, () => 1) // metal sliding on metal
-clank(T.rampDown, 1.0, 0.1)
-
-// Footsteps: metal on the ramp, dull on the ground, one per footfall of the walk cycle.
-for (let i = 0; i < 4; i++) {
-  const rampT = RAMP.len / CREW.rampSpeed
-  const pan = [-0.2, 0.15, 0.35, -0.35][i]
-  for (let k = 1; ; k++) {
-    const u = (k * Math.PI) / CREW.stride
-    if (u > rampT + 1.4) break
-    step(CREW.start(i) + u, u < rampT, 0.8 + 0.2 * rnd(), pan)
-  }
-}
 
 // The tablet: it wakes, each reading chirps as it lands, a two-note all-clear.
 chirp(T.tablet - 0.55, 600, 1800, 0.25, 0.8)
@@ -179,17 +147,12 @@ const clear = T.reading0 + 3 * T.readingGap + 0.3
 chirp(clear, 1568, 1568, 0.12, 0.9)
 chirp(clear + 0.13, 2093, 2093, 0.3, 0.9)
 
-// The breath. His seal, then a long breath in, held, and out.
+// His helmet's seal, then the breath (the calm chord went).
 seal(T.breath + 0.45, 1, 0.1)
+// The breath in, held, and out (owner kept it).
 sweep(T.inhale, T.hold - T.inhale, 420, 1400, 0.95, (u) => Math.pow(u, 0.7) * Math.min(1, (1 - u) * 14), 0, 1.1)
 sweep(T.inhale, T.hold - T.inhale, 2200, 3600, 0.25, (u) => u * Math.min(1, (1 - u) * 14), 0, 2)
 sweep(T.exhale, 1.3, 1200, 380, 0.85, (u) => Math.sin(Math.PI * Math.min(1, u * 1.15)) * (1 - u * 0.3), 0, 1.1)
-// The calm: a warm chord, nothing wrong.
-{
-  const freqs = [220, 277.2, 329.6, 440]
-  const o = shaped(at(3.2), (i, s) => freqs.reduce((m, f) => m + Math.sin(2 * Math.PI * f * s) * 0.25, 0), (u) => Math.sin(Math.PI * u) ** 2)
-  put(o, T.exhale + 0.9, 0.12, 0, 0.5)
-}
 // The others' seals.
 seal(T.helmets + 0.5, 0.9, 0.4)
 seal(T.helmets + 0.9, 0.9, -0.4)
@@ -198,16 +161,7 @@ seal(T.helmets + 1.2, 0.8, -0.1)
 // The alarm: on the beeps the tablet flashes on.
 BEEPS.forEach((b, k) => beep(b, k % 2 ? 1568 : 2093, 0.11, b < T.turn ? 1 : 0.6))
 
-// The twitching: a riser, glitch crackles on the picture's twitch steps, the heart speeding up.
-sweep(T.twitch, T.black - T.twitch, 200, 5000, 0.35, (u) => u * u)
-for (let s = Math.ceil(T.twitch * 15); s < T.black * 15; s++) {
-  const t = s / 15
-  if (rnd() < 0.25 + 0.5 * (t - T.twitch) / (T.black - T.twitch)) {
-    const o = shaped(at(0.035), () => (rnd() < 0.5 ? 1 : -1), () => 1)
-    biquad(o, 'bp', 1500 + rnd() * 3000, 1.5)
-    put(o, t, 0.12, rnd() * 1.4 - 0.7, 0.05)
-  }
-}
+// The heart speeding up under the twitching (the riser and glitch crackles went).
 {
   let t = T.twitch
   let gap = 0.7
@@ -227,18 +181,14 @@ for (let s = Math.ceil(T.twitch * 15); s < T.black * 15; s++) {
 impact(T.black, 1.25, 33, 3.5)
 clank(T.black, 0.6)
 for (let t = T.black + 0.9; t < T.end - 0.5; t += 0.95) heartbeat(t, 0.8)
-{
-  const len = at(T.end - T.black)
-  const o = shaped(len, (i, s) => Math.sin(2 * Math.PI * 3150 * s), (u) => Math.min(1, u * 4) * (1 - u) * 0.6)
-  put(o, T.black, 0.05, 0, 0)
-}
 
 // --- the bed: the owner's track ------------------------------------------------------------
 /** Where in the track the intro starts (s): its quiet opening under the landing; the band
  *  comes in at ~0:16, under the tablet's all-clear and the breath. */
 export const BED_FROM = 0
 /** The bed's level: dB of gain on the track as mastered (I −15.5 LUFS) — measured, see task. */
-const BED_DB = -8
+/** Owner, 2026-10-02: "up the music level 10%" — ×1.1 in amplitude on the earlier −8 dB. */
+const BED_DB = -8 + 20 * Math.log10(1.1)
 /** Ducks under the big moments: [from, to, dB]. */
 const DUCKS = [
   [T.land - 0.1, T.land + 1.4, -7],
