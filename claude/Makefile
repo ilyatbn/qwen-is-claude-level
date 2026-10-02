@@ -156,13 +156,15 @@ probe:
 # headed GPU Chrome (`scripts/play.mjs`) joined as a spectator — no body; Tab / Shift+Tab switch whom you watch, hold
 # S for the scores. A watched room restarts on its own after every round. `WATCH_ENV` passes server settings, e.g.
 # `make watch WATCH_ENV='DEV_BOT_FRENZY=1 DEV_LOADOUT=1'`; `WATCH_BOTS` the bot count. `make stop` ends it.
-# A map shape for the watched room: `make watch WATCH_ENV='DEV_MAP_SHAPE=islands'` (random, hill, flat, multilevel, islands).
+# A map shape for the watched room: `make watch WATCH_SHAPE=islands` (hill — the default —, flat, multilevel, islands; random).
 WATCH_BOTS ?= 6
 WATCH_ENV ?=
+# Bots play the Random shape badly (owner, 2026-10-02): a watched room defaults to Hill. `WATCH_SHAPE=flat` etc.
+WATCH_SHAPE ?= hill
 SERVER_ENV ?=
 watch:
 	@set -euo pipefail
-	$(MAKE) --no-print-directory start SERVER_ENV="BOT_COUNT=$(WATCH_BOTS) $(WATCH_ENV)"
+	$(MAKE) --no-print-directory start SERVER_ENV="BOT_COUNT=$(WATCH_BOTS) DEV_MAP_SHAPE=$(WATCH_SHAPE) $(WATCH_ENV)"
 	# The page joins the moment it loads, so the server has to be listening first (a cold release build is minutes).
 	echo "waiting for the server on :3000 (a cold release build takes a while) -> $(SERVER_LOG)"
 	up=""
