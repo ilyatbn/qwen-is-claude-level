@@ -21,6 +21,7 @@ import { C, MapGenerator, type Core } from '../core'
 import type { Masks, Scorch } from './scene'
 import type { TerrainFeed } from './terrainFields'
 import type { Rect } from './terrainGpu'
+import { worldLookByte } from './worldLookId'
 
 /** `rle.rs`'s format: alternating runs, the first clear, LEB128 lengths. */
 function encodeRle(bits: Uint8Array): Uint8Array {
@@ -65,6 +66,8 @@ export class LabFields implements TerrainFeed {
     private readonly scorch: Scorch[],
     /** T23.20: F3's rock — the core's generator says space, so the Rust relief raises the asteroid's boulders. */
     asteroid = false,
+    /** T23.31: F2's rock — the core's world look says volcanic, so the Rust relief raises `THEMES.volcanic`'s boulders. */
+    volcanic = false,
   ) {
     const size = C().CHUNK_SIZE
     this.w = masks.w
@@ -85,6 +88,7 @@ export class LabFields implements TerrainFeed {
       }
     }
     core.setMapGenerator(asteroid ? MapGenerator.Space : MapGenerator.V2)
+    core.setWorldLook(worldLookByte(volcanic ? 'volcanic' : 'classic'))
     if (!core.loadMask(this.w, this.h, encodeRle(solid))) throw new Error('look-lab fields: mask failed to load')
     core.renderFieldsFullWithWall(wall)
   }

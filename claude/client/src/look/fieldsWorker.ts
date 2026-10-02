@@ -18,7 +18,7 @@ export interface FieldsJob {
   w: number
   h: number
   rle: Uint8Array
-  /** `[seed_lo, seed_hi, scale, generator, theme, shape]` (shape: T23.30). */
+  /** `[seed_lo, seed_hi, scale, generator, theme, shape, look]` (shape: T23.30; look: T23.31). */
   key: number[]
 }
 
@@ -46,11 +46,12 @@ self.onmessage = async (e: MessageEvent<FieldsJob | FieldsWarm>): Promise<void> 
     await ready
     const t0 = performance.now()
     const core = new GameCore()
-    const [lo, hi, scale, generator, theme, shape] = job.key as [number, number, number, number, number, number]
+    const [lo, hi, scale, generator, theme, shape, look] = job.key as [number, number, number, number, number, number, number]
     core.set_map_generator(generator)
     if (!core.load_mask(job.w, job.h, job.rle)) throw new Error('fields worker: mask failed to load')
-    // T23.30: the shape is the key's sixth element (`renderFieldsOwnKey`, `GameScene.onMapInit`).
-    const out = core.render_fields_full_landform(lo, hi, scale, generator, theme, shape ?? 0)
+    // T23.30: the shape is the key's sixth element (`renderFieldsOwnKey`, `GameScene.onMapInit`); T23.31: the world
+    // look its seventh — it picks the relief's boulder threshold.
+    const out = core.render_fields_full_landform(lo, hi, scale, generator, theme, shape ?? 0, look ?? 0)
     const wall = core.render_fields_wall_words()
     // Copies out of this worker's wasm memory, so the buffers can be transferred.
     const rgba = core.render_fields_rgba_copy()

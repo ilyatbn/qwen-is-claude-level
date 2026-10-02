@@ -6527,6 +6527,7 @@ mod toxic_rain_falls {
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
+            look: crate::constants::WorldLook::Classic,
         };
         // The surface points the pre-§C21 code placed the hazard on directly.
         // Under the cave the "surface" is the CAVE FLOOR — under a roof — which
@@ -7036,6 +7037,7 @@ mod toxic_rain_falls {
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
+            look: crate::constants::WorldLook::Classic,
         };
         meta.surface_points.push(crate::math::Point {
             x: x as i32,
@@ -7395,6 +7397,7 @@ mod toxic_rain_falls {
                 largest_component: Vec::new(),
                 generator: crate::constants::MapGenerator::V1,
                 shape: crate::constants::MapShape::Random,
+                look: crate::constants::WorldLook::Classic,
             };
             Map::from_parts(mask, coarse, meta)
         };
@@ -14914,5 +14917,80 @@ mod multilevel_tests {
             fall(MapShape::Flat).is_empty(),
             "control: a drop on Mostly flat died"
         );
+    }
+}
+
+/// T23.31 part 5 (`docs/78` §A7): a world look is render-only — "same gameplay on both".
+#[cfg(test)]
+mod world_look_tests {
+    use super::*;
+    use crate::bots::{drive, Bot};
+    use crate::constants::{
+        MapGenerator, MapScale, WorldLook, BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, SIM_DT, SIM_HZ,
+    };
+
+    /// A round of `BOT_COUNT_DEFAULT` bots on `map`, from construction (`from_map`: items,
+    /// buried items, weather) through ten seconds of fighting — the state hash once a second.
+    fn hashes(seed: u64, map: Map) -> Vec<[u8; 32]> {
+        let mut w = World::from_map(seed, 0, map);
+        w.set_phase(RoundPhase::Playing);
+        let mut bots = Vec::new();
+        for i in 0..BOT_COUNT_DEFAULT {
+            w.add_player(i as PlayerId, 0, format!("b{i}"));
+            bots.push(Bot::new(i as PlayerId, seed, i as u32, BOT_SKILL_DEFAULT));
+        }
+        let _ = w.drain_events();
+        let mut out = vec![w.state_hash()];
+        for t in 0..10 * SIM_HZ {
+            drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+            w.step(SIM_DT);
+            if (t + 1) % SIM_HZ == 0 {
+                out.push(w.state_hash());
+            }
+        }
+        out
+    }
+
+    /// The map a seed generates, drawn in each look: the mask, the objects and every state
+    /// hash of a bot round are identical — only `meta.look` differs. Two seeds, one generated
+    /// volcanic and one classic, so each runs in its own look and the other.
+    #[test]
+    fn a_world_look_changes_nothing_the_simulation_reads() {
+        let mut seen = Vec::new();
+        for seed in 1u64.. {
+            let map = crate::map::generate_full(seed, MapScale::Small, 0, MapGenerator::V2);
+            if seen.contains(&map.meta.look) {
+                continue;
+            }
+            seen.push(map.meta.look);
+            let other = WorldLook::ALL
+                .into_iter()
+                .find(|l| *l != map.meta.look)
+                .expect("two looks");
+            let mut drawn_other = map.clone();
+            drawn_other.meta.look = other;
+            assert_eq!(map.mask.hash(), drawn_other.mask.hash());
+            assert_eq!(map.meta.objects, drawn_other.meta.objects);
+            let a = hashes(seed, map.clone());
+            let b = hashes(seed, drawn_other);
+            let apart = a.iter().zip(&b).position(|(x, y)| x != y);
+            assert_eq!(
+                apart, None,
+                "seed {seed}: {:?} and {other:?} simulate apart from second {apart:?}",
+                map.meta.look
+            );
+            // The control: the same harness on the same map with one thing the simulation
+            // *does* read changed (the spawn order — who stands where) reports a difference,
+            // so equal hashes above are not an instrument that cannot see the map.
+            let mut moved = map.clone();
+            moved.meta.spawn_points.reverse();
+            assert!(
+                a != hashes(seed, moved),
+                "control: the spawn order moved nothing"
+            );
+            if seen.len() == WorldLook::ALL.len() {
+                break;
+            }
+        }
     }
 }

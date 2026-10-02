@@ -376,6 +376,8 @@ export class WorldMirror {
     this.core.setMapGenerator(m.generator)
     // T23.30: and which shape it was generated to — the shape's rules read it.
     this.core.setMapShape(m.shape)
+    // T23.31: and which look the server drew it in — the relief and the scene read it off the core.
+    this.core.setWorldLook(m.look)
     if (!this.core.loadMask(m.width, m.height, m.rle)) {
       throw new Error('map_init: mask failed to load')
     }

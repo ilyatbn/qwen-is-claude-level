@@ -46,6 +46,8 @@ function mapInitFixture(opts: Partial<{
   generator: number
   /** T23.30's trailing map-shape byte; 2 (Flat) by default, off Random, for the same reason. */
   shape: number
+  /** T23.31's trailing world-look byte; 1 (volcanic) by default, off classic, for the same reason. */
+  look: number
 }> = {}): ArrayBuffer {
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
@@ -68,8 +70,8 @@ function mapInitFixture(opts: Partial<{
     2 + objects * OBJECT_WIRE_BYTES +
     // T22.05A's asteroids ride between the objects and the RLE length.
     2 + asteroids * ASTEROID_WIRE_BYTES + 4 + rle.length +
-    // T23.30: the map shape, after the mask.
-    1
+    // T23.30: the map shape, after the mask; T23.31: the world look, after the shape.
+    1 + 1
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -132,7 +134,8 @@ function mapInitFixture(opts: Partial<{
   v.setUint32(at, opts.rleLenLie ?? rle.length, true); at += 4
   new Uint8Array(b).set(rle, at)
   at += rle.length
-  v.setUint8(at, opts.shape ?? 2)
+  v.setUint8(at++, opts.shape ?? 2)
+  v.setUint8(at, opts.look ?? 1)
   return b
 }
 
@@ -255,6 +258,15 @@ describe('map_init', () => {
     expect(decodeMapInit(mapInitFixture({ shape: 0 })).shape).toBe(0)
     const n = C().MAP_SHAPES.length
     expect(() => decodeMapInit(mapInitFixture({ shape: n }))).toThrow(/names no map shape/)
+  })
+
+  it('reads the world look after the shape and refuses one naming no look (T23.31)', () => {
+    const m = decodeMapInit(mapInitFixture())
+    expect([m.shape, m.look]).toEqual([2, 1])
+    expect(decodeMapInit(mapInitFixture({ look: 0 })).look).toBe(0)
+    const n = C().WORLD_LOOKS.length
+    expect(n).toBeGreaterThan(1)
+    expect(() => decodeMapInit(mapInitFixture({ look: n }))).toThrow(/names no world look/)
   })
 
   it('refuses a generator byte that names no generator (T22.14A)', () => {

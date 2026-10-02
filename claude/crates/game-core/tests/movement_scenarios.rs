@@ -62,6 +62,7 @@ fn make_map(w: u32, h: u32, build: impl FnOnce(&mut Mask)) -> Map {
         largest_component: Vec::new(),
         generator: game_core::constants::MapGenerator::V1,
         shape: game_core::constants::MapShape::Random,
+        look: game_core::constants::WorldLook::Classic,
     };
     Map::from_parts(mask, coarse, meta)
 }

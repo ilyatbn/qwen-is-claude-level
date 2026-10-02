@@ -26,7 +26,9 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use game_core::constants::{GravityMode, MapGenerator, MapScale, MapShape, StartKit, SIM_HZ};
+use game_core::constants::{
+    GravityMode, MapGenerator, MapScale, MapShape, StartKit, WorldLook, SIM_HZ,
+};
 use game_core::player::input::Input;
 use game_core::player::state::PlayerId;
 use game_core::world::World;
@@ -44,12 +46,13 @@ pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// scale 1, generator 1, sim_hz 4, round_seconds 4, max_players 2,
 /// min_players_to_start 2 (retired §E2; still written, as 0), bot_count 2,
 /// bot_skill 4, dev_loadout 1, bots_enabled 1, start_kit 1, gravity 1, map_shape 1
-/// (T23.30, v38 — a v37 header is one byte shorter).
+/// (T23.30, v38 — a v37 header is one byte shorter), world_look 1 (T23.31, v39 — a
+/// v38 header is one byte shorter).
 ///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
 /// inline and both broke the moment the header grew a field.
-pub const HEADER_BYTES: usize = 47;
+pub const HEADER_BYTES: usize = 48;
 
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
@@ -386,9 +389,18 @@ pub const HEADER_BYTES: usize = 47;
 /// still reads** — it predates shapes, so its shape is `Random`, which generates
 /// today's map byte for byte (`golden.rs` unmoved); `decode` accepts exactly
 /// [`REPLAY_VERSION_NO_SHAPE`] besides this one.
-pub const REPLAY_VERSION: u16 = 38;
+///
+/// Bumped to 39 by T23.31 (`docs/78` §A7): the header gains the **world look** byte,
+/// appended after the map shape — a record of how the round was drawn (render-only:
+/// nothing replayed reads it). **v37 and v38 files still read**, as `Classic` — they
+/// predate looks, and every round they recorded was drawn classic.
+pub const REPLAY_VERSION: u16 = 39;
 
-/// The last version without the map-shape byte (T23.30) — read as `Random`.
+/// The last version without the world-look byte (T23.31) — read as `Classic`.
+pub const REPLAY_VERSION_NO_LOOK: u16 = 38;
+
+/// The last version without the map-shape byte (T23.30) — read as `Random`
+/// (and, having no look byte either, `Classic`).
 pub const REPLAY_VERSION_NO_SHAPE: u16 = 37;
 
 /// Ticks between recorded state hashes — 10 seconds at 60 Hz.
@@ -593,6 +605,10 @@ pub struct ReplayHeader {
     pub gravity: GravityMode,
     /// T23.30's map shape — the header carries it for gravity's reason above.
     pub map_shape: MapShape,
+    /// T23.31's world look: how the round was drawn. **A record, not an input** —
+    /// derived from the seed by the generator's own rule (`world_look_for`), and
+    /// nothing in a replay run reads it; `Classic` for files older than v39.
+    pub world_look: WorldLook,
 }
 
 impl ReplayHeader {
@@ -614,6 +630,12 @@ impl ReplayHeader {
             start_kit: config.start_kit,
             gravity: config.gravity,
             map_shape: config.map_shape,
+            // The map's own rule on the map's own inputs (the generator as gravity
+            // derives it, R15), so the header says what `map_init` sent.
+            world_look: game_core::map::meta::world_look_for(
+                seed,
+                MapGenerator::for_gravity(config.gravity, config.map_generator),
+            ),
         }
     }
 
@@ -682,6 +704,8 @@ pub enum ReplayError {
     BadGravity(u8),
     /// T23.30: a map-shape byte naming no shape.
     BadMapShape(u8),
+    /// T23.31: a world-look byte naming no look.
+    BadWorldLook(u8),
     /// A byte that is neither 0 nor 1 where a flag was written. Its own variant
     /// rather than a lenient `!= 0`, because a corrupt file that decodes as
     /// `true` replays a setting the round never had and then diverges somewhere
@@ -714,6 +738,7 @@ impl std::fmt::Display for ReplayError {
             ReplayError::BadStartKit(k) => write!(f, "unknown starting kit {k}"),
             ReplayError::BadGravity(g) => write!(f, "unknown gravity {g}"),
             ReplayError::BadMapShape(m) => write!(f, "unknown map shape {m}"),
+            ReplayError::BadWorldLook(l) => write!(f, "unknown world look {l}"),
             ReplayError::BadBool(field, b) => write!(f, "{field} is {b}, not 0 or 1"),
             ReplayError::BadUtf8 => f.write_str("player name is not valid utf-8"),
         }
@@ -846,6 +871,8 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     w.write_all(&[h.gravity.as_u8()])?;
     // T23.30, appended for the same reason.
     w.write_all(&[h.map_shape.to_u8()])?;
+    // T23.31, appended for the same reason.
+    w.write_all(&[h.world_look.to_u8()])?;
     Ok(())
 }
 
@@ -1030,7 +1057,10 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         return Err(ReplayError::BadMagic(magic));
     }
     let version = c.u16()?;
-    if version != REPLAY_VERSION && version != REPLAY_VERSION_NO_SHAPE {
+    if version != REPLAY_VERSION
+        && version != REPLAY_VERSION_NO_LOOK
+        && version != REPLAY_VERSION_NO_SHAPE
+    {
         return Err(ReplayError::BadVersion {
             found: version,
             expected: REPLAY_VERSION,
@@ -1087,6 +1117,13 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         } else {
             let b = c.u8()?;
             MapShape::from_u8(b).ok_or(ReplayError::BadMapShape(b))?
+        },
+        // T23.31: strict; absent before v39, where every round was drawn classic.
+        world_look: if version < REPLAY_VERSION {
+            WorldLook::Classic
+        } else {
+            let b = c.u8()?;
+            WorldLook::from_u8(b).ok_or(ReplayError::BadWorldLook(b))?
         },
     };
 
@@ -1271,6 +1308,8 @@ mod tests {
             gravity: GravityMode::Space,
             // T23.30: off the default too.
             map_shape: MapShape::Flat,
+            // T23.31: off the default too.
+            world_look: WorldLook::Volcanic,
         }
     }
 
@@ -1465,18 +1504,86 @@ mod tests {
         assert_eq!(now.header.map_shape, MapShape::Flat);
         assert_eq!(now.header.version, REPLAY_VERSION);
 
-        // The same round as v37 wrote it: no shape byte, version 37.
+        // The same round as v37 wrote it: no shape byte (nor T23.31's look), version 37.
         let mut v37 = v38.clone();
-        v37.remove(HEADER_BYTES - 1);
+        v37.drain(HEADER_BYTES - 2..HEADER_BYTES);
         v37[4..6].copy_from_slice(&REPLAY_VERSION_NO_SHAPE.to_le_bytes());
         let old = decode(&v37).expect("a v37 file must still read");
         assert_eq!(old.header.map_shape, MapShape::Random);
         assert_eq!(old.header.gravity, h.gravity, "v37 header misaligned");
         assert_eq!(old.body, now.body, "v37 body misaligned");
 
+        assert_eq!(old.header.world_look, WorldLook::Classic);
+
         let mut bad = v38;
-        bad[HEADER_BYTES - 1] = 0xEE;
+        bad[HEADER_BYTES - 2] = 0xEE;
         assert!(matches!(decode(&bad), Err(ReplayError::BadMapShape(0xEE))));
+    }
+
+    /// T23.31: a **v38** file — written before the look byte — still reads, as
+    /// Classic, with its shape and body intact; a v39 header carries the look (the
+    /// fixture's `Volcanic`, off the default); a look byte naming no look is refused.
+    #[test]
+    fn a_v38_file_reads_as_classic_and_a_v39_header_carries_the_look() {
+        let h = header();
+        let body = [(3u32, ReplayCommand::Ready(1))];
+        let v39 = encode_round(&h, &body);
+        let now = decode(&v39).expect("v39");
+        assert_eq!(now.header.world_look, WorldLook::Volcanic);
+        assert_eq!(now.header.version, REPLAY_VERSION);
+
+        let mut v38 = v39.clone();
+        v38.remove(HEADER_BYTES - 1);
+        v38[4..6].copy_from_slice(&REPLAY_VERSION_NO_LOOK.to_le_bytes());
+        let old = decode(&v38).expect("a v38 file must still read");
+        assert_eq!(old.header.world_look, WorldLook::Classic);
+        assert_eq!(old.header.map_shape, h.map_shape, "v38 header misaligned");
+        assert_eq!(old.body, now.body, "v38 body misaligned");
+
+        let mut bad = v39;
+        bad[HEADER_BYTES - 1] = 0xEE;
+        assert!(matches!(decode(&bad), Err(ReplayError::BadWorldLook(0xEE))));
+    }
+
+    /// T23.31: a recording's header says the look `map_init` sent — the map's own
+    /// rule on the header's seed, for seeds of each look; a space round, `Classic`.
+    #[test]
+    fn a_header_records_the_look_the_map_was_drawn_in() {
+        let mut seen = Vec::new();
+        for seed in 1u64..=16 {
+            let c = Config {
+                fixed_seed: Some(seed),
+                map_scale: MapScale::Small,
+                ..Config::default()
+            };
+            let h = ReplayHeader::from_config(&c, seed, 0);
+            let map = game_core::map::generate_full_shaped(
+                seed,
+                c.map_scale,
+                0,
+                MapGenerator::for_gravity(c.gravity, c.map_generator),
+                c.map_shape,
+            );
+            assert_eq!(h.world_look, map.meta.look, "seed {seed}");
+            if !seen.contains(&h.world_look) {
+                seen.push(h.world_look);
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            WorldLook::ALL.len(),
+            "16 seeds recorded only {seen:?}"
+        );
+        for seed in 1u64..=16 {
+            let c = Config {
+                gravity: GravityMode::Space,
+                ..Config::default()
+            };
+            assert_eq!(
+                ReplayHeader::from_config(&c, seed, 0).world_look,
+                WorldLook::Classic
+            );
+        }
     }
 
     #[test]
@@ -1612,8 +1719,18 @@ mod tests {
             again.min_players_to_start, 0,
             "the retired slot was populated"
         );
+        // T23.31: the look is not a setting — `from_config` derives it from the seed
+        // the way the map does (space: none), so it is the rule's, not the fixture's.
+        assert_eq!(
+            again.world_look,
+            game_core::map::meta::world_look_for(
+                h.seed,
+                MapGenerator::for_gravity(h.gravity, h.generator)
+            )
+        );
         let h = ReplayHeader {
             min_players_to_start: 0,
+            world_look: again.world_look,
             ..h
         };
         assert_eq!(again, h, "a header must survive a trip through Config");
@@ -1699,6 +1816,10 @@ mod format_tests {
         if version != REPLAY_VERSION_NO_SHAPE {
             v.push(1);
         }
+        // T23.31: the world look — Volcanic, off the default — from v39 on.
+        if version == REPLAY_VERSION {
+            v.push(1);
+        }
         v
     }
 
@@ -1737,6 +1858,7 @@ mod format_tests {
         // same reason: a decoder that stopped short would leave this `Standard`.
         assert_eq!(h.gravity, GravityMode::Space, "gravity did not read");
         assert_eq!(h.map_shape, MapShape::Hill, "map_shape did not read");
+        assert_eq!(h.world_look, WorldLook::Volcanic, "world_look did not read");
     }
 
     /// The v4 fields are decoded **strictly**, and `dev_loadout` is not.
@@ -1753,9 +1875,10 @@ mod format_tests {
             v[i] = b;
             decode(&v)
         };
-        // The four strict-or-lenient bytes before the map shape (T23.30, the last
-        // byte): dev_loadout, bots_enabled, start_kit, gravity — in that order.
-        let n = HEADER_BYTES - 1;
+        // The four strict-or-lenient bytes before the map shape (T23.30) and the
+        // world look (T23.31, the last byte): dev_loadout, bots_enabled, start_kit,
+        // gravity — in that order.
+        let n = HEADER_BYTES - 2;
         match at(n - 3, 2) {
             Err(ReplayError::BadBool("bots_enabled", 2)) => {}
             other => panic!("a bots_enabled of 2 must be refused, got {other:?}"),

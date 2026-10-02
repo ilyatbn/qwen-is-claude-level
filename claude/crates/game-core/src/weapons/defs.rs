@@ -1551,6 +1551,7 @@ mod ballistics {
                 largest_component: Vec::new(),
                 generator: crate::constants::MapGenerator::V1,
                 shape: crate::constants::MapShape::Random,
+                look: crate::constants::WorldLook::Classic,
             }
         }
 
@@ -1720,6 +1721,7 @@ mod ballistics {
                     largest_component: Vec::new(),
                     generator: crate::constants::MapGenerator::V1,
                     shape: crate::constants::MapShape::Random,
+                    look: crate::constants::WorldLook::Classic,
                 },
             );
             let mut dealt = 0.0f32;

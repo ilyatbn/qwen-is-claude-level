@@ -143,6 +143,8 @@ export interface MapMeta {
   generator: 'V1' | 'V2' | 'Space'
   /** T23.30: the map shape (`MapMeta::shape`, serde's spelling). */
   shape: 'Random' | 'Hill' | 'Flat' | 'Multilevel' | 'Islands'
+  /** T23.31: the world look (`MapMeta::look`, serde's spelling) — the generator's pick, or `map_init`'s / an override's (`setWorldLook`). */
+  look: 'Classic' | 'Volcanic'
 }
 
 /** One of the space map's rocks. Mirrors `game_core::map::meta::Asteroid`. */
@@ -278,6 +280,8 @@ export interface Constants {
    * as `lobby_error: unknown gravity`.
    */
   GRAVITY_MODES: readonly string[]
+  /** T23.31: `WorldLook::ALL`'s spellings (`worldLookId.ts::WORLD_LOOK_IDS`) — the index is the wire byte. */
+  WORLD_LOOKS: readonly string[]
   /** T23.30: `MapShape::ALL`'s spellings, lobby order — the index is the wire byte. */
   MAP_SHAPES: readonly string[]
   /** T23.30: the Islands shape's cloud-sea tops, fraction of the map's height. */
@@ -944,6 +948,16 @@ export class Core {
    */
   setMapShape(shape: number): boolean {
     const ok = this.inner.set_map_shape(shape)
+    this.invalidate()
+    return ok
+  }
+
+  /**
+   * T23.31: the world look the map is drawn in (`MapInit.look`, `WorldLook`'s byte — or a dev override). Render-only:
+   * the relief's boulder threshold reads it in Rust. `false` for a byte naming no look (nothing changes).
+   */
+  setWorldLook(look: number): boolean {
+    const ok = this.inner.set_world_look(look)
     this.invalidate()
     return ok
   }

@@ -33,7 +33,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
-import { worldLookOverride } from '../look/worldLookId'
+import { adoptWorldLook, worldLookOfMeta } from '../look/worldLookId'
 import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
@@ -433,8 +433,9 @@ export class SandboxScene extends Phaser.Scene {
   private gameMap(): GameMap {
     const core = this.core
     const cloudSea = core.meta.shape === 'Islands' ? core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
-    // T23.31: the world look — the dev override (`?look=volcanic`) until the map carries its own (docs/78 §A7, part 1).
-    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea, look: worldLookOverride(location.search) ?? 'classic' }
+    // T23.31: the world look — the generator's pick from this seed (`MapMeta::look`, the server's rule), or the dev
+    // override (`?look=volcanic`) that `regenerate` wrote into the core (`adoptWorldLook`).
+    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea, look: worldLookOfMeta(core.meta.look) }
   }
 
   private isSpaceMap(): boolean {
@@ -460,6 +461,8 @@ export class SandboxScene extends Phaser.Scene {
     // Through the gravity, because the gravity decides the generator (R15).
     // Shared with `PreviewScene` and tested in `sceneParams.test.ts`.
     generateForScene(this.core, this.seed, this.mapScale, this.gravity, this.shape)
+    // T23.31: the look this seed draws (the generator picked it, as the server does), unless a dev override forces one.
+    adoptWorldLook(this.core, location.search)
     this.timings.generateMs = performance.now() - t0
 
     const { width: mapW, height: mapH } = this.core

@@ -141,6 +141,7 @@ fn replay_meta() -> game_core::map::MapMeta {
         largest_component: Vec::new(),
         generator: game_core::constants::MapGenerator::V1,
         shape: game_core::constants::MapShape::Random,
+        look: game_core::constants::WorldLook::Classic,
     }
 }
 

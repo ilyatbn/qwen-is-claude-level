@@ -28,3 +28,32 @@ export function worldLookInUrl(search: string): WorldLookId | null {
   const v = q.get('worldlook') ?? q.get('look')
   return isWorldLookId(v) ? v : null
 }
+
+/** T23.31: a look's wire byte (`WorldLook::to_u8`) — its index in `WORLD_LOOK_IDS`, the server's byte order. */
+export function worldLookByte(id: WorldLookId): number {
+  return WORLD_LOOK_IDS.indexOf(id)
+}
+
+/** T23.31: the look a map's meta names (`MapMeta::look`, serde's `'Classic'`/`'Volcanic'`); anything else: classic. */
+export function worldLookOfMeta(look: string | undefined): WorldLookId {
+  const id = (look ?? '').toLowerCase()
+  return isWorldLookId(id) ? id : 'classic'
+}
+
+/** What `adoptWorldLook` needs of the core: its meta's look, and the setter `map_init` uses. */
+export interface WorldLookCore {
+  readonly meta: { look?: string }
+  setWorldLook(look: number): boolean
+}
+
+/**
+ * T23.31 (docs/78 §A7): **the look the map in the core is drawn in** — the server's (`map_init`, or the generator's
+ * own pick in the sandbox), unless the dev override (`?worldlook=` / `?look=`) forces one. The override is written
+ * into the core, so everything downstream (the Rust relief's boulder threshold, the fields key, the scene) reads one
+ * answer. Call it after the map is installed and before anything is drawn from it.
+ */
+export function adoptWorldLook(core: WorldLookCore, search: string): WorldLookId {
+  const forced = worldLookOverride(search)
+  if (forced !== null) core.setWorldLook(worldLookByte(forced))
+  return forced ?? worldLookOfMeta(core.meta.look)
+}

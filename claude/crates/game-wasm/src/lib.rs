@@ -615,6 +615,21 @@ impl GameCore {
         }
     }
 
+    /// T23.31 (`docs/78` §A7): the world look the map `map_init` carries (`WorldLook`'s
+    /// byte) — or a dev override (`?worldlook=`). Render-only: the relief's boulder
+    /// threshold reads it (`render_fields.rs::boulder_min_id`); nothing simulated does.
+    /// `WorldMirror.applyMapInit` and the scenes' override are the callers; `false` for
+    /// a byte naming no look (nothing changes).
+    pub fn set_world_look(&mut self, look: u8) -> bool {
+        match game_core::constants::WorldLook::from_u8(look) {
+            Some(l) => {
+                self.map.meta.look = l;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn set_map_generator(&mut self, generator: u8) -> bool {
         match game_core::constants::MapGenerator::from_u8(generator) {
             Some(g) => {
@@ -2846,6 +2861,8 @@ pub fn constants_json() -> String {
         // to `lobby.ts`'s `MAP_SHAPES` the way `GRAVITY_MODES` pins `GRAVITIES`.
         MAP_SHAPES => c::MapShape::ALL.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
         ISLANDS_CLOUD_SEA_FRAC => c::ISLANDS_CLOUD_SEA_FRAC,
+        // T23.31: the world looks' spellings, byte order — pinned to `worldLookId.ts`'s `WORLD_LOOK_IDS`.
+        WORLD_LOOKS => c::WorldLook::ALL.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
         // §F7. The private-lobby panel draws its own bounds and its own step;
         // a stepper carrying a local 240/600/60 would keep offering the old
         // range after any of them was tuned (§A19).

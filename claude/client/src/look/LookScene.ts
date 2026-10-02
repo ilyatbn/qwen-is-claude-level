@@ -48,6 +48,7 @@ import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import { C, Core } from '../core'
 import { LabFields } from './labFields'
+import { albedoTheme } from './albedo'
 import { fxFeed } from './fx/feed'
 import { BLAST_PEAK, BLAST_REACH, MOCKUP_STREAM } from './fx/game'
 import { OrdnanceState } from '../render/ordnance-state'
@@ -239,7 +240,9 @@ export class LookScene extends Phaser.Scene {
       if (core && desc.masks && renderer instanceof m.WorldRenderer) {
         let lab: LabFields | null = null
         try {
-          lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [], desc.albedo === 'asteroid')
+          // T23.31: the relief's boulders by the albedo the scene is painted with (`setScene`'s rule) — F2's volcanic.
+          const albedo = desc.albedo ?? albedoTheme((desc.daylight?.nightPalette ?? desc.palette)?.theme)
+          lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [], albedo === 'asteroid', albedo === 'volcanic')
         } catch (e) {
           // A strip the fields cannot take: no lit terrain (only=albedo: an error). T23.20: F3 mirrors its padding.
           if (only === 'albedo') {

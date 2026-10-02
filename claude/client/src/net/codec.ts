@@ -35,8 +35,13 @@ export interface MapInit {
    * handed to `Core.setMapGenerator` before `loadMask`.
    */
   generator: number
-  /** T23.30: the map shape, `MapShape::to_u8` — the trailing byte, after the mask. */
+  /** T23.30: the map shape, `MapShape::to_u8` — the byte after the mask. */
   shape: number
+  /**
+   * T23.31 (docs/78 §A7): the world look the server chose from the map's seed, `WorldLook::to_u8` (an index into
+   * `C().WORLD_LOOKS`) — the trailing byte, after the shape. Render-only; handed to `Core.setWorldLook`.
+   */
+  look: number
   wind: number
   /** The last carve `seq` this mask already contains. */
   carveSeq: number
@@ -346,14 +351,18 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
 
   const rleLen = r.u32()
-  // T23.30: one byte follows the mask — the map shape.
-  if (rleLen + 1 !== r.remaining) {
-    throw new CodecError(`rle_byte_len ${rleLen} + shape disagrees with ${r.remaining} remaining`)
+  // T23.30: two bytes follow the mask — the map shape, then (T23.31) the world look.
+  if (rleLen + 2 !== r.remaining) {
+    throw new CodecError(`rle_byte_len ${rleLen} + shape + look disagrees with ${r.remaining} remaining`)
   }
   const rle = r.bytes(rleLen)
   const shape = r.u8()
   if (shape >= C().MAP_SHAPES.length) {
     throw new CodecError(`shape ${shape} names no map shape`)
+  }
+  const look = r.u8()
+  if (look >= C().WORLD_LOOKS.length) {
+    throw new CodecError(`look ${look} names no world look`)
   }
 
   return {
@@ -364,6 +373,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     theme,
     generator,
     shape,
+    look,
     wind,
     carveSeq,
     spawnPoints,

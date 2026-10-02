@@ -177,6 +177,9 @@ pub fn encode_map_init_at(map: &Map, carve_seq: u32) -> Vec<u8> {
     // offset before it moves. A client re-derives the landform from it and the
     // shape's rules (multilevel pads) read it.
     b.push(m.shape.to_u8());
+    // T23.31 (`docs/78` §A7): the world look, the byte after the shape — every client
+    // draws the look the server chose from the seed (render-only).
+    b.push(m.look.to_u8());
     b
 }
 
@@ -211,6 +214,8 @@ pub struct MapInitParts {
     pub generator: game_core::constants::MapGenerator,
     /// T23.30: the map shape (`MapMeta::shape`), the trailing byte.
     pub shape: game_core::constants::MapShape,
+    /// T23.31: the world look (`MapMeta::look`), the byte after the shape.
+    pub look: game_core::constants::WorldLook,
     /// The carve sequence this mask is stamped at (`docs/70` §A40).
     ///
     /// Every carve with `seq <= carve_seq` is **already baked into `mask`**; the
@@ -324,6 +329,8 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         game_core::map::rle::decode(w, h, payload).map_err(|_| CodecError::BadMapInit("rle"))?;
     let shape =
         game_core::constants::MapShape::from_u8(r.u8()?).ok_or(CodecError::BadMapInit("shape"))?;
+    let look =
+        game_core::constants::WorldLook::from_u8(r.u8()?).ok_or(CodecError::BadMapInit("look"))?;
     r.finish()?;
     Ok(MapInitParts {
         mask,
@@ -332,6 +339,7 @@ pub fn decode_map_init_parts(bytes: &[u8]) -> Result<MapInitParts, CodecError> {
         asteroids,
         generator,
         shape,
+        look,
         carve_seq,
     })
 }
@@ -851,7 +859,8 @@ mod tests {
             + map.meta.asteroids.len() * ASTEROID_WIRE_BYTES
             + 4
             + rle_len
-            + 1; // map shape (T23.30), after the mask
+            + 1 // map shape (T23.30), after the mask
+            + 1; // world look (T23.31), after the shape
         assert_eq!(b.len(), expect);
     }
 
@@ -1033,11 +1042,39 @@ mod tests {
             assert_eq!(parts.shape, shape);
         }
         let mut b = encode_map_init(&game_core::map::generate(7, MapScale::Small));
+        let shape_at = b.len() - 2;
+        b[shape_at] = 0xEE;
+        assert!(matches!(
+            decode_map_init_parts(&b),
+            Err(CodecError::BadMapInit("shape"))
+        ));
+    }
+
+    /// T23.31: `map_init` carries the world look (the last byte, after the shape) — the
+    /// one the map was generated with, for seeds of each look — and refuses a byte naming none.
+    #[test]
+    fn map_init_carries_the_world_look_and_refuses_an_unknown_one() {
+        use game_core::constants::WorldLook;
+        let mut seen = Vec::new();
+        for seed in 1u64..=16 {
+            let map = game_core::map::generate(seed, MapScale::Small);
+            let parts = decode_map_init_parts(&encode_map_init(&map)).expect("decode");
+            assert_eq!(parts.look, map.meta.look, "seed {seed}");
+            if !seen.contains(&parts.look) {
+                seen.push(parts.look);
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            WorldLook::ALL.len(),
+            "16 seeds carried only {seen:?}"
+        );
+        let mut b = encode_map_init(&game_core::map::generate(7, MapScale::Small));
         let last = b.len() - 1;
         b[last] = 0xEE;
         assert!(matches!(
             decode_map_init_parts(&b),
-            Err(CodecError::BadMapInit("shape"))
+            Err(CodecError::BadMapInit("look"))
         ));
     }
 

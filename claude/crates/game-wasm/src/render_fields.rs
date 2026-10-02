@@ -32,7 +32,7 @@
 //! a heuristic with 2.5–16 % open-sky false positives, off via `CAVE_BACKDROP`) differs
 //! from the mockup and is not used.
 
-use game_core::constants::{MapGenerator, MapScale, MapShape};
+use game_core::constants::{MapGenerator, MapScale, MapShape, WorldLook};
 use game_core::map::mask::Mask;
 
 /// Distances are stored ×4 (`kit.js::fieldTextures`).
@@ -66,6 +66,8 @@ const BOULDER_MIN_ID: f64 = 0.8;
 /// T23.20: `world.js::derive`'s default (`T.boulders ?? 0.62`) — `THEMES.asteroid`, F3's theme, sets none: space's
 /// rock (`MapGenerator::Space`, the client's asteroid albedo, `albedo.ts::ASTEROID_PALETTE`).
 const ASTEROID_BOULDER_MIN_ID: f64 = 0.62;
+/// T23.31: `world.js::THEMES.volcanic.boulders` — F2's theme, the volcanic world look's rock (`docs/78` §A7).
+const VOLCANIC_BOULDER_MIN_ID: f64 = 0.75;
 /// `world.js::derive`: boulders only deeper than this into the rock.
 const BOULDER_MIN_DEPTH: f64 = 10.0;
 
@@ -279,6 +281,20 @@ pub struct RenderFields {
     /// T23.20: the relief's boulder threshold is space's (`boulder_min_id`) — set from the core's generator before
     /// every pass (`GameCore::render_fields_*`), so a carve's update shades as the full pass did.
     asteroid: bool,
+    /// T23.31: the map's world look — its theme's boulder threshold on a ground map ([`boulder_min_id`]). Set beside
+    /// `asteroid`, from the core's `MapMeta::look` (or the worker's key), before every pass.
+    look: WorldLook,
+}
+
+/// **The relief's boulder threshold for a map** — `world.js::derive`'s `T.boulders ?? 0.62` for the theme the map is
+/// drawn in: space's asteroid (none set: 0.62) whatever the look says (space has no look), else the look's — classic
+/// dusk's 0.8, volcanic's 0.75. T23.31 found the volcanic world shaded at dusk's (`look-volcanic`'s relief gap).
+fn boulder_min_id(asteroid: bool, look: WorldLook) -> f64 {
+    match (asteroid, look) {
+        (true, _) => ASTEROID_BOULDER_MIN_ID,
+        (false, WorldLook::Classic) => BOULDER_MIN_ID,
+        (false, WorldLook::Volcanic) => VOLCANIC_BOULDER_MIN_ID,
+    }
 }
 
 /// What identifies a generated landform: `map_init`'s seed, scale, generator, theme.
@@ -521,11 +537,7 @@ impl RenderFields {
 
     /// Distances and `back` over `write` (reading `read`); relief over `relief` ⊆ `write`.
     fn compute(&mut self, mask: &impl Solid, read: Rect, write: Rect, relief: Rect) {
-        let boulders = if self.asteroid {
-            ASTEROID_BOULDER_MIN_ID
-        } else {
-            BOULDER_MIN_ID
-        };
+        let boulders = boulder_min_id(self.asteroid, self.look);
         let ww = self.w as usize;
         let rgba = &mut self.rgba;
         let din2 = &mut self.din2;
@@ -851,6 +863,7 @@ impl GameCore {
     /// Returns the rect written, `[x, y, w, h]`.
     pub fn render_fields_full(&mut self) -> Vec<u32> {
         self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
+        self.render_fields.look = self.map.meta.look;
         self.render_fields.full(&self.map.mask).to_vec()
     }
 
@@ -870,6 +883,7 @@ impl GameCore {
             }
         }
         self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
+        self.render_fields.look = self.map.meta.look;
         self.render_fields
             .full_with_wall(&self.map.mask, g)
             .map(Rect::to_vec)
@@ -887,6 +901,7 @@ impl GameCore {
     /// Returns `[x, y, w, h, strays]`: the rect written, and the mask px the landform
     /// lacks. **`strays > 0` is version skew (F9)**: the pass fell back to "was rock" =
     /// the mask ([`RenderFields::full_landform`]) and the caller should say so.
+    #[allow(clippy::too_many_arguments)] // T23.31: the key's seventh field; a wasm export takes no struct.
     pub fn render_fields_full_landform(
         &mut self,
         seed_lo: u32,
@@ -895,6 +910,7 @@ impl GameCore {
         generator: u8,
         theme: u8,
         shape: u8,
+        look: u8,
     ) -> Result<Vec<u32>, String> {
         let key = LandformKey {
             shape: MapShape::from_u8(shape).ok_or(format!("render_fields: shape byte {shape}"))?,
@@ -905,6 +921,9 @@ impl GameCore {
             theme,
         };
         self.render_fields.asteroid = key.generator == MapGenerator::Space;
+        // T23.31: the look shades the relief (not the landform — the cache key leaves it out).
+        self.render_fields.look =
+            WorldLook::from_u8(look).ok_or(format!("render_fields: look byte {look}"))?;
         let (rect, strays) = self
             .render_fields
             .full_landform(&self.map.mask, key)
@@ -927,6 +946,7 @@ impl GameCore {
             m.generator.to_u8() as u32,
             m.theme as u32,
             m.shape.to_u8() as u32,
+            m.look.to_u8() as u32,
         ]
     }
 
@@ -941,6 +961,7 @@ impl GameCore {
         h: i32,
     ) -> Result<Vec<u32>, String> {
         self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
+        self.render_fields.look = self.map.meta.look;
         self.render_fields
             .dirty(&self.map.mask, x, y, w, h)
             .map(Rect::to_vec)
@@ -1440,6 +1461,7 @@ mod tests {
                     m.meta.generator.to_u8(),
                     m.meta.theme,
                     m.meta.shape.to_u8(),
+                    m.meta.look.to_u8(),
                 )
                 .unwrap();
             assert_eq!(out[4], 0, "gen {generator}: strays on a matching build");
@@ -1450,7 +1472,7 @@ mod tests {
         }
         let mut c = GameCore::new();
         assert!(c
-            .render_fields_full_landform(1, 0, 9, 1, 0, 0)
+            .render_fields_full_landform(1, 0, 9, 1, 0, 0, 0)
             .is_err_and(|e| e.contains("scale byte 9")));
     }
 
@@ -1505,7 +1527,7 @@ mod tests {
         let m = &main.map.meta;
         let (seed, scale, gen, theme) = (m.seed, m.scale.as_u8(), m.generator.to_u8(), m.theme);
         worker
-            .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme, 0)
+            .render_fields_full_landform(seed as u32, (seed >> 32) as u32, scale, gen, theme, 0, 0)
             .unwrap();
         let (wall, rgba, din2) = (
             worker.render_fields_wall_words(),
@@ -1566,13 +1588,15 @@ mod tests {
     fn own_landform(core: &mut GameCore) -> Vec<u32> {
         let m = &core.map.meta;
         let (seed, scale, generator, theme) = (m.seed, m.scale, m.generator, m.theme);
+        let (shape, look) = (m.shape.to_u8(), m.look.to_u8());
         core.render_fields_full_landform(
             seed as u32,
             (seed >> 32) as u32,
             scale.as_u8(),
             generator.to_u8(),
             theme,
-            0,
+            shape,
+            look,
         )
         .unwrap()
     }
@@ -1648,6 +1672,7 @@ mod tests {
                     m.meta.generator.to_u8(),
                     m.meta.theme,
                     m.meta.shape.to_u8(),
+                    m.meta.look.to_u8(),
                 )
                 .unwrap();
             assert_eq!(out[4], 0, "seed {seed}: strays");
@@ -1690,6 +1715,7 @@ mod tests {
                 m.meta.generator.to_u8(),
                 m.meta.theme,
                 m.meta.shape.to_u8(),
+                m.meta.look.to_u8(),
             )
             .unwrap()
         };
@@ -1921,6 +1947,45 @@ mod tests {
 
     /// T23.20: space's rock (F3's asteroid) raises boulders from `derive`'s default 0.62, the ground's from dusk's
     /// 0.8 — so the asteroid's relief has more domes, and the dusk threshold (the control) fewer, on the same rock.
+    #[test]
+    fn volcanic_relief_has_the_volcanic_boulders() {
+        // T23.31: the volcanic look raises its rock's boulders at `THEMES.volcanic`'s 0.75; space keeps the asteroid's
+        // whatever its look byte; classic is dusk's.
+        assert_eq!(
+            boulder_min_id(false, WorldLook::Volcanic),
+            VOLCANIC_BOULDER_MIN_ID
+        );
+        assert_eq!(boulder_min_id(false, WorldLook::Classic), BOULDER_MIN_ID);
+        assert_eq!(
+            boulder_min_id(true, WorldLook::Volcanic),
+            ASTEROID_BOULDER_MIN_ID
+        );
+        // Through the core, end to end: the same map's relief channel differs by look, and only the relief.
+        let fields = |look: WorldLook| {
+            let mut core = GameCore::new();
+            core.generate_with(7, 0, 0, 1);
+            core.map.meta.look = look;
+            core.render_fields_full();
+            core.render_fields.rgba.clone()
+        };
+        let (c, v) = (fields(WorldLook::Classic), fields(WorldLook::Volcanic));
+        let differ = |ch: usize| {
+            c.chunks(4)
+                .zip(v.chunks(4))
+                .filter(|(a, b)| a[ch] != b[ch])
+                .count()
+        };
+        assert!(
+            differ(3) > 0,
+            "the volcanic look's relief is the classic one"
+        );
+        assert_eq!(
+            (differ(0), differ(1), differ(2)),
+            (0, 0, 0),
+            "a look moved a distance field"
+        );
+    }
+
     #[test]
     fn asteroid_relief_has_the_asteroid_boulders() {
         let domes = |t: f64| {

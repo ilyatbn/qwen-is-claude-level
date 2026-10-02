@@ -40,6 +40,28 @@ pub fn theme_for(requested_seed: u64) -> u8 {
     (substream(requested_seed, "theme").next_u64_compat() % THEME_COUNT as u64) as u8
 }
 
+/// **T23.31 (`docs/78` §A7): the world look a map is drawn in.** The rule: a
+/// uniform draw over [`WorldLook::ALL`] from the requested seed's own `"world_look"`
+/// substream — so ~1/2 of seeds are volcanic with two looks (measured in
+/// `world_looks_split_about_evenly_over_many_seeds`), the server, every client
+/// and a replay agree, and the draw moves no other stream (`substream` builds a
+/// fresh generator per tag). Keyed on `requested_seed` like [`theme_for`], so a
+/// map that retried keeps its look. **Space has no look** — `Classic` there, and
+/// the client draws space's own whatever this says.
+///
+/// Adding a look to `ALL` re-deals existing seeds; nothing depends on a seed's
+/// look staying put (a replay records its own).
+///
+/// [`WorldLook::ALL`]: crate::constants::WorldLook::ALL
+pub fn world_look_for(requested_seed: u64, generator: MapGenerator) -> crate::constants::WorldLook {
+    use crate::constants::WorldLook;
+    if generator == MapGenerator::Space {
+        return WorldLook::Classic;
+    }
+    let n = WorldLook::ALL.len() as u64;
+    WorldLook::ALL[(substream(requested_seed, "world_look").next_u64_compat() % n) as usize]
+}
+
 /// One of `MapGenerator::Space`'s rocks (`T22.05A`, `M22-RULINGS` R13).
 ///
 /// *"Asteroid", not "island"* — the owner renamed them on 2026-09-18 and the
@@ -389,6 +411,11 @@ pub struct MapMeta {
     /// client re-derives the landform from the right generator, and read by the
     /// shape's own rules (multilevel pads, meteors, the islands' void).
     pub shape: crate::constants::MapShape,
+    /// T23.31 (`docs/78` §A7): how this map is drawn — [`world_look_for`] its
+    /// requested seed, `Classic` on a space map. **Render-only**: nothing the
+    /// simulation reads depends on it. Carried by `map_init` (its last byte) and
+    /// the replay header, so every client and a replay draw one look.
+    pub look: crate::constants::WorldLook,
     /// Indices into `surface_points` forming the validated strongly connected set.
     ///
     /// Shipped because nothing downstream can otherwise tell "every cave is
@@ -1105,6 +1132,7 @@ pub(crate) fn generate_full_with(
             largest_component,
             generator,
             shape: outcome.shape,
+            look: world_look_for(requested_seed, generator),
         },
         mask,
         coarse,
@@ -2467,6 +2495,49 @@ mod tests {
             );
             assert!(map.meta.theme < THEME_COUNT, "theme {}", map.meta.theme);
         }
+    }
+
+    /// T23.31 (`docs/78` §A7): the look rule over many seeds — both looks, about evenly;
+    /// a generated map records exactly the rule's look; space records none.
+    #[test]
+    fn world_looks_split_about_evenly_over_many_seeds() {
+        use crate::constants::WorldLook;
+        const SEEDS: u64 = 10_000;
+        let volcanic = (0..SEEDS)
+            .filter(|s| world_look_for(s * 7919 + 1, MapGenerator::V2) == WorldLook::Volcanic)
+            .count() as f64
+            / SEEDS as f64;
+        let even = 1.0 / WorldLook::ALL.len() as f64;
+        // ±5 points: ~10 standard errors at 10 000 draws, so a fair rule never trips it and
+        // a rule that ignored the seed (0 or 1) or leaned 60/40 always does.
+        assert!(
+            (volcanic - even).abs() < 0.05,
+            "volcanic share {volcanic:.3}"
+        );
+        eprintln!("world looks: volcanic {volcanic:.4} of {SEEDS} seeds");
+        assert!((0..SEEDS).all(|s| world_look_for(s, MapGenerator::Space) == WorldLook::Classic));
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 1..=8u64 {
+            let map = generate_full(seed, MapScale::Small, 0, MapGenerator::V2);
+            assert_eq!(
+                map.meta.look,
+                world_look_for(seed, MapGenerator::V2),
+                "seed {seed}"
+            );
+            seen.insert(map.meta.look.to_u8());
+            let again = generate_full(seed, MapScale::Small, 0, MapGenerator::V2);
+            assert_eq!(
+                again.meta.look, map.meta.look,
+                "seed {seed}: not deterministic"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            WorldLook::ALL.len(),
+            "8 generated maps drew {seen:?}"
+        );
+        let space = generate_full(3, MapScale::Small, 0, MapGenerator::Space);
+        assert_eq!(space.meta.look, WorldLook::Classic);
     }
 
     #[test]

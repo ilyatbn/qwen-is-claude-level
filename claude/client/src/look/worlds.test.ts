@@ -3,9 +3,12 @@
  * verbatim, each look's two ends have the same shapes (so T23.11's blend walks every field and reaches each end
  * exactly), the override is the dev surface's, and the albedo theme follows the palette.
  */
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { C, Core, MapScale } from '../core'
 import { WORLD_LOOK_IDS, WORLD_LOOKS, worldLook } from './worlds'
-import { worldLookInUrl, worldLookOverride } from './worldLookId'
+import { adoptWorldLook, worldLookByte, worldLookInUrl, worldLookOfMeta, worldLookOverride } from './worldLookId'
 import { blendLook, blendPalette } from './daylight'
 import { albedoTheme, albedoFs, ALBEDO_FS, TERRAIN_PALETTE, VOLCANIC_PALETTE } from './albedo'
 import { F1 } from './scenes/F1'
@@ -88,5 +91,35 @@ describe('world looks', () => {
     expect(v).not.toBe(ALBEDO_FS)
     expect(v).toContain('if (false && f.g')
     expect(ALBEDO_FS).not.toContain('false &&')
+  })
+})
+
+describe('world looks from the map (T23.31 part 1)', () => {
+  let core: Core
+  beforeAll(async () => {
+    core = await Core.init(readFileSync(fileURLToPath(new URL('../core/pkg/game_wasm_bg.wasm', import.meta.url))))
+  }, 120_000)
+
+  it("the ids are the server's, in its byte order", () => {
+    expect([...WORLD_LOOK_IDS]).toEqual([...C().WORLD_LOOKS])
+    WORLD_LOOK_IDS.forEach((id, i) => expect(worldLookByte(id)).toBe(i))
+  })
+
+  it("a generated map carries the generator's look, both occur over seeds, and the core takes map_init's", () => {
+    const seen = new Set<string>()
+    for (let s = 1n; s <= 16n; s++) {
+      core.generate(s, MapScale.Small)
+      const id = worldLookOfMeta(core.meta.look)
+      expect(adoptWorldLook(core, '?sandbox=1')).toBe(id)
+      seen.add(id)
+    }
+    expect([...seen].sort()).toEqual([...WORLD_LOOK_IDS].sort())
+    // `map_init`'s byte, installed: the meta (what the scenes read) follows it, both ways.
+    for (const id of WORLD_LOOK_IDS) {
+      expect(core.setWorldLook(worldLookByte(id))).toBe(true)
+      expect(worldLookOfMeta(core.meta.look)).toBe(id)
+    }
+    expect(core.setWorldLook(WORLD_LOOK_IDS.length)).toBe(false)
+    expect(worldLookOfMeta(undefined)).toBe('classic')
   })
 })

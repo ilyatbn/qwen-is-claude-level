@@ -72,7 +72,7 @@ import { SPECTATE_SCORES_KEY, WatchState, type WatchCandidate } from '../net/spe
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
-import { worldLookOverride } from '../look/worldLookId'
+import { adoptWorldLook, worldLookByte, worldLookOfMeta } from '../look/worldLookId'
 import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
@@ -1750,9 +1750,9 @@ export class GameScene extends Phaser.Scene {
   private gameMap(): GameMap {
     // T23.30: the Islands shape's cloud sea, off the map `map_init` installed (`setMapShape`).
     const cloudSea = this.core.meta.shape === 'Islands' ? this.core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
-    // T23.31: the world look — the dev override (`?worldlook=volcanic`) until `map_init` carries the map's own (docs/78
-    // §A7, part 1: the coordinator's wiring — then `look: override ?? the map's`).
-    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea, look: worldLookOverride(location.search) ?? 'classic' }
+    // T23.31 (docs/78 §A7): the world look `map_init` carries (the server's pick from the seed), or the dev override
+    // (`?worldlook=volcanic`) `onMapInit` wrote into the core over it (`adoptWorldLook`).
+    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea, look: worldLookOfMeta(this.core.meta.look) }
   }
 
   /**
@@ -1781,6 +1781,8 @@ export class GameScene extends Phaser.Scene {
   private onMapInit(b64: string): void {
     if (!b64) return
     const init = this.mirror.applyMapInitB64(b64)
+    // T23.31: the look the server drew this map in (installed by the mirror), or the dev override over it.
+    const look = adoptWorldLook(this.core, location.search)
 
     this.world?.destroy()
     // (Phaser's rock no longer takes the seed or theme — T23.07, the one palette R5's. The lit terrain's albedo
@@ -1803,7 +1805,8 @@ export class GameScene extends Phaser.Scene {
     const seedHi = Number((init.seed >> 32n) & 0xffffffffn) >>> 0
     // T23.15: the theme is read here and nowhere else in the client — as simulation, not look (R5): it picks the
     // objects stamped into the collision mask, so the landform the fields are derived from needs it to be the server's.
-    const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme, init.shape])
+    // T23.31: the look last — the relief's boulder threshold is the look's (`render_fields.rs::boulder_min_id`).
+    const fields = new TerrainFields(this.core, [seedLo, seedHi, init.scale, init.generator, init.theme, init.shape, worldLookByte(look)])
     this.terrainFields = fields
     this.world.terrain.onDirty = (ids) => fields.noteDirtyChunks(ids)
     this.worldRenderer?.setTerrain(fields)

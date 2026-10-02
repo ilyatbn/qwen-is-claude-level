@@ -287,6 +287,7 @@ mod gravity_modes {
             largest_component: Vec::new(),
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
+            look: crate::constants::WorldLook::Classic,
         };
         Map::from_parts(mask.clone(), CoarseGrid::build(&mask), meta)
     }

@@ -634,6 +634,10 @@ async function crater(page, seed, log, problems) {
   // with it held — at mid-day (`daylight.ts::DAY_MOON_U` of the 120 s cycle): no night view dimming the crater
   // (measured at night: 589/3136 px moved, under the 20 % control), as the running clock was at this point before.
   await page.evaluate((t) => window.__game.setTime(t), 0.25 * 120)
+  // T23.31: a volcanic seed (4242 and 11 are, by the server's rule from the seed) has drifting embers in its air —
+  // animated, so the frame and its control repaint differ by them (seen: 242 on ~6000 px) whatever the terrain did.
+  // Held out of both; the terrain they would cover is still compared. Released after the leg.
+  await page.evaluate(() => window.__world.hideLayers(['embers']))
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [cx, cy - 60])
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r)))))
   const pre = decode(await page.evaluate(() => window.__world.readFrame()))
@@ -658,6 +662,7 @@ async function crater(page, seed, log, problems) {
   await page.evaluate(() => window.__world.repaintAlbedo())
   const scratch = decode(await page.evaluate(() => window.__world.readFrame()))
   await page.evaluate(() => window.__game.watch(null))
+  await page.evaluate(() => window.__world.hideLayers([]))
   const views = [pre.view, inc.view, scratch.view].map((v) => JSON.stringify(v))
   if (new Set(views).size !== 1) problems.push(`seed ${seed}: the camera moved between the crater's frames: ${views.join(' ')}`)
   const k = inc.width / inc.view.w
@@ -690,7 +695,8 @@ async function crater(page, seed, log, problems) {
   // that drew it, the counter still says the frame before — so the step the crater first shows in is
   // `readback − carve + 1`, and 1 is the very next step after the carve.
   const framesToShow = carved.f.loopFrame - (carved.at ?? NaN) + 1
-  log(`seed ${seed} crater r ${CRATER_R} at (${cx}, ${cy}): shown ${framesToShow} Phaser frame(s) after the carve (want ${CARVE_FRAMES}); terrain repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes}; crater box ${box.x1 - box.x0}x${box.y1 - box.y0} buffer px: the whole frame vs the control repaint max |Δ| ${worst} (max ${CRATER_MAX_DIFF}), ${stale} px over; the box vs the frame before ${moved}/${n} px moved`)
+  const look = await page.evaluate(() => window.__game.core.meta.look)
+  log(`seed ${seed} (${look}) crater r ${CRATER_R} at (${cx}, ${cy}): shown ${framesToShow} Phaser frame(s) after the carve (want ${CARVE_FRAMES}); terrain repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes}; crater box ${box.x1 - box.x0}x${box.y1 - box.y0} buffer px: the whole frame vs the control repaint max |Δ| ${worst} (max ${CRATER_MAX_DIFF}), ${stale} px over; the box vs the frame before ${moved}/${n} px moved`)
   if (framesToShow !== CARVE_FRAMES) problems.push(`seed ${seed}: the crater was first drawn ${framesToShow} frames after the carve, want ${CARVE_FRAMES}`)
   if (!(t1.dirtyPaints > t0.dirtyPaints) || !(t1.bakes > t0.bakes)) problems.push(`seed ${seed}: the carve's frame repainted nothing (repaints ${t0.dirtyPaints} → ${t1.dirtyPaints}, bakes ${t0.bakes} → ${t1.bakes})`)
   if (worst > CRATER_MAX_DIFF) problems.push(`seed ${seed}: the crater's first frame differs from the control repaint by ${worst} on ${stale} px`)

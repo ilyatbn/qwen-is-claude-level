@@ -779,6 +779,65 @@ pub const ISLANDS_LOWEST_FRAC: f32 = 0.84;
 /// Where the client's cloud sea's tops sit, fraction of height — under the lowest
 /// island's slab, so no island stands in it.
 pub const ISLANDS_CLOUD_SEA_FRAC: f32 = 0.9;
+
+// ---------------------------------------------------------------------------
+// World looks (`docs/78` §A7, T23.31): picked per map from its seed.
+// ---------------------------------------------------------------------------
+
+/// How a ground map is **drawn** (`docs/78` §A7) — an open list: adding a look is
+/// adding a variant here (and its byte), plus its entry in the client's registry
+/// (`client/src/look/worlds.ts`), not a new mechanism.
+///
+/// **Render-only plus fauna.** Nothing in the simulation reads it: the mask,
+/// objects, items and every tick are the same for a seed under either look
+/// (`map::meta::tests::a_look_changes_nothing_the_simulation_reads`). It is
+/// chosen on the server from the map's seed (`map::meta::world_look_for`) and
+/// carried by `map_init`'s last byte and the replay header. **Space has none**:
+/// a space map records `Classic` and is drawn in its own look whatever this says.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum WorldLook {
+    /// Today's look — F1's night, F5's moonlit day. The default, and what every
+    /// map recorded before looks existed was drawn in.
+    #[default]
+    Classic,
+    /// F2's — near-black basalt with glowing lava cracks, red haze, embers, a
+    /// volcano on the skyline, the tripod and the crawler for animals.
+    Volcanic,
+}
+
+impl WorldLook {
+    /// Every look, in byte order. `world_look_for` draws uniformly from this list,
+    /// so with two looks each is ~1/2 of seeds.
+    pub const ALL: [WorldLook; 2] = [WorldLook::Classic, WorldLook::Volcanic];
+
+    /// The client's spelling (`worldLookId.ts::WorldLookId`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WorldLook::Classic => "classic",
+            WorldLook::Volcanic => "volcanic",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|l| l.as_str() == s)
+    }
+
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            WorldLook::Classic => 0,
+            WorldLook::Volcanic => 1,
+        }
+    }
+
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(WorldLook::Classic),
+            1 => Some(WorldLook::Volcanic),
+            _ => None,
+        }
+    }
+}
 /// Islands are laid one per cell of a jittered grid this many px wide and tall — the
 /// reference has ~4 across and ~3 down on its frame. Whether every island can be
 /// reached from another is the traversal gate's verdict (`JETPACK_CLIMB_BUDGET`).
