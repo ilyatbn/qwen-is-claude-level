@@ -29,7 +29,7 @@ async function start() {
 
   const css = document.createElement('style')
   css.textContent = `
-    #bar { position: fixed; left: 16px; right: 16px; bottom: 14px; padding: 34px 18px 12px; border-radius: 12px;
+    #bar { position: fixed; left: 16px; right: 16px; bottom: 14px; padding: 52px 18px 12px; border-radius: 12px;
       background: rgba(8, 10, 20, .78); color: #dfe6ff; font: 13px/1.2 "Ubuntu Sans Mono", "DejaVu Sans Mono", monospace;
       display: grid; grid-template-columns: auto auto 1fr auto; gap: 14px; align-items: center; z-index: 9; user-select: none }
     #bar.hidden { display: none }
@@ -39,6 +39,7 @@ async function start() {
     #track input { position: absolute; inset: 0; width: 100%; margin: 0; accent-color: #5dffb0 }
     .mk { position: absolute; bottom: 22px; transform: translateX(-1px); border-left: 1px solid rgba(160,190,255,.55);
       height: 26px; padding-left: 4px; white-space: nowrap; color: #a9b8e8; font-size: 12px; cursor: pointer }
+    .mk.hi { height: 44px }
     .mk:hover { color: #fff }
     #time { min-width: 116px; text-align: right; font-variant-numeric: tabular-nums }
     #hint { position: fixed; right: 20px; top: 14px; color: rgba(255,255,255,.4); font: 12px monospace; z-index: 9 }`
@@ -53,9 +54,9 @@ async function start() {
   hint.textContent = 'space play/pause · R restart · ←/→ 1 s · , . one frame · H hide controls'
   document.body.append(hint)
   const track = bar.querySelector('#track')
-  for (const [bt, name] of B) {
+  for (const [k, [bt, name]] of B.entries()) {
     const m = document.createElement('div')
-    m.className = 'mk'
+    m.className = k % 2 ? 'mk hi' : 'mk'
     m.style.left = `${(bt / END) * 100}%`
     m.textContent = `${name} ${bt.toFixed(1)}`
     m.onclick = () => seek(bt)
