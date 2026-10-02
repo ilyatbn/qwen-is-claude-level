@@ -39,6 +39,12 @@ pub struct JetpackState {
     /// player (`the_dismount_hold_never_launches_the_player`). On the ground the pack waits
     /// for a fresh press.
     pub refused_hold: bool,
+    /// T23.32: the engage key has been held continuously since a jump it launched. On the
+    /// ground a held key engages only then — "a held key after a jump has already been
+    /// consumed". A hold that never jumped (carried across a respawn, pressed while dead)
+    /// would otherwise engage on the ground, and since a held JUMP climbs, it launched the
+    /// player (`prediction.test.ts`: a respawn while holding JUMP does not jump).
+    pub hold_jumped: bool,
 }
 
 impl Default for JetpackState {
@@ -50,6 +56,7 @@ impl Default for JetpackState {
             ticks_since_jump: u32::MAX / 2,
             locked_out: false,
             refused_hold: false,
+            hold_jumped: false,
         }
     }
 }
@@ -106,6 +113,11 @@ pub fn update(
     if !engage_held || !body.grounded {
         state.refused_hold = false;
     }
+    if !engage_held {
+        state.hold_jumped = false;
+    } else if jumped_this_tick {
+        state.hold_jumped = true;
+    }
     state.active = if !engage_held || !has_fuel || state.refused_hold {
         // Released, or nothing to burn: disengage instantly.
         false
@@ -119,8 +131,8 @@ pub fn update(
     } else if body.grounded || body.in_coyote_time() {
         // On the ground with Space held but no jump this tick: that is a held key
         // after a jump has already been consumed, so it engages once the delay has
-        // elapsed.
-        true
+        // elapsed. A hold that launched no jump (carried across a respawn) does not.
+        state.hold_jumped
     } else {
         true
     };
@@ -405,6 +417,26 @@ mod tests {
         // The next tick is past the delay.
         update(&mut s, &b, true, false, false, SIM_DT);
         assert!(s.active, "did not engage after the hold delay");
+    }
+
+    /// T23.32: a JUMP held on the ground that launched no jump (carried across a respawn,
+    /// pressed while dead — the edge was refused) never engages there, however long it is
+    /// held; since a held JUMP climbs, it would launch the player. Control: the same hold
+    /// after a jump it launched engages once grounded past the hold delay.
+    #[test]
+    fn a_grounded_hold_that_never_jumped_does_not_engage() {
+        let mut s = JetpackState::default();
+        for tick in 0..=HOLD_DELAY_TICKS * 3 {
+            update(&mut s, &grounded(), true, tick == 0, false, SIM_DT);
+            assert!(!s.active, "a hold that never jumped engaged on the ground at tick {tick}");
+        }
+        // Control: the hold launches a jump, lands, keeps holding.
+        let mut c = JetpackState::default();
+        update(&mut c, &grounded(), true, true, true, SIM_DT);
+        for _ in 0..=HOLD_DELAY_TICKS {
+            update(&mut c, &grounded(), true, false, false, SIM_DT);
+        }
+        assert!(c.active, "control: a hold after its own jump did not engage on the ground");
     }
 
     #[test]
