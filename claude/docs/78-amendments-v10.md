@@ -126,3 +126,11 @@ exploding), with the background volcano erupting as the warning.
   effects the scheduler rolls; the server already knows the look (it picks it from the seed), so the simulation stays
   deterministic and every client agrees.
 Task: `tasks/parking-lot/T23.33-volcanic-disasters.md` (after `T23.31`).
+
+## A9 — The ice world (parked)
+
+**Owner, 2026-10-02 (parked):** a third look, **Ice** — semi-transparent ice terrain, an ice-world background; hail
+storms (ice-shard meteors) and **extreme frost** (a drifting patch of cold that penetrates shields, drawn as diamond
+dust) as its disasters; **frost at night** like space radiation (unshielded players lose health, the bar turns blue,
+the view's edges frost over); fire rendered as ice. Builds on §A7–§A8. Task:
+`tasks/parking-lot/T23.34-the-ice-world.md`.
