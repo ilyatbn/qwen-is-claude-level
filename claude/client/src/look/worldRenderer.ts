@@ -46,6 +46,8 @@ import { Atmosphere } from './atmosphere'
 import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
+import { FireflyLayer } from './fireflyLayer'
+import { FIREFLY_HZ, fieldSampler, fireflyFade, placeFireflies, type Firefly } from './fireflies'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
 import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
 import { castOf } from './actors/cast'
@@ -214,6 +216,15 @@ export class WorldRenderer implements SceneRenderer {
   private fxSource: FxFeed | null = null
   /** The last built frame had game effects (the scene's own are static: laid out on the frame `setScene` marks). */
   private fxLive = false
+  /**
+   * T23.24: the fireflies — seeded per map from the description's `fireflies` (the game's, never space's or the
+   * look-lab's) once the terrain fields are in (`swarmKey`: seed and map), moved by the scene's clock (`setClock`).
+   */
+  private readonly fireflyLayer = new FireflyLayer()
+  private swarm: Firefly[] = []
+  private swarmKey: string | null = null
+  private clock = 0
+  private fireflyStep = -1
   /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
   private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } = { drawn: false, material: null, lights: 0, wallK: null }
 
@@ -242,6 +253,8 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer = new ActorLayer(this.renderer)
     this.addLayer({ object: this.actorLayer.mesh, animated: false })
     this.addLayer({ object: this.glowLayer.mesh, animated: false })
+    // T23.24: not animated as a layer — a swarm in view ends the redraw skip itself, `FIREFLY_HZ` times a second at most.
+    this.addLayer({ object: this.fireflyLayer.mesh, animated: false })
     // T23.18: not animated as a layer — an effect on screen ends the redraw skip itself (`placeFx`), an empty one does not.
     for (const m of this.fxLayer.meshes) this.addLayer({ object: m, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
@@ -447,6 +460,7 @@ export class WorldRenderer implements SceneRenderer {
     const live = this.buildFx()
     if (live || this.fxLive) this.dirty = true
     this.fxLive = live
+    if (this.fireflyTick()) this.dirty = true
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -483,6 +497,7 @@ export class WorldRenderer implements SceneRenderer {
     // (`this.pickedLights` here) is the other answer, and it changes how figures are lit near every evicted light.
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
+    this.fireflyLayer.place(this.swarm, this.clock, this.fireflyFadeNow, view, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
     this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, NIGHT_CIRCLES)
@@ -597,6 +612,47 @@ export class WorldRenderer implements SceneRenderer {
   /** Dev (T23.18): the scene's effect feed — the ordnance layers' live records, for a shot to stage effects in. */
   get fxFeed(): FxFeed | null {
     return this.fxSource
+  }
+
+  /** T23.24: the scene's own clock, s (`scene.time.now`): it stops while the scene is paused, and so do the fireflies. */
+  setClock(s: number): void {
+    this.clock = s
+  }
+
+  /** T23.24: the swarm's fade at this hour — 0 by day, and while a check hides the layer (`hideLayers(['fireflies'])`). */
+  private get fireflyFadeNow(): number {
+    return this.hidden.has('fireflies') ? 0 : fireflyFade(this.hour.t)
+  }
+
+  /**
+   * T23.24: seed the swarm once the map's fields are in, and say whether it moved since the last drawn frame — a new
+   * step of `FIREFLY_HZ` with any of it showing. Never on a scene without `fireflies` (space, the look-lab).
+   */
+  private fireflyTick(): boolean {
+    const d = this.desc
+    const feed = this.terrain.feed
+    if (!d?.fireflies) {
+      this.swarm = []
+      this.swarmKey = null
+      return false
+    }
+    const key = feed && this.terrain.ready ? `${d.fireflies.seed}:${feed.mapKey}` : null
+    if (key !== this.swarmKey) {
+      const v = key && feed ? feed.view() : null
+      this.swarm = v && feed ? placeFireflies(d.fireflies.seed, feed.w, feed.h, fieldSampler(v, feed.w, feed.h)) : []
+      this.swarmKey = v ? key : null
+    }
+    if (this.fireflyFadeNow <= 0 || this.swarm.length === 0) return false
+    const step = Math.floor(this.clock * FIREFLY_HZ)
+    if (step === this.fireflyStep) return false
+    this.fireflyStep = step
+    return true
+  }
+
+  /** Dev (T23.24): the swarm — fireflies seeded on this map, laid out on the last drawn frame, the fade and the clock. */
+  firefliesDrawn(): { seeded: number; drawn: number; fade: number; clock: number; positions: [number, number][] } {
+    const l = this.fireflyLayer
+    return { seeded: this.swarm.length, drawn: l.drawn, fade: this.fireflyFadeNow, clock: this.clock, positions: l.positions.map((p) => [...p] as [number, number]) }
   }
 
   /** Dev (T23.18): what the effects layer laid out on its last drawn frame, by list. */
@@ -1057,6 +1113,7 @@ export class WorldRenderer implements SceneRenderer {
     this.atmos.dispose()
     this.actorLayer.dispose()
     this.glowLayer.dispose()
+    this.fireflyLayer.dispose()
     this.fxLayer.dispose()
     if (this.fxSource) {
       setWorldDraws(this.fxSource, false)
@@ -1142,6 +1199,8 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     cloudSea: map.space ? null : (map.cloudSea ?? null),
     // T23.09A: off by default pending the owner's verdict (`CAVE_WALL_DEFAULT`); the lab's scenes keep F1's walls.
     caveWall,
+    // T23.24: fireflies at night, seeded by the map — none in space (and none in the look-lab, which builds no game map).
+    ...(map.space ? {} : { fireflies: { seed: map.seed } }),
     // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
     // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
@@ -1219,7 +1278,11 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
   if (renderer instanceof WorldRenderer) {
     // T23.18: the scene's effects, from its ordnance layers' records (`fx/feed.ts`).
     renderer.setFxFeed(fxFeed(scene))
-    const gather = (): void => renderer.setActors(castOf(scene))
+    // T23.24: and the scene's clock, which a paused scene stops — the fireflies hold still in a frozen frame.
+    const gather = (): void => {
+      renderer.setActors(castOf(scene))
+      renderer.setClock(scene.time.now / 1000)
+    }
     scene.events.on('prerender', gather)
     scene.events.once('shutdown', () => scene.events.off('prerender', gather))
   }

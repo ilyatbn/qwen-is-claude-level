@@ -408,6 +408,11 @@ export interface SceneDescription {
    * behind the rock. Absent: drawn, as in every mockup scene (the look-lab).
    */
   caveWall?: boolean
+  /**
+   * T23.24: fireflies at night, seeded from the map (`fireflies.ts`) — cosmetic and per-client, nothing simulated reads
+   * them. Absent: none (space, every look-lab scene).
+   */
+  fireflies?: { seed: number }
   /** T23.13: draw `lit()`'s two rim passes on the actors (absent: drawn; the look-lab's `knob=actor-rim-off` is the control). */
   actorRim?: boolean
   id: string

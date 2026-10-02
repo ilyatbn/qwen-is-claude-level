@@ -126,6 +126,9 @@ export const CHECKS = [
   // T23.09C F6: and §4 through GameScene — a remote's jet lit at its flame, networked rounds flashing at the gun (its
   // own two-client stack).
   { name: 'effect-lights', file: 'scripts/checks/effect-lights.mjs', url: '?sandbox=1&seed=4242&hour=1' },
+  // T23.24: fireflies — at night each drawn firefly changes its patch (ink darker, glint brighter) against the same
+  // frozen frame with the layer hidden, the clear patches do not; by day and in space hiding the layer changes nothing.
+  { name: 'fireflies', file: 'scripts/checks/fireflies.mjs', url: '?sandbox=1&seed=4242' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
   // GPU process's memory, which other checks' pages would move.
