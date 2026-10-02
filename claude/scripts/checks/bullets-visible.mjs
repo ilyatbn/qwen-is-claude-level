@@ -45,6 +45,7 @@ import {
   tally,
   sleep,
   freePort,
+  drawnFrames,
 } from './harness.mjs'
 
 const PORT = await freePort()
@@ -70,6 +71,19 @@ await enterBattle(page, { waitPlaying: true, label: 'bullets-visible' })
 // changed 255 luminance at screen x 649–658, strip column 517). The round is drawn by the world
 // renderer; the timer and the effect banner are not what this check is about.
 await page.addStyleTag({ content: '#hud-timer, #hud-banner { visibility: hidden !important; }' })
+// T23.24: **the fireflies are hidden too.** At `&hour=1` they fly (`look/fireflies.ts`), and one drifting by the lane
+// is a glint brighter than the fresh control frame that creeps a few px a sample — measured alone at HEAD 1efb357:
+// x 166–176 from 0.7 s to 2.1 s at +70–77 after a round lit x 486, so the samples read "drawn, then a static column"
+// and the attempt loop stopped on that pair. They are cosmetic and nothing a round is drawn with; hidden by the
+// renderer's own switch (`hideLayers`), and the count under the hide is asserted 0 below so the hide is known to hold.
+await page.waitForFunction(() => !!window.__world, null, { timeout: 60_000 })
+await page.evaluate(() => window.__world.hideLayers(['fireflies']))
+await drawnFrames(page, 2)
+{
+  const f = await page.evaluate(() => window.__world.fireflies())
+  console.log(`  fireflies hidden: ${f?.seeded} seeded, ${f?.drawn} drawn under the hide (fade ${f?.fade})`)
+  if (f?.drawn !== 0) fail(`the fireflies are drawn under the hide (${f?.drawn}) — the lane is not held still`)
+}
 
 const K = await page.evaluate(() => window.__game.constants())
 for (const [name, v] of Object.entries({

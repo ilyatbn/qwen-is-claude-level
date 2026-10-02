@@ -292,9 +292,24 @@ export default async function ({ page, shot, log }) {
       // `a_replay_that_lands_hops_and_lands_reports_the_last_landing` pins that; here the whole path is checked).
       const hopFrom = o.landVolumes.length
       const replayBefore = o.replayLandings
+      // T23.32: **a hop is a tap, and the tap is made on normal frames.** A held Space climbs now (owner: "pressing and
+      // holding space flies up"), so a hold past `JETPACK_HOLD_DELAY` (0.18 s) is a jump plus a climb, landing louder than
+      // the fall it is told apart from (measured alone at 1efb357: 0.903–0.929 against the fall's 0.898; before the merge
+      // the same hold engaged the pack with nothing pushing, 0.74–0.79). On 100 ms frames a key event waits behind the
+      // held frame, so a release sent the moment the body left the ground arrived ~0.5 s later (traced: the pack burning
+      // from 0.34 s, the key up seen at 0.75 s). So the takeoff runs on normal frames — down, airborne, up, a frame or
+      // two of hold — and the slow frames are back before the apex (rise `JUMP_VELOCITY` / `GRAVITY` = 0.31 s): the
+      // landing, the replay this leg is about, is still on slow frames.
+      await mp.evaluate(() => window.__game.slowFrames(0))
       await mp.keyboard.down('Space')
-      await sleep(3 * MATCH_SLOW_MS)
+      await mp.waitForFunction(() => window.__game.debug().player?.grounded === false, null, { timeout: 10_000, polling: 'raf' })
       await mp.keyboard.up('Space')
+      const rising = await mp.evaluate((ms) => {
+        window.__game.slowFrames(ms)
+        return window.__game.debug().player?.vy ?? null
+      }, MATCH_SLOW_MS)
+      log(`match, the hop's takeoff: Space up and slow frames back while rising (vy ${rising === null ? 'none' : rising.toFixed(0)})`)
+      if (!(rising < 0)) throw new Error(`the slow frames came back after the hop's apex (vy ${rising}) — its landing is not the slow-frame case`)
       await mp.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: 10_000 })
       await sleep(4 * MATCH_SLOW_MS)
       const o2 = (await mp.evaluate(() => window.__game.debug())).observed

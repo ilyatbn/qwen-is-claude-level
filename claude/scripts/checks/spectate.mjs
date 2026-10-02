@@ -25,7 +25,18 @@
  *
  * **What the viewpoint leg (`dv <= VIEW_TOL`) can and cannot show** (T23.27C F5c): `viewAt` and `drawnPlayers` come
  * from the same `sampled` map in one frame (`GameScene.update` → `viewer(sampled)` / `renderRemotes(sampleAt, sampled)`),
- * so it is close to a tautology. The camera-centre leg (`dc <= CAMERA_TOL`) is the real evidence that the view moved.
+ * so it is close to a tautology. The camera-centre leg (per axis within `followTol`) is the real evidence that the view
+ * moved.
+ *
+ * **The camera leg's tolerance is the rig's own** (restated after T23.26F): the rig holds still while its subject is
+ * inside the deadzone (`cameraRig-math.ts::desiredCenter`, `CAMERA_DEADZONE_W`×`_H` around the centre) and eases toward
+ * the box's edge by `CAMERA_LERP` a frame, so a settled camera sits up to half the deadzone off its subject per axis,
+ * plus the ease's lag behind a moving one — a body moving Δ px a frame is trailed by Δ / lerp at most. The old bound,
+ * a flat 60 px "the lag behind a body at walking pace", fitted neither: half the deadzone's diagonal alone is 75 px, and
+ * the bots glide and drift now (T23.26F), so a watched bot bobbing 70 px in a quarter second put the centre 59–61 px off
+ * it with the rig working as designed (measured alone at 1efb357: y 59 px off, 45 of it deadzone). The subject's speed
+ * is measured over `FOLLOW_MS` of frames just before the read (`motion`), not assumed. A camera left on A is still red:
+ * every B is `APART` (250) from A, more than the tolerance box's diagonal.
  *
  *   node scripts/checks/spectate.mjs
  */
@@ -35,8 +46,10 @@ const { fail, ok, finish } = tally('spectate')
 
 /** The rig eases toward its target; after this long it is settled on a walking body (lerp per frame, measured). */
 const SETTLE_MS = 1500
-/** How far the rig's centre may sit from the clamped target once settled: the lag behind a body at walking pace. */
-const CAMERA_TOL = 60
+/** Frames the subject's speed is measured over before a camera read, ms. */
+const FOLLOW_MS = 600
+/** Px on top of the rig's own bound per axis: the drawn body's interpolation and the read landing between frames. */
+const FOLLOW_SLACK = 4
 /** The viewpoint is the drawn body: the same sample, so within a pixel (container rounding). */
 const VIEW_TOL = 2
 /** Two players are "far apart" for the camera leg when the clamped camera targets differ by this much (world px). */
@@ -107,7 +120,48 @@ try {
     x: Math.min(Math.max(p.x, s.view.w / 2), s.mapW - s.view.w / 2),
     y: Math.min(Math.max(p.y, s.view.h / 2), s.mapH - s.view.h / 2),
   })
-  /** The camera is on `id`: the viewpoint is its drawn place, and the rig's centre its clamped place. */
+  const K = await w.evaluate(() => window.__game.constants())
+  /** `id`'s drawn speed per axis (px a frame, the most over any ~100 ms of `FOLLOW_MS`), from the watcher's own frames. */
+  const motion = (id) =>
+    w.evaluate(
+      ([id, ms]) =>
+        new Promise((done) => {
+          const out = []
+          const t0 = performance.now()
+          const step = () => {
+            const p = window.__game.debug().drawnPlayers.find((q) => q.id === id)
+            if (p) out.push({ t: performance.now(), x: p.x, y: p.y })
+            if (performance.now() - t0 < ms) requestAnimationFrame(step)
+            else {
+              let vx = 0
+              let vy = 0
+              for (let i = 0, j = 0; i < out.length; i++) {
+                while (out[i].t - out[j].t > 100) j++
+                const dt = out[i].t - out[j].t
+                if (dt > 0) {
+                  vx = Math.max(vx, Math.abs(out[i].x - out[j].x) / dt)
+                  vy = Math.max(vy, Math.abs(out[i].y - out[j].y) / dt)
+                }
+              }
+              const frame = out.length > 1 ? (out[out.length - 1].t - out[0].t) / (out.length - 1) : 1000 / 60
+              done({ dx: vx * frame, dy: vy * frame, frame, frames: out.length })
+            }
+          }
+          requestAnimationFrame(step)
+        }),
+      [id, FOLLOW_MS],
+    )
+  /** The rig's bound per axis on a subject moving as `m` measured: half the deadzone, plus the ease's lag. */
+  const followTol = (m) => ({
+    x: K.CAMERA_DEADZONE_W / 2 + m.dx / K.CAMERA_LERP + FOLLOW_SLACK,
+    y: K.CAMERA_DEADZONE_H / 2 + m.dy / K.CAMERA_LERP + FOLLOW_SLACK,
+  })
+  /** Measure `id`'s motion, then read: the read and the speed its tolerance comes from are one moment. */
+  const readOn = async (id) => {
+    const m = await motion(id)
+    return { ...(await read()), motion: m }
+  }
+  /** The camera is on `id`: the viewpoint is its drawn place, and the rig's centre its clamped place (within `followTol`). */
   const onPlayer = (s, id, label) => {
     const body = s.drawn.find((p) => p.id === id)
     if (!body) {
@@ -116,16 +170,20 @@ try {
     }
     const dv = Math.hypot(s.viewAt.x - body.x, s.viewAt.y - body.y)
     const want = clampTo(body, s)
-    const dc = Math.hypot(s.centre.x - want.x, s.centre.y - want.y)
-    console.log(`  ${label}: watching ${s.watching} drawn at (${body.x.toFixed(0)}, ${body.y.toFixed(0)}); viewpoint ${dv.toFixed(1)} px off (max ${VIEW_TOL}); camera centre (${s.centre.x.toFixed(0)}, ${s.centre.y.toFixed(0)}), ${dc.toFixed(1)} px from its clamped place (max ${CAMERA_TOL})`)
+    const ex = Math.abs(s.centre.x - want.x)
+    const ey = Math.abs(s.centre.y - want.y)
+    const tol = followTol(s.motion)
+    const m = s.motion
+    console.log(`  ${label}: watching ${s.watching} drawn at (${body.x.toFixed(0)}, ${body.y.toFixed(0)}); viewpoint ${dv.toFixed(1)} px off (max ${VIEW_TOL}); camera centre (${s.centre.x.toFixed(0)}, ${s.centre.y.toFixed(0)}), (${ex.toFixed(1)}, ${ey.toFixed(1)}) px from its clamped place (max (${tol.x.toFixed(1)}, ${tol.y.toFixed(1)}): subject at (${m.dx.toFixed(2)}, ${m.dy.toFixed(2)}) px a frame, ${m.frame.toFixed(1)} ms frames, ${m.frames} of them)`)
     // `!(… <= …)`: a NaN (a field that is not there) is a failure, not a pass.
     if (!(dv <= VIEW_TOL)) fail(`${label}: the viewpoint is ${dv.toFixed(1)} px from where player ${id} is drawn`)
-    if (!(dc <= CAMERA_TOL)) fail(`${label}: the camera centre is ${dc.toFixed(1)} px from player ${id}`)
-    return dv <= VIEW_TOL && dc <= CAMERA_TOL ? want : null
+    const onIt = ex <= tol.x && ey <= tol.y
+    if (!onIt) fail(`${label}: the camera centre is (${ex.toFixed(1)}, ${ey.toFixed(1)}) px from player ${id}, past the rig's (${tol.x.toFixed(1)}, ${tol.y.toFixed(1)})`)
+    return dv <= VIEW_TOL && onIt ? want : null
   }
   await sleep(SETTLE_MS)
-  const a = await read()
-  const A = a.watching
+  const A = (await read()).watching
+  const a = await readOn(A)
   const alive = await w.evaluate(() => [...window.__game.debug().playerIds])
   if (!alive.includes(A)) fail(`watching ${A}, who is not a player`)
   const atA = onPlayer(a, A, 'A')
@@ -157,9 +215,13 @@ try {
     const B = b.s.watching
     if (b.s.steps !== presses) fail(`the scene counted ${b.s.steps} Tab presses, the check pressed ${presses}`)
     if (B === A) fail('Tab did not change whom the camera watches')
-    const atB = onPlayer(b.s, B, 'B')
-    const fromA = Math.hypot(b.s.centre.x - clampTo(b.bodyA, b.s).x, b.s.centre.y - clampTo(b.bodyA, b.s).y)
-    if (atB && fromA > CAMERA_TOL) ok(`Tab moved the camera to player ${B}, ${fromA.toFixed(0)} px from A's place`)
+    const sB = await readOn(B)
+    const bodyA = sB.drawn.find((p) => p.id === A) ?? b.bodyA
+    const atB = onPlayer(sB, B, 'B')
+    const fromA = Math.hypot(sB.centre.x - clampTo(bodyA, sB).x, sB.centre.y - clampTo(bodyA, sB).y)
+    const tolA = followTol(sB.motion)
+    // `onPlayer` has already said so when the camera is not on B; this says whether it left A.
+    if (fromA > Math.hypot(tolA.x, tolA.y)) ok(`Tab moved the camera off A: ${fromA.toFixed(0)} px from A's place`)
     else fail(`after Tab the camera is still ${fromA.toFixed(0)} px from A`)
     const name = b.s.line ?? ''
     const nameB = b.s.names[B]
@@ -180,7 +242,7 @@ try {
     // Shift+Tab steps back through the same order to A (each press one step).
     for (let i = 0; i < presses; i++) await w.keyboard.press('Shift+Tab')
     await sleep(SETTLE_MS)
-    const back = await read()
+    const back = await readOn(A)
     if (back.watching !== A) fail(`${presses} Shift+Tab did not return to A (${A}): watching ${back.watching}`)
     else if (onPlayer(back, A, 'back')) ok(`Shift+Tab ×${presses} returned to player ${A}`)
     const nameA = back.names[A]

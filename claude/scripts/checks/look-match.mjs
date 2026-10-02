@@ -32,6 +32,13 @@ import { startStack, enterBattle, standStill, tally, freePort, drawnFrames } fro
 // T23.11: the sky follows the hour now (the palettes' blend, the moons on their arcs); this check was calibrated on
 // F1's look with nothing in the sky moving, so it pins that hour (`worldRenderer-math.ts::hourFromUrl`).
 const HOUR = '&hour=1'
+/**
+ * T23.24: fireflies fly at night (`look/fireflies.ts`) on the scene's clock, so at `HOUR` the frame is not static and
+ * every control below moved (measured, alone: top rows max 15, fg mean 0.364, the rect twice 28 px — all 0 before the
+ * fireflies merged). They are held hidden under every photograph, as T23.28 holds the cast empty: the fog, the grade
+ * and the rock are what this check judges, and none of them is drawn differently with or without the swarm.
+ */
+const STILL = ['fireflies']
 
 const { fail, ok, finish } = tally('look-match')
 
@@ -65,7 +72,7 @@ const frame = async (page) => {
   return decode(await page.evaluate(() => window.__world.readFrame()))
 }
 const hide = async (page, layers) => {
-  await page.evaluate((l) => window.__world.hideLayers(l), layers)
+  await page.evaluate((l) => window.__world.hideLayers(l), [...STILL, ...layers])
   return frame(page)
 }
 /** Mean |Δ| per channel over rows [y0, y1) and columns [x0, x1) of two same-size frames; and the max. */
@@ -145,7 +152,12 @@ try {
   // not static and both controls below move (measured: top rows max 117, fg mean 0.08; 0 and 0.000 with the
   // pickups unannounced). The fog and the grade are whole-frame passes, drawn the same with or without a cast.
   await pa.evaluate(() => window.__world.setActors([]))
+  const flies = await pa.evaluate(() => window.__world.fireflies())
+  await showAll(pa)
   const on = await frame(pa)
+  const fliesHidden = await pa.evaluate(() => window.__world.fireflies())
+  console.log(`  fireflies: ${flies?.seeded} seeded, ${flies?.drawn} drawn (fade ${flies?.fade}) before the hide; ${fliesHidden?.drawn} drawn under it`)
+  if (fliesHidden?.drawn !== 0) fail(`the fireflies are drawn under the hide (${fliesHidden?.drawn}) — the frame is not held still`)
   const noFog = await hide(pa, ['fogBack', 'fogFront'])
   const noGrade = await hide(pa, ['grade'])
   const noFg = await hide(pa, ['fg'])
@@ -179,6 +191,7 @@ try {
 
   // ------------------------------------------------------------ 2. two matches, two rocks
   B = await openMatch(SEED_B)
+  await showAll(B.page)
   if (B.warning === '') ok(`seed ${SEED_B}: the terrain fields came from the worker (no warning)`)
   else fail(`seed ${SEED_B}: the terrain fields warn — got ${JSON.stringify(B.warning)}, want ""`)
   const ca = await deepCells(pa)
@@ -221,6 +234,7 @@ await finish(async () => {
   await B?.stack.close()
 })
 
+/** Every layer drawn but the fireflies (`STILL`). */
 async function showAll(page) {
-  await page.evaluate(() => window.__world.hideLayers([]))
+  await page.evaluate((l) => window.__world.hideLayers(l), STILL)
 }
