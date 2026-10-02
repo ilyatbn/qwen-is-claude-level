@@ -334,9 +334,14 @@ export default async function ({ page, shot, log }) {
         const out = []
         let total = 0
         let count = 0
+        const gm = window.__game
+        const dv = j.skyOnly ? gm.debug() : null
+        const rockAt = dv ? (x, y) => gm.core.solidAt(Math.round(dv.worldView.x + x / dv.zoom), Math.round(dv.worldView.y + y / dv.zoom)) : null
         for (let y = 3; y < H - 3; y++) {
           for (let x = 3; x < W - 3; x++) {
             if (inAny(x, y, j.exclude)) continue
+            // T23.20: the lit rock has bright specks of its own (pebbles, the lip light); a star is in the sky.
+            if (rockAt && rockAt(x, y)) continue
             const L = lum(x, y)
             total += L
             count++
@@ -529,9 +534,9 @@ export default async function ({ page, shot, log }) {
 
   // --- 3: stars, and they drift -------------------------------------------------
   const both = [...exclude, a.pb, b.pb]
-  const sa = await measure({ kind: 'stars', a: a.bare, exclude: both })
-  const sa2 = await measure({ kind: 'stars', a: a.bare2, exclude: both })
-  const sb = await measure({ kind: 'stars', a: b.bare, exclude: both })
+  const sa = await measure({ kind: 'stars', a: a.bare, exclude: both, skyOnly: true })
+  const sa2 = await measure({ kind: 'stars', a: a.bare2, exclude: both, skyOnly: true })
+  const sb = await measure({ kind: 'stars', a: b.bare, exclude: both, skyOnly: true })
   const STAR_FLOOR = starFloor((await dbg()).zoom)
   if (sa.stars.length < STAR_FLOOR) throw new Error(`only ${sa.stars.length} star pixels in space (want ≥ ${STAR_FLOOR})`)
   const kept = (x, y) => {
