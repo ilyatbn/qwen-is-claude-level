@@ -4563,7 +4563,7 @@ pub const BOT_ARSENAL_ROTATE: f32 = 2.0;
 /// T99.04: an arsenal bot takes the flamethrower on one pass of its rotation in this many (and
 /// the kind rotation puts at most one bot on it at a time) — the owner: fire is an accent;
 /// the stream's ground fire outlives the turn, and every pass walled the shot off in flame.
-pub const BOT_ARSENAL_FLAME_EVERY: usize = 3;
+pub const BOT_ARSENAL_FLAME_EVERY: usize = 6;
 /// T99.04: ...and only for this many seconds at the start of that turn: a burst, not a hose —
 /// each flame burns `FLAME_LIFE` on the ground, so a two-second spray is a seven-second wall.
 pub const BOT_ARSENAL_FLAME_BURST: f32 = 0.6;
