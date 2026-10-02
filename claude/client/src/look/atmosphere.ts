@@ -25,7 +25,7 @@
  * Not animated: nothing here reads a clock, so the redraw skip stays valid.
  */
 import { Mesh, PlaneGeometry, ShaderMaterial, Vector2, Vector3, Vector4 } from 'three'
-import type { Box, Fog, Foreground, ViewRect } from './scene'
+import type { Box, Fog, Foreground, SeaTint, ViewRect } from './scene'
 import { NOISE_GLSL } from './skyMaterial'
 
 /** `foregroundDoF`'s spot slots (`spots[6]`). */
@@ -84,18 +84,21 @@ const FOG_FS =
  * than a band. In the fog's style: the same noise (`NOISE_GLSL`), the look's front-fog colour (so it follows the
  * daylight blend), drawn just after the front fog. Not animated (no clock: the redraw skip stands).
  */
+/** T23.30's cloud sea: how far its billows' tops are lifted from the colour toward white (a world may name its own). */
+const SEA_LIFT = 0.62
+
 const SEA_FS =
   NOISE_GLSL +
   FRAG_P +
   /* glsl */ `
-  uniform vec3 c; uniform float top;
+  uniform vec3 c; uniform float top; uniform vec3 liftTo; uniform float lift;
   void main(){ vec2 p = worldP();
     float edge = top - 70. * fbm(vec2(p.x*0.0045, 3.1), 3) - 34. * fbm(vec2(p.x*0.017, 7.7), 3);
     float a = smoothstep(edge - 6., edge + 26., p.y);
     if (a <= 0.) discard;
     float depth = clamp((p.y - edge) / 260., 0., 1.);
     float billow = fbm(vec2(p.x*0.008, p.y*0.016), 4);
-    vec3 lit = mix(c, vec3(1.), 0.62);
+    vec3 lit = mix(c, liftTo, lift);
     vec3 col = mix(lit, c * 0.85, clamp(depth*0.8 + (0.55 - billow)*0.9, 0., 1.));
     gl_FragColor = vec4(col, a * 0.97); }`
 
@@ -176,7 +179,7 @@ export class Atmosphere {
   /** T23.30: the Islands shape's cloud sea, after the front fog and before the leaves. */
   readonly cloudSea = quad(
     new ShaderMaterial({
-      uniforms: { ...common(), c: { value: new Vector3() }, top: { value: 0 } },
+      uniforms: { ...common(), c: { value: new Vector3() }, top: { value: 0 }, liftTo: { value: new Vector3(1, 1, 1) }, lift: { value: SEA_LIFT } },
       vertexShader: VS,
       fragmentShader: SEA_FS,
       transparent: true,
@@ -226,6 +229,7 @@ export class Atmosphere {
     occluders: Box[],
     hidden: ReadonlySet<string>,
     cloudSea: number | null = null,
+    seaTint: SeaTint | null = null,
   ): void {
     const set = (m: Mesh, on: boolean): ShaderMaterial | null => {
       m.visible = on
@@ -252,7 +256,10 @@ export class Atmosphere {
     // T23.30: the cloud sea, in the front fog's colour (or the back's, or a pale lilac when a look has neither).
     const sea = set(this.cloudSea, cloudSea !== null && !hidden.has('cloudSea'))
     if (sea && cloudSea !== null) {
-      ;(sea.uniforms['c']!.value as Vector3).set(...(look.fogFront?.color ?? look.fogBack?.color ?? [0.62, 0.6, 0.78]))
+      // T23.31: a world with its own sea (volcanic's ash) names it; the rest keep the fog's, lifted toward white.
+      ;(sea.uniforms['c']!.value as Vector3).set(...(seaTint?.color ?? look.fogFront?.color ?? look.fogBack?.color ?? [0.62, 0.6, 0.78]))
+      ;(sea.uniforms['liftTo']!.value as Vector3).set(...(seaTint?.liftTo ?? [1, 1, 1]))
+      sea.uniforms['lift']!.value = seaTint?.lift ?? SEA_LIFT
       sea.uniforms['top']!.value = cloudSea
     }
     const mat = set(this.fg, !!look.fg && !hidden.has('fg'))

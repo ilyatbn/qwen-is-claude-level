@@ -440,6 +440,8 @@ export interface SceneDescription {
   litTerrain: boolean
   /** T23.30: the Islands shape's cloud sea — its tops' world y (mask px); absent / null: none. */
   cloudSea?: number | null
+  /** T23.31: the cloud sea's colours in this world (`worlds.ts::WorldLook.sea`); absent: the fog's, lifted toward white. */
+  seaTint?: SeaTint
   /**
    * T23.20: the rock's albedo palette (`albedo.ts::ALBEDO_PALETTES`) — absent: the ground's (`dusk`, R5); `asteroid`
    * on a space map and in F3 (`SceneData.theme`).
@@ -480,4 +482,14 @@ export function describeScene(d: SceneData): SceneDescription {
 /** T23.02: the screen boxes of a scene's actors, in draw order — the look-compare `actors` region. */
 export function actorBoxes(d: Pick<SceneDescription, 'actors'>): Box[] {
   return d.actors.flatMap((a) => (a.box ? [a.box] : []))
+}
+
+/**
+ * T23.31: a world's cloud sea (`atmosphere.ts::SEA_FS`) — `color` in the troughs and depths, the billows' tops lifted
+ * `lift` of the way toward `liftTo`. Today's sea is `{ color: the front fog's, liftTo: white, lift: 0.62 }`.
+ */
+export interface SeaTint {
+  color: [number, number, number]
+  liftTo: [number, number, number]
+  lift: number
 }

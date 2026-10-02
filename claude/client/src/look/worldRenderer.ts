@@ -522,7 +522,7 @@ export class WorldRenderer implements SceneRenderer {
       this.backdrop.place(!!b && !!bg && !this.hidden.has('backdrop'), b?.seed ?? 0, bg?.horizon ?? 0, view, this.desc.world, frame, [this.buf.w, this.buf.h], this.desc.daylight ? this.hour.t : 1)
     }
     this.placeTerrain(view)
-    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null)
+    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null, this.desc.seaTint ?? null)
     this.actorLayer.rimOn = this.desc.actorRim !== false
     // **Two light lists, and it is a known disagreement** (T23.27C F10, filed for the coordinator): the terrain above
     // draws `pickedLights` — culled to the view and capped to the tier's slots (`pickLights`: 12 gates + a muzzle + an
@@ -1309,6 +1309,7 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     // scenes hand over their effect lights each frame (T23.09, `setLights`).
     litTerrain: true,
     cloudSea: map.cloudSea ?? null,
+    ...(wl.sea ? { seaTint: wl.sea } : {}),
     // T23.09A: off by default pending the owner's verdict (`CAVE_WALL_DEFAULT`); the lab's scenes keep F1's walls.
     caveWall,
     // T23.24: fireflies at night, seeded by the map — none in space (`spaceDescription`) or the look-lab.

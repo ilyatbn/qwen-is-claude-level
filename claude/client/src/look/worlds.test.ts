@@ -66,6 +66,15 @@ describe('world looks', () => {
     expect(blendLook(v.day.look, v.night.look, 0.5).bg?.skyBottom).not.toBe(v.night.look.bg?.skyBottom)
   })
 
+  it("classic keeps today's cloud sea; volcanic names an ash sea darker than its fog", () => {
+    expect(WORLD_LOOKS.classic.sea).toBeNull()
+    const sea = WORLD_LOOKS.volcanic.sea
+    expect(sea).not.toBeNull()
+    const fog = WORLD_LOOKS.volcanic.night.look.fogFront?.color ?? [1, 1, 1]
+    const sum = (c: readonly number[]): number => c.reduce((a, b) => a + b, 0)
+    expect(sum(sea?.color ?? fog)).toBeLessThan(sum(fog))
+  })
+
   it('an unknown id is classic', () => {
     expect(worldLook('lunar').id).toBe('classic')
     expect(worldLook(undefined).id).toBe('classic')

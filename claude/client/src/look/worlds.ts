@@ -15,7 +15,7 @@
  *
  * Adding a look is adding an entry here (and an id the server can send — part 1, the coordinator's wiring).
  */
-import type { CombatPalette, FrameLook } from './scene'
+import type { CombatPalette, FrameLook, SeaTint } from './scene'
 import { F1 } from './scenes/F1'
 import { F2 } from './scenes/F2'
 import { F5 } from './scenes/F5'
@@ -39,6 +39,12 @@ export interface WorldLook {
   /** The distant painted layer between the sky and the back fog (`backdrop.ts`), or none. */
   backdrop: 'volcano' | null
   fauna: Fauna
+  /**
+   * T23.31: the Islands shape's cloud sea in this world (`scene.ts::SeaTint`) — null: today's, the fog's colour lifted
+   * toward white (classic). Volcanic's is an ash sea lit from below by the lava's glow: a near-white sea under F2's
+   * dark red air read as a hole in the picture (seen on the GPU; after: `shots/t2331-islands-volcanic-sea.png`).
+   */
+  sea: SeaTint | null
 }
 
 const end = (look: FrameLook, palette: CombatPalette | null): LookEnd => {
@@ -104,13 +110,15 @@ function volcanicDayPalette(p: CombatPalette): CombatPalette {
 }
 
 export const WORLD_LOOKS: Readonly<Record<WorldLookId, WorldLook>> = {
-  classic: { id: 'classic', day: end(F5.look, F5.palette), night: end(F1.look, F1.palette), backdrop: null, fauna: 'classic' },
+  classic: { id: 'classic', day: end(F5.look, F5.palette), night: end(F1.look, F1.palette), backdrop: null, fauna: 'classic', sea: null },
   volcanic: {
     id: 'volcanic',
     day: end(volcanicDayLook(F2.look), F2.palette && volcanicDayPalette(F2.palette)),
     night: end(F2.look, F2.palette),
     backdrop: 'volcano',
     fauna: 'volcanic',
+    // Ash in the troughs, the billows' tops caught orange — the backdrop's lava rivers' colour, a third of the way.
+    sea: { color: [0.13, 0.06, 0.05], liftTo: [0.95, 0.42, 0.16], lift: 0.26 },
   },
 }
 
