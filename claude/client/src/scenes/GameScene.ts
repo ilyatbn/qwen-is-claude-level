@@ -856,6 +856,8 @@ export class GameScene extends Phaser.Scene {
     this.selectedSlot = 0
     this.serverPos = null
     this.watchPoint = null
+    // T99.04: a promo's shake multiplier is for the shot that set it; a new round shakes as the game does.
+    this.shakeScale = 1
 
     // The helpers that carry state of their own.
     //
