@@ -17,7 +17,7 @@
  * `dOut` of the top 720 rows are the mockup's. (The cave wall's closing, R24, reads a second distance
  * over the padded band, so its last ~48 rows may differ; F3's bottom rows are open sky and planet limb.)
  */
-import { C, type Core } from '../core'
+import { C, MapGenerator, type Core } from '../core'
 import type { Masks, Scorch } from './scene'
 import type { TerrainFeed } from './terrainFields'
 import type { Rect } from './terrainGpu'
@@ -63,6 +63,8 @@ export class LabFields implements TerrainFeed {
     private readonly core: Core,
     masks: Masks,
     private readonly scorch: Scorch[],
+    /** T23.20: F3's rock — the core's generator says space, so the Rust relief raises the asteroid's boulders. */
+    asteroid = false,
   ) {
     const size = C().CHUNK_SIZE
     this.w = masks.w
@@ -82,6 +84,7 @@ export class LabFields implements TerrainFeed {
         wall.copyWithin((masks.h + k) * this.w, from, from + this.w)
       }
     }
+    core.setMapGenerator(asteroid ? MapGenerator.Space : MapGenerator.V2)
     if (!core.loadMask(this.w, this.h, encodeRle(solid))) throw new Error('look-lab fields: mask failed to load')
     core.renderFieldsFullWithWall(wall)
   }

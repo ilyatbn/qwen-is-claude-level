@@ -137,6 +137,12 @@ export default async function ({ page, shot, log }) {
   if (!rocks[0].r) throw new Error(`the asteroid has no radius field: ${JSON.stringify(rocks[0])}`)
 
   const vw = await g(() => ({ w: window.innerWidth, h: window.innerHeight }))
+  // T23.20: the sandbox's panel covers the top-left of the frame, where F3 puts its star and its moon; the panel is
+  // not under test here, so it is hidden (visibility only — it stays in the layout) and the overlays below omit it.
+  await g(() => {
+    const game = document.querySelector('canvas')
+    for (const el of document.body.children) if (!el.contains(game)) el.style.visibility = 'hidden'
+  })
   /**
    * The DOM over the canvas — the sandbox panel, the HUD strip, the suit line, the
    * minimap — read off the page rather than guessed.

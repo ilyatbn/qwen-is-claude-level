@@ -226,7 +226,7 @@ export class LookScene extends Phaser.Scene {
       if (core && desc.masks && renderer instanceof m.WorldRenderer) {
         let lab: LabFields | null = null
         try {
-          lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [])
+          lab = new LabFields(core, desc.masks, desc.look.terrain.scorch ?? [], desc.albedo === 'asteroid')
         } catch (e) {
           // A strip the fields cannot take: no lit terrain (only=albedo: an error). T23.20: F3 mirrors its padding.
           if (only === 'albedo') {

@@ -104,13 +104,18 @@ export function spaceBodies(
  * the moon its smaller arc (`look/space.ts`), so a body's place is its arc's **apex** (the top of its limb) and the
  * sun is F3's distant star. Each body keeps T22.06's path, speed and phase (`spaceBodies`); only the path's centre
  * moves to where F3 draws it — composition, as `SUN_PATH`/`EARTH_PATH` are: the star high and left of centre, the
- * planet's limb high on the right with the planet filling the lower right, the moon circling F3's place for it,
- * down and left of the planet (`variant_F3.js`: star (150, 60), planet apex (980, 130), moon apex (240, 330)).
+ * planet's limb high on the right with the planet filling the lower right, the moon circling a place down and
+ * left of the planet (`F3_MOON_FROM_EARTH`) (`variant_F3.js`: star (150, 60), planet apex (980, 130), moon apex (240, 330)).
  */
 export const F3_SUN_PATH = { cx: 0.45, cy: 0.17 }
 export const F3_EARTH_PATH = { cx: 0.6, cy: 0.2 }
-/** F3's moon apex from its planet apex, frame px — the centre the moon's T22.06 orbit circles in the new look. */
-export const F3_MOON_FROM_EARTH: readonly [number, number] = [240 - 980, 330 - 130]
+/**
+ * The moon's apex from the planet's, frame px — the centre the moon's T22.06 orbit circles in the new look. F3 draws
+ * it at (240 − 980, 330 − 130) = (−740, +200) for one still; with the planet swinging ±`SPACE_EARTH_PATH_RX` of the
+ * frame and the orbit ±`SPACE_MOON_ORBIT` on top, that put the moon off the left edge most of a round (measured in
+ * `space-sky`: off screen at the second moment). Moved in to (−460, +210): F3's side and drop, on screen most of the time.
+ */
+export const F3_MOON_FROM_EARTH: readonly [number, number] = [-460, 210]
 
 /** Where each body is drawn this frame in the new look, frame px (the sun's centre, each arc's apex). */
 export interface SpaceScreen {

@@ -262,8 +262,13 @@ export class SpaceSky {
     }
     f.starCount = n
     this.starsDrawn = n
-    f.hidden = new Set([...this.hiddenBodies].filter((h): h is SpacePart => h !== 'shade'))
-    f.version++
+    this.syncHidden()
+  }
+
+  /** T23.20: the parts a check hid, onto the feed now — a frozen scene does not `update`, and the world still draws. */
+  private syncHidden(): void {
+    this.feed.hidden = new Set([...this.hiddenBodies].filter((h): h is SpacePart => h !== 'shade'))
+    this.feed.version++
   }
 
   private drawStars(t: number, view: { left: number; top: number; w: number; h: number }, sx: number, sy: number): void {
@@ -299,11 +304,11 @@ export class SpaceSky {
    */
   setBodiesVisible(on: boolean, which: SpaceSkyPart | 'all' = 'all'): void {
     for (const n of which === 'all' ? BODY_NAMES : [which]) {
-      this.feed.version++
       if (on) this.hiddenBodies.delete(n)
       else this.hiddenBodies.add(n)
     }
     this.applyVisibility()
+    this.syncHidden()
   }
 
   private applyVisibility(): void {

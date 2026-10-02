@@ -63,6 +63,9 @@ pub const WALL_CLOSING_R: u32 = 48;
 const BACK_RAMP_PX: f64 = 10.0;
 /// `world.js::THEMES.dusk.boulders` — F1/F5's theme (`variant_F1.js`, R5: one world).
 const BOULDER_MIN_ID: f64 = 0.8;
+/// T23.20: `world.js::derive`'s default (`T.boulders ?? 0.62`) — `THEMES.asteroid`, F3's theme, sets none: space's
+/// rock (`MapGenerator::Space`, the client's asteroid albedo, `albedo.ts::ASTEROID_PALETTE`).
+const ASTEROID_BOULDER_MIN_ID: f64 = 0.62;
 /// `world.js::derive`: boulders only deeper than this into the rock.
 const BOULDER_MIN_DEPTH: f64 = 10.0;
 
@@ -273,6 +276,9 @@ pub struct RenderFields {
     /// resync of the same map (a second `map_init`) costs no second generation — and (T23.07C)
     /// its hard/soft split, computed once per map, never per carve.
     landform: Option<(LandformKey, WallClass)>,
+    /// T23.20: the relief's boulder threshold is space's (`boulder_min_id`) — set from the core's generator before
+    /// every pass (`GameCore::render_fields_*`), so a carve's update shades as the full pass did.
+    asteroid: bool,
 }
 
 /// What identifies a generated landform: `map_init`'s seed, scale, generator, theme.
@@ -515,6 +521,11 @@ impl RenderFields {
 
     /// Distances and `back` over `write` (reading `read`); relief over `relief` ⊆ `write`.
     fn compute(&mut self, mask: &impl Solid, read: Rect, write: Rect, relief: Rect) {
+        let boulders = if self.asteroid {
+            ASTEROID_BOULDER_MIN_ID
+        } else {
+            BOULDER_MIN_ID
+        };
         let ww = self.w as usize;
         let rgba = &mut self.rgba;
         let din2 = &mut self.din2;
@@ -526,7 +537,7 @@ impl RenderFields {
             din2[y as usize * ww + x as usize] = (d as f64 * d as f64).round() as u16;
             if relief.contains(x, y) {
                 let rel = if mask.solid(x, y) {
-                    relief_at(x, y, d)
+                    relief_at(x, y, d, boulders)
                 } else {
                     0.0
                 };
@@ -793,7 +804,7 @@ fn cell2(x: f64, y: f64, s: i64) -> (f64, f64, f64) {
 }
 
 /// `world.js::derive`'s `relief[i]` for a solid px at depth `d_in`.
-fn relief_at(x: u32, y: u32, d_in: f32) -> f32 {
+fn relief_at(x: u32, y: u32, d_in: f32, boulder_min_id: f64) -> f32 {
     let (x, y) = (x as f64, y as f64);
     let warp = fbm(x * 0.02, y * 0.02, 3, 11);
     let band = (y * 0.045 + warp * 3.2 + fbm(x * 0.004, 0.0, 2, 12) * 4.0) % 4.0;
@@ -801,7 +812,7 @@ fn relief_at(x: u32, y: u32, d_in: f32) -> f32 {
     let grain = fbm(x * 0.25, y * 0.25, 3, 13);
     let (b1, b2, bid) = cell2(x * 0.022 + warp * 0.6, y * 0.03 + warp * 0.4, 21);
     let mut rel = 0.0f64;
-    if bid > BOULDER_MIN_ID && d_in as f64 > BOULDER_MIN_DEPTH {
+    if bid > boulder_min_id && d_in as f64 > BOULDER_MIN_DEPTH {
         rel = ((b2 - b1) * 2.2).min(1.0).sqrt();
     }
     rel = rel.max(0.25 * bt.powf(3.0) + 0.2 * grain);
@@ -839,6 +850,7 @@ impl GameCore {
     /// Every field for the whole world, and the `back` snapshot. Call at round start.
     /// Returns the rect written, `[x, y, w, h]`.
     pub fn render_fields_full(&mut self) -> Vec<u32> {
+        self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
         self.render_fields.full(&self.map.mask).to_vec()
     }
 
@@ -857,6 +869,7 @@ impl GameCore {
                 g.put(i as u32 % w, i as u32 / w, true);
             }
         }
+        self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
         self.render_fields
             .full_with_wall(&self.map.mask, g)
             .map(Rect::to_vec)
@@ -891,6 +904,7 @@ impl GameCore {
                 .ok_or(format!("render_fields: generator byte {generator}"))?,
             theme,
         };
+        self.render_fields.asteroid = key.generator == MapGenerator::Space;
         let (rect, strays) = self
             .render_fields
             .full_landform(&self.map.mask, key)
@@ -926,6 +940,7 @@ impl GameCore {
         w: i32,
         h: i32,
     ) -> Result<Vec<u32>, String> {
+        self.render_fields.asteroid = self.map.meta.generator == MapGenerator::Space;
         self.render_fields
             .dirty(&self.map.mask, x, y, w, h)
             .map(Rect::to_vec)
@@ -1807,7 +1822,7 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 let bits = if solid.solid(x, y) {
-                    relief_at(x, y, exact_din(&solid, x, y)).to_bits()
+                    relief_at(x, y, exact_din(&solid, x, y), BOULDER_MIN_ID).to_bits()
                 } else {
                     0
                 };
@@ -1901,6 +1916,33 @@ mod tests {
                 "{scale:?} {}x{}: full {:.1} ms (median of 3; min {:.1}), r=60 crater {:.2} ms over {}x{} written",
                 map.mask.w, map.mask.h, fulls[1], fulls[0], crater, wrote.w, wrote.h
             );
+        }
+    }
+
+    /// T23.20: space's rock (F3's asteroid) raises boulders from `derive`'s default 0.62, the ground's from dusk's
+    /// 0.8 — so the asteroid's relief has more domes, and the dusk threshold (the control) fewer, on the same rock.
+    #[test]
+    fn asteroid_relief_has_the_asteroid_boulders() {
+        let domes = |t: f64| {
+            (0..256u32)
+                .flat_map(|y| (0..256u32).map(move |x| (x, y)))
+                .filter(|&(x, y)| relief_at(x, y, 30.0, t) > 0.6)
+                .count()
+        };
+        // Measured: 13498 vs 10840 over this 256² patch at depth 30. A lower threshold only adds domes: every px is
+        // at least as high, and a tenth more of them are high.
+        let (a, d) = (domes(ASTEROID_BOULDER_MIN_ID), domes(BOULDER_MIN_ID));
+        assert!(
+            a > d + d / 10 && d > 0,
+            "asteroid {a} vs dusk {d} high-relief px"
+        );
+        for y in 0..64 {
+            for x in 0..64 {
+                assert!(
+                    relief_at(x, y, 30.0, ASTEROID_BOULDER_MIN_ID)
+                        >= relief_at(x, y, 30.0, BOULDER_MIN_ID)
+                );
+            }
         }
     }
 }
