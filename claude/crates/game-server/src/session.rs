@@ -1146,7 +1146,9 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
                                 return;
                             };
-                            let Some(id) = sessions.player_of(socket.id) else {
+                            // T99.04: `id` names another player (a bot) to bring it near and to
+                            // place — a spectator's trailer shot has no body of its own.
+                            let Some(id) = promo_target(&p).or_else(|| sessions.player_of(socket.id)) else {
                                 return;
                             };
                             let dist = p.get("dist").and_then(|v| v.as_f64()).map(|d| d as f32);
@@ -1200,9 +1202,15 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
                                 return;
                             };
-                            let Some(id) = sessions.player_of(socket.id) else {
+                            // T99.04: `id` places another player (a bot) instead of the asker,
+                            // and `anchor` (seconds) then holds it there, still fighting
+                            // (`Bot::anchor_until`) — a trailer's staged shot.
+                            let Some(id) =
+                                promo_target(&p).or_else(|| sessions.player_of(socket.id))
+                            else {
                                 return;
                             };
+                            let anchor = p.get("anchor").and_then(|v| v.as_f64()).map(|v| v as f32);
                             let at = p
                                 .get("x")
                                 .and_then(|v| v.as_f64())
@@ -1210,9 +1218,15 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                                 .map(|(x, y)| game_core::math::Vec2::new(x as f32, y as f32));
                             let reply = match at {
                                 Some(at) => room
-                                    .inspect(move |w| {
-                                        w.dev_relocate(id, at)
-                                            .map(|p| serde_json::json!({"x": p.x, "y": p.y}))
+                                    .inspect_bots(move |w, bots| {
+                                        let placed = w.dev_relocate(id, at)?;
+                                        if let Some(secs) = anchor {
+                                            let until = w.round_time + secs;
+                                            for b in bots.iter_mut().filter(|b| b.player == id) {
+                                                b.anchor_until(until);
+                                            }
+                                        }
+                                        Some(serde_json::json!({"x": placed.x, "y": placed.y}))
                                     })
                                     .await
                                     .flatten(),
@@ -1221,6 +1235,44 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             emit(
                                 &socket,
                                 "debug_place",
+                                &reply.unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    },
+                );
+            }
+            // T99.04 (promo, `DEV_PROBE=1`): a crowd of animals and birds around column `x`
+            // (`World::dev_spawn_fauna`) — the trailer's last shot. Answers the counts placed.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on(
+                    "debug_fauna",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, _)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let n = |k: &str| {
+                                p.get(k).and_then(|v| v.as_u64()).unwrap_or(0).min(64) as u32
+                            };
+                            let (spiders, beetles, birds) =
+                                (n("spiders"), n("beetles"), n("birds"));
+                            let x = p.get("x").and_then(|v| v.as_f64()).map(|v| v as f32);
+                            let reply = match x {
+                                Some(x) => {
+                                    room.inspect(move |w| {
+                                        let (s, b, f) =
+                                            w.dev_spawn_fauna(x, spiders, beetles, birds);
+                                        serde_json::json!({"spiders": s, "beetles": b, "birds": f})
+                                    })
+                                    .await
+                                }
+                                None => None,
+                            };
+                            emit(
+                                &socket,
+                                "debug_fauna",
                                 &reply.unwrap_or(serde_json::Value::Null),
                             );
                         }
@@ -2058,9 +2110,27 @@ fn use_command(id: PlayerId, quick: bool, p: &serde_json::Value) -> Command {
     }
 }
 
+/// T99.04: the `id` a dev debug verb names, when it names one — a spectator directing a
+/// trailer shot acts on a bot rather than on its own (absent) body.
+fn promo_target(p: &serde_json::Value) -> Option<PlayerId> {
+    p.get("id")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| PlayerId::try_from(v).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T99.04: a debug verb's `id` names a player only when it is one — absent, or out of
+    /// a `PlayerId`'s range, it falls back to the asker rather than wrapping onto a stranger.
+    #[test]
+    fn promo_target_reads_an_id_and_refuses_one_out_of_range() {
+        assert_eq!(promo_target(&serde_json::json!({"id": 3})), Some(3));
+        assert_eq!(promo_target(&serde_json::json!({})), None);
+        let past = u64::from(PlayerId::MAX) + 1;
+        assert_eq!(promo_target(&serde_json::json!({"id": past})), None);
+    }
 
     #[test]
     fn names_are_trimmed_stripped_and_bounded() {

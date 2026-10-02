@@ -4556,6 +4556,13 @@ pub const BOT_OUT_OF_REACH_SCORE: f32 = 0.25;
 /// guard, or `zone_refusal`): a tenth — below any weapon that could fire (T22.03C: scored on
 /// distance only, bots held an unthrowable molotov 4.7 % of their lives).
 pub const BOT_REFUSED_SCORE: f32 = 0.1;
+/// T99.04 (promo, `DEV_BOT_ARSENAL`): seconds a bot holds each weapon of its rotation
+/// before switching to the next. Short enough that a five-second shot shows switching,
+/// long enough that each weapon gets a few trigger pulls.
+pub const BOT_ARSENAL_ROTATE: f32 = 2.0;
+/// T99.04 (promo, `World::dev_spawn_fauna`): px between the animals it stands on one
+/// hillside — a body and a hop apart, so a crowd reads as a crowd and not a pile.
+pub const DEV_FAUNA_SPACING: f32 = 48.0;
 
 // ---- v7 amendments ----  mirrors docs/75-amendments-v7.md
 

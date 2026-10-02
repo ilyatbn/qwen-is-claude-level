@@ -295,6 +295,27 @@ pub struct BirdKill {
 }
 
 impl Birds {
+    /// T99.04 (promo, dev only): a new bird at `at`, flying `right` or left, as though it
+    /// had flown in. Its id is fresh and the caller announces it. Draws nothing from the
+    /// stream, so the natural cadence after it is the one it would have been.
+    pub fn launch_at(&mut self, kind: BirdKind, at: Vec2, right: bool, now: f32) -> BirdId {
+        let id = self.next_id;
+        self.next_id += 1;
+        let speed = kind.speed();
+        self.birds.push(Bird {
+            id,
+            kind,
+            pos: at,
+            base_y: at.y,
+            vx: if right { speed } else { -speed },
+            spawned_at: now,
+            health: kind.health(),
+        });
+        id
+    }
+}
+
+impl Birds {
     /// Test seam: put a known bird at a known place.
     ///
     /// The natural spawn enters off the edge of the map and takes most of a

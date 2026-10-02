@@ -206,7 +206,13 @@ pub enum Command {
     },
     /// Test and debug hook: run `f` against the world between ticks.
     Inspect(Box<dyn FnOnce(&mut World) + Send>),
+    /// T99.04 (dev only): `Inspect` with the room's bots beside the world — a staged
+    /// trailer shot anchors one (`Bot::anchor_until`).
+    InspectBots(BotsProbe),
 }
+
+/// `Command::InspectBots`'s closure (T99.04).
+pub type BotsProbe = Box<dyn FnOnce(&mut World, &mut [Bot]) + Send>;
 
 /// Hand-written because `Inspect` holds a closure. Kept because a dropped command
 /// is logged, and a log line reading `Input(3)` is worth more than `<command>`.
@@ -248,6 +254,7 @@ impl std::fmt::Debug for Command {
             Command::SetMapShape { by, shape, .. } => write!(f, "SetMapShape({by}, {shape:?})"),
             Command::LobbyRead { .. } => f.write_str("LobbyRead"),
             Command::Inspect(_) => f.write_str("Inspect"),
+            Command::InspectBots(_) => f.write_str("InspectBots"),
         }
     }
 }
@@ -394,6 +401,21 @@ impl RoomHandle {
         self.tx
             .send(Command::Inspect(Box::new(move |w| {
                 let _ = tx.send(f(w));
+            })))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// T99.04 (dev only): `inspect`, with the room's bots as well as its world.
+    pub async fn inspect_bots<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut World, &mut [Bot]) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::InspectBots(Box::new(move |w, b| {
+                let _ = tx.send(f(w, b));
             })))
             .await
             .ok()?;
@@ -1576,7 +1598,8 @@ impl Room {
             self.seats.mark_ready(id);
             self.bots.push(
                 Bot::new(id, seed, index, self.config.bot_skill)
-                    .frenzied(self.config.dev_bot_frenzy),
+                    .frenzied(self.config.dev_bot_frenzy)
+                    .arsenal(self.config.dev_bot_arsenal),
             );
             self.grant_dev_loadout(id);
             self.grant_start_kit(id);
@@ -1606,13 +1629,7 @@ impl Room {
             return;
         }
         // Independent of the loadout: a check may want one without the other.
-        if self.config.dev_start_health > 0.0 {
-            if let Some(w) = self.world.as_mut() {
-                if let Some(p) = w.player_mut(id) {
-                    p.health = self.config.dev_start_health;
-                }
-            }
-        }
+        self.apply_dev_health(id);
         // Also independent, and also not gated on the loadout: §C8's bar colour
         // is what this is for, and it has nothing to do with weapons.
         if self.config.dev_poisoned {
@@ -1706,6 +1723,20 @@ impl Room {
             (game_core::items::registry::LASER_PISTOL, 1),
         ];
         self.give_all(id, &items);
+    }
+
+    /// Development only (`DEV_START_HEALTH`): the health a life starts on.
+    ///
+    /// T99.04: called at join **and on every respawn** — `grant_dev_loadout` is not on
+    /// the respawn path, so until this moved here a promo's 1000-health bots were
+    /// 1000 for their first life and `BASE_HEALTH` for every one after.
+    fn apply_dev_health(&mut self, id: PlayerId) {
+        if self.config.dev_start_health <= 0.0 {
+            return;
+        }
+        if let Some(p) = self.world.as_mut().and_then(|w| w.player_mut(id)) {
+            p.health = self.config.dev_start_health;
+        }
     }
 
     /// Development only (`DEV_START_BATTERY`, T22.09C): overwrite the suit battery.
@@ -2313,6 +2344,11 @@ impl Room {
                     f(world)
                 }
             }
+            Command::InspectBots(f) => {
+                if let Some(world) = self.world.as_mut() {
+                    f(world, &mut self.bots)
+                }
+            }
         }
     }
 
@@ -2881,6 +2917,7 @@ impl Room {
             });
             self.grant_start_kit(id);
             self.apply_dev_battery(id);
+            self.apply_dev_health(id);
         }
 
         // A state hash every CHECKPOINT_STRIDE ticks, so a failed verification can
@@ -4967,6 +5004,97 @@ mod tests {
         assert!(
             announced,
             "the respawn granted the kit and sent no `inventory` — the client shows an empty bag"
+        );
+    }
+
+    /// T99.04: **`InspectBots` hands the closure the room's own bots** — every seated bot,
+    /// counted against the seats marked bot, and an anchor set through it is the one the
+    /// next `drive` reads. Without a world (the control) the closure never runs, as
+    /// `Inspect`'s does not.
+    #[test]
+    fn inspect_bots_reaches_every_seated_bot() {
+        let cfg = Arc::new(Config {
+            bot_count: 2,
+            map_scale: game_core::constants::MapScale::Small,
+            weather_mode: game_core::world::WeatherMode::Off,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<PlayerId>>();
+        let ask = |tx: std::sync::mpsc::Sender<Vec<PlayerId>>| {
+            Command::InspectBots(Box::new(move |_w, bots| {
+                for b in bots.iter_mut() {
+                    b.anchor_until(f32::MAX);
+                }
+                let _ = tx.send(bots.iter().map(|b| b.player).collect());
+            }))
+        };
+        room.apply(ask(tx.clone()));
+        assert!(rx.try_recv().is_err(), "the control: it ran with no world");
+        let id = join(&mut room, "ana");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        room.apply(Command::Ready(id, true));
+        room.tick_inline(SIM_DT);
+        room.apply(ask(tx));
+        let got = rx.try_recv().expect("the closure did not run");
+        let seated: Vec<PlayerId> = room
+            .seats
+            .seats
+            .iter()
+            .filter(|s| s.bot)
+            .map(|s| s.id)
+            .collect();
+        assert!(!seated.is_empty(), "precondition: no bots were seated");
+        assert_eq!(
+            got, seated,
+            "the bots handed over are not the room's seated bots"
+        );
+    }
+
+    /// T99.04: **`DEV_START_HEALTH` holds for every life, not the first.** The respawn path
+    /// never called `grant_dev_loadout`, so a promo's 1000-health bot came back on
+    /// `BASE_HEALTH`. The join's health is the control: it was always applied there.
+    #[test]
+    fn dev_start_health_survives_a_respawn() {
+        let start = game_core::constants::BASE_HEALTH * 10.0;
+        let cfg = Arc::new(Config {
+            bot_count: 0,
+            map_scale: game_core::constants::MapScale::Small,
+            weather_mode: game_core::world::WeatherMode::Off,
+            dev_start_health: start,
+            ..Config::default()
+        });
+        let mut room = Room::new(cfg);
+        let id = join(&mut room, "ana");
+        room.request_start();
+        room.tick_inline(SIM_DT);
+        room.apply(Command::Ready(id, true));
+        room.tick_inline(SIM_DT);
+        let health = |room: &mut Room| room.world_for_test().player(id).map(|p| p.health);
+        let first = health(&mut room).expect("seated");
+        assert!(
+            first > game_core::constants::BASE_HEALTH,
+            "the control: the join did not apply it ({first})"
+        );
+        let now = room.world_for_test().round_time;
+        room.world_for_test()
+            .player_mut(id)
+            .expect("seated")
+            .die(game_core::player::state::DeathCause::Weather, now);
+        let mut back = None;
+        for _ in 0..((game_core::constants::RESPAWN_DELAY + 2.0) / SIM_DT) as usize {
+            room.tick_inline(SIM_DT);
+            let alive = room.world_for_test().player(id).is_some_and(|p| p.alive);
+            if alive {
+                back = health(&mut room);
+                break;
+            }
+        }
+        let back = back.expect("never respawned");
+        assert!(
+            back > game_core::constants::BASE_HEALTH,
+            "the respawn came back on {back}, not DEV_START_HEALTH"
         );
     }
 

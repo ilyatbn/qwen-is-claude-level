@@ -3528,6 +3528,81 @@ impl World {
         Some(at)
     }
 
+    /// T99.04 (promo, dev only): `spiders`, `beetles` and `birds` around column `x` — the
+    /// animals standing on the ground `DEV_FAUNA_SPACING` apart, the birds above them
+    /// flying alternately right and left — announced as every natural spawn is, so the
+    /// clients draw them. Returns how many of each were placed (an animal needs ground in
+    /// its column). Nothing in a real round calls it: the trailer's last shot is every
+    /// creature on one hillside, and the natural cadence is one every `ANIMAL_INTERVAL`.
+    #[doc(hidden)]
+    pub fn dev_spawn_fauna(
+        &mut self,
+        x: f32,
+        spiders: u32,
+        beetles: u32,
+        birds: u32,
+    ) -> (u32, u32, u32) {
+        use crate::constants::{BIRD_ALTITUDE_ABOVE_MIN, DEV_FAUNA_SPACING};
+        let now = self.round_time;
+        let tick = self.tick + 1;
+        let ground = |map: &crate::map::Map, at: f32| -> Option<f32> {
+            let col = at as i32;
+            if col < 0 || col >= map.mask.w as i32 {
+                return None;
+            }
+            (0..map.mask.h as i32)
+                .find(|y| map.mask.get(col, *y))
+                .map(|y| y as f32)
+        };
+        let kinds: Vec<AnimalKind> = (0..spiders)
+            .map(|_| AnimalKind::Spider)
+            .chain((0..beetles).map(|_| AnimalKind::Beetle))
+            .collect();
+        let half = kinds.len() as f32 / 2.0;
+        let (mut placed_s, mut placed_b) = (0u32, 0u32);
+        for (i, kind) in kinds.iter().enumerate() {
+            let at_x = x + (i as f32 - half) * DEV_FAUNA_SPACING;
+            let Some(top) = ground(&self.map, at_x) else {
+                continue;
+            };
+            let (_, h) = kind.size();
+            let at = Vec2::new(at_x, top - h / 2.0);
+            let id = self.animals.place_for_test(*kind, at, now);
+            match kind {
+                AnimalKind::Spider => placed_s += 1,
+                AnimalKind::Beetle => placed_b += 1,
+            }
+            self.events.push(GameEvent::AnimalSpawn {
+                tick,
+                id,
+                kind: kind.to_u8(),
+                x: at.x,
+                y: at.y,
+                right: i % 2 == 0,
+            });
+        }
+        let mut placed_birds = 0u32;
+        for i in 0..birds {
+            let at_x = x + (i as f32 - birds as f32 / 2.0) * DEV_FAUNA_SPACING * 2.0;
+            let Some(top) = ground(&self.map, at_x) else {
+                continue;
+            };
+            let at = Vec2::new(at_x, top - BIRD_ALTITUDE_ABOVE_MIN);
+            let right = i % 2 == 0;
+            let id = self.birds.launch_at(BirdKind::Normal, at, right, now);
+            placed_birds += 1;
+            self.events.push(GameEvent::BirdSpawn {
+                tick,
+                id,
+                kind: BirdKind::Normal.to_u8(),
+                x: at.x,
+                y: at.y,
+                right,
+            });
+        }
+        (placed_s, placed_b, placed_birds)
+    }
+
     /// Test seam: start `kind` now, through the same install the scheduler uses.
     ///
     /// The sandbox's weather controls and the effect tests both need to say
@@ -8754,6 +8829,56 @@ mod birds_in_a_round {
         assert!(
             !w.birds.is_empty(),
             "a second into a live round and the sky is empty"
+        );
+    }
+
+    /// T99.04: **`dev_spawn_fauna` puts a crowd on the ground and in the air, and the
+    /// clients are told.** Counted at both ends — the world's populations against the
+    /// spawn events — and the animals are still standing a second later (on the ground,
+    /// not fallen through it). The control is the same world without the call: the
+    /// natural cadence has not grown a crowd that size in the same second.
+    #[test]
+    fn dev_spawn_fauna_places_a_crowd_and_announces_it() {
+        let (spiders, beetles, birds) = (3, 3, 2);
+        let mut control = world();
+        run(&mut control, 1.0);
+        assert!(
+            control.animals.len() < (spiders + beetles) as usize,
+            "the control: the round grew {} animals unaided",
+            control.animals.len()
+        );
+
+        let mut w = world();
+        let _ = w.drain_events();
+        let (before_a, before_b) = (w.animals.len(), w.birds.len());
+        let x = w.map.mask.w as f32 / 2.0;
+        let placed = w.dev_spawn_fauna(x, spiders, beetles, birds);
+        assert_eq!(placed, (spiders, beetles, birds), "a column had no ground");
+        let events = w.drain_events();
+        let told_a = events
+            .iter()
+            .filter(|e| matches!(e, GameEvent::AnimalSpawn { .. }))
+            .count();
+        let told_b = events
+            .iter()
+            .filter(|e| matches!(e, GameEvent::BirdSpawn { .. }))
+            .count();
+        assert_eq!(
+            w.animals.len() - before_a,
+            told_a,
+            "animals placed against animals announced"
+        );
+        assert_eq!(
+            w.birds.len() - before_b,
+            told_b,
+            "birds placed against birds announced"
+        );
+        assert_eq!(told_a, (spiders + beetles) as usize);
+        assert_eq!(told_b, birds as usize);
+        run(&mut w, 1.0);
+        assert!(
+            w.animals.len() >= (spiders + beetles) as usize,
+            "the crowd fell out of the world within a second"
         );
     }
 

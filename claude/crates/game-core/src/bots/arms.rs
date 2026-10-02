@@ -572,6 +572,8 @@ impl Bot {
         // firable (measured, 8 seeds). The swing is for point blank.
         let mut any_ranged: Option<(f32, u8)> = None;
         let mut melee_reach = 0.0f32;
+        // T99.04 (promo): every ranged slot in its band, in slot order, for the rotation.
+        let mut band: Vec<u8> = Vec::new();
         for slot in 0..INVENTORY_SLOTS as u8 {
             let Some(stack) = me.inventory.slot(slot) else {
                 continue;
@@ -645,6 +647,17 @@ impl Bot {
             if in_band && best_ranged.is_none_or(|(bs, _)| score > bs) {
                 best_ranged = Some((score, slot));
             }
+            if in_band {
+                band.push(slot);
+            }
+        }
+        // T99.04 (promo, `DEV_BOT_ARSENAL`): not the best weapon but the one this bot's
+        // turn in the rotation names — still only from the band, so nothing it would
+        // refuse to fire or could not reach.
+        if let (Some(offset), false) = (self.arsenal, band.is_empty()) {
+            let turn = (world.round_time / crate::constants::BOT_ARSENAL_ROTATE).max(0.0) as usize;
+            let slot = band[(turn + offset as usize) % band.len()];
+            return (slot != me.inventory.selected()).then_some(slot);
         }
         // T23.26D item 2: a ranged weapon that can fire from here beats any swing.
         let point_blank = dist <= melee_reach;
@@ -1337,6 +1350,68 @@ mod tests {
                 "{mode:?}: enemy {dist:.0} px off, inside the {reach:.0} px flame stand-off"
             );
         }
+    }
+
+    /// T99.04: **`DEV_BOT_ARSENAL` rotates the weapon in hand, and offsets it by seat.**
+    /// Three guns in the band at mid range. The control is the same bot with the
+    /// rotation off: one weapon, whatever the clock says. With it on, every gun of the
+    /// three comes round, and two bots seated next to each other never hold the same
+    /// one at the same moment.
+    #[test]
+    fn the_arsenal_rotation_cycles_the_band_and_offsets_each_bot() {
+        use crate::constants::{MapScale, BOT_ARSENAL_ROTATE};
+        use crate::items::registry::{MACHINEGUN, SMG};
+        let mut w = World::with_gravity(
+            SEED,
+            MapScale::Small,
+            0,
+            crate::constants::DEFAULT_MAP_GENERATOR,
+            GravityMode::Standard,
+        );
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        for item in [PISTOL, SMG, MACHINEGUN] {
+            let max = crate::items::registry::def(item).expect("def").max_stack;
+            give(&mut w, 1, item, max);
+        }
+        let me = w.player(1).expect("bot").clone();
+        let pistol = crate::weapons::defs::def(
+            match crate::items::registry::def(PISTOL).expect("def").kind {
+                ItemKind::Weapon(wid) => wid,
+                _ => panic!("the pistol is not a weapon"),
+            },
+        )
+        .expect("pistol def");
+        let target = me.body.pos + Vec2::new(pistol.range * 0.5, 0.0);
+        let held = |b: &Bot, w: &World| {
+            let slot = b
+                .choose_weapon(w, &me, target, me.body.pos)
+                .unwrap_or(me.inventory.selected());
+            me.inventory.slot(slot).map(|s| s.item)
+        };
+        let turns = 6;
+        let mut plain = std::collections::BTreeSet::new();
+        let mut rotated = std::collections::BTreeSet::new();
+        for k in 0..turns {
+            w.round_time = (k as f32 + 0.5) * BOT_ARSENAL_ROTATE;
+            plain.insert(held(&Bot::new(1, SEED, 0, 1.0), &w));
+            let (a, b) = (
+                held(&Bot::new(1, SEED, 0, 1.0).arsenal(true), &w),
+                held(&Bot::new(1, SEED, 1, 1.0).arsenal(true), &w),
+            );
+            assert_ne!(a, b, "two seats held the same weapon at turn {k}");
+            rotated.insert(a);
+        }
+        assert_eq!(
+            plain.len(),
+            1,
+            "the control: a real bot changed weapon with the clock: {plain:?}"
+        );
+        assert_eq!(
+            rotated.len(),
+            3,
+            "the rotation did not come round to every gun: {rotated:?}"
+        );
     }
 
     /// T21.43: **a bot riding a gun platform fires it** — a stream at the

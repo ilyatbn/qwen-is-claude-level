@@ -208,6 +208,12 @@ pub fn drive(world: &mut World, bots: &mut [Bot], now: f32, dt: f32) -> Vec<Driv
             fired: None,
         })
         .collect();
+    // T99.04: an anchored bot keeps its aim and its trigger and nothing else.
+    for (d, b) in out.iter_mut().zip(bots.iter()) {
+        if now < b.anchored_until {
+            d.input.buttons &= button::FIRE;
+        }
+    }
     for d in &out {
         world.queue_input(d.player, d.input);
     }
@@ -338,6 +344,16 @@ pub struct Bot {
     /// T99.01 (promo only): the enemy search has no range and nobody flees — the
     /// server's `DEV_BOT_FRENZY`. Off unless `frenzied` sets it.
     frenzy: bool,
+    /// T99.04 (promo, `DEV_BOT_ARSENAL`): this bot's place in the weapon rotation, or
+    /// `None` to hold its best weapon as every real bot does (`choose_weapon`).
+    arsenal: Option<u32>,
+    /// The seat order `new` was given — the rotation's offset, so no two bots hold
+    /// the same weapon at the same moment.
+    index: u32,
+    /// T99.04 (promo, dev only): round time before which this bot does not move —
+    /// it still aims and fires (`drive`). How a trailer keeps a bot on the underside
+    /// of a rock or standing on a teleport pad long enough to charge it.
+    anchored_until: f32,
 }
 
 impl Bot {
@@ -394,6 +410,9 @@ impl Bot {
             escape_to: None,
             stats: BotStats::default(),
             frenzy: false,
+            arsenal: None,
+            index,
+            anchored_until: f32::NEG_INFINITY,
         }
     }
 
@@ -403,6 +422,19 @@ impl Bot {
     pub fn frenzied(mut self, on: bool) -> Self {
         self.frenzy = on;
         self
+    }
+
+    /// T99.04: cycle the ranged weapons in the bag, `BOT_ARSENAL_ROTATE` seconds each,
+    /// offset by seat — a trailer's "every weapon at once". Promo only (`DEV_BOT_ARSENAL`).
+    pub fn arsenal(mut self, on: bool) -> Self {
+        self.arsenal = on.then_some(self.index);
+        self
+    }
+
+    /// T99.04: hold still until round time `t` — aim and fire, no movement (`drive`).
+    /// Dev only, for a trailer's staged shot.
+    pub fn anchor_until(&mut self, t: f32) {
+        self.anchored_until = t;
     }
 
     /// T23.26E: the same bot without its fight strafe — the strafe test's control.
@@ -1565,6 +1597,64 @@ mod tests {
             }
         }
         panic!("no clear 260 px span on this map; the fixture is wrong, not the bot");
+    }
+
+    /// T99.04: **an anchored bot fights where it stands.** A bot with a pistol and an
+    /// enemy down a flat shelf: anchored, it sends no movement bit and does not drift,
+    /// and it still pulls the trigger — the half that makes it a shot worth staging. The
+    /// control is the same fixture unanchored: it moves.
+    #[test]
+    fn an_anchored_bot_fires_without_moving_and_an_unanchored_one_moves() {
+        let run = |anchored: bool| {
+            let mut w = world_with(&[1, 2]);
+            let at = clear_line(&w);
+            let y = flat_shelf(&mut w, at, 240);
+            let gap = 180.0;
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = Vec2::new(at.x, y);
+            }
+            give(&mut w, 1, PISTOL, crate::constants::PISTOL_AMMO);
+            wield(&mut w, 1, PISTOL);
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            let ticks = 240;
+            if anchored {
+                b.anchor_until(ticks as f32 * SIM_DT);
+            }
+            let start = w.player(1).expect("bot").body.pos;
+            let (mut moved_bits, mut fires) = (0u32, 0u32);
+            for t in 0..ticks {
+                if let Some(p) = w.player_mut(2) {
+                    p.body.pos = Vec2::new(at.x + gap, y);
+                    p.body.vel = Vec2::ZERO;
+                    p.health = crate::constants::BASE_HEALTH;
+                }
+                let d = drive(
+                    &mut w,
+                    std::slice::from_mut(&mut b),
+                    t as f32 * SIM_DT,
+                    SIM_DT,
+                )[0];
+                if d.input.buttons & !button::FIRE != 0 {
+                    moved_bits += 1;
+                }
+                if d.fired.is_some() {
+                    fires += 1;
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+            }
+            let drift = (w.player(1).expect("bot").body.pos.x - start.x).abs();
+            (moved_bits, drift, fires)
+        };
+        let (bits, drift, fires) = run(true);
+        assert_eq!(bits, 0, "an anchored bot pressed a movement button");
+        assert!(drift < 1.0, "an anchored bot drifted {drift:.1} px");
+        assert!(fires > 0, "an anchored bot never fired");
+        let (bits, drift, _) = run(false);
+        assert!(
+            bits > 0 && drift >= 1.0,
+            "the control: a free bot did not move ({bits} ticks, {drift:.1} px)"
+        );
     }
 
     pub(super) fn world_with(ids: &[PlayerId]) -> World {
