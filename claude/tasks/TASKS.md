@@ -876,6 +876,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.30](M23/T23.30-map-shapes.md) — Map shapes: random (today's), hill, mostly flat, multilevel (paired pads, meteors top / toxic clouds bottom), islands in the clouds
 - [ ] [T23.31](M23/T23.31-the-volcanic-world.md) — The volcanic world: a second look picked at random per map (open list), F2's lava-cracked rock, a volcano background, tripod and octopus creatures
 - [ ] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner)
+- [ ] [T23.35](M23/T23.35-flash-and-camera-follow-ups.md) — A moving player's muzzle flash 87 px off his body; the camera eases per frame, not per second
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [ ] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
