@@ -39,6 +39,12 @@ export const DIRECTOR = {
       if (dir.frame % 3 === 1) {
         const d = g.debug()
         dir.fighters = d.stand.remotes.filter((r) => r.at).map((r) => ({ id: r.id, x: r.at.x, y: r.at.y, tilt: r.tilt }))
+        // The shake, measured: how far the drawn view sits from the rig's centre (the trauma offset).
+        if (d.worldView && d.cameraCentre) {
+          const wx = d.worldView.x + d.worldView.width / 2
+          const wy = d.worldView.y + d.worldView.height / 2
+          dir.shake = Math.max(dir.shake ?? 0, Math.hypot(wx - d.cameraCentre.x, wy - d.cameraCentre.y))
+        }
       }
       const lights = g.effectLights()
       const score = (x, y) => {
@@ -102,7 +108,8 @@ export const DIRECTOR = {
       if (dir.frame % 6 === 0) {
         const kinds = {}
         for (const l of lights) kinds[l.kind] = (kinds[l.kind] ?? 0) + 1
-        dir.log.push({ t: Date.now() / 1000, s: want ? +want.s.toFixed(2) : 0, id: want?.id ?? null, kinds })
+        dir.log.push({ t: Date.now() / 1000, s: want ? +want.s.toFixed(2) : 0, id: want?.id ?? null, kinds, shake: +(dir.shake ?? 0).toFixed(1) })
+        dir.shake = 0
       }
       requestAnimationFrame(step)
     }

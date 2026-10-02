@@ -69,4 +69,76 @@ export const SCENES = {
     // Take 12, 4.5 s in: blasts, a burst of fire, then the lasers cross — every kind in five seconds.
     cut: { dur: 5, in: 4.5 },
   },
+  scene3: {
+    // Space (`DEV_GRAVITY=space`; the map is the asteroid field, seed 7's measured below). Two bots stand on the
+    // **undersides** of the two big rocks (909,442 r99 and 603,480 r96), upside down, anchored and firing at the
+    // three below and beside them. The black hole is summoned on the far rock (1753,731), out of the fight's reach;
+    // at the cue a fourth bot is put just outside its horizon and the camera follows it in.
+    env: { ...ARMED, FIXED_SEED: '7', DEV_GRAVITY: 'space', WEATHER: 'off' },
+    director: 'busy',
+    zoom: 1.3,
+    seconds: 14,
+    stage: async (page) => {
+      const ids = await place(
+        page,
+        [[909, 555], [603, 590], [840, 688], [1132, 649], [1753, 640]],
+        14,
+      )
+      // The hole eats the rock nearest the last bot (the far one), then that bot is left where it stands.
+      await page.evaluate((id) => window.__game.debugBlackHole(undefined, false, id), ids[4])
+      await sleep(500)
+      const hole = (await debug(page)).blackHole.hole
+      console.log('hole:', JSON.stringify(hole))
+      return { focus: { x: 860, y: 600 }, hole, victim: ids[4] }
+    },
+    cues: [
+      {
+        at: 3.4,
+        what: 'pan to the black hole',
+        run: async (page) => {
+          const hole = (await debug(page)).blackHole.hole
+          await focus(page, { x: hole.x - 140, y: hole.y - 60 }, 0.06)
+        },
+      },
+      {
+        at: 4.8,
+        what: 'a bot at the horizon',
+        run: async (page) => {
+          const hole = (await debug(page)).blackHole.hole
+          const victim = (await server(page)).players.map((p) => p.id).sort((a, b) => a - b)[4]
+          // Three horizons out, held (anchored: no jet to escape on), so the pull drags it in over a second or two.
+          await page.evaluate(([x, y, id]) => window.__game.debugPlace(x, y, id, 6), [hole.x - 190, hole.y - 90, victim])
+        },
+      },
+      {
+        at: 10,
+        what: 'is the victim gone?',
+        run: async (page) => {
+          const p = (await server(page)).players
+          console.log('after the pull:', p.map((q) => `${q.id}${q.alive ? '' : '(dead)'}@${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(' '))
+        },
+      },
+    ],
+    caption: { text: 'SURVIVE THE HARSHNESS OF SPACE' },
+    // From the upside-down fight, the pan, to the bot dragged into the hole (~5–7 s into the take).
+    cut: { dur: 7, in: 0.3 },
+  },
+  scene2: {
+    // Seed 8 is volcanic. `WEATHER=meteor` keeps a shower falling (one every `METEOR_EVERY`), restarted the moment
+    // one ends; the camera shakes on every impact near it (`shakeOrigin`, doubled for the shot).
+    env: { ...ARMED, FIXED_SEED: '8', DEV_ROUND_CLOCK: '20', WEATHER: 'meteor' },
+    director: 'busy',
+    zoom: 1.2,
+    seconds: 30,
+    stage: async (page) => {
+      await page.evaluate(() => window.__game.setShakeScale(2))
+      // The flat between seed 8's two hills, x 480–800 (measured off the generated map).
+      await place(page, [[500, 770], [570, 770], [640, 768], [720, 665], [790, 745]], 4)
+      return { focus: { x: 650, y: 720 } }
+    },
+    cues: [{ at: 6, what: 'free the camera', run: (page) => focus(page, null) }],
+    caption: { text: 'FIGHT THROUGH DISASTERS ON DIFFERENT BIOMES' },
+    // Blasts (the meteors') carry it; fire on screen counts against a window (owner: fire is an accent).
+    cut: { dur: 5, weight: { explosion: 5, flame: -1.5 } },
+  },
 }
