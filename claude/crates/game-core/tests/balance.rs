@@ -1972,14 +1972,25 @@ const POOLED_DAMAGE_FLOOR: f32 = 4000.0;
 
 /// Seeds of eight the control must miss the sight floor on.
 ///
-/// **Measured at T23.26C step 6, `--release`:** the 2-seat control is under
-/// `SEED_LOS_FLOOR` on **7 of 8** seeds (2.3/0.4/4.4/1.7/1.3/3.0/1.3 %, seed 7 over it) —
-/// before routes it was all eight, and the test asked for all eight plus damage
-/// (`> SEEDS.len()` failures), so one pair of routed bots meeting on one seed turned it
-/// red (T23.26 step 4: a coin at the margin). Three in four is still a structural
-/// failure — no seed of the shipping six is under the floor — with a seed of margin
-/// from the measured seven.
-const CONTROL_SIGHT_FAILS_MIN: usize = 6;
+/// **Re-derived at T23.26F (`docs/78` §A6: bots seek each other). Measured over 96 seeds
+/// (`s × 7919`, s = 1..96) in twelve blocks of eight, `--release`:** the 2-seat control is
+/// under `SEED_LOS_FLOOR` on **69 of 96** seeds, **4–8 per block** (4/5/5/6/6/5/7/6/5/6/8/6);
+/// the shipping six on **0 of 96**. T23.26C's 6 was a coin on these bots (four of twelve
+/// blocks under it — the red that filed this). 2 is half the worst block: at the measured
+/// 72 % rate, eight seeds miss fewer than two about once in 1200.
+const CONTROL_SIGHT_FAILS_MIN: usize = 2;
+
+/// **What the control must prove: two players fight less than six** — the control's
+/// pooled sight share and pooled damage, each at most `1 / CONTROL_FIGHT_RATIO` of the
+/// shipping configuration's on the same seeds.
+///
+/// **Measured at T23.26F over 96 seeds in twelve blocks of eight, `--release`:** sight,
+/// shipping 75.6–82.7 % a block against the control's 4.8–20.2 % (worst block ratio
+/// **3.7x**); damage, shipping 16187–22882 a block against 2462–4172 (worst **3.9x**). The
+/// control's damage crossed `POOLED_DAMAGE_FLOOR` (4000) on two blocks, so "the control
+/// misses the damage floor" was a coin too. A ratio of 2 sits under the worst block by a
+/// factor of ~1.9 on both — not `control < ship` (T20.16: that passed at 6 against 7).
+const CONTROL_FIGHT_RATIO: f32 = 2.0;
 
 /// What the floors say, and which of them a configuration fails.
 ///
@@ -2140,22 +2151,34 @@ fn the_shipping_configuration_produces_a_fight() {
         "the {CONTROL_SEATS}-seat control cleared every floor the shipping \
          configuration cleared — the floors do not measure the change"
     );
-    // And it must fail *structurally*, not by one seed: a control that scrapes
-    // under one floor on one seed is the marginal shape all over again. The damage
-    // floor, and the sight floor on `CONTROL_SIGHT_FAILS_MIN` seeds (its doc has the
-    // measurement; T23.26C re-derived it from "all eight" once routed bots met).
+    // And it must fail *structurally*, not by one seed: the sight floor on
+    // `CONTROL_SIGHT_FAILS_MIN` seeds (its doc has the 96-seed measurement).
     let sight_fails = control_failed
         .iter()
         .filter(|f| f.starts_with("seed "))
         .count();
-    let damage_fails = control_failed
-        .iter()
-        .any(|f| f.starts_with("pooled damage"));
     assert!(
-        damage_fails && sight_fails >= CONTROL_SIGHT_FAILS_MIN,
+        sight_fails >= CONTROL_SIGHT_FAILS_MIN,
         "the control failed only {sight_fails} seeds' sight (wants {CONTROL_SIGHT_FAILS_MIN}) \
-         and the damage floor {damage_fails} ({control_failed:?}) — a control that barely \
-         fails is the marginal control T20.16 replaced"
+         ({control_failed:?}) — a control that barely fails is the marginal control T20.16 \
+         replaced"
+    );
+    // T23.26F: **two players fight less than six**, by a factor (`CONTROL_FIGHT_RATIO`).
+    // Bots that find each other met in the two-seat control often enough to cross the
+    // damage floor, so the floor alone no longer says the seats are what it measures.
+    let sight = |rs: &[Encounters]| {
+        rs.iter().map(|r| r.los_ticks as f32).sum::<f32>()
+            / rs.iter().map(|r| r.ticks as f32).sum::<f32>().max(1.0)
+    };
+    let dmg = |rs: &[Encounters]| rs.iter().map(|r| r.damage).sum::<f32>();
+    let (ship_sight, ctl_sight) = (sight(&ship), sight(&control));
+    let (ship_dmg, ctl_dmg) = (dmg(&ship), dmg(&control));
+    assert!(
+        ctl_sight * CONTROL_FIGHT_RATIO <= ship_sight && ctl_dmg * CONTROL_FIGHT_RATIO <= ship_dmg,
+        "two seats fought nearly as much as six: sight {:.1} % against {:.1} %, damage \
+         {ctl_dmg:.0} against {ship_dmg:.0} (each must be under 1/{CONTROL_FIGHT_RATIO})",
+        100.0 * ctl_sight,
+        100.0 * ship_sight
     );
 }
 
@@ -2180,6 +2203,7 @@ fn the_balance_floors_record_their_basis() {
         "SEED_LOS_FLOOR",
         "POOLED_DAMAGE_FLOOR",
         "CONTROL_SIGHT_FAILS_MIN",
+        "CONTROL_FIGHT_RATIO",
         // T20.26. Its basis is a quotation rather than a fresh measurement, and
         // `the_wait_ceiling_is_still_the_one_the_constant_records` guards the
         // quotation itself; this guards that the numbers behind it are written

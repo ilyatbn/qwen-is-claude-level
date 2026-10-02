@@ -12,10 +12,10 @@
 
 use super::nav::{Grid, Move, Progress, Search, Step, Want};
 use crate::constants::{
-    GravityMode, BOT_FLEE_COST_MAX, BOT_FLEE_GAIN, BOT_HIDE_COST_MAX, BOT_HIDE_KEEP_OFF,
-    BOT_NAV_CELL, BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX, BOT_NAV_NODES_PER_TICK,
-    BOT_NAV_RETRY, BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW, BOT_WANDER_ARRIVED,
-    JETPACK_DRAIN, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
+    GravityMode, BOT_FLEE_COST_MAX, BOT_FLEE_GAIN, BOT_GLIDE_UP_SHARE, BOT_HIDE_COST_MAX,
+    BOT_HIDE_KEEP_OFF, BOT_NAV_CELL, BOT_NAV_COST_MAX, BOT_NAV_FUEL_STEP, BOT_NAV_NODES_MAX,
+    BOT_NAV_NODES_PER_TICK, BOT_NAV_RETRY, BOT_NAV_STEP_SLACK, BOT_STUCK_PX, BOT_STUCK_WINDOW,
+    BOT_WANDER_ARRIVED, JETPACK_DRAIN, JETPACK_MAX_SPEED, JETPACK_MIN_FUEL_TO_ENGAGE, WALK_SPEED,
 };
 use crate::items::registry::SHOVEL;
 use crate::math::Vec2;
@@ -186,6 +186,10 @@ pub(super) struct Route {
     pub tank_replans: u32,
     /// Tests only: the tank rule planted out (`Bot::without_tank_rule`).
     pub tank_rule_off: bool,
+    /// T23.32: the glide's duty-cycle accumulator (`BOT_GLIDE_UP_SHARE`).
+    glide_phase: f32,
+    /// Tests only: the pre-T23.32 JUMP-alone glide on a jet step (`Bot::with_old_glide`).
+    pub glide_off: bool,
     /// Tests only: T23.26E step 4's open-ground pricing planted out
     /// (`Bot::without_open_ground`).
     pub open_ground_off: bool,
@@ -200,6 +204,18 @@ impl Route {
         self.next = 0;
         self.target = None;
         self.last_aim = None;
+    }
+
+    /// Tests only: follow `path` to `target` as though the planner had found it.
+    #[cfg(test)]
+    pub fn follow(&mut self, path: Vec<Step>, target: Target, carve_seq: u32, at: Vec2) {
+        self.clear();
+        self.path = path;
+        self.next = 1;
+        self.on_step = 0.0;
+        self.target = Some(target);
+        self.carve_seq = carve_seq;
+        self.last_pos = at;
     }
 
     /// Was `t` refused by the planner within `BOT_NAV_RETRY`?
@@ -450,7 +466,7 @@ impl Route {
     }
 
     fn buttons(
-        &self,
+        &mut self,
         grid: &Grid,
         me: &PlayerState,
         s: Step,
@@ -484,6 +500,7 @@ impl Route {
         };
         // Feet row against the step's: positive when the step is higher.
         let rise = here.map_or(0, |(_, y)| y - s.y);
+        let mut climbing = false;
         let mut out = NavStep {
             how: s.how,
             ..NavStep::default()
@@ -525,17 +542,39 @@ impl Route {
                 }
             }
             Move::Jet => {
-                out.buttons = toward;
-                // Hold the step's height by velocity, as a column is centred on: thrust up
-                // while rising slower than the gap asks, and let gravity settle the rest. A
-                // height switch (up under it, off over it) bobbed a body a cell either side
-                // of a level jet, and it never arrived. T23.32: a held JUMP alone climbs now
-                // (`jetpack::thrust_delta`), so "no push" is the pack let go, not JUMP
-                // without UP — the pack re-engages on the next airborne press.
+                // Hold the step's height by velocity, as a column is centred on. A height
+                // switch (up under it, off over it) bobbed a body a cell either side of a
+                // level jet, and it never arrived.
                 let want =
                     ((goal.y - pos.y) * CENTRE_GAIN).clamp(-JETPACK_MAX_SPEED, JETPACK_MAX_SPEED);
-                if me.body.vel.y > want + CENTRE_DEADBAND || me.body.grounded {
-                    out.buttons |= button::JUMP | button::UP;
+                if self.glide_off {
+                    // Tests only: the pre-T23.32 glide — JUMP held, UP added when falling
+                    // too fast. A held JUMP alone climbs since T23.32, so this rises.
+                    out.buttons = toward | button::JUMP;
+                    if me.body.vel.y > want + CENTRE_DEADBAND {
+                        out.buttons |= button::UP;
+                    }
+                } else {
+                    // (see `climbing` at the tank guard below)
+                    // T23.32 (holding Space flies up): **the pack stays held, and the old
+                    // glide is kept by duty cycle.** JUMP alone climbs now, as UP did, so the
+                    // climb arm is unchanged. The glide (JUMP alone was the pack with no push,
+                    // a fall at `JETPACK_GRAVITY_SCALE`) has no button of its own any more:
+                    // it is JUMP+DOWN (DOWN wins its axis) and JUMP alone, alternated so the
+                    // mean push is zero — `BOT_GLIDE_UP_SHARE` of the ticks climbing. Letting
+                    // the pack go instead fell at full gravity and re-lit it (96 seeds: air
+                    // 58 → 66 %, kills 12.5 → 10.8); DOWN alone fell at nearly the same rate.
+                    out.buttons = toward | button::JUMP;
+                    let climb = me.body.vel.y > want + CENTRE_DEADBAND || me.body.grounded;
+                    climbing = climb;
+                    if !climb {
+                        self.glide_phase += BOT_GLIDE_UP_SHARE;
+                        if self.glide_phase >= 1.0 {
+                            self.glide_phase -= 1.0;
+                        } else {
+                            out.buttons |= button::DOWN;
+                        }
+                    }
                 }
             }
             Move::Rest | Move::Teleport => {}
@@ -565,8 +604,12 @@ impl Route {
                 }
             }
         }
-        // Never hover a tank dry: below what starting the pack needs, let go and land.
-        if out.buttons & button::UP != 0 && me.jetpack.fuel < JETPACK_MIN_FUEL_TO_ENGAGE * 0.5 {
+        // Never hover a tank dry: below what starting the pack needs, let go and land. A
+        // climb (T23.32: a jet step's JUMP alone climbs too) — not the glide, which is the
+        // descent the tank is kept for.
+        if (out.buttons & button::UP != 0 || climbing)
+            && me.jetpack.fuel < JETPACK_MIN_FUEL_TO_ENGAGE * 0.5
+        {
             out.buttons &= !(button::UP | button::JUMP);
         }
         out

@@ -898,3 +898,81 @@ fn over_a_wall_the_high_arc_is_fired() {
         "control: the low arc cleared a {wall:.0} px wall ({flat:.0} px off) — the fixture"
     );
 }
+
+/// **T23.32: a gap is jetted across at level height, the pack held.** Holding Space flies
+/// up since T23.32, and the follower's level jet glided on JUMP alone. Two ledges at one
+/// height, a pit `GAP` cells wide and twenty deep between them, and the bot in the air at
+/// the near edge following a route of `Jet` steps along that row (the planner's "across in
+/// the air on the pack" — the follower is what is under test, so the route is given). It
+/// stays within `BAND` cells of the row, the pack is lit once — no on/off pulsing — and it
+/// arrives. Control: the pre-T23.32 glide (`with_old_glide`) climbs out of the band.
+#[test]
+fn a_gap_is_jetted_across_at_level_height_without_pulsing() {
+    use super::nav::{Move, Step};
+    const GAP: i32 = 16;
+    const BAND: f32 = 3.0;
+    let run = |old: bool| {
+        let (mut w, ox, oy) = block(MapScale::Small, 48, 40);
+        let row = oy + 14;
+        fill(&mut w, ox + 1, oy + 1, ox + 46, row, false);
+        let (x0, x1) = (ox + 16, ox + 16 + GAP - 1);
+        fill(&mut w, x0, row + 1, x1, row + 20, false);
+        seal(&mut w);
+        let start = stand_at(x0, row);
+        let _ = scenario(&mut w, (x0, row), (x1 + 12, row));
+        // In the air over the pit, past coyote time: a press is the pack, not a jump.
+        if let Some(p) = w.player_mut(1) {
+            p.body.grounded = false;
+            p.body.airborne_ticks = 100;
+        }
+        let mut b = Bot::new(1, SEED, 0, 0.6);
+        if old {
+            b = b.with_old_glide();
+        }
+        let fuel = w.player(1).expect("bot").jetpack.fuel;
+        let path: Vec<Step> = (x0..=x1 + 1)
+            .map(|x| Step {
+                x,
+                y: row,
+                how: if x == x0 { Move::Start } else { Move::Jet },
+                cost: super::nav::JET_S,
+                fuel,
+            })
+            .collect();
+        let end = stand_at(x1 + 1, row);
+        let target = super::route::item_target(end);
+        let seq = w.carve_seq();
+        b.route.follow(path, target, seq, start);
+        let (mut band, mut lit, mut was, mut arrived) = (0.0f32, 0u32, false, false);
+        for t in 0..((SCENARIO_S * SIM_HZ as f32) as u32) {
+            let now = t as f32 * SIM_DT;
+            let me = w.player(1).expect("bot").clone();
+            let step = b
+                .route
+                .step(&w, &me, target, true, now, SIM_DT, &mut 0)
+                .map_or(0, |n| n.buttons);
+            w.queue_input(1, crate::player::input::Input::new(t + 1, step, 0));
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+            let p = w.player(1).expect("bot");
+            band = band.max((start.y - p.body.pos.y).abs() / BOT_NAV_CELL);
+            lit += u32::from(p.jetpack.active && !was);
+            was = p.jetpack.active;
+            if (p.body.pos - end).len() < BOT_NAV_CELL {
+                arrived = true;
+                break;
+            }
+        }
+        (arrived, band, lit)
+    };
+    let (arrived, band, lit) = run(false);
+    assert!(
+        arrived && band <= BAND && lit <= 1,
+        "level jet: arrived {arrived}, {band:.1} cells off the row, pack lit {lit} times"
+    );
+    let (_, band, _) = run(true);
+    assert!(
+        band > BAND,
+        "control: the JUMP-alone glide held the row ({band:.1} cells off) — the fixture"
+    );
+}

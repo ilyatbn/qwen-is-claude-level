@@ -450,6 +450,13 @@ impl Bot {
         self
     }
 
+    /// T23.32: the same bot gliding a jet step on JUMP alone, as before Space flew up.
+    #[cfg(test)]
+    pub(crate) fn with_old_glide(mut self) -> Self {
+        self.route.glide_off = true;
+        self
+    }
+
     /// T23.26C: the same bot with the follower's tank rule planted out — its control.
     #[cfg(test)]
     pub(crate) fn without_tank_rule(mut self) -> Self {

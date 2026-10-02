@@ -4371,6 +4371,12 @@ pub const BOT_PAD_RIDE_S: f32 = BOT_WANDER_GIVE_UP + TELEPORT_CHARGE;
 /// goes to where it heard one (`Bot::choose_goal`). Hearing, not seeing: §A5's fairness —
 /// a bot knows only what a player at its seat could.
 pub const BOT_HEAR_RANGE: f32 = FOV_DAY;
+/// T23.32 (holding Space flies up): the share of a gliding jet step's ticks a bot holds
+/// JUMP alone (a climb, `JETPACK_THRUST_UP`) rather than JUMP+DOWN (`JETPACK_THRUST_DOWN`),
+/// so the mean push is zero and the body falls at the pack's `JETPACK_GRAVITY_SCALE`, as
+/// JUMP alone did before T23.32: `p·UP = (1 − p)·DOWN` ⇒ `p = DOWN / (UP + DOWN)` ≈ 0.29.
+/// Both pushes carry the same mode scale, so it holds in low gravity too.
+pub const BOT_GLIDE_UP_SHARE: f32 = JETPACK_THRUST_DOWN / (JETPACK_THRUST_UP + JETPACK_THRUST_DOWN);
 /// T23.26F (`docs/78` §A6, *"stop shoveling"*): how far an **unarmed** bot sees a ranged
 /// weapon on the ground, px — a person's day sight (`FOV_DAY`), past `BOT_ENGAGE_RANGE`:
 /// the one errand that beats closing on an enemy with the shovel is going to get a gun,

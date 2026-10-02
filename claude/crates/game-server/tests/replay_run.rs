@@ -577,7 +577,12 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     //
     // A plateau, not a spike: the two neighbours of the chosen margin both read
     // 19/20, so this is not perched on one lucky window.
-    const MARGIN: u32 = SIM_HZ;
+    //
+    // **Re-measured at T23.26F/T23.32** (the bots glide differently; the recorded player
+    // now lives to the end, `last_alive = 1400`): margin 0 → 7/20, SIM_HZ/2 → 6/20,
+    // **SIM_HZ → 3/20** (ticks 1324..1340 wash out, a contiguous pocket — red), 1.5 × SIM_HZ
+    // → 10/20, **2 × SIM_HZ → 20/20**, 3 × SIM_HZ → 20/20. Moved to the plateau's start.
+    const MARGIN: u32 = 2 * SIM_HZ;
     let cut = rec.last_alive.saturating_sub(MARGIN);
 
     // **The precondition, asserted rather than arranged.** Without this the
