@@ -428,7 +428,10 @@ mod tests {
         let mut s = JetpackState::default();
         for tick in 0..=HOLD_DELAY_TICKS * 3 {
             update(&mut s, &grounded(), true, tick == 0, false, SIM_DT);
-            assert!(!s.active, "a hold that never jumped engaged on the ground at tick {tick}");
+            assert!(
+                !s.active,
+                "a hold that never jumped engaged on the ground at tick {tick}"
+            );
         }
         // Control: the hold launches a jump, lands, keeps holding.
         let mut c = JetpackState::default();
@@ -436,7 +439,10 @@ mod tests {
         for _ in 0..=HOLD_DELAY_TICKS {
             update(&mut c, &grounded(), true, false, false, SIM_DT);
         }
-        assert!(c.active, "control: a hold after its own jump did not engage on the ground");
+        assert!(
+            c.active,
+            "control: a hold after its own jump did not engage on the ground"
+        );
     }
 
     #[test]
