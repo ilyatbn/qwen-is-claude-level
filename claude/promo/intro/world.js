@@ -431,7 +431,7 @@ export const dustSeed = (() => { const r = rng(41); return Array.from({ length: 
 export const breath = points(260, 0x7a2ab8, 0.12)
 export const breathSeed = (() => { const r = rng(51); return Array.from({ length: 260 }, () => [r(), r(), r()]) })()
 
-// --- post: bloom, then a grade with chromatic split, grain, vignette, flash ------------------
+// --- post: bloom, then a grade with chromatic split, vignette, flash (no grain — owner) ------------------
 export const composer = new EffectComposer(renderer)
 composer.setSize(W, H)
 composer.addPass(new RenderPass(scene, camera))
@@ -450,7 +450,7 @@ export const grade = new ShaderPass({
       vec3 c = vec3(texture2D(tDiffuse, uv + d).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - d).b);
       float v = smoothstep(1.05, 0.35, length((vUv - 0.5) * vec2(1.1, 1.0)));
       c *= mix(0.55, 1.0, v);
-      c += (h(vUv * 1000.0) - 0.5) * 0.05;
+      // Film grain removed (owner, 2026-10-02).
       c = mix(c, vec3(1.0), uFlash);
       gl_FragColor = vec4(c * uFade, 1.0);
     }`,
