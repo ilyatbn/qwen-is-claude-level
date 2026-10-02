@@ -50,6 +50,11 @@ export interface FxFeed {
    * scene each frame from `sceneDarkness`. What the furniture's night halo fades with (`furniture.ts::nightHalo`).
    */
   night: number
+  /**
+   * T23.31: which animals live in this scene's world (`worlds.ts::Fauna`) — set by the world renderer from its
+   * description (`SceneDescription.fauna`), read by the animal layer (`render/animals.ts`).
+   */
+  fauna: 'classic' | 'volcanic'
   /** e2e (T23.10): something reads the world canvas every frame (`render/ordnanceWatch.ts`) — draw every frame. */
   keepDrawing: boolean
   /**
@@ -66,7 +71,7 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, keepDrawing: false }
+    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, fauna: 'classic', keepDrawing: false }
     feeds.set(scene, f)
   }
   return f

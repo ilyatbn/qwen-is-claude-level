@@ -72,8 +72,36 @@ export const SPIDER_ART_W = 12.5
  */
 export const ANIMAL_LIT_PER_S = 2 / 3
 
-/** A ground animal whose hit box (`w` × `h`) is centred on (x, y), facing right or left, at the scene's `night` (0–1). */
-export function animalActor(kind: number, x: number, y: number, right: boolean, w: number, h: number, night: number): Actor {
+/**
+ * T23.31: the volcanic world's animals on the same wire kinds (§A7: a look picks *which* animals, the simulation keeps
+ * its two): the beetle's place is the **tripod walker**'s, the spider's the **octopus crawler**'s. Art widths are their
+ * bodies' (`draw.ts::tripod`'s dome, `crawler`'s mantle and near legs), scaled to the hit box as the classic two are —
+ * the tripod's stilts stand above its box, as the spider's legs reach past its.
+ */
+export const TRIPOD_ART_W = 12
+export const CRAWLER_ART_W = 11
+/** Walk-cycle steps a creature is drawn in: one atlas cell each, reused every stride (`BIRD_FLAP_STEPS`'s reason). */
+export const GAIT_STEPS = 6
+
+/**
+ * A ground animal whose hit box (`w` × `h`) is centred on (x, y), facing right or left, at the scene's `night` (0–1).
+ * `fauna` (T23.31): the world's animals — classic F4's beetle and spider, volcanic the tripod and the crawler, walking
+ * at `gait` (0–1, quantised to `GAIT_STEPS`).
+ */
+export function animalActor(kind: number, x: number, y: number, right: boolean, w: number, h: number, night: number, fauna: 'classic' | 'volcanic' = 'classic', gait = 0): Actor {
+  if (fauna === 'volcanic') {
+    const tri = kind === BEETLE_KIND
+    const s = w / (tri ? TRIPOD_ART_W : CRAWLER_ART_W)
+    const step = Math.round((((gait % 1) + 1) % 1) * GAIT_STEPS) % GAIT_STEPS
+    return {
+      kind: tri ? 'tripod' : 'crawler',
+      x,
+      y: y + h / 2,
+      opts: { s, face: right ? 1 : -1, gait: step / GAIT_STEPS },
+      lit: { size: ANIMAL_LIT_PER_S * s, ...nightHalo(night), shadow: false },
+      box: null,
+    }
+  }
   const beetle = kind === BEETLE_KIND
   const s = w / (beetle ? BEETLE_ART_W : SPIDER_ART_W)
   return {

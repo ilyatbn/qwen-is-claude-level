@@ -206,6 +206,92 @@ export function spider(g: G, x: number, y: number, { s = 1, face = 1, rot = 0, e
 }
 
 /**
+ * T23.31 (docs/78 §A7): the volcanic world's animals, after the owner's references (`mapideas/volcanic*.jpg`) — not
+ * the mockup's (it has none), drawn in its vocabulary: ink silhouettes, thin stroked legs, one fixed-colour accent
+ * (`extra`, like the spider's eye). Feet on y 0, facing +x. `gait` (0–1) is the walk cycle's phase; the atlas caches a
+ * cell per quantised phase (`furniture.ts::GAIT_STEPS`).
+ *
+ * **Tripod walker** — a small dome on three long, thin, jointed legs, a stilted gait: one leg at a time lifts and
+ * steps forward while the other two slide back under the body, which bobs a little at each step.
+ */
+export function tripod(g: G, x: number, y: number, { s = 1, face = 1, gait = 0, eye = '#ff7a2a' } = {}): void {
+  withT(g, x, y, s, face, 0, () => {
+    const lift = (ph: number): [number, number] => {
+      // Swing (a third of the cycle): the foot rises and moves forward; stance: it slides back on the ground.
+      if (ph < 1 / 3) {
+        const u = ph * 3
+        return [-2.2 + 4.4 * u, -2.4 * Math.sin(Math.PI * u)]
+      }
+      const u = (ph - 1 / 3) * 1.5
+      return [2.2 - 4.4 * u, 0]
+    }
+    const bob = -0.5 * Math.abs(Math.sin(gait * Math.PI * 3))
+    const by = -12.6 + bob
+    const feet: P[] = [[-7.5, 0], [0.8, 0], [7.8, 0]]
+    feet.forEach(([fx], i) => {
+      const [dx, dy] = lift((gait + i / 3) % 1)
+      const hip: P = [-1.6 + i * 1.6, by + 2.2]
+      const foot: P = [fx + dx, dy]
+      // The knee bends up and out: a stilt's joint high above the foot.
+      const out = fx < -1 ? -1 : fx > 1 ? 1 : 0.4
+      const knee: P = [hip[0] + (foot[0] - hip[0]) * 0.55 + out * 2.2, hip[1] + (foot[1] - hip[1]) * 0.35 - 1.2]
+      line(g, [hip, knee, foot], 0.95)
+      line(g, [[foot[0] - 0.9, foot[1]], [foot[0] + 0.9, foot[1]]], 0.9)
+    })
+    // The dome: a cap over a short skirt and a hanging under-pod, a feeler on top.
+    g.fillStyle = INK
+    g.beginPath()
+    g.ellipse(0, by, 4.6, 3.6, 0, Math.PI, 0)
+    g.lineTo(4.9, by + 1.1)
+    g.lineTo(-4.9, by + 1.1)
+    g.closePath()
+    g.fill()
+    g.beginPath()
+    g.ellipse(0, by + 1.6, 2.2, 1.3, 0, 0, 7)
+    g.fill()
+    line(g, [[0.6, by - 3.4], [1.4, by - 5.4]], 0.6)
+    if (extras) disc(g, 2.6, by - 0.6, 0.65, eye)
+  })
+}
+
+/**
+ * **Octopus crawler** — a low bulbous body on six curled legs that scuttle: alternate legs reach and pull, the tips
+ * curling up off the ground, the body rocking over them.
+ */
+export function crawler(g: G, x: number, y: number, { s = 1, face = 1, gait = 0, eye = '#ff7a2a' } = {}): void {
+  withT(g, x, y, s, face, 0, () => {
+    const rock = 0.35 * Math.sin(gait * Math.PI * 2)
+    const by = -5.2 + rock
+    const reach = [6.2, 4.2, 2.2]
+    for (let i = 0; i < 6; i++) {
+      const side = i < 3 ? 1 : -1
+      const k = i % 3
+      const ph = Math.sin((gait + (i % 2) * 0.5) * Math.PI * 2)
+      const fx = side * (reach[k]! + 0.9 * ph) - 0.6
+      const root: P = [side * (0.8 + k * 0.5) - 0.6, by + 2]
+      const lift = Math.max(0, -ph) * 1.1
+      g.strokeStyle = INK
+      g.lineWidth = 1.05 - k * 0.12
+      g.beginPath()
+      g.moveTo(...root)
+      g.quadraticCurveTo(root[0] + (fx - root[0]) * 0.6, by - 0.8 - k * 0.4, fx, -0.3 - lift)
+      // The tip curls back and up — the reference's tentacles.
+      g.quadraticCurveTo(fx + side * 1.6, -0.6 - lift, fx + side * 1.2, -2.0 - lift)
+      g.quadraticCurveTo(fx + side * 0.6, -2.6 - lift, fx + side * 0.3, -1.9 - lift)
+      g.stroke()
+    }
+    g.fillStyle = INK
+    g.beginPath()
+    g.ellipse(-0.9, by - 1.6, 3.7, 3.3, -0.25, 0, 7)
+    g.fill()
+    g.beginPath()
+    g.ellipse(-0.4, by + 0.9, 3.0, 1.6, 0, 0, 7)
+    g.fill()
+    if (extras) disc(g, 1.7, by - 0.6, 0.55, eye)
+  })
+}
+
+/**
  * `metal` (T23.19B, §C16's metal bird — worth more, so it must read apart at a glance, and R10 keeps it ink): a
  * machine, not a bird — straight swept wings with a notched trailing edge, a longer boxy fuselage and a tail fin, where
  * F4's bird is all curves. Same span and flap, so it flies the same box.

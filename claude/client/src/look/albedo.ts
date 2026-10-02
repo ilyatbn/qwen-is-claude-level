@@ -82,8 +82,25 @@ export const ASTEROID_PALETTE = {
   noFringe: true,
 } as const satisfies AlbedoPalette
 
+/**
+ * T23.31 (docs/78 §A7): `world.js::THEMES.volcanic` verbatim — F2's rock: near-black basalt, ash where the dusk palette
+ * has grass, and **no grass fringe** (`T.noGrass`: `derive` skips the blades — `noFringe` here). Its glowing seams are not albedo: they are the
+ * lit terrain's `lava` term (`terrainMaterial.ts`), as in the mockup.
+ */
+export const VOLCANIC_PALETTE = {
+  grass: [[60, 54, 52], [80, 70, 64]],
+  soil: [[54, 44, 42], [42, 36, 36]],
+  rock: [[64, 60, 62], [48, 46, 50], [78, 72, 72], [40, 38, 42]],
+  pebble: [96, 90, 92],
+  back: [[34, 30, 32], [26, 24, 26]],
+  scorch: [14, 10, 10],
+  boulders: 0.75,
+  noTop: false,
+  noFringe: true,
+} as const satisfies AlbedoPalette
+
 /** The albedo palettes by name (`SceneDescription.albedo`). */
-export const ALBEDO_PALETTES = { dusk: TERRAIN_PALETTE, asteroid: ASTEROID_PALETTE } as const
+export const ALBEDO_PALETTES = { dusk: TERRAIN_PALETTE, asteroid: ASTEROID_PALETTE, volcanic: VOLCANIC_PALETTE } as const
 export type AlbedoPaletteName = keyof typeof ALBEDO_PALETTES
 
 /**
@@ -116,6 +133,12 @@ export function hashU32(x: number, y: number, s: number): number {
  */
 export function probeInput(i: number): [number, number, number] {
   return [((i * 7919) % 40009) - 20000, ((i * 104729) % 30011) - 15000, i % 211]
+}
+
+
+/** T23.31: the albedo palette a combat palette's `theme` names — `volcanic`, else the ground's (`dusk`, R5). */
+export function albedoTheme(theme: string | null | undefined): AlbedoPaletteName {
+  return theme === 'volcanic' ? 'volcanic' : 'dusk'
 }
 
 const v3 = (c: readonly number[]): string => `vec3(${c.map((n) => n.toFixed(1)).join(', ')})`
@@ -295,7 +318,6 @@ void main() {
   outColor = o;
 }
 `
-
 /** The ground's albedo pass (`TERRAIN_PALETTE`). */
 export const ALBEDO_FS = albedoFs(TERRAIN_PALETTE)
 

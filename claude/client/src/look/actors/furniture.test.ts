@@ -19,6 +19,9 @@ import {
   BIRD_ART_W,
   BIRD_FLAP_STEPS,
   animalActor,
+  CRAWLER_ART_W,
+  GAIT_STEPS,
+  TRIPOD_ART_W,
   birdActor,
   crystalActors,
   crystalLights,
@@ -74,6 +77,24 @@ describe('furniture (T23.19)', () => {
     expect((s.opts.s ?? 0) * SPIDER_ART_W).toBeCloseTo(12)
     expect(s.lit?.halo).toBe(NIGHT_HALO)
     expect(s.lit?.size).toBeCloseTo(ANIMAL_LIT_PER_S * (s.opts.s ?? 0))
+  })
+
+  it("T23.31: the volcanic world's animals on the same kinds — the tripod where the beetle is, the crawler where the spider is, walking", () => {
+    const t = animalActor(BEETLE_KIND, 50, 60, false, 16, 10, 1, 'volcanic', 0.5)
+    expect(t.kind).toBe('tripod')
+    expect((t.opts.s ?? 0) * TRIPOD_ART_W).toBeCloseTo(16)
+    expect(t.y).toBe(65)
+    expect(t.opts.face).toBe(-1)
+    expect(t.opts.gait).toBeCloseTo(Math.round(0.5 * GAIT_STEPS) / GAIT_STEPS)
+    const c = animalActor(0, 50, 60, true, 12, 8, 1, 'volcanic', 0.99)
+    expect(c.kind).toBe('crawler')
+    expect((c.opts.s ?? 0) * CRAWLER_ART_W).toBeCloseTo(12)
+    // A gait just short of a whole stride is the first step again: GAIT_STEPS cells, no more.
+    expect(c.opts.gait).toBe(0)
+    const steps = new Set(Array.from({ length: 100 }, (_, i) => animalActor(0, 0, 0, true, 12, 8, 1, 'volcanic', i / 100).opts.gait))
+    expect(steps.size).toBe(GAIT_STEPS)
+    // Control: classic keeps F4's two, unchanged by a gait.
+    expect(animalActor(BEETLE_KIND, 50, 60, false, 16, 10, 1, 'classic', 0.5)).toEqual(animalActor(BEETLE_KIND, 50, 60, false, 16, 10, 1))
   })
 
   it('a grave is TOMBSTONE_H tall on its feet line, with the night halo and a box that holds it', () => {

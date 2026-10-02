@@ -263,7 +263,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item' | 'tripod' | 'crawler'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -283,6 +283,8 @@ export interface ActorOpts {
   n?: number
   seed?: number
   eye?: string
+  /** T23.31 `tripod` / `crawler`: the walk cycle's phase, 0–1 (quantised by the caller: one atlas cell per step). */
+  gait?: number
   flap?: number
   /** T23.19B `bird`: §C16's metal bird (a machine's silhouette, `draw.ts::metalBird`). */
   metal?: boolean
@@ -410,6 +412,10 @@ export interface Daylight {
 export interface SceneDescription {
   /** T23.11: the palettes `look` is blended from (the game; the look-lab's `&t=`); absent: `look` as given. */
   daylight?: Daylight
+  /** T23.31: the world look's distant painted layer (`backdrop.ts`), between the sky and the back fog; absent: none. */
+  backdrop?: { kind: 'volcano'; seed: number }
+  /** T23.31: which animals live in this world (`worlds.ts::Fauna`) — told to the scene's animal layer (`fx/feed.ts`). Absent: classic. */
+  fauna?: 'classic' | 'volcanic'
   /**
    * T23.09A: `false` draws no cave wall (the terrain shader's `back` branch) — carved air shows what is
    * behind the rock. Absent: drawn, as in every mockup scene (the look-lab).

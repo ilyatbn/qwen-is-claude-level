@@ -25,12 +25,19 @@ import { joinCast } from '../look/actors/cast'
 import { followWorldDraws, fxFeed } from '../look/fx/feed'
 import { VIEW_MARGIN, animalActor, nearView } from '../look/actors/furniture'
 
+/** T23.31: a volcanic creature's stride, ms — the crawler (spider's kind, index 0) scuttles, the tripod (1) stalks. */
+const GAIT_PERIOD_MS = [360, 900]
+
 interface Entry {
   root: Phaser.GameObjects.Container
   body: Phaser.GameObjects.Ellipse
   legs: Phaser.GameObjects.Rectangle[]
   kind: number
   right: boolean
+  /** T23.31: the walk cycle's phase (0–1), advanced only while it moves; where it was, and when, to tell. */
+  gait: number
+  lastX: number
+  lastMs: number
   /** T23.19: its place in the world renderer's cast, while `useWorld` holds. */
   leave: (() => void) | null
 }
@@ -69,7 +76,8 @@ export class AnimalLayer {
         actor: () => {
           const { x, y } = e.root
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
-          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, fxFeed(this.scene).night)
+          const feed = fxFeed(this.scene)
+          return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, feed.night, feed.fauna, e.gait)
         },
       })
     } else if (!this.worldOn && e.leave) {
@@ -124,6 +132,11 @@ export class AnimalLayer {
         this.place(e)
       }
       e.right = a.right
+      // T23.31: a creature walks only while it moves (a stride of `GAIT_PERIOD_MS`), and stands still otherwise.
+      const dt = Math.max(0, Math.min(100, nowMs - e.lastMs))
+      if (Math.abs(a.x - e.lastX) > 0.05) e.gait = (e.gait + dt / GAIT_PERIOD_MS[a.kind === BEETLE ? 1 : 0]!) % 1
+      e.lastX = a.x
+      e.lastMs = nowMs
       e.root.setPosition(a.x, a.y)
       e.root.setScale(a.right ? 1 : -1, 1)
 
@@ -163,7 +176,7 @@ export class AnimalLayer {
     }
     root.add([...legs, body])
     this.container.add(root)
-    return { root, body, legs, kind: a.kind, right: a.right, leave: null }
+    return { root, body, legs, kind: a.kind, right: a.right, gait: (a.id * 0.37) % 1, lastX: a.x, lastMs: 0, leave: null }
   }
 
   destroy(): void {

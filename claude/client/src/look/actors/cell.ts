@@ -65,7 +65,7 @@ export interface Lighting {
 /** Does `a` draw anything in a fixed colour in its rim and fill passes (`draw.ts`'s `extras` sites)? */
 export function hasExtras(a: Actor): boolean {
   if (!a.lit) return false
-  return (a.kind === 'stick' && !!a.opts.jet) || (a.kind === 'figure' && !!a.opts.J?.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider'
+  return (a.kind === 'stick' && !!a.opts.jet) || (a.kind === 'figure' && !!a.opts.J?.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider' || a.kind === 'tripod' || a.kind === 'crawler'
 }
 
 /** The scene lambdas' rim-pass options (`f_scene.js` / `variant_F4.js`: `rc ? … : …`). */
@@ -121,6 +121,12 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
       return
     case 'spider':
       D.spider(g, x, y, o)
+      return
+    case 'tripod':
+      D.tripod(g, x, y, o)
+      return
+    case 'crawler':
+      D.crawler(g, x, y, o)
       return
     case 'bird':
       D.bird(g, x, y, o)

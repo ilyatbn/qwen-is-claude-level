@@ -40,6 +40,10 @@ import Phaser from 'phaser'
 import { devSurface } from '../dev'
 import { actorBoxes, describeScene, type Box, type FrameLook, type SceneDescription } from './scene'
 import { SCENES } from './scenes'
+import { WORLD_LOOK_IDS, WORLD_LOOKS, type WorldLookId } from './worlds'
+
+/** T23.31: the reference scene a world look is shown on in the lab — its night picture's. */
+const WORLD_SCENE: Record<WorldLookId, string> = { classic: 'F1', volcanic: 'F2' }
 import { loadWorldRenderer } from './loadWorldRenderer'
 import { sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import { C, Core } from '../core'
@@ -104,14 +108,18 @@ export class LookScene extends Phaser.Scene {
     // T23.11: `&t=` (0–1) draws the scene at that hour of the game's blend — F5's moonlit day at 0, F1's night at 1
     // (`daylight.ts`), the moons at the pictures' places. Only for the combat pair (F1/F5: "only the palette differs");
     // the cast and effects are the nearer end's scene (shapes never blend).
+    // T23.31: `?look=classic` / `?look=volcanic` — a world look (`worlds.ts`) on its night picture's scene (F1, F2), its
+    // own two ends for `&t=`, and the volcanic one's backdrop. `?look=F2` stays the mockup's picture verbatim (Level A).
+    const world = (WORLD_LOOK_IDS as readonly string[]).includes(id) ? WORLD_LOOKS[id as WorldLookId] : null
     const tArg = q.get('t')
     const tLab = tArg === null ? null : Number(tArg)
-    if (tLab !== null && (!(tLab >= 0 && tLab <= 1) || (id !== 'F1' && id !== 'F5'))) {
-      handle.error = `&t=${tArg}: a number in 0..1, on F1 or F5 only`
+    if (tLab !== null && (!(tLab >= 0 && tLab <= 1) || (id !== 'F1' && id !== 'F5' && !world))) {
+      handle.error = `&t=${tArg}: a number in 0..1, on F1, F5 or a world look only`
       console.error(handle.error)
       return
     }
-    const data = tLab === null ? SCENES[id] : tLab >= 0.5 ? SCENES['F1'] : SCENES['F5']
+    const sceneId = world ? WORLD_SCENE[world.id] : id
+    const data = tLab === null || world ? SCENES[sceneId] : tLab >= 0.5 ? SCENES['F1'] : SCENES['F5']
     if (!data) {
       handle.error = `unknown look scene "${id}" — have ${Object.keys(SCENES).join(', ')}`
       console.error(handle.error)
@@ -135,6 +143,8 @@ export class LookScene extends Phaser.Scene {
       for (const knob of (knobs ?? '').split(',').filter(Boolean)) {
         if (knob === 'rim-off') terrainLook.rimK = 0
         else if (knob === 'bevel-off') terrainLook.bevel = 0.001
+        // T23.31: the volcanic seams out — look-volcanic's must-fail control for the lava term.
+        else if (knob === 'lava-off') terrainLook.lavaK = 0
         else if (knob === 'lights-off') look.lights = []
         // T23.08: the gate's must-fail controls through the game's renderer (look-thresholds.json's controls, lab side).
         else if (knob === 'bloom-off') look.bloom = [0, P.bloom[1], P.bloom[2]]
@@ -172,10 +182,13 @@ export class LookScene extends Phaser.Scene {
         : only === 'terrain' || only === 'world'
           ? { ...full, look, ...cast }
           : { ...full, look }
-    if (tLab !== null) {
+    if (tLab !== null && world) {
+      desc.daylight = { day: lookOf(world.day.look), night: lookOf(world.night.look), dayPalette: world.day.palette, nightPalette: world.night.palette }
+    } else if (tLab !== null) {
       const [f5, f1] = [SCENES['F5']!, SCENES['F1']!]
       desc.daylight = { day: lookOf(f5.look), night: lookOf(f1.look), dayPalette: f5.palette, nightPalette: f1.palette }
     }
+    if (world?.backdrop && only !== 'terrain' && only !== 'albedo') desc.backdrop = { kind: world.backdrop, seed: Number(q.get('seed') ?? 0) }
     desc.actorRim = actorRim
     if (albedoDusk) desc.albedo = 'dusk'
     if (fxOff) desc.fx = []

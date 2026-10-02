@@ -13,8 +13,9 @@
  *
  * **Dropped, and why:** `occl` (the object contact shadow's 5×5 = 25 reads a pixel) is a blank 4×4
  * render target in every F scene (`f_kit.js::frame`'s `black`), so it multiplies by exactly 1 —
- * research § 1; removed with its two lines. `lava`/`lavaK`: 0 in F1 and F5, the only palettes that
- * ship (R5 — F2's volcanic look is a reference, not a theme); a later palette with lava ports it back.
+ * research § 1; removed with its two lines. `lava`/`lavaK` (F2's glowing seams): **ported back by T23.31** for the
+ * volcanic world (docs/78 §A7) with the mockup's own noise (`kit.js::NOISE_GLSL`, here `lv*`); 0 in F1 and F5, where
+ * the branch is skipped and the classic picture is unchanged.
  *
  * **The albedo target holds sRGB bytes** (`albedo.ts`, a plain RGBA8 target), where the mockup's
  * `DataTexture` was tagged `SRGBColorSpace` and decoded by the GPU on sampling: `A()` decodes with
@@ -52,6 +53,7 @@ uniform float worldH;
 uniform vec3 sunDir, sunCol, sky, ground, rimCol, lipCol;
 uniform float bevel, interior, pixel, ambient, rimK, lipK;
 uniform float wallK; // dev (gate-ground): 0 draws no cave wall; 1 always in play
+uniform vec3 lava; uniform float lavaK; // T23.31: F2's glowing seams (0: none — the classic world)
 uniform vec4 pl[${TERRAIN_LIGHTS}];
 uniform vec3 plc[${TERRAIN_LIGHTS}];
 uniform int nl;
@@ -60,6 +62,11 @@ float backOf(vec4 f) { return f.b * wallK; }
 float sd(vec2 p) { vec4 f = F(p); return f.r * 64. - f.g * 64.; } // + inside
 float heightOf(vec4 f) { float d = clamp((f.r * 64. - f.g * 64.) / bevel, 0., 1.); return bevel * sqrt(1. - (1. - d) * (1. - d)) + f.a * 7. * d; }
 float height(vec2 p) { return heightOf(F(p)); }
+// T23.31: kit.js::NOISE_GLSL (hash12, vnoise, fbm) for the lava seams — the mockup's float hash, not world.js's.
+float lvHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float lvNoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
+  return mix(mix(lvHash(i), lvHash(i + vec2(1, 0)), f.x), mix(lvHash(i + vec2(0, 1)), lvHash(i + vec2(1, 1)), f.x), f.y); }
+float lvFbm(vec2 p, int o) { float t = 0., a = .5; for (int i = 0; i < 8; i++) { if (i >= o) break; t += a * lvNoise(p); p = p * 2.03 + 17.1; a *= .5; } return t; }
 vec3 srgbToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
 vec4 A(vec2 p) { vec4 a = texelFetch(albedo, clamp(ivec2(floor(p)), ivec2(0), ivec2(RES) - 1), 0); return vec4(srgbToLinear(a.rgb), a.a); }
 float lum(vec2 p) { return dot(A(p).rgb, vec3(.3, .5, .2)); }
@@ -139,6 +146,14 @@ void shade(vec2 p, vec4 f, vec4 alb, vec3 n, float sh, float shB) {
     // lip light: the top edge catches the sky (reads the silhouette in the dark)
     float upv = sd(p + vec2(0., 3.)) - s;
     col += lipCol * lipK * smoothstep(5., 0., s) * smoothstep(0.5, 2.5, upv);
+    // T23.31: kit.js's lava seams — thin glowing cracks deep in the face, and a glow rising from the world's floor.
+    // (smoothstep(0.012, 0.0, x) there, reversed edges; written as 1 − smoothstep(0, 0.012, x), the same curve.)
+    if (lavaK > 0.) {
+      float cr = lvFbm(p * vec2(0.012, 0.03) + lvFbm(p * 0.01, 3) * 2., 5);
+      float seam = (1. - smoothstep(0.0, 0.012, abs(cr - 0.5))) * smoothstep(28., 60., f.r * 64.) * smoothstep(0.35, 0.7, lvNoise(p * 0.006));
+      col += lava * lavaK * seam * (0.6 + 0.4 * lvNoise(p * 0.05));
+      col += lava * 0.05 * lavaK * smoothstep(0.7, 1.0, p.y / worldH);
+    }
     // grass tips catching light on top edges
     col += a * sunCol * 0.25 * smoothstep(0.4, 0.9, n.y) * sh;
     // T23.20: a space rock's core glows — its heart (albedo alpha CORE_HEART_A), its ember rim (CORE_RIM_A) less.
@@ -270,6 +285,8 @@ export function lookUniforms(): Uniforms {
     ambient: { value: 1 },
     rimK: { value: 0 },
     lipK: { value: 0 },
+    lava: { value: new Vector3() },
+    lavaK: { value: 0 },
     wallK: { value: 1 },
     pl: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector4(0, 0, 0, 1)) },
     plc: { value: Array.from({ length: TERRAIN_LIGHTS }, () => new Vector3()) },
@@ -289,6 +306,8 @@ export function setLook(u: Uniforms, t: TerrainLook): void {
   u['interior']!.value = t.interior
   u['rimK']!.value = t.rimK
   u['lipK']!.value = t.lipK
+  ;(u['lava']!.value as Vector3).set(...(t.lava ?? [0, 0, 0]))
+  u['lavaK']!.value = t.lavaK ?? 0
 }
 
 /** Upload `lights` (already picked — `pickLights`) into the slots. */

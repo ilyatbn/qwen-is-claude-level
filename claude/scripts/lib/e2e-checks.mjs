@@ -122,6 +122,15 @@ export const CHECKS = [
     url: '?look=F3&only=world',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.31: the volcanic world look — F2's world at Level A against the mockup's (`controls/F2-world.png`; lava-off and
+  // the classic palette must fail), F2 whole against its picture (reported), the volcano backdrop and the embers drawn
+  // (each against its hidden control), and the two volcanic creatures drawn and told apart from F4's by silhouette.
+  {
+    name: 'look-volcanic',
+    file: 'scripts/checks/look-volcanic.mjs',
+    url: '?look=F2&only=world',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.03: three.js under Phaser — canvas order, the world canvas where Phaser draws nothing,
   // one camera (a marker read back from both canvases in the same frame while panning), the
   // tier plumbing, and `&world=off` as the control. Standalone: it needs a networked match too.

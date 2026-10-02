@@ -72,6 +72,7 @@ import { SPECTATE_SCORES_KEY, WatchState, type WatchCandidate } from '../net/spe
 import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { worldLookOverride } from '../look/worldLookId'
 import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
@@ -1749,7 +1750,9 @@ export class GameScene extends Phaser.Scene {
   private gameMap(): GameMap {
     // T23.30: the Islands shape's cloud sea, off the map `map_init` installed (`setMapShape`).
     const cloudSea = this.core.meta.shape === 'Islands' ? this.core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
-    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea }
+    // T23.31: the world look — the dev override (`?worldlook=volcanic`) until `map_init` carries the map's own (docs/78
+    // §A7, part 1: the coordinator's wiring — then `look: override ?? the map's`).
+    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea, look: worldLookOverride(location.search) ?? 'classic' }
   }
 
   /**

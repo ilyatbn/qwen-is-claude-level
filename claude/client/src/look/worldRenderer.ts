@@ -53,10 +53,13 @@ import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
 import { EARTH_BAND, MOON_BAND, SPACE_SMOKE, SpaceStars, spaceDescription, spaceFeed, starKey, type SpaceFeed } from './space'
 import { castOf } from './actors/cast'
 import { NIGHT_CIRCLES, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
-import { F1 } from './scenes/F1'
 import { SkyQuad } from './skyMaterial'
+import { albedoTheme } from './albedo'
+import { Backdrop } from './backdrop'
+import { worldLook, type WorldLookId } from './worlds'
+import { ambientEmbers, emberSprites, mockupEmbers } from './embers'
+
 import { blendLook, blendPalette, clamp01, MOON_REACH, MOON_TRAVEL, moonArcs } from './daylight'
-import { F5 } from './scenes/F5'
 import { gameSky, skyOffsets, type Offset } from './skyLayout'
 import { exposeWorldHandle } from './worldHandle'
 import type { TerrainFeed } from './terrainFields'
@@ -142,6 +145,9 @@ function thePageRenderer(): PageRenderer {
  * buffer's size cost 8.3 ms of a 19.3 ms drawn frame and the match fell 60 → 43 fps.
  */
 export const LOW_BLOOM_SCALE = 0.5
+/** T23.31: F2's sparks, frame px = the lab's scene px (its camera is the mockup's frame). */
+const MOCKUP_SPARKS = mockupEmbers()
+
 /**
  * T23.11: steps of `t` the hour is drawn in. Dusk takes ~14 s (`world/cycle.rs`: u 0.50 → 0.62 of 120 s), so 256
  * steps is one every ~0.06 s — a change no one sees as a step (the sky's colours are 8-bit hex anyway), and the
@@ -176,6 +182,8 @@ export class WorldRenderer implements SceneRenderer {
   private post!: Post
   /** T23.08: back fog, front fog, foreground leaves (`atmosphere.ts`). */
   private readonly atmos = new Atmosphere()
+  /** T23.31: the world look's backdrop (the volcano, its planets). */
+  private readonly backdrop = new Backdrop()
   /** T23.08: player boxes (mask px) the foreground fades over, besides the description's stick figures — `setOccluders`. */
   private occluders: Box[] = []
   /** Dev (T23.08): layers and passes switched off — `fogBack`, `fogFront`, `fg`, `bloom`, `grade` (`hideLayers`). */
@@ -234,6 +242,8 @@ export class WorldRenderer implements SceneRenderer {
   private swarmKey: string | null = null
   private clock = 0
   private fireflyStep = -1
+  /** T23.31: the look-lab's scene draws the mockup's still embers this frame (`embers.ts::mockupEmbers`). */
+  private embersStill = false
   /** Dev (`look-terrain`): the lights and material the last drawn frame used. */
   private drawnTerrain: { drawn: boolean; material: 'full' | 'low' | null; lights: number; wallK: number | null } = { drawn: false, material: null, lights: 0, wallK: null }
 
@@ -256,6 +266,8 @@ export class WorldRenderer implements SceneRenderer {
     this.terrainMesh.frustumCulled = false
     this.terrainMesh.visible = false
     this.addLayer({ object: this.terrainMesh, animated: false })
+    // T23.31: a world look's distant painted layer (`backdrop.ts`) — static, between the sky and the back fog.
+    for (const m of this.backdrop.meshes) this.addLayer({ object: m, animated: false })
     // T23.08: no clock in the fog or the leaves (`atmosphere.ts`) — the redraw skip stands.
     for (const m of this.atmos.meshes) this.addLayer({ object: m, animated: false })
     // T23.12: static like the rest — a changed cast or light list is a changed description, which marks the frame.
@@ -413,7 +425,8 @@ export class WorldRenderer implements SceneRenderer {
     this.sceneFxFrame = sceneFx(desc.fx)
     this.syncFxDrawer()
     this.stats.scene = sceneCounts(desc)
-    this.terrain.setPalette(desc.albedo ?? 'dusk')
+    // T23.31: a description that names no albedo takes its look's (`palette.theme`: F2's and the volcanic world's).
+    this.terrain.setPalette(desc.albedo ?? albedoTheme((desc.daylight?.nightPalette ?? desc.palette)?.theme))
     const reach: [number, number] = desc.daylight ? MOON_REACH : desc.spaceSky?.reach ?? [0, 0]
     this.sky.setSky(desc.daylight ? desc.daylight.night.bg : desc.look.bg, desc.daylight?.day.bg ?? null, reach)
     this.spaceDrawn = { version: -1, sun: '', hide: '' }
@@ -470,7 +483,7 @@ export class WorldRenderer implements SceneRenderer {
     // A terrain update is a new picture once the terrain is drawn (T23.07) — the carve's frame, not the next.
     if (this.terrain.pump() && (this.albedoView || this.terrain.ready)) this.dirty = true
     // T23.18: effects move on their own (age, flicker, drift) — a frame with any is a new picture, and so is the first without.
-    const live = this.buildFx()
+    const live = this.buildFx(view)
     if (live || this.fxLive) this.dirty = true
     this.fxLive = live
     if (this.fireflyTick()) this.dirty = true
@@ -502,6 +515,11 @@ export class WorldRenderer implements SceneRenderer {
       const offsets = skyOffsets(bg, view, this.desc.world, frame[0])
       this.placeSpace(offsets, frame)
       this.drawnOffsets = this.sky.place(this.renderer, view, this.desc.world, frame, [this.buf.w, this.buf.h], offsets)
+    }
+    {
+      const b = this.desc.backdrop
+      const frame: [number, number] = [this.phaserCanvas.width, this.phaserCanvas.height]
+      this.backdrop.place(!!b && !!bg && !this.hidden.has('backdrop'), b?.seed ?? 0, bg?.horizon ?? 0, view, this.desc.world, frame, [this.buf.w, this.buf.h], this.desc.daylight ? this.hour.t : 1)
     }
     this.placeTerrain(view)
     this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null)
@@ -667,14 +685,22 @@ export class WorldRenderer implements SceneRenderer {
 
   private syncFxDrawer(): void {
     if (this.fxSource) setWorldDraws(this.fxSource, this.owns && !!this.desc && this.desc.look.bg !== null)
+    // T23.31: the world's animals follow the description (one copy: the description's).
+    if (this.fxSource) this.fxSource.fauna = this.desc?.fauna ?? 'classic'
   }
 
   /** This frame's effects into `fxFrame`: the game's, then the scene's (none while `fx` is hidden). Any of the game's? */
-  private buildFx(): boolean {
+  private buildFx(view: ViewRect): boolean {
     const f = this.fxFrame
     clearFrame(f)
     if (this.hidden.has('fx')) return false
     if (this.fxSource?.worldDraws) gameFrame(this.fxSource, f, performance.now() / 1000, this.desc?.look.lights ?? [], this.desc?.spaceSky ? SPACE_SMOKE : null)
+    // T23.31: a look with embers in its air (F2's `extra2d`) — drifting in the game, the mockup's still sparks in the lab.
+    if (this.desc?.palette?.extra2d === 'embers' && !this.hidden.has('embers')) {
+      if (this.desc.id === 'game') emberSprites(f, ambientEmbers(view, performance.now() / 1000))
+      // The lab: the mockup draws them on its 2D actor canvas, so they go with the cast (`only=world` has none).
+      else this.embersStill = this.desc.actors.length > 0
+    } else this.embersStill = false
     const live = f.smoke.length + f.ink.length + f.soft.length + f.ribbons.length + f.discs.length > 0
     const s = this.sceneFxFrame
     f.smoke.push(...s.smoke)
@@ -682,6 +708,7 @@ export class WorldRenderer implements SceneRenderer {
     f.soft.push(...s.soft)
     f.ribbons.push(...s.ribbons)
     f.discs.push(...s.discs)
+    if (this.embersStill) emberSprites(f, MOCKUP_SPARKS)
     return live
   }
 
@@ -1193,6 +1220,7 @@ export class WorldRenderer implements SceneRenderer {
     this.sky.dispose()
     this.spaceStars.dispose()
     this.atmos.dispose()
+    this.backdrop.dispose()
     this.actorLayer.dispose()
     this.glowLayer.dispose()
     this.fireflyLayer.dispose()
@@ -1243,6 +1271,8 @@ export interface GameMap {
    * no far mountains (nothing stands that low, high in the clouds). Absent / null: an ordinary ground map.
    */
   cloudSea?: number | null
+  /** T23.31 (docs/78 §A7): the map's world look (`worlds.ts`); absent: classic. Space keeps its own look whatever this says. */
+  look?: WorldLookId
 }
 
 /**
@@ -1254,8 +1284,10 @@ export interface GameMap {
 export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): SceneDescription {
   // T23.20: space is its own world — `P_space`, the asteroid rock, the moving sky (`space.ts`); no day to blend.
   if (map.space) return spaceDescription(map, caveWall)
-  const f1 = F1.look.bg as Background
-  const f5 = F5.look.bg as Background
+  // T23.31: the map's look's two ends (classic: F1's night, F5's moonlit day — exactly what was here before).
+  const wl = worldLook(map.look)
+  const f1 = wl.night.look.bg as Background
+  const f5 = wl.day.look.bg as Background
   // T23.11 (R7): night is F1's look, the moonlit day F5's, one seeded sky layout for both (the shapes are equal, so
   // `gameSky` lays both out alike); `setDaylight` blends them. F1's lights are the mockup scene's, not this map's.
   const end = (look: FrameLook, bg: Background): FrameLook => ({
@@ -1264,9 +1296,11 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     lights: [],
     fg: null,
   })
-  const night = end(F1.look, f1)
+  const night = end(wl.night.look, f1)
   return {
-    daylight: { day: end(F5.look, f5), night, dayPalette: F5.palette, nightPalette: F1.palette },
+    daylight: { day: end(wl.day.look, f5), night, dayPalette: wl.day.palette, nightPalette: wl.night.palette },
+    ...(wl.backdrop ? { backdrop: { kind: wl.backdrop, seed: map.seed } } : {}),
+    ...(wl.fauna !== 'classic' ? { fauna: wl.fauna } : {}),
     id: 'game',
     camera: { x: 0, y: 0, w: map.w, h: map.h },
     world: { w: map.w, h: map.h },
@@ -1283,7 +1317,7 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
     // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
     look: { ...night },
-    palette: F1.palette,
+    palette: wl.night.palette,
     actors: [],
     fx: [],
     labels: [],

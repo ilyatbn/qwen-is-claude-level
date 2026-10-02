@@ -33,6 +33,7 @@ import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
+import { worldLookOverride } from '../look/worldLookId'
 import { EffectLights, gateLights, jetFlames, viewRect } from '../look/effectLights'
 import { TerrainFields } from '../look/terrainFields'
 import { SpaceSky, type SpaceSkyPart } from '../render/spaceSky'
@@ -432,7 +433,8 @@ export class SandboxScene extends Phaser.Scene {
   private gameMap(): GameMap {
     const core = this.core
     const cloudSea = core.meta.shape === 'Islands' ? core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
-    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea }
+    // T23.31: the world look — the dev override (`?look=volcanic`) until the map carries its own (docs/78 §A7, part 1).
+    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea, look: worldLookOverride(location.search) ?? 'classic' }
   }
 
   private isSpaceMap(): boolean {
