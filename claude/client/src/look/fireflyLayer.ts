@@ -8,7 +8,8 @@
  *
  * renderOrder 6: after the front fog (5), before the actors (7) — in the background band, behind the fight.
  */
-import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor, ShaderMaterial } from 'three'
+import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor, OrthographicCamera, ShaderMaterial } from 'three'
+import type { WebGLRenderer, WebGLRenderTarget } from 'three'
 import type { ViewRect } from './scene'
 import { FIREFLY_REACH, fireflyAt, type Firefly } from './fireflies'
 import { toWorld } from './worldRenderer-math'
@@ -136,6 +137,30 @@ export class FireflyLayer {
     this.geometry.setDrawRange(0, n * 6)
     this.drawn = n
     this.mesh.visible = n > 0
+  }
+
+  /**
+   * Build the program and upload the geometry now, at scene start, as `actors/glow.ts::warm` does — an empty draw into
+   * 1 px of `target`. Without it the program first appeared at dusk (`look-day-night`: programs 23 by day → 24 at dusk).
+   */
+  warm(r: WebGLRenderer, target: WebGLRenderTarget): void {
+    const prev = r.getRenderTarget()
+    const autoClear = r.autoClear
+    const vis = this.mesh.visible
+    const range = { ...this.geometry.drawRange }
+    r.autoClear = false
+    target.scissor.set(0, 0, 1, 1)
+    target.scissorTest = true
+    r.setRenderTarget(target)
+    this.mesh.visible = true
+    this.geometry.setDrawRange(0, 0)
+    r.render(this.mesh, new OrthographicCamera(0, 1, 1, 0, -1, 1))
+    this.geometry.setDrawRange(range.start, range.count)
+    this.mesh.visible = vis
+    target.scissor.set(0, 0, target.width, target.height)
+    target.scissorTest = false
+    r.setRenderTarget(prev)
+    r.autoClear = autoClear
   }
 
   dispose(): void {

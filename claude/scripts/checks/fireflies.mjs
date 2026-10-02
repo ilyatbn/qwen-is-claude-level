@@ -167,9 +167,11 @@ export default async function ({ page, shot, log }) {
 
   // ------------------------------------------------------------------ space: absent at night
   const base = new URL(page.url())
-  base.search = '?sandbox=1&seed=4242&gravity=space'
+  // The harness's own parameters kept (`e2e=1` and the rest), only the gravity added: it decides the generator.
+  base.searchParams.set('gravity', 'space')
   await page.goto(base.href, { waitUntil: 'load' })
-  await page.waitForFunction(() => window.__game && window.__world && window.__world.frames() > 5, null, { timeout: 120_000 })
+  await page.waitForFunction(() => !!window.__game && !!window.__world && window.__game.core?.meta?.generator === 'Space', null, { timeout: 120_000 })
+  await page.waitForTimeout(1000)
   await page.evaluate((t) => window.__game.setTime(t), NIGHT_T)
   await page.waitForTimeout(600)
   await page.evaluate(() => window.__game.freeze(true))

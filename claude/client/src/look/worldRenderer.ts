@@ -263,6 +263,7 @@ export class WorldRenderer implements SceneRenderer {
     this.composer = this.buildComposer()
     // T23.14C: the glow's program and geometry exist from scene start, not from the first jet.
     this.glowLayer.warm(this.renderer, this.composer.readBuffer)
+    this.fireflyLayer.warm(this.renderer, this.composer.readBuffer)
     this.fxLayer.warm(this.renderer, this.composer.readBuffer)
     this.mount()
     this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
