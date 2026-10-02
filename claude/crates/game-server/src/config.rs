@@ -491,7 +491,18 @@ impl Config {
             bots_enabled: d.bots_enabled,
             start_kit: d.start_kit,
             gravity: d.gravity,
-            map_shape: d.map_shape,
+            // T23.30 follow-up: the lobby owns the shape (no env spelling, above) — except as a
+            // **dev default** for a watched room, which has no host to choose one (`make watch`).
+            map_shape: match get("DEV_MAP_SHAPE") {
+                Some(v) => {
+                    game_core::constants::MapShape::parse(&v).ok_or_else(|| ConfigError {
+                        var: "DEV_MAP_SHAPE",
+                        value: v.clone(),
+                        expected: "random, hill, flat, multilevel or islands".to_string(),
+                    })?
+                }
+                None => d.map_shape,
+            },
             bot_count,
             bot_skill,
             dev_loadout: matches!(get("DEV_LOADOUT").as_deref(), Some("1") | Some("true")),
@@ -828,6 +839,20 @@ mod tests {
             .expect("ok")
             .summary()
             .contains("dev_smoke=true"));
+    }
+
+    /// The watched room's dev default shape; unset keeps the lobby's default.
+    #[test]
+    fn dev_map_shape_sets_the_default_and_refuses_nonsense() {
+        assert_eq!(
+            Config::from_source(empty).expect("ok").map_shape,
+            game_core::constants::MapShape::Random
+        );
+        assert_eq!(
+            from(&[("DEV_MAP_SHAPE", "islands")]).expect("ok").map_shape,
+            game_core::constants::MapShape::Islands
+        );
+        assert!(from(&[("DEV_MAP_SHAPE", "donut")]).is_err());
     }
 
     /// T99.01's switch: frenzied bots are a trailer's, never a default round's.
