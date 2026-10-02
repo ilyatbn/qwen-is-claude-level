@@ -7871,3 +7871,7 @@ Batch gate `--changed 68c83e3` (`gate-builder9.txt`): fmt, clippy, cargo, vitest
 Door: hatch swings to face the ground, ramp slides out to touch it; crew walk down it. Tablet: glass hologram, readings + checks, red UNKNOWN SUBSTANCE on the beeps. Terminal caption top-left.
 Sound: `intro-sound.mjs` (SFX synthesised; owner's ingame1.mp3 as a −8 dB ducked bed, decoded into build/ only). Beeps 25.35–29.7 and breath 17.2–21.6 verified on a spectrogram; per-beat loudness in the task file.
 `dsp.mjs` split from music.mjs (music.wav md5 unchanged). No mp4 by owner's change; contact sheet build/SHRED-intro-beats.jpg. check.sh not run (promo/ is outside the gate).
+
+## 2026-10-02 — coordinator: box restart (owner; memory pressure)
+Handoff: tasks/M23/HANDOFF-M23-2026-10-02.md. HEAD e6cac02 + this. Open: space reds from T23.20 (gate-builder9),
+T23.36 unmerged in its worktree, T99.03 intro shown live (no owner notes yet). Owner rules: bots never on Random maps.
