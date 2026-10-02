@@ -275,7 +275,8 @@ export const CHECKS = [
   // Standalone and on a real server for the reason `ordnance-visible` is: the
   // sandbox is the one scene that drives its own ordnance layer, so a check that
   // ran there would pass with `GameScene` drawing nothing at all.
-  { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true },
+  // Parked 2026-10-02 (builder8, `tasks/flaky-test.md`): its sampler catches one round in ~350 ms screenshots — a coin flip.
+  { name: 'bullets-visible', file: 'scripts/checks/bullets-visible.mjs', standalone: true, flaky: true },
   // §C6: the weather must reach the screen, not just the simulation.
   { name: 'weather-visible', file: 'scripts/checks/weather-visible.mjs', url: '?sandbox=1&seed=4242' },
   { name: 'wasd', file: 'scripts/checks/wasd.mjs', url: '?sandbox=1&seed=4242' },
