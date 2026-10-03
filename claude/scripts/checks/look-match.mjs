@@ -14,9 +14,9 @@
  *   frame's lower half where the two frames differ most — by a mean ≥ `FOG_MIN_DELTA`; the **control patch**
  *   (the top `CONTROL_ROWS` rows: above the fog's ramp, whose quad does not reach there) moves by exactly 0.
  * - **grade**: hiding it moves the whole frame by a mean ≥ `GRADE_MIN_DELTA` (the vignette is strongest at
- *   the edges: the centre alone moved 1.72); control: hiding `fg`
- *   (no foreground leaves in the game — T23.08B) moves no px at all, so a hide that changes pixels is the
- *   layer's, not the harness redrawing.
+ *   the edges: the centre alone moved 1.72); control: hiding `fg` with the map's leaf clusters taken out
+ *   (`setLeaves([])` — T23.41: the game has leaves since T23.08B) moves no px at all, so a hide that changes pixels
+ *   is the layer's, not the harness redrawing.
  * `__world.atmosphere()`'s flags are printed beside the pixels, not trusted instead of them.
  *
  * ## 2. Two matches, two rocks
@@ -152,6 +152,12 @@ try {
   // not static and both controls below move (measured: top rows max 117, fg mean 0.08; 0 and 0.000 with the
   // pickups unannounced). The fog and the grade are whole-frame passes, drawn the same with or without a cast.
   await pa.evaluate(() => window.__world.setActors([]))
+  // T23.41: the match has foreground leaves now (T23.08B), so `fg` is no longer an absent layer — the map's clusters
+  // are taken out under the four frames (the fog and the grade are whole-frame passes, drawn the same with or without
+  // them) and put back after, which keeps the control what it says: hiding a layer that draws nothing moves nothing.
+  // Measured before this, with the leaves in: fg mean 1.005, max 117 — red, the leaves' own pixels.
+  const leaves = await pa.evaluate(() => window.__world.leaves())
+  await pa.evaluate(() => window.__world.setLeaves([]))
   const flies = await pa.evaluate(() => window.__world.fireflies())
   await showAll(pa)
   const on = await frame(pa)
@@ -162,6 +168,7 @@ try {
   const noGrade = await hide(pa, ['grade'])
   const noFg = await hide(pa, ['fg'])
   await showAll(pa)
+  await pa.evaluate((l) => window.__world.setLeaves(l), leaves?.clusters ?? [])
   await pa.evaluate(() => window.__world.setActors(null))
   const W = on.w
   const H = on.h
@@ -181,7 +188,7 @@ try {
   else fail(`the fog is not drawn in the match: hiding it moves its band by ${band.mean.toFixed(2)} (min ${FOG_MIN_DELTA})`)
   const grade = patch(on, noGrade, [0, 0, W, H])
   const fg = patch(on, noFg, [0, 0, W, H])
-  console.log(`  grade: whole frame mean |Δ| ${grade.mean.toFixed(2)} (max ${grade.max}) with the grade hidden; control, fg hidden (no leaves in the game): mean ${fg.mean.toFixed(3)}, max ${fg.max}`)
+  console.log(`  grade: whole frame mean |Δ| ${grade.mean.toFixed(2)} (max ${grade.max}) with the grade hidden; control, fg hidden (the map's ${leaves?.clusters.length} leaf clusters taken out): mean ${fg.mean.toFixed(3)}, max ${fg.max}`)
   // T23.10: judged on the mean, a twentieth of the grade's floor — not "no px at all": at zoom 1 the view holds four
   // times the map, and something animated in it (a bird's wing, a fire) moves a few px between any two frames (seen:
   // mean 0.002, max 86–94, against the grade's 5.02). The top-rows fog control above stays exact.

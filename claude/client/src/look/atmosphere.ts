@@ -47,6 +47,16 @@ export const FOG_OCTAVES = 5
  * the fog layers 1.0 → 0.7 ms a frame. The full tier (and every Level A gate) keeps the mockup's 5.
  */
 export const FOG_OCTAVES_LOW = 3
+/**
+ * T23.41: the leaves' renderOrder — **under the effects**, not the mockup's 10 over everything. The mockup's leaves sit at
+ * F1's frame corners where no effect is; the game's sit on the ground where the fight is, and over a fire, a smoke cloud
+ * or a blast they hid the danger itself (fire-fx: 24 of 192 damage-circle points under a leaf at alpha 0.96 — "burned by
+ * fire you cannot see"; smoke-fx, blast-fx the same). R10 keeps strong colour for danger and identity: identity is the
+ * player boxes (`occluders`), danger is this order. After the actors (7), their glows (8) and the flare (8.5); before
+ * every effect batch (`fx/layer.ts`: `FX_ORDER` − 0.2 and up). Where no effect overlaps a leaf — every F picture — the
+ * frame is unchanged. *Reverse it by:* 10.
+ */
+export const FG_ORDER = 8.7
 /** The height of the pictures' frame, px: the fog's `y0`/`y1` are in it. */
 export const PICTURE_H = 720
 
@@ -153,8 +163,8 @@ function quad(mat: ShaderMaterial, order: number): Mesh {
 
 /**
  * The three layers, in `f_kit.js::frame`'s order around the terrain (renderOrder 0): the sky at −10,
- * the back fog at −5, the terrain, the front fog at 5, the foreground at 10 (the mockup's
- * `q.renderOrder = 10`), the dev markers at 1000.
+ * the back fog at −5, the terrain, the front fog at 5, the foreground at `FG_ORDER` (the mockup's
+ * `q.renderOrder = 10`, moved under the effects — T23.41), the dev markers at 1000.
  */
 export class Atmosphere {
   readonly fogBack = quad(this.fogMat(), -5)
@@ -174,7 +184,7 @@ export class Atmosphere {
       depthWrite: false,
       depthTest: false,
     }),
-    10,
+    FG_ORDER,
   )
   /** T23.30: the Islands shape's cloud sea, after the front fog and before the leaves. */
   readonly cloudSea = quad(

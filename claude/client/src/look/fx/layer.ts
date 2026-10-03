@@ -2,9 +2,10 @@
  * T23.18: the effects in the world renderer — `kit.js`'s `ribbon`, `sprite` and `explosion` meshes, batched: one
  * draw each for the smoke sprites (normal blending, `kit.js::sprite(smokeTex(), …, false)`), the soft additive sprites
  * (`sprite(softTex(), …, true)`), the ribbons (tracers, beams, sparks) and the shaded discs (fireballs, flames, the
- * shock ring). Into the linear HDR scene, after the actors and their glows (renderOrder `FX_ORDER`) and before the
- * foreground leaves — where `f_kit.js::frame` puts its fx group (z 40–60: over the actor canvas at z 20, under the
- * foreground at z 900) — so the post's bloom picks up what exceeds 1, as the mockup's does.
+ * shock ring). Into the linear HDR scene, after the actors and their glows (renderOrder `FX_ORDER`) and — unlike
+ * `f_kit.js::frame`, whose fx group (z 40–60) sits under the foreground at z 900 — **over the foreground leaves**
+ * (`atmosphere.ts::FG_ORDER`, T23.41: a leaf may not hide danger), so the post's bloom picks up what exceeds 1, as the
+ * mockup's does.
  *
  * **Order.** The mockup's transparent meshes are sorted by z: the tracers, beams and soft sprites (40–43) first, then
  * the explosion's smoke (45–47), then its ring, glow, fire and sparks. Additive draws commute among themselves, so the
@@ -32,8 +33,21 @@ import { NOISE_GLSL } from '../skyMaterial'
 import type { FxDisc, FxFrame, FxRibbon, FxSprite } from './kit'
 import { smokeTex, softTex } from './textures'
 
-/** After the actors (7) and their glows (8), before the foreground leaves (10). */
+/** After the actors (7), their glows (8) and the foreground leaves (`FG_ORDER` 8.7; every batch is ≥ this − 0.2). */
 export const FX_ORDER = 9
+
+/** Each batch's renderOrder around `FX_ORDER` (the order rule in the header); the constructor reads these. */
+export const FX_BATCH_ORDER = {
+  glowUnder: FX_ORDER - 0.2,
+  ribbonsUnder: FX_ORDER - 0.1,
+  smoke: FX_ORDER,
+  ink: FX_ORDER + 0.05,
+  glow: FX_ORDER + 0.1,
+  ribbons: FX_ORDER + 0.2,
+  discs: FX_ORDER + 0.3,
+  glowMax: FX_ORDER + 0.4,
+  discsMax: FX_ORDER + 0.5,
+} as const
 
 const SPRITE_VS = /* glsl */ `
 attribute vec2 aUv; attribute vec4 aColor; attribute float aTex;
@@ -230,21 +244,21 @@ export class FxLayer {
     const spriteAttrs = { position: 3, aUv: 2, aColor: 4, aTex: 1 }
     const ribbonMat = (): ShaderMaterial => new ShaderMaterial({ name: 'fx-ribbon', vertexShader: RIBBON_VS, fragmentShader: RIBBON_FS, side: DoubleSide, ...summed })
     const ribbonAttrs = { position: 3, aUv: 2, aCore: 3, aGlow: 3, aFade: 2 }
-    this.glowUnder = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_ORDER - 0.2)
-    this.ribbonsUnder = new Batch(ribbonMat(), ribbonAttrs, FX_ORDER - 0.1)
-    this.smoke = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.smokeT), spriteAttrs, FX_ORDER)
-    this.ink = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.soft), spriteAttrs, FX_ORDER + 0.05)
-    this.glow = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_ORDER + 0.1)
-    this.ribbons = new Batch(ribbonMat(), ribbonAttrs, FX_ORDER + 0.2)
+    this.glowUnder = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_BATCH_ORDER.glowUnder)
+    this.ribbonsUnder = new Batch(ribbonMat(), ribbonAttrs, FX_BATCH_ORDER.ribbonsUnder)
+    this.smoke = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.smokeT), spriteAttrs, FX_BATCH_ORDER.smoke)
+    this.ink = new Batch(spriteMat({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false }, this.soft), spriteAttrs, FX_BATCH_ORDER.ink)
+    this.glow = new Batch(spriteMat(additive, this.soft), spriteAttrs, FX_BATCH_ORDER.glow)
+    this.ribbons = new Batch(ribbonMat(), ribbonAttrs, FX_BATCH_ORDER.ribbons)
     const discMat = (blend: object): ShaderMaterial =>
       new ShaderMaterial({ name: 'fx-disc', vertexShader: DISC_VS, fragmentShader: DISC_FS, defines: { FIRE_OCT_A: FIRE_OCTAVES[0], FIRE_OCT_B: FIRE_OCTAVES[1] }, uniforms: { time: this.time }, side: DoubleSide, ...blend })
     const discAttrs = { position: 3, aUv: 2, aKind: 1, aP: 4, aColor: 3 }
-    this.discs = new Batch(discMat(summed), discAttrs, FX_ORDER + 0.3)
+    this.discs = new Batch(discMat(summed), discAttrs, FX_BATCH_ORDER.discs)
     // Fire on the ground (a molotov's crowd, a flamethrower's stream): the brightest of the overlapping flames, not
     // their sum — T21.36's lesson, measured then: ten overlapping oranges summed past white and read as steam.
     const brightest = { ...summed, blendEquation: MaxEquation }
-    this.glowMax = new Batch(spriteMat(brightest, this.soft, 1), spriteAttrs, FX_ORDER + 0.4)
-    this.discsMax = new Batch(discMat(brightest), discAttrs, FX_ORDER + 0.5)
+    this.glowMax = new Batch(spriteMat(brightest, this.soft, 1), spriteAttrs, FX_BATCH_ORDER.glowMax)
+    this.discsMax = new Batch(discMat(brightest), discAttrs, FX_BATCH_ORDER.discsMax)
   }
 
   private get batches(): Batch[] {

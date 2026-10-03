@@ -241,3 +241,17 @@ describe('R27: the blast passes through the still (T23.19D)', () => {
     expect(norm(own)).not.toEqual(norm(still))
   })
 })
+
+describe('T23.41: a leaf never hides danger', () => {
+  it('every effect batch draws after the foreground leaves, and the leaves after the actors, their glows and the flare', async () => {
+    const { FX_BATCH_ORDER } = await import('./layer')
+    const { FG_ORDER } = await import('../atmosphere')
+    const { ACTOR_ORDER } = await import('../actors/layer')
+    const { GLOW_ORDER } = await import('../actors/glow')
+    const { FLARE_ORDER } = await import('./flare')
+    const orders = Object.values(FX_BATCH_ORDER)
+    expect(orders.length).toBeGreaterThan(0)
+    expect(Math.min(...orders)).toBeGreaterThan(FG_ORDER)
+    expect(FG_ORDER).toBeGreaterThan(Math.max(ACTOR_ORDER, GLOW_ORDER, FLARE_ORDER))
+  })
+})

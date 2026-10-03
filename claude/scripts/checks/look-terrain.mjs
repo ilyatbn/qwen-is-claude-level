@@ -290,6 +290,10 @@ export default async function ({ page, shot, log }) {
     return null
   }, SWAP_DEEP)
   if (!deep) throw new Error('no deep rock found to watch across the swap')
+  // T23.41: the sandbox has foreground leaves (T23.08B), and one sat on the patch: a leaf at alpha 0.96 is the same
+  // over rock as over the sky, so the patch read "no rock" (share 0.00) with the rock drawn under it. This leg judges
+  // the terrain's swap, not the foliage (`leaves` does), so the leaves are hidden across it and shown again after.
+  await page.evaluate(() => window.__world.hideLayers(['fg']))
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [deep.x, deep.y])
   // Every frame from here until ready + 10: (ready, rock visible) — and, alongside, screenshots of the page
   // (both canvases composited: what a player sees) of a patch of that rock, each tagged ready or not.
@@ -355,6 +359,9 @@ export default async function ({ page, shot, log }) {
   const ptS = await toScreen(page, deep.x, deep.y)
   const sky = PNG.sync.read(await page.screenshot({ clip: { x: ptS.x - SWAP_PATCH / 2, y: ptS.y - SWAP_PATCH / 2, width: SWAP_PATCH, height: SWAP_PATCH } })).data
   await page.evaluate(() => window.__world.hideTerrain(false))
+  const fgShown = await page.evaluate(() => window.__world.atmosphere()?.fg)
+  if (fgShown !== false) problems.push(`the swap leg hides the leaves, but the last frame drew them (atmosphere().fg ${JSON.stringify(fgShown)})`)
+  await page.evaluate(() => window.__world.hideLayers([]))
   const rockShare = (d) => {
     let n = 0
     for (let o = 0; o < d.length; o += 4) if (Math.max(Math.abs(d[o] - sky[o]), Math.abs(d[o + 1] - sky[o + 1]), Math.abs(d[o + 2] - sky[o + 2])) > PIXEL_MOVED) n++
