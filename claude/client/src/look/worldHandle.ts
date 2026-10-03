@@ -109,6 +109,9 @@ export interface WorldHandle {
   fireflies(): ReturnType<WorldRenderer['firefliesDrawn']> | null
   /** T23.20 part C: the black hole as the world renderer last drew it (`hideLayers(['blackHole'])` hides it). */
   blackHole(): ReturnType<WorldRenderer['blackHoleDrawn']> | null
+  /** T23.20 part C: the flare and the vortices as the world renderer last drew them (`hideLayers(['flare'|'vortex'])`). */
+  flare(): ReturnType<WorldRenderer['flareDrawn']> | null
+  vortices(): ReturnType<WorldRenderer['vorticesDrawn']> | null
   /** T23.12: the cast as last laid out — quads, and the atlas's redraws/uploads/resets/cells. */
   actors(): ReturnType<WorldRenderer['actorsDrawn']> | null
   /** T23.18: the effects as last laid out, by list, and whether this renderer draws the game's (`fx/feed.ts`). */
@@ -396,6 +399,8 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     actors: () => three?.actorsDrawn() ?? null,
     fireflies: () => three?.firefliesDrawn() ?? null,
     blackHole: () => three?.blackHoleDrawn() ?? null,
+    flare: () => three?.flareDrawn() ?? null,
+    vortices: () => three?.vorticesDrawn() ?? null,
     fx: () => three?.fxDrawn() ?? null,
     fxFeed: () => three?.fxFeed ?? null,
     nightDrawn: () => three?.nightDrawn() ?? null,

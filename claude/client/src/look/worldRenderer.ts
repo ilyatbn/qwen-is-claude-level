@@ -48,6 +48,8 @@ import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
 import { FireflyLayer } from './fireflyLayer'
 import { BlackHoleLayer, DISC_TILT, holeShade, type BlackHoleView } from './fx/blackHole'
+import { FlareLayer, type FlareView } from './fx/flare'
+import { VortexLayer } from './fx/vortex'
 import { FIREFLY_HZ, fieldSampler, fireflyFade, placeFireflies, type Firefly } from './fireflies'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
 import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
@@ -241,6 +243,9 @@ export class WorldRenderer implements SceneRenderer {
   private readonly fireflyLayer = new FireflyLayer()
   /** T23.20 part C: the black hole, the owner's look (`fx/blackHole.ts`) — from the feed, on the scene's clock. */
   private readonly holeLayer = new BlackHoleLayer()
+  /** T23.20 part C: the solar flare and the breach vortices, F3's look (`fx/flare.ts`, `fx/vortex.ts`) — from the feed. */
+  private readonly flareLayer = new FlareLayer()
+  private readonly vortexLayer = new VortexLayer()
   private swarm: Firefly[] = []
   private swarmKey: string | null = null
   private clock = 0
@@ -281,6 +286,9 @@ export class WorldRenderer implements SceneRenderer {
     this.addLayer({ object: this.fireflyLayer.mesh, animated: false })
     // T23.20 part C: not animated as a layer — a hole on screen ends the redraw skip itself (`render`), none does not.
     this.addLayer({ object: this.holeLayer.mesh, animated: false })
+    // T23.20 part C: as the hole — a flare or a vortex on screen ends the redraw skip itself (`render`).
+    this.addLayer({ object: this.vortexLayer.mesh, animated: false })
+    this.addLayer({ object: this.flareLayer.mesh, animated: false })
     // T23.18: not animated as a layer — an effect on screen ends the redraw skip itself (`placeFx`), an empty one does not.
     for (const m of this.fxLayer.meshes) this.addLayer({ object: m, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
@@ -291,6 +299,8 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.warm(this.renderer, this.composer.readBuffer)
     this.fireflyLayer.warm(this.renderer, this.composer.readBuffer)
     this.holeLayer.warm(this.renderer, this.composer.readBuffer)
+    this.flareLayer.warm(this.renderer, this.composer.readBuffer)
+    this.vortexLayer.warm(this.renderer, this.composer.readBuffer)
     this.fxLayer.warm(this.renderer, this.composer.readBuffer)
     this.mount()
     this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
@@ -496,6 +506,9 @@ export class WorldRenderer implements SceneRenderer {
     // T23.20 part C: the hole's disc turns on the scene's clock — a hole drawn or just gone is a new picture.
     const hole = this.holeNow()
     if (hole || this.holeLayer.drawn) this.dirty = true
+    const flare = this.flareNow()
+    const vortices = this.vorticesNow()
+    if (flare || this.flareLayer.drawn || vortices || this.vortexLayer.drawn.length) this.dirty = true
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -542,6 +555,8 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fireflyLayer.place(this.swarm, this.clock, this.fireflyFadeNow, view, this.desc.world.h)
     this.holeLayer.place(hole, this.clock, this.desc.world.h)
+    this.flareLayer.place(flare, this.clock, this.desc.world.h)
+    this.vortexLayer.place(vortices?.list ?? null, vortices?.look ?? null, this.clock, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
     this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, NIGHT_CIRCLES)
@@ -734,6 +749,29 @@ export class WorldRenderer implements SceneRenderer {
     const f = this.fxSource
     if (!f?.worldDraws || this.hidden.has('blackHole')) return null
     return f.blackHole
+  }
+
+  /** T23.20 part C: the flare to draw — the feed's, while this renderer draws the scene and no check hid `flare`. */
+  private flareNow(): FlareView | null {
+    const f = this.fxSource
+    if (!f?.worldDraws || this.hidden.has('flare')) return null
+    return f.flare
+  }
+
+  /** T23.20 part C: the vortices to draw — the feed's, while this renderer draws the scene and no check hid `vortex`. */
+  private vorticesNow(): FxFeed['vortices'] {
+    const f = this.fxSource
+    if (!f?.worldDraws || this.hidden.has('vortex')) return null
+    return f.vortices
+  }
+
+  /** Dev (T23.20 part C): the flare and the vortices as last drawn. */
+  flareDrawn(): { drawn: boolean; samples: number } {
+    return { drawn: this.flareLayer.drawn, samples: this.flareLayer.samples }
+  }
+
+  vorticesDrawn(): { drawn: number[] } {
+    return { drawn: [...this.vortexLayer.drawn] }
   }
 
   /** Dev (T23.20 part C): the hole as last drawn — whether, where, at what swell. */
@@ -1250,6 +1288,8 @@ export class WorldRenderer implements SceneRenderer {
     this.glowLayer.dispose()
     this.fireflyLayer.dispose()
     this.holeLayer.dispose()
+    this.flareLayer.dispose()
+    this.vortexLayer.dispose()
     this.fxLayer.dispose()
     if (this.fxSource) {
       setWorldDraws(this.fxSource, false)

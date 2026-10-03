@@ -46,6 +46,7 @@ import { C, type Core, type FlareQuery } from '../core'
 import { DEPTH } from './backdrop'
 import { flareFragment } from './shaders'
 import { isHighQuality } from '../ui/settings'
+import { fxFeed, type FxFeed } from '../look/fx/feed'
 import { BurnTracker, confirmWindow, flareBounds, flareStrength, ribbonLength, ribbonOutline, strand, strokePasses, toLocal } from './flareFx-math'
 
 /** One body the flare may touch: physics centre and box for contact, drawn centre for the flames. */
@@ -65,6 +66,11 @@ export interface FlareBody {
 export interface FlareState {
   drawn: boolean
   shader: boolean
+  /**
+   * T23.20 part C: drawn by the world renderer (`look/fx/flare.ts`, F3's look) — the scene's `worldDraws`. Then this
+   * layer paints only the burning bodies' flames; `shader` is false. Phaser's two paths are the no-WebGL2 fallback.
+   */
+  world: boolean
   strength: number
   lit: boolean
   elapsed: number
@@ -95,6 +101,7 @@ export class FlareFx {
   private last: FlareState = {
     drawn: false,
     shader: false,
+    world: false,
     strength: 0,
     lit: false,
     elapsed: 0,
@@ -105,6 +112,9 @@ export class FlareFx {
   }
   private frames = 0
   private rttMs = 0
+  /** T23.20 part C: the scene's effect feed — the world renderer draws the loop from it while it draws the scene. */
+  private readonly feed: FxFeed
+  private readonly seed = (flareSeed++ % 97) * 0.6180339887
 
   /**
    * `authoritative`: the core this layer asks **is** the simulation that burns — the
@@ -116,6 +126,7 @@ export class FlareFx {
     private readonly webgl: boolean,
     private readonly authoritative = false,
   ) {
+    this.feed = fxFeed(scene)
     // At the particles' depth, over the terrain and the players, under the HUD: a flare
     // is light, and it crosses rock as easily as space. **The same depth, not 41**:
     // `sceneDepths()` lists every depth up to the lightmap and `terrain-render` pins
@@ -137,6 +148,7 @@ export class FlareFx {
     this.burnGfx.clear()
     let drawn = false
     let viaShader = false
+    const world = this.feed.worldDraws
     let strength = 0
     let lit = false
     let points: number[] = []
@@ -158,12 +170,14 @@ export class FlareFx {
       }
       if (strength > 0 && !this.hidden) {
         drawn = true
-        viaShader = this.webgl && isHighQuality()
-        if (viaShader) this.paintShader(pts, strength)
+        viaShader = this.webgl && isHighQuality() && !world
+        if (world) this.handOver(pts, strength)
+        else if (viaShader) this.paintShader(pts, strength)
         else this.paintFlat(pts, strength, t)
       }
     }
     if (!viaShader) this.shader?.setVisible(false)
+    if (!(drawn && world)) this.feed.flare = null
     if (drawn) this.frames++
 
     const burning: number[] = []
@@ -181,7 +195,7 @@ export class FlareFx {
     // `q ?`, not `q !== null`: the sandbox's `weatherStep` JSON leaves `flare` out
     // when there is none, and `undefined !== null` took the whole sandbox down.
     const tail = q ? q.elapsed >= c.EFFECT_TELEGRAPH && !lit : false
-    this.last = { drawn, shader: viaShader, strength, lit, elapsed: q?.elapsed ?? 0, points, frames: this.frames, burning, tail }
+    this.last = { drawn, shader: viaShader, world: drawn && world, strength, lit, elapsed: q?.elapsed ?? 0, points, frames: this.frames, burning, tail }
   }
 
   /**
@@ -209,12 +223,14 @@ export class FlareFx {
       this.coronaGfx.clear()
       this.burnGfx.clear()
       this.shader?.setVisible(false)
+      this.feed.flare = null
     }
   }
 
   /** Discard the round: nobody is burning in the next one. */
   clear(): void {
     this.tracker.clearAll()
+    this.feed.flare = null
   }
 
   get state(): FlareState {
@@ -227,6 +243,13 @@ export class FlareFx {
     this.burnGfx.destroy()
     this.shader?.destroy()
     this.shader = null
+    this.feed.flare = null
+  }
+
+  /** T23.20 part C: the world renderer draws the loop — hand it the samples that burn and the strength. */
+  private handOver(pts: Float32Array, strength: number): void {
+    const c = C()
+    this.feed.flare = { points: pts, strength, hidden: false, seed: this.seed, ribbon: c.SOLAR_FLARE_RIBBON_R, glow: c.SOLAR_FLARE_GLOW }
   }
 
   private paintShader(pts: Float32Array, strength: number): void {

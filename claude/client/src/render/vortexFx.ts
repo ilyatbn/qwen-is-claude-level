@@ -27,9 +27,13 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
+import { fxFeed, type FxFeed } from '../look/fx/feed'
+import type { VortexLook, VortexView } from '../look/fx/vortex'
 import {
   VORTEX_ARMS,
+  VORTEX_ARM_TURNS,
   VORTEX_RING_COLOR,
+  VORTEX_SPIN,
   VORTEX_RING_W,
   VORTEX_SWIRL_FADE_FROM,
   armPhase,
@@ -56,6 +60,11 @@ export interface VortexFxState {
   /** Ids painted this frame (pulling or fading). */
   drawn: number[]
   shader: boolean
+  /**
+   * T23.20 part C: drawn by the world renderer (`look/fx/vortex.ts`, F3's look) — the scene's `worldDraws`; `shader`
+   * is then false. Phaser's two paths are the no-WebGL2 fallback.
+   */
+  world: boolean
   /** Frames in which anything was painted. */
   frames: number
   hidden: boolean
@@ -125,12 +134,15 @@ export class VortexFx {
   private readonly arm: number[] = []
   private hidden = false
   private frames = 0
-  private last: VortexFxState = { drawn: [], shader: false, frames: 0, hidden: false, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: { capture: 0, outer: 0 } }
+  /** T23.20 part C: the scene's effect feed — the world renderer draws the vortices from it while it draws the scene. */
+  private readonly feed: FxFeed
+  private last: VortexFxState = { drawn: [], shader: false, world: false, frames: 0, hidden: false, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: { capture: 0, outer: 0 } }
 
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly webgl: boolean,
   ) {
+    this.feed = fxFeed(scene)
     // At the particles' depth, beside the flare: over the rock and the players, under
     // the HUD. **Not a new depth** — `sceneDepths()` is pinned by `terrain-render`.
     this.glow = scene.add.graphics().setDepth(DEPTH.particles).setBlendMode(Phaser.BlendModes.ADD)
@@ -141,16 +153,19 @@ export class VortexFx {
   update(list: readonly VortexDraw[], nowMs: number, t: number): void {
     this.gfx.clear()
     this.glow.clear()
-    const viaShader = this.webgl && isHighQuality()
+    const world = this.feed.worldDraws
+    const viaShader = this.webgl && isHighQuality() && !world
     const drawn: number[] = []
     const used = new Set<number>()
+    const handed: VortexView[] = []
     if (!this.hidden) {
       const radii = vortexRadii(C())
       for (const v of list) {
         const fade = vortexFade(v.closedAt, nowMs)
         if (fade <= 0) continue
         drawn.push(v.id)
-        if (viaShader) {
+        if (world) handed.push({ id: v.id, x: v.x, y: v.y, fade })
+        else if (viaShader) {
           this.paintShader(v, fade, radii)
           used.add(v.id)
         } else this.paintFlat(v, fade, radii, t)
@@ -162,8 +177,9 @@ export class VortexFx {
         this.quads.delete(id)
       }
     }
+    this.feed.vortices = handed.length ? { list: handed, look: this.look() } : null
     if (drawn.length) this.frames++
-    this.last = { drawn, shader: viaShader && drawn.length > 0, frames: this.frames, hidden: this.hidden, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: vortexRadii(C()) }
+    this.last = { drawn, shader: viaShader && drawn.length > 0, world: world && drawn.length > 0, frames: this.frames, hidden: this.hidden, ringRgb: rgbOf(VORTEX_RING_COLOR), radii: vortexRadii(C()) }
   }
 
   /** e2e only (§C2): hide the layer for a same-instant control frame. */
@@ -174,6 +190,7 @@ export class VortexFx {
       this.glow.clear()
       for (const q of this.quads.values()) q.destroy()
       this.quads.clear()
+      this.feed.vortices = null
     }
   }
 
@@ -183,6 +200,7 @@ export class VortexFx {
 
   /** Discard the round's quads; the list itself is the mirror's to clear. */
   clear(): void {
+    this.feed.vortices = null
     for (const q of this.quads.values()) q.destroy()
     this.quads.clear()
     this.gfx.clear()
@@ -193,6 +211,21 @@ export class VortexFx {
     this.clear()
     this.gfx.destroy()
     this.glow.destroy()
+  }
+
+  /** T23.20 part C: how the world renderer draws them — the same radii, ring and arms as Phaser's paths. */
+  private look(): VortexLook {
+    const r = vortexRadii(C())
+    return {
+      capture: r.capture,
+      outer: r.outer,
+      fadeFrom: r.capture + (r.outer - r.capture) * VORTEX_SWIRL_FADE_FROM,
+      ringW: VORTEX_RING_W,
+      arms: VORTEX_ARMS,
+      turns: VORTEX_ARM_TURNS,
+      spin: VORTEX_SPIN,
+      ringRgb: rgbOf(VORTEX_RING_COLOR),
+    }
   }
 
   private paintFlat(v: VortexDraw, fade: number, r: { capture: number; outer: number }, t: number): void {

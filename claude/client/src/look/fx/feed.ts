@@ -17,6 +17,8 @@ import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, m
 import { clearFrame, type FxFrame } from './kit'
 import { weatherFrame, type WeatherSource } from './hazards'
 import type { BlackHoleView } from './blackHole'
+import type { FlareView } from './flare'
+import type { VortexLook, VortexView } from './vortex'
 
 export interface OrdnanceSource {
   readonly state: OrdnanceState
@@ -47,6 +49,13 @@ export interface FxFeed {
    * by `fx/blackHole.ts` while `worldDraws`, and a light for the rock and the figures near it.
    */
   blackHole: BlackHoleView | null
+  /**
+   * T23.20 part C: the solar flare this frame (`render/flareFx.ts` writes it every update while `worldDraws`; null with
+   * none) — drawn by `fx/flare.ts`, and lights along the loop.
+   */
+  flare: FlareView | null
+  /** T23.20 part C: the breach vortices showing this frame and how they look (`render/vortexFx.ts`; null with none). */
+  vortices: { list: VortexView[]; look: VortexLook } | null
   /** The world renderer draws this scene's effects (see the file comment). Written only by `setWorldDraws`. */
   worldDraws: boolean
   /** T23.19D F1: the layers that draw themselves in the world or with Phaser by `worldDraws` (`followWorldDraws`). */
@@ -77,7 +86,7 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, weather: null, blackHole: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, fauna: 'classic', keepDrawing: false }
+    f = { ordnance: null, zones: null, weather: null, blackHole: null, flare: null, vortices: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, fauna: 'classic', keepDrawing: false }
     feeds.set(scene, f)
   }
   return f

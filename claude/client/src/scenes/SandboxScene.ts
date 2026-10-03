@@ -1894,7 +1894,9 @@ export class SandboxScene extends Phaser.Scene {
         jets: jetFlames(this.player),
         vents: weather.vents,
         stale: this.world.staleRounds,
-      },
+        // T23.20 part C: the flare the world renderer draws is a light too.
+        flare: fxFeed(this).flare,
+        },
       viewRect(this.cameras.main.worldView),
     )
     this.worldRenderer?.setLights(effectLights)

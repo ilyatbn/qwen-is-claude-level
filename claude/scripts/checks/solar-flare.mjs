@@ -106,6 +106,9 @@ export default async function ({ page, shot, log }) {
       [pts, gap, k.PLAYER_H, k.VIEWPORT_W / 2, k.VIEWPORT_H / 2],
     )
   const reach = k.SOLAR_FLARE_RIBBON_R + k.SOLAR_FLARE_GLOW
+  // T23.20 part C: the world renderer's flare is also a light (F3: effects are key lights) — the rock round it changes
+  // with it out to the light's reach, so the control sits clear of that too (read from the code that lights it).
+  const lightReach = isCanvas ? 0 : await page.evaluate(async () => (await import('/src/look/fx/flare.ts')).FLARE_LIGHT.r)
 
   // The player well away, so nothing but the ribbon differs between the two photographs.
   {
@@ -144,7 +147,14 @@ export default async function ({ page, shot, log }) {
       })
       const wantShader = hq && !isCanvas
       if (!f.drawn || !f.lit) throw new Error(`${label}: the lit flare was not drawn: ${JSON.stringify({ ...f, points: f.points.length })}`)
-      if (f.shader !== wantShader) throw new Error(`${label}: drawn ${f.shader ? 'by the shader' : 'flat'}, expected ${wantShader ? 'the shader' : 'flat'}`)
+      // T23.20 part C: with the world renderer drawing the scene the loop is its (both tiers); Phaser's two paths are
+      // the fallback without WebGL2 (this file's `-canvas` entry) and are asked for only then.
+      if (f.world) {
+        if (f.shader) throw new Error(`${label}: the world renderer draws the flare and Phaser's shader quad is up too`)
+        const w = await page.evaluate(() => window.__world?.flare?.() ?? null)
+        if (!w?.drawn || w.samples !== k.SOLAR_FLARE_SAMPLES) throw new Error(`${label}: the scene hands the flare to the world renderer and it drew ${JSON.stringify(w)}`)
+      } else if (!isCanvas) throw new Error(`${label}: a WebGL page drew the flare in Phaser (${f.shader ? 'shader' : 'flat'}), not in the world renderer`)
+      else if (f.shader !== wantShader) throw new Error(`${label}: drawn ${f.shader ? 'by the shader' : 'flat'}, expected ${wantShader ? 'the shader' : 'flat'}`)
       if (burns.length !== 2 * k.SOLAR_FLARE_SAMPLES) {
         throw new Error(`${label}: the core gave ${burns.length / 2} damage points, the server samples ${k.SOLAR_FLARE_SAMPLES}`)
       }
@@ -186,7 +196,7 @@ export default async function ({ page, shot, log }) {
           }
           return null
         },
-        [burns, reach + 40],
+        [burns, reach + Math.max(40, lightReach)],
       )
       if (!ctrlWorld) throw new Error(`${label}: no on-screen point clear of the flare for the control`)
       const ctrl = await toScreen(page, ctrlWorld.x, ctrlWorld.y)
@@ -205,7 +215,7 @@ export default async function ({ page, shot, log }) {
         throw new Error(`${label}: only ${covered} of ${onScreen.length} damage points (${n} samples, centre and ±${EDGE} of the contact radius) are under painted flare — unpainted: ${JSON.stringify(bad.slice(0, 6))}`)
       }
       if (ctrlMoved) throw new Error(`${label}: the control point clear of the flare changed too: ${JSON.stringify(cmp.detail[onScreen.length])}`)
-      log(`${label}: ${covered}/${onScreen.length} damage points (${n} samples × centre and both edges) painted (${f.shader ? 'shader' : 'flat'}), control unchanged, ${(cmp.fraction * 100).toFixed(1)}% of the frame is flare`)
+      log(`${label}: ${covered}/${onScreen.length} damage points (${n} samples × centre and both edges) painted (${f.world ? 'world renderer' : f.shader ? 'shader' : 'flat'}), control unchanged, ${(cmp.fraction * 100).toFixed(1)}% of the frame is flare`)
     } finally {
       await page.evaluate(() => window.__game.freeze(false))
     }

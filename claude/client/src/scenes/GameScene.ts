@@ -2838,6 +2838,7 @@ export class GameScene extends Phaser.Scene {
       vents: this.vents,
       ...(this.world ? { stale: this.world.staleRounds } : {}),
       hole: fxFeed(this).blackHole,
+      flare: fxFeed(this).flare,
     }
   }
 

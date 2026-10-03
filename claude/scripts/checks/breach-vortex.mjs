@@ -65,6 +65,15 @@ const RING_TOLERANCE = 12
  */
 const RING_COLOUR_SHARE = 0.8
 /**
+ * T23.20 part C: the world renderer's vortex (F3's look) goes through the HDR post — tone map, bloom, grade — so its
+ * capture ring is not `ringRgb` to 12 any more. A ring probe is then **lit and violet**: mean channel ≥
+ * `RING_LIT_MIN`, green the lowest channel by `RING_VIOLET_MIN` (red and blue both over it), and changed against the
+ * hidden frame. Measured on SwiftShader (the checks' tier), ring heat 0.8: ~(200, 170, 192) in the sandbox and a match
+ * — the margin 23–30; the space sky behind it reads ~(6, 4, 25) (mean under the floor), the arms are cyan (g ≈ b).
+ */
+const RING_LIT_MIN = 90
+const RING_VIOLET_MIN = 15
+/**
  * R98: the largest per-channel change the layer may make at, and `EDGE_IN_SHARE` of the swirl's span
  * inside, the swirl's outer radius — read off `vortex.fx.radii.outer`, what drew the
  * frame (T22.14A L sized it off the capture ring; it was `VORTEX_REACH / 2`) — no edge
@@ -102,6 +111,10 @@ async function coverage(page, k, v, label, wantShader) {
   const dbg = () => page.evaluate(() => window.__game.debug())
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [v.x, v.y])
   await frames(page, SETTLE_FRAMES)
+  // T23.20 part C: the vortex is the world renderer's, under Phaser's canvas — and so is the rock once its lit picture
+  // is whole; until then Phaser's flat rock is drawn over the world (a vortex on an asteroid is hidden by it).
+  await page.waitForFunction(() => !window.__world || (window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending), null, { timeout: deadlineMs(60, 'the lit terrain') })
+  await frames(page, 2)
   await page.evaluate(() => window.__game.freeze(true))
   try {
     await frames(page, 2)
@@ -111,7 +124,13 @@ async function coverage(page, k, v, label, wantShader) {
       fail(`${label}: vortex ${v.id} is not drawn: ${JSON.stringify(fx)}`)
       return null
     }
-    if (fx.shader !== wantShader) fail(`${label}: drawn by the ${fx.shader ? 'shader' : 'flat'} path, asked for ${wantShader ? 'shader' : 'flat'}`)
+    // T23.20 part C: with the world renderer drawing the scene the vortex is its (both tiers); Phaser's two paths are the
+    // fallback without WebGL2 and are asked for only then.
+    if (fx.world) {
+      if (fx.shader) fail(`${label}: the world renderer draws the vortex and Phaser's shader quad is up too`)
+      const w = await page.evaluate(() => window.__world?.vortices?.() ?? null)
+      if (!w?.drawn.includes(v.id)) fail(`${label}: the scene hands vortex ${v.id} to the world renderer and it drew ${JSON.stringify(w)}`)
+    } else if (fx.shader !== wantShader) fail(`${label}: drawn by the ${fx.shader ? 'shader' : 'flat'} path, asked for ${wantShader ? 'shader' : 'flat'}`)
     const bounds = await page.evaluate(() => {
       const r = document.querySelector('canvas').getBoundingClientRect()
       return { left: r.left, top: r.top, w: r.width, h: r.height }
@@ -187,16 +206,19 @@ async function coverage(page, k, v, label, wantShader) {
     // these pixels too (measured: every ring probe changed on the flat path with the
     // ring deleted), so "changed" alone would pass a vortex that draws no ring.
     const ring = fx.ringRgb
-    const inRingColour = cmp.detail
-      .slice(0, shown.length)
-      .filter((q) => q.a.every((c, i) => Math.abs(c - ring[i]) <= RING_TOLERANCE)).length
+    const ringOk = (q) =>
+      fx.world
+        ? (q.a[0] + q.a[1] + q.a[2]) / 3 >= RING_LIT_MIN && Math.min(q.a[0], q.a[2]) - q.a[1] >= RING_VIOLET_MIN && q.peak > 6
+        : q.a.every((c, i) => Math.abs(c - ring[i]) <= RING_TOLERANCE)
+    const ringWant = fx.world ? `lit and violet (mean ≥ ${RING_LIT_MIN}, r and b over g by ≥ ${RING_VIOLET_MIN}, changed)` : `the ring's colour ${JSON.stringify(ring)}`
+    const inRingColour = cmp.detail.slice(0, shown.length).filter(ringOk).length
     if (shown.length < RING_PROBES * MIN_ON_SCREEN) fail(`${label}: only ${shown.length} of ${RING_PROBES} ring points in view — coverage would mean nothing`)
     else if (painted < shown.length) {
       const bad = cmp.detail.slice(0, shown.length).filter((_, i) => !cmp.points[i])
       fail(`${label}: only ${painted} of ${shown.length} capture-ring points in view are painted: ${JSON.stringify(bad.slice(0, 4))}`)
     } else if (inRingColour < shown.length * RING_COLOUR_SHARE) {
-      fail(`${label}: only ${inRingColour} of ${shown.length} capture-ring points are the ring's colour ${JSON.stringify(ring)}: ${JSON.stringify(cmp.detail.slice(0, 4).map((q) => q.a))}`)
-    } else ok(`${label}: ${painted}/${shown.length} capture-ring points painted where the vortex is, ${inRingColour} in the ring's own colour (${fx.shader ? 'shader' : 'flat'}; ${hidden} under the HUD, not counted)`)
+      fail(`${label}: only ${inRingColour} of ${shown.length} capture-ring points are ${ringWant}: ${JSON.stringify(cmp.detail.slice(0, 4).map((q) => q.a))}`)
+    } else ok(`${label}: ${painted}/${shown.length} capture-ring points painted where the vortex is, ${inRingColour} ${ringWant} (${fx.world ? 'world renderer' : fx.shader ? 'shader' : 'flat'}; ${hidden} under the HUD, not counted; ring px ${JSON.stringify(cmp.detail.slice(0, 3).map((q) => q.a))})`)
     if (!ctrl) fail(`${label}: no point in view clear of the vortex for the control`)
     else if (cmp.points[shown.length]) fail(`${label}: control — a point clear of the vortex changed too: ${JSON.stringify(cmp.detail[shown.length])}`)
     else ok(`${label}: control — a point clear of the vortex did not change`)
@@ -222,8 +244,26 @@ try {
     await page.waitForFunction('window.__game && !!window.__game.debug().player', null, { timeout: deadlineMs(60, 'the sandbox player') })
     const k = await page.evaluate(() => window.__game.constants())
     const me = (await page.evaluate(() => window.__game.debug())).player
-    // Clear of the body's pull range, so the sandbox body is not drawn into the shot.
-    const at = { x: me.x + k.VORTEX_REACH + 80, y: me.y }
+    // Clear of the body's pull range, so the sandbox body is not drawn into the shot — and (T23.20 part C) in open
+    // space: the world renderer's vortex is in the HDR scene, so over an asteroid's glowing core (seed 4242's first
+    // choice, `me.x + VORTEX_REACH + 80`) its dark opening hid the core and the core's bloom round it went with it —
+    // every edge probe 20+ darker with the vortex shown, a change at R98's radius that is the rock's, not a line.
+    const at = await page.evaluate(
+      ([x0, y0, clear, reach]) => {
+        const core = window.__game.core
+        for (let d = 0; d < 1200; d += 16) {
+          for (const [x, y] of [[x0 + d, y0], [x0, y0 - d], [x0, y0 + d], [x0 + d, y0 - d], [x0 + d, y0 + d]]) {
+            if (Math.hypot(x - x0 + reach + 80, y - y0) < reach + 80) continue
+            let ok = x > clear && y > clear && x < core.width - clear && y < core.height - clear
+            for (let dy = -clear; ok && dy <= clear; dy += 6) for (let dx = -clear; ok && dx <= clear; dx += 6) if (dx * dx + dy * dy <= clear * clear && core.solidAt(Math.round(x + dx), Math.round(y + dy))) ok = false
+            if (ok) return { x, y }
+          }
+        }
+        return null
+      },
+      [me.x + k.VORTEX_REACH + 80, me.y, k.VORTEX_CAPTURE_R * 2 + 100, k.VORTEX_REACH],
+    )
+    if (!at) throw new Error('no open space for the sandbox vortex')
     const id = await page.evaluate(([x, y]) => window.__game.openVortex(x, y), [at.x, at.y])
     for (const hq of [false, true]) {
       await page.evaluate((v) => window.__game.setHighQuality(v), hq)
