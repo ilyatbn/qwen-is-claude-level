@@ -41,9 +41,10 @@ const botIds = async (page) => (await server(page)).players.map((p) => p.id).sor
  */
 async function place(page, spots, anchor) {
   const ids = await botIds(page)
-  for (const [k, [x, y]] of spots.entries()) {
+  // A spot may carry its own hold as a third number (`[x, y, seconds]`); otherwise `anchor`.
+  for (const [k, [x, y, own]] of spots.entries()) {
     if (ids[k] === undefined) break
-    await page.evaluate(([x, y, id, a]) => window.__game.debugPlace(x, y, id, a), [x, y, ids[k], anchor])
+    await page.evaluate(([x, y, id, a]) => window.__game.debugPlace(x, y, id, a), [x, y, ids[k], own ?? anchor])
     await sleep(60)
   }
   await sleep(300)
@@ -61,28 +62,32 @@ export const SCENES = {
     // All five in one bowl (seed 7's ground between x 560 and 880, measured off the generated map), 60-120 px
     // apart: near enough for the flamethrower, far enough for a rocket — each in its own turn of the rotation.
     stage: async (page) => {
-      await place(page, [[600, 772], [670, 800], [740, 765], [810, 748], [870, 712]], 4)
+      // Started together, then free: no anchor (owner: the bots must move, jet and jump, not stand and trade).
+      await place(page, [[600, 772], [670, 800], [740, 765], [810, 748], [870, 712]], 0)
       return { focus: { x: 735, y: 780 } }
     },
     cues: [{ at: 6, what: 'free the camera', run: (page) => focus(page, null) }],
-    caption: { text: 'TRUST NO ONE' },
+    caption: { text: 'MULTIPLAYER BATTLE ROYALE' },
     // Take 12, 4.5 s in: blasts, a burst of fire, then the lasers cross — every kind in five seconds.
     cut: { dur: 5, in: 4.5 },
   },
   scene3: {
     // Space (`DEV_GRAVITY=space`; the map is the asteroid field, seed 7's measured below). Two bots stand on the
-    // **undersides** of the two big rocks (909,442 r99 and 603,480 r96), upside down, anchored and firing at the
-    // three below and beside them. The black hole is summoned on the far rock (1753,731), out of the fight's reach;
+    // **undersides** of the two big rocks (909,442 r99 and 603,480 r96), upside down, anchored and firing down at
+    // the two floating free below them. The black hole is summoned on the far rock (1753,731), out of the fight's reach;
     // at the cue a fourth bot is put just outside its horizon and the camera follows it in.
     env: { ...ARMED, FIXED_SEED: '7', DEV_GRAVITY: 'space', WEATHER: 'off' },
     director: 'busy',
     zoom: 1.3,
     seconds: 14,
     stage: async (page) => {
+      // Each pinned shooter's nearest enemy floats free straight below it, 130 px off — the lines checked against
+      // seed 7's mask (no solid px on 909,560→909,690 or 603,600→603,720), so the held bots fire into open space,
+      // never into their own rock (owner: a held bot can't move to find a line).
       const ids = await place(
         page,
-        [[909, 555], [603, 590], [840, 688], [1132, 649], [1753, 640]],
-        14,
+        [[909, 555, 14], [603, 590, 14], [909, 690, 0], [603, 715, 0], [1753, 640, 0]],
+        0,
       )
       // The hole eats the rock nearest the last bot (the far one), then that bot is left where it stands.
       await page.evaluate((id) => window.__game.debugBlackHole(undefined, false, id), ids[4])
@@ -97,7 +102,9 @@ export const SCENES = {
         what: 'pan to the black hole',
         run: async (page) => {
           const hole = (await debug(page)).blackHole.hole
-          await focus(page, { x: hole.x - 140, y: hole.y - 60 }, 0.06)
+          // Pushed in (owner: the pull must read): the hole and the bot's last second fill the frame.
+          await focus(page, { x: hole.x - 90, y: hole.y - 40, lift: 0 }, 0.06)
+          await zoomTo(page, 1.9, 1.4)
         },
       },
       {
@@ -119,6 +126,9 @@ export const SCENES = {
         },
       },
     ],
+    // Nothing drawn over the hole (owner: a black hole swallows graves, items, everything — the game fix is T23.38):
+    // no pickups, crates or graves in this shot (re-hidden every 250 ms by shoot.mjs).
+    hide: ['items', 'graves'],
     caption: { text: 'SURVIVE THE HARSHNESS OF SPACE' },
     // From the upside-down fight, the pan, to the bot dragged into the hole (~5–7 s into the take).
     cut: { dur: 7, in: 0.3 },

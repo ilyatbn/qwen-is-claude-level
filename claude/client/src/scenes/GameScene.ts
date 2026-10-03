@@ -3618,6 +3618,10 @@ export class GameScene extends Phaser.Scene {
         self.shakeScale = Math.max(0, k)
         return self.shakeScale
       },
+      /** e2e only (T99.04): the graves, off for a trailer shot (the black hole's should swallow them — T23.38). */
+      setGravesVisible(on: boolean) {
+        self.tombstones?.setVisible(on)
+      },
       /** e2e only (T99.04): the pickups, off for the trailer's wildlife shot. */
       setItemsVisible(on: boolean) {
         return self.world?.items.setVisible(on) ?? null

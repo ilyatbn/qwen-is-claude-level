@@ -36,7 +36,9 @@ mkdirSync(join(out, 'frames'), { recursive: true })
 
 const W = 1920
 const H = 1080
-const port = 3000
+// Own ports when another stack shares the box: PROMO_SERVER_PORT / PROMO_VITE_PORT.
+const port = Number(process.env.PROMO_SERVER_PORT ?? 3000)
+const vitePort = process.env.PROMO_VITE_PORT ?? null
 const bin = join(root, 'target/release/game-server')
 if (!existsSync(bin)) throw new Error('build the release server first: cargo build -p game-server --release')
 
@@ -68,7 +70,12 @@ for (let i = 0; ; i++) {
 let base = process.env.VITE_URL
 if (!base) {
   // Its own process group, so the cleanup takes vite and the esbuild it forks (scripts/proc-group.mjs).
-  const vite = spawnGroup('npm', ['--prefix', 'client', 'run', 'dev'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+  const viteArgs = vitePort ? ['--', '--port', vitePort, '--strictPort'] : []
+  const vite = spawnGroup('npm', ['--prefix', 'client', 'run', 'dev', ...viteArgs], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, VITE_SERVER_PORT: String(port) },
+  })
   children.push(vite)
   base = await new Promise((res, rej) => {
     const timer = setTimeout(() => rej(new Error('vite reported no port in 120 s')), 120_000)
@@ -106,15 +113,18 @@ await page.addStyleTag({
             canvas { cursor: none !important; }`,
 })
 const hud = () =>
-  page.evaluate(() => {
+  page.evaluate((hide) => {
     const g = window.__game
     g.setCrosshairVisible(false)
     g.setNamesVisible(false)
     g.setItemLabelsVisible(false)
+    // A scene's own `hide` list: 'items' (pickups, crates, their beams), 'graves'.
+    if (hide.includes('items')) g.setItemsVisible(false)
+    if (hide.includes('graves')) g.setGravesVisible(false)
     for (const c of document.querySelectorAll('canvas')) {
       if (c.getBoundingClientRect().width < 600) (c.parentElement ?? c).style.visibility = 'hidden'
     }
-  })
+  }, scene.hide ?? [])
 await hud()
 // Names come up for players who enter the view later, and a map resync (heavy carving) rebuilds the world view
 // with its labels and minimap: keep re-hiding them.
