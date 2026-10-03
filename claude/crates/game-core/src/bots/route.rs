@@ -37,6 +37,9 @@ pub(super) struct NavStep {
     pub unstick: bool,
     /// The step's kind (T23.26C: the still counter's cause).
     pub how: Move,
+    /// T23.41: the rock of the next dig step within `BOT_BLAST_DIG_LOOKAHEAD` steps — a face a carving weapon may
+    /// open from here when its guard allows (`arms::blast_dig`).
+    pub face: Option<Vec2>,
 }
 
 /// Where a route goes: what the planner was asked, and the point it was asked about
@@ -428,6 +431,7 @@ impl Route {
             }
         }
         let mut out = self.buttons(&grid, me, s, here, now);
+        out.face = self.next_face(&grid);
         // **Stuck on a step: swing at it, hop, and lean in.** A cell may hold
         // `BOT_NAV_AIR_PX` of rock, and a sliver of it standing up is a wall to a body; a
         // body the plan has falling can sit on a ledge's corner. Not moving for
@@ -470,6 +474,18 @@ impl Route {
         out.fire &= held;
         self.last_aim = out.aim;
         Some(out)
+    }
+
+    /// T23.41: the rock of the first dig step from here, within `BOT_BLAST_DIG_LOOKAHEAD` steps (`dig_rock`, from the
+    /// cell before it), or `None`.
+    fn next_face(&self, g: &Grid) -> Option<Vec2> {
+        let end = self
+            .path
+            .len()
+            .min(self.next + crate::constants::BOT_BLAST_DIG_LOOKAHEAD);
+        let k = (self.next..end).find(|&k| self.path[k].how == Move::Dig)?;
+        let prev = k.checked_sub(1).map(|j| (self.path[j].x, self.path[j].y));
+        dig_rock(g, self.path[k], prev)
     }
 
     /// Refuse `t` for `BOT_NAV_RETRY`, as a search that found nothing does — for a route

@@ -3,17 +3,96 @@
 
 use super::Bot;
 use crate::constants::{
-    GravityMode, BATTERY_MAX, BOT_BLAST_GUARD, BOT_CHARGE_BELOW, BOT_FLAME_REACH_SCALE,
-    BOT_GUN_HOLD_SHARE, BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOB_SWEEP, BOT_LOS_CARVES,
-    BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP, BOT_LOS_TOLERANCE_PX, BOT_OUT_OF_REACH_SCORE,
-    BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE, BOT_SPACE_ZONE_REACH,
-    BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, FLAME_DPS, FLAME_GRAVITY_SCALE, FLAME_LIFE,
-    FLAME_RADIUS, GRAVITY, INVENTORY_SLOTS,
+    GravityMode, BATTERY_MAX, BOT_BLAST_DIG_KEEP, BOT_BLAST_GUARD, BOT_CHARGE_BELOW,
+    BOT_FLAME_REACH_SCALE, BOT_GUN_HOLD_SHARE, BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOB_SWEEP,
+    BOT_LOS_CARVES, BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP, BOT_LOS_TOLERANCE_PX,
+    BOT_OUT_OF_REACH_SCORE, BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE,
+    BOT_SPACE_ZONE_REACH, BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, FLAME_DPS, FLAME_GRAVITY_SCALE,
+    FLAME_LIFE, FLAME_RADIUS, GRAVITY, INVENTORY_SLOTS, SHOVEL_CARVE,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::Vec2;
 use crate::weapons::defs::Delivery;
 use crate::world::World;
+
+/// T23.41 (T23.37 item 4, T23.26B item 2): **a carving weapon opens a dig face when its blast guard allows.** The
+/// route's next dig face (`NavStep::face`) is shot at from back here with the first weapon in the bag that carves at
+/// least what a shovel swing does (`SHOVEL_CARVE`), explodes where it lands, and has more than
+/// `BOT_BLAST_DIG_KEEP` rounds — aimed along its low arc if it arcs (`low_arc`), and only if the predicted impact
+/// (`predict_impact`, the same walk the throw guard trusts) is **outside `BOT_BLAST_GUARD` of the blast radius from
+/// where the shooter will be when it lands** (its speed toward it over the flight) and within a blast radius of the
+/// face. At the face itself every guard refuses (a dig step aims at
+/// an adjacent cell), so the shovel still digs there. `(slot, aim angle)`.
+pub(super) fn blast_dig(
+    world: &World,
+    me: &crate::player::state::PlayerState,
+    pos: Vec2,
+    face: Vec2,
+) -> Option<(u8, f32)> {
+    (0..INVENTORY_SLOTS as u8).find_map(|slot| {
+        let st = me.inventory.slot(slot)?;
+        if st.count <= BOT_BLAST_DIG_KEEP {
+            return None;
+        }
+        let ItemKind::Weapon(wid) = def(st.item)?.kind else {
+            return None;
+        };
+        let w = crate::weapons::defs::def(wid)?;
+        let blasts = matches!(
+            w.delivery,
+            Delivery::Projectile {
+                explode_on_contact: true,
+                ..
+            }
+        );
+        if !blasts || w.blast_radius < SHOVEL_CARVE {
+            return None;
+        }
+        // Along the low arc through the face (`lob_angle` asks for a clear arc *to* its target, and a face is rock),
+        // or straight at it; `predict_impact` below says where it really lands.
+        let g = GRAVITY * w.gravity_scale * world.gravity.scale();
+        let angle = if g > 0.0 {
+            low_arc(g, w.muzzle_speed, pos, face)?
+        } else {
+            (face.y - pos.y).atan2(face.x - pos.x)
+        };
+        let hit = crate::weapons::projectile::predict_impact(
+            &world.map,
+            wid,
+            pos,
+            angle,
+            world.wind,
+            world.gravity,
+            BOT_PREDICT_TICKS,
+            crate::constants::SIM_DT,
+        )?;
+        // The guard where the shooter will be when it lands: a bot walking at its face closes on the blast for the
+        // round's flight (a stationary shooter's 1.5 radii, less what it walks in that time).
+        let d = (hit - pos).len();
+        let closing = me.body.vel.dot((hit - pos) * (1.0 / d.max(1.0))).max(0.0);
+        let flight = d / w.muzzle_speed.max(1.0);
+        let safe = d - closing * flight >= w.blast_radius * BOT_BLAST_GUARD;
+        (safe && (hit - face).len() <= w.blast_radius).then_some((slot, angle))
+    })
+}
+
+/// T23.41: the screen angle of the low arc from `pos` through `target` at muzzle speed `v` under gravity `g` (px/s²),
+/// or `None` past its reach — `lob_angle`'s closed form without its clear-path test.
+fn low_arc(g: f32, v: f32, pos: Vec2, target: Vec2) -> Option<f32> {
+    let dx = target.x - pos.x;
+    let up = pos.y - target.y;
+    let run = dx.abs().max(1.0);
+    let disc = v.powi(4) - g * (g * run * run + 2.0 * up * v * v);
+    if disc < 0.0 || v <= 0.0 {
+        return None;
+    }
+    let elev = (v * v - disc.sqrt()).atan2(g * run);
+    Some(if dx >= 0.0 {
+        -elev
+    } else {
+        std::f32::consts::PI + elev
+    })
+}
 
 /// T23.37 item 5: how many solid samples (at `BOT_LOS_STEP`) a shot with `w` may
 /// cross — rock as thick as `BOT_LOS_CARVES` of its own carves (`blast_radius`: a

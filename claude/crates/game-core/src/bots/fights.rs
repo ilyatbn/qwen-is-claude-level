@@ -462,3 +462,97 @@ fn a_bot_spends_its_counters_and_fires_a_laser() {
         "control: a laser fired with no charge to fire it"
     );
 }
+
+/// Run `b` at the one pistol on the floor until it picks it up, or the bound; `(got it, blast digs, dig swings, the
+/// bot's lowest health, rounds of `item` left)`. Nobody else is armed, so any health it loses is its own doing.
+fn tunnel(
+    mut w: World,
+    b: Bot,
+    item: crate::items::registry::ItemId,
+) -> (bool, u32, u32, f32, u32) {
+    let mut bots = vec![b];
+    let mut low = w.player(1).expect("bot").health;
+    let mut got = false;
+    for t in 0..((FIXTURE_S * SIM_HZ as f32) as u32) {
+        crate::bots::drive(&mut w, &mut bots, t as f32 * SIM_DT, SIM_DT);
+        w.step(SIM_DT);
+        let _ = w.drain_events();
+        low = low.min(w.player(1).expect("bot").health);
+        if w.player(1).expect("bot").inventory.count_of(PISTOL) > 0 {
+            got = true;
+            break;
+        }
+    }
+    let left = w.player(1).expect("bot").inventory.count_of(item);
+    (
+        got,
+        bots[0].stats().blast_digs,
+        bots[0].stats().dig_swings,
+        low,
+        left,
+    )
+}
+
+/// **T23.41 (T23.37 item 4): a carving weapon digs when its blast guard allows.** Sealed in a pocket eleven cells
+/// wide, the one pistol in a sealed chamber three cells of rock away: the route digs. With a bazooka in the bag the bot
+/// fires it at the tunnel's face from back in the pocket, **never hurts itself** doing it (the guard: an impact inside
+/// `BOT_BLAST_GUARD` radii of where it will stand is refused), keeps `BOT_BLAST_DIG_KEEP` rounds, and gets the pistol.
+/// Started three cells from the face instead, every impact is inside the guard: no blast, no harm, the shovel digs.
+/// The control: the same pocket without the bazooka — no blast dig, the shovel digs. Planted (the guard's distance
+/// test off in `arms::blast_dig`): the near start rockets the face at its feet → red.
+#[test]
+fn a_carving_weapon_opens_the_dig_face_from_a_safe_distance() {
+    use crate::constants::{BAZOOKA_AMMO, BOT_BLAST_DIG_KEEP};
+    let pocket = |bazooka: bool, start: i32| {
+        let (mut w, ox, oy) = block(MapScale::Small, 30, 16);
+        let feet = oy + 12;
+        fill(&mut w, ox + 2, feet - 3, ox + 12, feet, false);
+        fill(&mut w, ox + 16, feet - 3, ox + 20, feet, false);
+        seal(&mut w);
+        w.set_phase(RoundPhase::Playing);
+        w.add_player(1, 0, "bot".into());
+        let _ = w.drain_events();
+        let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+        for id in ids {
+            w.items.remove(id);
+        }
+        w.spawn_schedule.rebase(crate::constants::ROUND_SECONDS);
+        if let Some(p) = w.player_mut(1) {
+            p.body = crate::physics::body::Body::new(stand_at(ox + start, feet));
+        }
+        if bazooka {
+            give(&mut w, 1, BAZOOKA, BAZOOKA_AMMO);
+        }
+        let _ = drop_at(&mut w, PISTOL, stand_at(ox + 18, feet));
+        w
+    };
+    let full = crate::constants::BASE_HEALTH;
+    let (got, blasts, swings, low, left) =
+        tunnel(pocket(true, 3), Bot::new(1, SEED, 0, 0.6), BAZOOKA);
+    assert!(
+        blasts > 0,
+        "with a bazooka the face was never shot at ({swings} swings, got {got})"
+    );
+    assert!(
+        low >= full,
+        "the bot hurt itself digging: health fell to {low}"
+    );
+    assert!(
+        left >= BOT_BLAST_DIG_KEEP as u32,
+        "dug its last rounds away: {left} left"
+    );
+    assert!(got, "it blasted ({blasts}) but never got the pistol");
+    // The guard: started three cells from the face — inside `BOT_BLAST_GUARD` radii of any impact on it — it
+    // never fires the bazooka at the rock and is never hurt; the shovel digs.
+    let (got, blasts, swings, low, _) =
+        tunnel(pocket(true, 10), Bot::new(1, SEED, 0, 0.6), BAZOOKA);
+    assert!(
+        blasts == 0 && low >= full && swings > 0,
+        "inside the guard: {blasts} blast digs, health {low}, {swings} swings (got {got})"
+    );
+    let (got, blasts, swings, _, _) = tunnel(pocket(false, 3), Bot::new(1, SEED, 0, 0.6), BAZOOKA);
+    assert!(
+        blasts == 0 && swings > 0 && got,
+        "control, no bazooka: {blasts} blast digs, {swings} swings, got {got} — the shovel digs"
+    );
+}

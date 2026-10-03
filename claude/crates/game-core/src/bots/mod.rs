@@ -147,6 +147,8 @@ pub struct BotStats {
     pub nav_plans: u32,
     pub ticks_routed: u32,
     pub dig_swings: u32,
+    /// T23.41: shots a carving weapon fired at a route's dig face (`arms::blast_dig`).
+    pub blast_digs: u32,
     /// T23.26: swings at a lip a route step stuck on (the follower's stuck response).
     pub lip_swings: u32,
     /// T23.26C (§A3): ticks a bot stepped sideways out from under a falling meteor.
@@ -738,6 +740,12 @@ impl Bot {
         // A dig step aims at its rock, and without the skill's error: nobody misses a
         // wall they are standing at, and a swing off the bore leaves a lip.
         let dig_at = nav.and_then(|n| n.aim);
+        // T23.41 (T23.37 item 4): **a carving weapon opens the route's next dig face from back here** when its blast
+        // guard allows (`arms::blast_dig`) — selected, aimed along its arc, fired; at the face the shovel digs.
+        let blast = match (nav.and_then(|n| n.face), dig_at) {
+            (Some(face), None) => arms::blast_dig(world, me, pos, face),
+            _ => None,
+        };
         // T23.26D item 3: **an arcing weapon is aimed along its solved arc**, and a fast
         // straight round **leads** a moving enemy by its velocity over the flight time.
         // The skill's error goes on top of either.
@@ -770,6 +778,7 @@ impl Bot {
             _ => Vec2::ZERO,
         };
         let angle = match (dig_at, self.lob) {
+            _ if blast.is_some() => blast.map_or(0.0, |(_, a)| a),
             (Some(p), _) => (p.y - pos.y).atan2(p.x - pos.x),
             (None, Some(a)) => a + err,
             (None, None) => {
@@ -794,7 +803,8 @@ impl Bot {
         // their lives they could not shoot at all.
         let mut fighting = false;
         if let Goal::Enemy(_) = self.goal {
-            if dig_at.is_none() && self.should_fire(world, me, pos, aim_at, now) {
+            if dig_at.is_none() && blast.is_none() && self.should_fire(world, me, pos, aim_at, now)
+            {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
                 if let Some(d) = arms::first_rock(world, pos, aim_at) {
@@ -826,6 +836,13 @@ impl Bot {
             }
         }
 
+        if let Some((slot, _)) = blast {
+            if me.inventory.selected() == slot && now >= me.fire_ready_at {
+                buttons |= button::FIRE;
+                self.stats.blast_digs += 1;
+            }
+        }
+
         // --- items ------------------------------------------------------
         self.want_use = self.choose_item(me);
         // T23.26E step 6: the counters, by `choose_item`'s own thresholds.
@@ -835,6 +852,9 @@ impl Bot {
         // **A dig step holds the shovel**: `choose_weapon` re-decides every tick and would
         // switch back to the best gun the tick after.
         self.want_select = match nav {
+            _ if blast.is_some() => blast
+                .map(|(s, _)| s)
+                .filter(|s| *s != me.inventory.selected()),
             Some(n) if dig_at.is_some() => n.select,
             _ => self.choose_weapon(world, me, aim_at, pos),
         };
@@ -2358,6 +2378,7 @@ pub(crate) mod harness {
             nav_plans: a.nav_plans + b.nav_plans,
             ticks_routed: a.ticks_routed + b.ticks_routed,
             dig_swings: a.dig_swings + b.dig_swings,
+            blast_digs: a.blast_digs + b.blast_digs,
             lip_swings: a.lip_swings + b.lip_swings,
             ticks_dodging: a.ticks_dodging + b.ticks_dodging,
             tank_replans: a.tank_replans + b.tank_replans,

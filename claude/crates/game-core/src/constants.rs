@@ -4597,6 +4597,15 @@ pub const BOT_STAND_OFF_MIN: f32 = 40.0;
 /// a weapon that would down for it (`choose_weapon`) — one rule, both callers: a bot that
 /// rockets its own feet is a bug that looks like a difficulty setting.
 pub const BOT_BLAST_GUARD: f32 = 1.5;
+/// T23.41 (T23.37 item 4): a carving weapon digs only while it holds **more** than this many rounds — the last is
+/// kept for the fight the tunnel leads to. **Basis:** the fewest a carving weapon is found with is 1 (a thrown
+/// grenade, a mine), and digging the last of a bazooka's `BAZOOKA_AMMO` 4 left a bot arriving unarmed; 1 keeps one.
+pub const BOT_BLAST_DIG_KEEP: u8 = 1;
+/// T23.41: how many route steps ahead a bot looks for the next dig face a carving weapon could open
+/// (`route::Route::next_face`). **Basis:** `BOT_BLAST_GUARD` × a bazooka's 42 px blast is 63 px, ~4 cells
+/// (`BOT_NAV_CELL` 16): a face must be at least that far ahead to be shot at all, and past ~12 cells (192 px) a
+/// route has usually turned, so a straight or lobbed shot from here no longer lands on its face.
+pub const BOT_BLAST_DIG_LOOKAHEAD: usize = 12;
 /// `choose_weapon`'s score for a weapon that cannot reach the target from here: a
 /// quarter — penalised, not disqualified, since walking closer with a bazooka beats
 /// standing still with nothing.
