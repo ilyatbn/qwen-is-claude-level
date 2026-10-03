@@ -406,7 +406,13 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
                         let (ctx, io, config) = (ctx.clone(), io.clone(), config.clone());
                         async move {
-                            let scale = scale_from(&payload, config.map_scale);
+                            // T23.42: with the picker switched off a requested size is ignored — the room is the
+                            // server's scale, whatever an old or hand-made client asks for.
+                            let scale = if config.map_scale_selectable {
+                                scale_from(&payload, config.map_scale)
+                            } else {
+                                config.map_scale
+                            };
                             let private = payload
                                 .get("private")
                                 .and_then(|v| v.as_bool())
@@ -483,7 +489,12 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             // does not offer. Seeded in the registry, so
                             // `FIXED_SEED` still reproduces the whole round.
                             let _ = &payload;
-                            let scale = ctx.random_scale();
+                            // T23.42: switched off, quick match draws no size either — every lobby is the server's.
+                            let scale = if config.map_scale_selectable {
+                                ctx.random_scale()
+                            } else {
+                                config.map_scale
+                            };
                             let max = config.max_players;
                             match ctx.quick_match(scale, max) {
                                 crate::registry::QuickMatch::Existing(room_id)
@@ -547,11 +558,17 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                 // would give a refusal that is correct on the server and silent
                 // at the client, and a Rust test asserting "the error was
                 // emitted" would pass while the real client ignored it.
+                let selectable = config.map_scale_selectable;
                 socket.on(
                     "set_scale",
                     move |socket: SocketRef, Data::<serde_json::Value>(payload)| {
                         let ctx = ctx.clone();
                         async move {
+                            // T23.42: the size is switched off, so a request to change it is ignored — no refusal
+                            // either, since the lobby offers no control that could have sent it.
+                            if !selectable {
+                                return;
+                            }
                             let Some((_, room, sessions)) = ctx.resolve(socket.id) else {
                                 return;
                             };

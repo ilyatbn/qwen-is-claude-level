@@ -455,7 +455,7 @@ export class MenuScene extends Phaser.Scene {
       // §F7: **a public lobby shows no panel at all.** Not a disabled one —
       // every control on it would be refused by the server, and a row a player
       // can see and never move is worse than no row.
-      const controls = L.private ? settingsControls(L, this.mySeat, this.timerBounds()) : []
+      const controls = L.private ? settingsControls(L, this.mySeat, this.timerBounds(), C().MAP_SCALE_SELECTABLE) : []
       const stepper = controls
         .map(
           (c) => `<div class="settings-row">
@@ -513,7 +513,8 @@ export class MenuScene extends Phaser.Scene {
    * screen to say so.
    */
   private stepEither(delta: number): void {
-    if (this.model.screen === 'lobby') this.step('scale', delta)
+    // T23.42: with the size switched off the arrows drive nothing — there is no row for them to move.
+    if (this.model.screen === 'lobby' && C().MAP_SCALE_SELECTABLE) this.step('scale', delta)
   }
 
   /**

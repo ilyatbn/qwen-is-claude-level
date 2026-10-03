@@ -2489,6 +2489,9 @@ pub fn constants_json() -> String {
         // range and subtle at distance"), so the client needs the same number
         // the sim arms on rather than a second copy of it.
         MINE_ARM_TIME => c::MINE_ARM_TIME,
+        // T23.42: whether the lobby offers a Map size row. The server ignores a size request when it is false, so
+        // the client hides the control from the same constant rather than a copy that could disagree.
+        MAP_SCALE_SELECTABLE => c::MAP_SCALE_SELECTABLE,
         // T20.10's ground animals. The client draws them at exactly the hit box
         // the sim tests against, so the sizes cross the boundary rather than
         // being spelled in `animals-math.ts`.

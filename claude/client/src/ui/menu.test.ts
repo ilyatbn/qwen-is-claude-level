@@ -114,17 +114,17 @@ describe('menu navigation', () => {
 })
 
 describe('map size', () => {
-  it('persists and falls back to medium on anything unexpected', () => {
+  it('persists and falls back to the default size on anything unexpected', () => {
     const store = new Map<string, string>()
     const s = {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => void store.set(k, v),
     }
-    expect(loadScale(s)).toBe('medium')
+    expect(loadScale(s)).toBe(DEFAULT_MODEL.scale)
     saveScale(s, 'large')
     expect(loadScale(s)).toBe('large')
     store.set('deepcut.scale', 'enormous')
-    expect(loadScale(s)).toBe('medium')
+    expect(loadScale(s)).toBe(DEFAULT_MODEL.scale)
   })
 
   it('every size reads as something, and they differ', () => {

@@ -2192,6 +2192,12 @@ pub const CAMERA_LERP: f32 = 0.12;
 
 /// The map you get unless `MAP_SCALE` says otherwise.
 ///
+/// **Small — T23.42, the owner's call (2026-10-03):** *"honestly the map sizes are kinda unnecessary for now. can you
+/// leave everything on small and disable the feature (without removing it)? i feel like small is good enough for a fun
+/// battle."* The basis is that sentence, not a measurement: nothing below was re-run to choose Small. The size picker
+/// is switched off by [`MAP_SCALE_SELECTABLE`], so this is the size of every match a player can reach. The history
+/// below is why it was Medium before, kept because it is still what Medium and Large measure.
+///
 /// **Medium, not Large — T11.16, §B27.** §A1 chose Large so the map is something
 /// you explore rather than survey, and that intent stands: at `CAMERA_ZOOM` 2.0
 /// Medium was 4.8 x 4.3 screens of world — at 1.0 (T23.10, R6) it is 2.4 x 2.1, still
@@ -2219,7 +2225,15 @@ pub const CAMERA_LERP: f32 = 0.12;
 /// Large is still there behind `MAP_SCALE=large` for the exploratory game §A1
 /// describes. It is not the default because at four players it produces rounds
 /// with no fighting in them.
-pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Medium;
+pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Small;
+/// Whether a player may choose the map size (T23.42, the owner, 2026-10-03 — quoted at [`DEFAULT_MAP_SCALE`]).
+///
+/// **Off: switched off, not removed.** When false the lobby shows no Map size row (mirrored to the client through
+/// `constants_json`) and the server ignores a scale named by `create_room`, by quick match (which no longer draws a
+/// random size) and by `set_scale` — every room is the server's configured scale, [`DEFAULT_MAP_SCALE`] unless the
+/// operator's `MAP_SCALE` says otherwise. When true everything works as it did before T23.42. The server reads it
+/// through `Config::map_scale_selectable`, so its tests can run both sides of the switch.
+pub const MAP_SCALE_SELECTABLE: bool = false;
 /// Phaser camera zoom. Visible world = VIEWPORT / this.
 ///
 /// **T23.10 (R6): 2.0 → 1.0** — what the M23 pictures are drawn at, and the owner's words: *"a bit more zoomed out

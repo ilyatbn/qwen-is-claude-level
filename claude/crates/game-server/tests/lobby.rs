@@ -27,7 +27,11 @@ struct Harness {
 }
 
 async fn spawn_server() -> Harness {
-    let state = AppState::new(test_config());
+    spawn_server_with(test_config()).await
+}
+
+async fn spawn_server_with(config: Config) -> Harness {
+    let state = AppState::new(config);
     let stack = app::build_stack(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1411,7 +1415,12 @@ fn the_tick_asks_for_a_world_and_does_not_build_one() {
 /// after seating is dropped before anything reads it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_set_scale_tells_the_sender_why() {
-    let h = spawn_server().await;
+    // T23.42: the size is switched off by default; this is the "on" behaviour, so it turns the switch on.
+    let h = spawn_server_with(Config {
+        map_scale_selectable: true,
+        ..test_config()
+    })
+    .await;
     let addr = h.addr;
 
     let (owner_errs, other_errs, scale_after) = tokio::task::spawn_blocking(move || {
@@ -1482,6 +1491,71 @@ async fn a_refused_set_scale_tells_the_sender_why() {
     );
 
     h.stack.shutdown_all(Duration::from_secs(2)).await;
+}
+
+/// What a room ends up at after its host asks for `large` at create and `medium` from the lobby, with the map-size
+/// switch at `selectable`: `(room_created.scale, lobby_state.scale after set_scale)`.
+async fn scales_after_asking(selectable: bool) -> (serde_json::Value, serde_json::Value) {
+    let h = spawn_server_with(Config {
+        map_scale_selectable: selectable,
+        ..test_config()
+    })
+    .await;
+    let addr = h.addr;
+    let out = tokio::task::spawn_blocking(move || {
+        let ia: Inbox = Arc::default();
+        let a = connect(addr, ia.clone());
+        a.emit(
+            "create_room",
+            serde_json::json!({ "name": "ana", "scale": "large", "private": true }),
+        )
+        .expect("emit");
+        wait_for(&ia, "room_created", 1, "ana");
+        wait_for(&ia, "welcome", 1, "ana");
+        std::thread::sleep(Duration::from_millis(400));
+        let created = first(&ia, "room_created", "scale");
+        a.emit("set_scale", serde_json::json!({ "scale": "medium" }))
+            .expect("emit");
+        std::thread::sleep(Duration::from_millis(600));
+        let after = last(&ia, "lobby_state", "scale");
+        let _ = a.disconnect();
+        (created, after)
+    })
+    .await
+    .expect("client thread");
+    h.stack.shutdown_all(Duration::from_secs(2)).await;
+    out
+}
+
+/// **T23.42: switched off, a requested size is ignored — at create and in the lobby.** The owner: every match Small,
+/// the feature kept. The control is the same requests with the switch on, which must be honoured — without it, "the
+/// room stayed at the server's scale" also passes for a server that ignores the payload altogether.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_the_size_switched_off_a_requested_scale_is_ignored() {
+    let server = test_config().map_scale.as_str();
+    let (created, after) = scales_after_asking(false).await;
+    assert_eq!(
+        created, server,
+        "create_room honoured a size with the switch off"
+    );
+    assert_eq!(
+        after, server,
+        "set_scale changed the size with the switch off"
+    );
+
+    let (created, after) = scales_after_asking(true).await;
+    assert_ne!(
+        server, "large",
+        "the control needs a request unlike the server's scale"
+    );
+    assert_eq!(
+        created, "large",
+        "control: switched on, create_room ignored the size"
+    );
+    assert_eq!(
+        after, "medium",
+        "control: switched on, set_scale was not honoured"
+    );
 }
 
 /// **The seed is stated, not inherited** (T20.18/T20.20).

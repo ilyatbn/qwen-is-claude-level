@@ -30,7 +30,8 @@ export interface MenuModel {
 
 export const DEFAULT_MODEL: MenuModel = {
   screen: 'menu',
-  scale: 'medium',
+  // T23.42: Small, the server's size. With the picker switched off the server ignores this anyway.
+  scale: 'small',
   code: '',
   error: null,
   hostCode: null,
@@ -93,7 +94,7 @@ const SCALE_KEY = 'deepcut.scale'
 
 export function loadScale(store: Pick<Storage, 'getItem'>): Scale {
   const v = store.getItem(SCALE_KEY)
-  return v === 'small' || v === 'medium' || v === 'large' ? v : 'medium'
+  return v === 'small' || v === 'medium' || v === 'large' ? v : DEFAULT_MODEL.scale
 }
 
 export function saveScale(store: Pick<Storage, 'setItem'>, s: Scale): void {
@@ -106,7 +107,7 @@ export function scaleBlurb(s: Scale): string {
     case 'small':
       return 'Small — fast, close-quarters'
     case 'medium':
-      return 'Medium — the default'
+      return 'Medium — room to roam'
     case 'large':
       return 'Large — slow, exploratory'
   }

@@ -543,7 +543,7 @@ describe('the private settings panel (§F7)', () => {
   it('carries the same map-shape list the Rust enum does, and hides it in space (T23.30)', () => {
     expect([...MAP_SHAPES]).toEqual([...C().MAP_SHAPES])
     expect(C().MAP_SHAPES.length).toBeGreaterThan(1)
-    const ids = (g: 'standard' | 'space') => settingsControls(lobby({ gravity: g }), HOST, bounds).map((c) => c.id)
+    const ids = (g: 'standard' | 'space') => settingsControls(lobby({ gravity: g }), HOST, bounds, true).map((c) => c.id)
     expect(ids('standard')).toContain('shape')
     expect(ids('space')).not.toContain('shape')
     // The host steps it, wrapping; nobody steps it in space.
@@ -617,20 +617,20 @@ describe('the private settings panel (§F7)', () => {
   })
 
   it('disables exactly what it refuses, so a screen cannot disagree with the wire', () => {
-    const guest = settingsControls(lobby(), GUEST, bounds)
+    const guest = settingsControls(lobby(), GUEST, bounds, true)
     expect(guest).toHaveLength(6)
     for (const c of guest) {
       expect([c.id, c.prevDisabled, c.nextDisabled]).toEqual([c.id, true, true])
     }
     // The control frame: the same lobby, seen by the host. Its timer sits one
     // step above `min`, so neither arrow is at a bound.
-    const host = settingsControls(lobby(), HOST, bounds)
+    const host = settingsControls(lobby(), HOST, bounds, true)
     for (const c of host) {
       expect([c.id, c.prevDisabled, c.nextDisabled]).toEqual([c.id, false, false])
     }
     // And the timer's arrows end disabled at each bound, for the host too.
-    const low = settingsControls(lobby({ roundSeconds: bounds.min }), HOST, bounds)
-    const high = settingsControls(lobby({ roundSeconds: bounds.max }), HOST, bounds)
+    const low = settingsControls(lobby({ roundSeconds: bounds.min }), HOST, bounds, true)
+    const high = settingsControls(lobby({ roundSeconds: bounds.max }), HOST, bounds, true)
     expect(low.find((c) => c.id === 'timer')?.prevDisabled).toBe(true)
     expect(low.find((c) => c.id === 'timer')?.nextDisabled).toBe(false)
     expect(high.find((c) => c.id === 'timer')?.nextDisabled).toBe(true)
@@ -651,7 +651,7 @@ describe('the private settings panel (§F7)', () => {
         for (const bots of [true, false]) {
           for (const startKit of START_KITS) {
             const s = lobby({ roundSeconds: sec, bots, startKit })
-            for (const c of settingsControls(s, seat, bounds)) {
+            for (const c of settingsControls(s, seat, bounds, true)) {
               const prev = stepSetting(s, seat, c.id, -1, bounds) === undefined
               const next = stepSetting(s, seat, c.id, 1, bounds) === undefined
               expect([c.id, c.prevDisabled, c.nextDisabled]).toEqual([c.id, prev, next])
@@ -669,9 +669,20 @@ describe('the private settings panel (§F7)', () => {
     expect(dead).toBeGreaterThan(0)
   })
 
+  it('hides the Map size row when the size is switched off, and only that row (T23.42)', () => {
+    // The owner: every match Small, the picker switched off but kept. The control is the same lobby with the switch
+    // on — without it, "no scale row" also passes for a panel that renders nothing.
+    const ids = (on: boolean) => settingsControls(lobby(), HOST, bounds, on).map((c) => c.id)
+    expect(ids(false)).not.toContain('scale')
+    expect(ids(true)).toContain('scale')
+    expect(ids(false)).toEqual(ids(true).filter((id) => id !== 'scale'))
+    // The shipped switch reaches the client as a boolean from `constants_json`, not as `undefined`.
+    expect(typeof C().MAP_SCALE_SELECTABLE).toBe('boolean')
+  })
+
   it('renders each setting in the words §F7 uses, and the timer in minutes', () => {
     const rows = (s: LobbyStateMsg) =>
-      Object.fromEntries(settingsControls(s, HOST, bounds).map((c) => [c.id, c.value]))
+      Object.fromEntries(settingsControls(s, HOST, bounds, true).map((c) => [c.id, c.value]))
     expect(rows(lobby()).bots).toBe('Enabled')
     expect(rows(lobby({ bots: false })).bots).toBe('Disabled')
     expect(rows(lobby({ startKit: 'none' })).kit).toBe('None')
@@ -711,7 +722,7 @@ describe('the private settings panel (§F7)', () => {
     // An older server that carries none of them: the panel still renders, at
     // the server's own defaults, rather than throwing or showing blanks.
     const bare = parseLobbyState({ private: true, capacity: 5, scale: 'small', players: [] })
-    const rows = settingsControls({ ...bare, settingsOwner: HOST }, HOST, bounds)
+    const rows = settingsControls({ ...bare, settingsOwner: HOST }, HOST, bounds, true)
     expect(rows.map((c) => c.id)).toEqual(['scale', 'gravity', 'shape', 'bots', 'kit', 'timer'])
     expect(rows.find((c) => c.id === 'bots')?.value).toBe('Enabled')
     expect(rows.find((c) => c.id === 'kit')?.value).toBe('None')

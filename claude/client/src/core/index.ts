@@ -576,6 +576,8 @@ export interface Constants {
   ROUND_SECONDS_MIN: number
   ROUND_SECONDS_MAX: number
   ROUND_SECONDS_STEP: number
+  /** T23.42 — whether the lobby offers a Map size row; the server ignores a size request when false. */
+  MAP_SCALE_SELECTABLE: boolean
   /** §C5 — the pads the client draws, and the timings it fills the ring over. */
   TELEPORT_PADS: number
   PAD_W: number

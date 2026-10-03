@@ -543,6 +543,8 @@ export function settingsControls(
   s: LobbyStateMsg,
   mySeat: number | undefined,
   b: TimerBounds,
+  /** T23.42 — `C().MAP_SCALE_SELECTABLE`. False: no Map size row; the server ignores a size request anyway. */
+  scaleSelectable: boolean,
 ): SettingControl[] {
   const owner = ownsSettings(s, mySeat)
   const row = (id: SettingId, name: string, value: string): SettingControl => ({
@@ -556,7 +558,9 @@ export function settingsControls(
     nextDisabled: !owner || stepSetting(s, mySeat, id, 1, b) === undefined,
   })
   return [
-    row('scale', 'Map size', s.scale.toUpperCase()),
+    // T23.42: switched off, not removed — every match is the server's size and the row would be a control that
+    // does nothing.
+    ...(scaleSelectable ? [row('scale', 'Map size', s.scale.toUpperCase())] : []),
     row('gravity', 'Gravity', GRAVITY_LABELS[s.gravity]),
     // T23.30 (`docs/78` §A5): beside gravity, and hidden for space, which keeps its own map.
     ...(s.gravity === 'space' ? [] : [row('shape', 'Map shape', MAP_SHAPE_LABELS[s.mapShape])]),

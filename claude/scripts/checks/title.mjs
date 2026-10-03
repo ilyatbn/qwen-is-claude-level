@@ -202,6 +202,8 @@ export default async function ({ page, shot, log }) {
   // `stepSetting(…, 'scale', ±1)` wrapping in both directions. Said plainly
   // rather than left to be discovered: the wire half of a map-size change is
   // the one thing this move did not carry over.
+  // T23.42: and with `MAP_SCALE_SELECTABLE` off there is no `scale` row at all — `lobby.mjs` asserts its absence on
+  // both seats, and carries `scale` in `IDS`/`MOVED` again only when the switch is on.
   await page.click('#private')
   if ((await m()).screen !== 'private') throw new Error('Private Game did not open')
 

@@ -13,8 +13,8 @@ use std::net::SocketAddr;
 use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
-    LOBBY_BOT_TIMEOUT, MAX_PLAYERS, READY_TIMEOUT_SECS, ROOM_EMPTY_TTL, ROUND_SECONDS,
-    WARMUP_SECONDS,
+    LOBBY_BOT_TIMEOUT, MAP_SCALE_SELECTABLE, MAX_PLAYERS, READY_TIMEOUT_SECS, ROOM_EMPTY_TTL,
+    ROUND_SECONDS, WARMUP_SECONDS,
 };
 use game_core::weapons::explode::EffectKind;
 use game_core::world::WeatherMode;
@@ -24,6 +24,11 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub game_log: String,
     pub map_scale: MapScale,
+    /// Whether a client may choose the map size (T23.42). From
+    /// [`MAP_SCALE_SELECTABLE`], not the environment: the owner switched the feature off, and the operator's
+    /// `MAP_SCALE` already picks the one size every room gets. A field rather than a direct read of the constant only
+    /// so the server tests can run both sides of the switch.
+    pub map_scale_selectable: bool,
     /// Which terrain generator builds the round's map.
     ///
     /// Runtime rather than compile-time because the two are meant to be compared
@@ -306,6 +311,7 @@ impl Default for Config {
             bind_addr: ([0, 0, 0, 0], 3000).into(),
             game_log: "info".to_string(),
             map_scale: DEFAULT_MAP_SCALE,
+            map_scale_selectable: MAP_SCALE_SELECTABLE,
             map_generator: DEFAULT_MAP_GENERATOR,
             max_players: MAX_PLAYERS,
             round_seconds: ROUND_SECONDS,
@@ -481,6 +487,7 @@ impl Config {
             bind_addr,
             game_log,
             map_scale,
+            map_scale_selectable: d.map_scale_selectable,
             map_generator,
             max_players,
             round_seconds,
@@ -723,6 +730,7 @@ mod tests {
         // was written against — it went stale the moment T11.16 moved the
         // scale, and reported a deliberate change as a failure.
         assert_eq!(c.map_scale, DEFAULT_MAP_SCALE);
+        assert_eq!(c.map_scale_selectable, MAP_SCALE_SELECTABLE);
         assert_eq!(c.max_players, MAX_PLAYERS);
         assert_eq!(c.round_seconds, 240.0);
         assert_eq!(c.fixed_seed, None);

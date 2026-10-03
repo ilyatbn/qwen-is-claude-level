@@ -17,7 +17,8 @@
  */
 import { startStack, sleep, shotsDir, freePort, openAtMenu } from './harness.mjs'
 import { samplePatch } from './pixels.mjs'
-import { constants as rustConstants } from '../lib/rust-constants.mjs'
+import { constants as rustConstants, CONSTANTS_RS } from '../lib/rust-constants.mjs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const PORT = await freePort()
@@ -159,7 +160,23 @@ const boPanel = await settings(bo)
 // is a row the guest gate, the host control and the "every seat sees it" half
 // all skip in silence.
 // T23.30 adds `shape` (hidden only in space; this lobby starts at Standard).
-const IDS = ['scale', 'gravity', 'shape', 'bots', 'kit', 'timer']
+//
+// T23.42: `scale` is on the panel only while `MAP_SCALE_SELECTABLE` is on — the owner switched the size off (every
+// match Small) without removing it. Read from `constants.rs` rather than assumed, so flipping the switch back on
+// restores the row's assertions instead of failing them. (`rust-constants.mjs` evaluates arithmetic, not booleans.)
+const selectableDecl = /^pub const MAP_SCALE_SELECTABLE: bool = (true|false);/m.exec(readFileSync(CONSTANTS_RS, 'utf8'))
+if (!selectableDecl) throw new Error('constants.rs has no `pub const MAP_SCALE_SELECTABLE: bool`')
+const SCALE_SELECTABLE = selectableDecl[1] === 'true'
+const IDS = [...(SCALE_SELECTABLE ? ['scale'] : []), 'gravity', 'shape', 'bots', 'kit', 'timer']
+// The picker's absence, on both seats' screens, with the switch off. The control is every other row being present
+// (`missing` just below), so "no Map size row" cannot be satisfied by a panel that rendered nothing.
+if (!SCALE_SELECTABLE) {
+  const shown = [anaPanel, boPanel].filter((p) => p.scale).length
+  const text = await ana.page.evaluate(() => document.body.innerText)
+  if (shown || /map size/i.test(text)) {
+    fail(`the map size is switched off and the lobby still offers it (${shown} panels, text: ${/map size/i.test(text)})`)
+  } else ok('the map size is switched off (T23.42): no Map size row on either seat')
+}
 const missing = IDS.filter((id) => !anaPanel[id])
 if (missing.length) fail(`the host's panel is missing rows: ${JSON.stringify(missing)}`)
 else ok(`the host sees all ${IDS.length} settings on screen: ${JSON.stringify(anaPanel)}`)
@@ -180,7 +197,7 @@ if (hostLocked.length) {
 } else ok("control: the host's controls are enabled, so the guest's are locked by seat")
 
 // --- the host changes every steppable setting, and the guest sees it -----
-const MOVED = ['scale', 'shape', 'bots', 'kit', 'timer', 'gravity']
+const MOVED = [...(SCALE_SELECTABLE ? ['scale'] : []), 'shape', 'bots', 'kit', 'timer', 'gravity']
 const beforeMoved = Object.fromEntries(MOVED.map((id) => [id, anaPanel[id].value]))
 for (const id of MOVED) {
   await ana.page.evaluate((i) => window.__menu.step(i, 1), id)
