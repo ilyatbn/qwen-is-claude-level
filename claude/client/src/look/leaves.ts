@@ -18,6 +18,14 @@ import type { Box, Foreground, ViewRect } from './scene'
 
 export type LeafSpot = Foreground['spots'][number]
 
+/**
+ * T23.43: **switched off, not removed.** The owner, seeing a cluster as a big blurry dark clump mid-screen: *"what are
+ * these leaves anyway? ... you can make them really small like the fire dots on the lava level."* The game's leaves are
+ * `leafFlecks.ts` now; with this false `gameDescription` hands the renderer no clusters and no `fg` layer. The look-lab's
+ * F1/F5 keep the mockup's own clusters (their Level A gates measure them). *Reverse it by:* true.
+ */
+export const LEAF_CLUSTERS = false
+
 /** F1's clusters' radii and leaf counts (`scenes/F1.ts`: r 90 / 110, n 9 / 10) — a map's are drawn from this range. */
 export const LEAF_R: readonly [number, number] = [90, 110]
 export const LEAF_N: readonly [number, number] = [9, 10]

@@ -86,7 +86,7 @@ export interface WorldHandle {
   hideTerrain(hide: boolean): void
   /** T23.07B (F4): draw the lit terrain without its cave wall (`gate-ground`: rock changes with the terrain, not with the wall). */
   hideWall(hide: boolean): void
-  /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`; T23.18 `fx`, every effect; T23.24 `fireflies`); `[]` restores. */
+  /** T23.08: switch the fog, leaves or post passes off by name (`fogBack`, `fogFront`, `fg`, `bloom`, `grade`; T23.18 `fx`, every effect; T23.24 `fireflies`; T23.43 `leaves`, the flecks); `[]` restores. */
   hideLayers(names: string[]): void
   /** T23.19G: the point lights the terrain last drew (after `pickLights`: culled to the view, capped to the slots). */
   drawnLights(): Light[] | null
@@ -110,6 +110,8 @@ export interface WorldHandle {
   atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
   /** T23.24: the fireflies — seeded on this map, laid out on the last drawn frame, their fade and clock. */
   fireflies(): ReturnType<WorldRenderer['firefliesDrawn']> | null
+  /** T23.43: the leaf flecks the last drawn frame laid out, and the boxes they faded over. */
+  flecks(): ReturnType<WorldRenderer['flecksDrawn']> | null
   /** T23.20 part C: the black hole as the world renderer last drew it (`hideLayers(['blackHole'])` hides it). */
   blackHole(): ReturnType<WorldRenderer['blackHoleDrawn']> | null
   /** T23.20 part C: the flare and the vortices as the world renderer last drew them (`hideLayers(['flare'|'vortex'])`). */
@@ -405,6 +407,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     },
     actors: () => three?.actorsDrawn() ?? null,
     fireflies: () => three?.firefliesDrawn() ?? null,
+    flecks: () => three?.flecksDrawn() ?? null,
     blackHole: () => three?.blackHoleDrawn() ?? null,
     flare: () => three?.flareDrawn() ?? null,
     vortices: () => three?.vorticesDrawn() ?? null,

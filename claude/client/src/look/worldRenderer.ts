@@ -43,7 +43,8 @@ import { detectTier, onHighQualityChange, qualityTier, rendererString } from '..
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import type { Actor, Background, Box, FrameLook, Light, SceneDescription, ViewRect } from './scene'
 import { Atmosphere, FG_SPOTS } from './atmosphere'
-import { visibleSpots, type LeafSpot } from './leaves'
+import { LEAF_CLUSTERS, visibleSpots, type LeafSpot } from './leaves'
+import { FLECK_HZ, FleckLayer, leafFlecks } from './leafFlecks'
 import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
@@ -244,6 +245,9 @@ export class WorldRenderer implements SceneRenderer {
    * look-lab's) once the terrain fields are in (`swarmKey`: seed and map), moved by the scene's clock (`setClock`).
    */
   private readonly fireflyLayer = new FireflyLayer()
+  /** T23.43: the foreground leaves as tiny drifting flecks (`leafFlecks.ts`) — classic maps (`desc.leafFlecks`), on the scene's clock. */
+  private readonly fleckLayer = new FleckLayer()
+  private fleckStep = -1
   /** T23.20 part C: the black hole, the owner's look (`fx/blackHole.ts`) — from the feed, on the scene's clock. */
   private readonly holeLayer = new BlackHoleLayer()
   /** T23.20 part C: the solar flare and the breach vortices, F3's look (`fx/flare.ts`, `fx/vortex.ts`) — from the feed. */
@@ -287,6 +291,8 @@ export class WorldRenderer implements SceneRenderer {
     this.addLayer({ object: this.glowLayer.mesh, animated: false })
     // T23.24: not animated as a layer — a swarm in view ends the redraw skip itself, `FIREFLY_HZ` times a second at most.
     this.addLayer({ object: this.fireflyLayer.mesh, animated: false })
+    // T23.43: as the fireflies — flecks in view end the redraw skip themselves, `FLECK_HZ` times a second at most.
+    this.addLayer({ object: this.fleckLayer.mesh, animated: false })
     // T23.20 part C: not animated as a layer — a hole on screen ends the redraw skip itself (`render`), none does not.
     this.addLayer({ object: this.holeLayer.mesh, animated: false })
     // T23.20 part C: as the hole — a flare or a vortex on screen ends the redraw skip itself (`render`).
@@ -301,6 +307,7 @@ export class WorldRenderer implements SceneRenderer {
     // T23.14C: the glow's program and geometry exist from scene start, not from the first jet.
     this.glowLayer.warm(this.renderer, this.composer.readBuffer)
     this.fireflyLayer.warm(this.renderer, this.composer.readBuffer)
+    this.fleckLayer.warm(this.renderer, this.composer.readBuffer)
     this.holeLayer.warm(this.renderer, this.composer.readBuffer)
     this.flareLayer.warm(this.renderer, this.composer.readBuffer)
     this.vortexLayer.warm(this.renderer, this.composer.readBuffer)
@@ -506,6 +513,7 @@ export class WorldRenderer implements SceneRenderer {
     if (live || this.fxLive) this.dirty = true
     this.fxLive = live
     if (this.fireflyTick()) this.dirty = true
+    if (this.fleckTick()) this.dirty = true
     // T23.20 part C: the hole's disc turns on the scene's clock — a hole drawn or just gone is a new picture.
     const hole = this.holeNow()
     if (hole || this.holeLayer.drawn) this.dirty = true
@@ -557,6 +565,7 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fireflyLayer.place(this.swarm, this.clock, this.fireflyFadeNow, view, this.desc.world.h)
+    this.fleckLayer.place(this.flecksNow(view), this.occluderBoxes(), this.desc.world.h)
     this.holeLayer.place(hole, this.clock, this.desc.world.h)
     this.flareLayer.place(flare, this.clock, this.desc.world.h)
     this.vortexLayer.place(vortices?.list ?? null, vortices?.look ?? null, this.clock, this.desc.world.h)
@@ -842,6 +851,27 @@ export class WorldRenderer implements SceneRenderer {
     return true
   }
 
+  /** T23.43: this frame's flecks — the map's field in `view`, unless the description has none or a check hides `leaves`. */
+  private flecksNow(view: ViewRect): ReturnType<typeof leafFlecks> {
+    const f = this.desc?.leafFlecks
+    return f && !this.hidden.has('leaves') ? leafFlecks(f.seed, view, this.clock) : []
+  }
+
+  /** T23.43: a new picture when the flecks have moved a step (`FLECK_HZ`), or when they have just gone. */
+  private fleckTick(): boolean {
+    if (!this.desc?.leafFlecks || this.hidden.has('leaves')) return this.fleckLayer.drawn.length > 0
+    const step = Math.floor(this.clock * FLECK_HZ)
+    if (step === this.fleckStep) return false
+    this.fleckStep = step
+    return true
+  }
+
+  /** Dev (T23.43): the flecks the last drawn frame laid out (centre and length, mask px), the boxes they faded over, the clock. */
+  flecksDrawn(): { on: boolean; drawn: { x: number; y: number; len: number }[]; occluders: Box[]; clock: number } {
+    const l = this.fleckLayer
+    return { on: !!this.desc?.leafFlecks, drawn: l.drawn.map((d) => ({ ...d })), occluders: l.occluders.map((b) => [...b] as Box), clock: this.clock }
+  }
+
   /** Dev (T23.24): the swarm — fireflies seeded on this map, laid out on the last drawn frame, the fade and the clock. */
   firefliesDrawn(): { seeded: number; drawn: number; fade: number; clock: number; positions: [number, number][] } {
     const l = this.fireflyLayer
@@ -909,7 +939,7 @@ export class WorldRenderer implements SceneRenderer {
     this.dirty = true
   }
 
-  /** Dev (T23.08): switch layers/passes off by name — `fogBack`, `fogFront`, `fg`, `bloom`, `grade` (the per-pass cost, the layer hunt). */
+  /** Dev (T23.08): switch layers/passes off by name — `fogBack`, `fogFront`, `fg`, `bloom`, `grade`; T23.43 `leaves`, the flecks (the per-pass cost, the layer hunt). */
   hideLayers(names: string[]): void {
     this.hidden = new Set(names)
     this.dirty = true
@@ -1314,6 +1344,7 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.dispose()
     this.glowLayer.dispose()
     this.fireflyLayer.dispose()
+    this.fleckLayer.dispose()
     this.holeLayer.dispose()
     this.flareLayer.dispose()
     this.vortexLayer.dispose()
@@ -1390,7 +1421,8 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     bg: gameSky(map.seed, map.cloudSea != null ? { ...bg, layers: [] } : bg),
     lights: [],
     // T23.08B: the look's leaf tint (blended by the hour like the rest); the spots are the map's (`leaves`, below).
-    fg: map.leaves?.length && look.fg ? { tint: look.fg.tint, spots: [] } : null,
+    // T23.43: switched off behind `LEAF_CLUSTERS` — the flecks (`leafFlecks`, below) are the game's leaves now.
+    fg: LEAF_CLUSTERS && map.leaves?.length && look.fg ? { tint: look.fg.tint, spots: [] } : null,
   })
   const night = end(wl.night.look, f1)
   return {
@@ -1412,7 +1444,10 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     fireflies: { seed: map.seed },
     // T23.08: F1's fog, bloom and grade. T23.08B: and the foreground leaves — the map's own world-anchored clusters
     // (F1's are placed for its frame, not a map), faded over every player box the scenes hand over (`setOccluders`).
-    leaves: map.leaves ?? null,
+    leaves: LEAF_CLUSTERS ? map.leaves ?? null : null,
+    // T23.43: the owner's tiny drifting leaf flecks, seeded by the map — where the air has no embers (volcanic keeps
+    // its own; space never reaches here).
+    leafFlecks: wl.night.palette?.extra2d === 'embers' ? null : { seed: map.seed },
     look: { ...night },
     palette: wl.night.palette,
     actors: [],

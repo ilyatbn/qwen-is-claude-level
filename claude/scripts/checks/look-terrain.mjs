@@ -293,7 +293,9 @@ export default async function ({ page, shot, log }) {
   // T23.41: the sandbox has foreground leaves (T23.08B), and one sat on the patch: a leaf at alpha 0.96 is the same
   // over rock as over the sky, so the patch read "no rock" (share 0.00) with the rock drawn under it. This leg judges
   // the terrain's swap, not the foliage (`leaves` does), so the leaves are hidden across it and shown again after.
-  await page.evaluate(() => window.__world.hideLayers(['fg']))
+  // T23.43: the clusters are switched off; the leaves are now tiny drifting flecks (`leaves`), hidden here for the
+  // same reason — a fleck crossing the patch is foliage, not rock.
+  await page.evaluate(() => window.__world.hideLayers(['leaves']))
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [deep.x, deep.y])
   // Every frame from here until ready + 10: (ready, rock visible) — and, alongside, screenshots of the page
   // (both canvases composited: what a player sees) of a patch of that rock, each tagged ready or not.
@@ -644,7 +646,8 @@ async function crater(page, seed, log, problems) {
   // T23.31: a volcanic seed (4242 and 11 are, by the server's rule from the seed) has drifting embers in its air —
   // animated, so the frame and its control repaint differ by them (seen: 242 on ~6000 px) whatever the terrain did.
   // Held out of both; the terrain they would cover is still compared. Released after the leg.
-  await page.evaluate(() => window.__world.hideLayers(['embers']))
+  // T23.43: a classic seed's leaf flecks drift the same way (seen: 85 on 270 px on seed 7) — held out with them.
+  await page.evaluate(() => window.__world.hideLayers(['embers', 'leaves']))
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [cx, cy - 60])
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r)))))
   const pre = decode(await page.evaluate(() => window.__world.readFrame()))
