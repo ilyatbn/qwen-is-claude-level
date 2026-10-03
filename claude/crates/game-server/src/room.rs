@@ -1159,6 +1159,11 @@ pub fn to_command(c: &ReplayCommand) -> Command {
         // silently drop the command that *starts the round*, and the replay
         // would sit in an empty lobby and diverge on tick one.
         ReplayCommand::StartWithBots(id) => Command::StartWithBots(*id),
+        // T23.29: the code is not recorded (nothing simulated reads it); the privacy is.
+        ReplayCommand::SetPrivate(private) => Command::SetIdentity {
+            code: None,
+            private: *private,
+        },
         // Unreachable: filtered out before this is called, because a checkpoint
         // is an observation rather than an input. Mapping it to a no-op command
         // would be a quiet lie about what the file contains.
@@ -2311,8 +2316,11 @@ impl Room {
                 });
                 let _ = reply.send(answer);
             }
-            // Not recorded: identity is registry bookkeeping, not simulation.
+            // The code is registry bookkeeping; **privacy is not** — it decides whether the lobby's settings are
+            // accepted and whether the match starts on consent or on the bot timeout. Not recorded until T23.29, and
+            // that is why the owner's round replayed with the shovel alone: see `ReplayCommand::SetPrivate`.
             Command::SetIdentity { code, private } => {
+                self.note(R::SetPrivate(private));
                 self.code = code;
                 self.private = private;
             }

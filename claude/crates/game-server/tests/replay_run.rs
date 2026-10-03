@@ -1072,3 +1072,158 @@ fn a_recorded_settings_change_rebuilds_the_map_that_was_played() {
          change was not applied"
     );
 }
+
+/// T23.29 item 4: **a human's private session replays to the footer hash** — the shape of the owner's round that did
+/// not: a private room (the registry's `SetIdentity`), the `All` kit, readying (a private lobby starts on consent), then
+/// hotbar selects, fires, a quick throw, a drag, a drop and the pickup that takes it back. No `dev_loadout`: every item
+/// the human holds came through the kit or the ground.
+///
+/// Twice: the kit **picked in the lobby** (the owner's case — `decode`'s `infer_privacy` also covers files recorded
+/// before the fix), and the kit **from the config** with no lobby setting at all, where the recorded `SetPrivate` is the
+/// only thing that says the lobby started on consent. Falsified (T23.29's task file has the output): the `note` removed
+/// from `Room::apply`'s `SetIdentity` arm turns the second red; that plus `infer_privacy` disabled turns the first red.
+#[test]
+fn a_human_style_private_session_replays_to_the_footer_hash() {
+    use game_core::constants::StartKit;
+    use game_core::world::RoundPhase;
+    for kit_in_lobby in [true, false] {
+        let s = Scratch::new(if kit_in_lobby {
+            "human-lobby"
+        } else {
+            "human-config"
+        });
+        let mut room = Room::new(Arc::new(Config {
+            map_scale: MapScale::Small,
+            fixed_seed: Some(90210),
+            bot_count: 2,
+            record_replay: true,
+            round_seconds: 20.0,
+            start_kit: if kit_in_lobby {
+                StartKit::None
+            } else {
+                StartKit::All
+            },
+            ..Config::default()
+        }));
+        room.start_recording(s.path(), "000000000001");
+        room.apply_for_test(Command::SetIdentity {
+            code: Some("ABCDEF".into()),
+            private: true,
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        room.apply_for_test(Command::Join {
+            name: "owner".into(),
+            look: Default::default(),
+            reply: tx,
+        });
+        let id = rx.blocking_recv().ok().flatten().expect("seat");
+        if kit_in_lobby {
+            let (reply, ack) = tokio::sync::oneshot::channel();
+            room.apply_for_test(Command::SetStartKit {
+                by: id,
+                kit: StartKit::All,
+                reply,
+            });
+            ack.blocking_recv()
+                .expect("answered")
+                .expect("the host of a private lobby may pick the kit");
+        }
+        room.apply_for_test(Command::Ready(id, true));
+
+        let (mut pickups, mut drops, mut most_held) = (0usize, 0usize, 0usize);
+        let mut last: Option<(bool, usize)> = None;
+        let mut t = 0u32;
+        while t < 1500 {
+            t += 1;
+            let playing = room.world().is_some_and(|w| w.phase == RoundPhase::Playing);
+            // Walk, then stand still from the drop so the stack is under the feet when its lock runs out.
+            let buttons = match t {
+                _ if drops > 0 => 0,
+                _ if t % 90 < 45 => button::RIGHT,
+                _ => button::LEFT,
+            };
+            room.apply_for_test(Command::Input(
+                id,
+                vec![Input::new(t, buttons, (t.wrapping_mul(613) % 65536) as u16)],
+            ));
+            if playing && t < 600 {
+                match t % 60 {
+                    0 => room.apply_for_test(Command::SelectSlot(id, ((t / 60) % 8) as u8)),
+                    30 => room.apply_for_test(Command::Fire(id)),
+                    _ => {}
+                }
+                if t == 400 {
+                    room.apply_for_test(Command::QuickThrow(id));
+                }
+                if t == 460 {
+                    room.apply_for_test(Command::MoveItem(id, 1, 2));
+                }
+            }
+            if playing && t >= 600 && drops == 0 {
+                {
+                    // The first stack that is not the issued shovel (which cannot be dropped), on a live body.
+                    let slot = room
+                        .world_for_test()
+                        .player_mut(id)
+                        .filter(|p| p.alive)
+                        .and_then(|p| {
+                            p.inventory
+                                .iter()
+                                .find(|(_, s)| {
+                                    !game_core::player::state::STARTING_KIT.contains(&s.item)
+                                })
+                                .map(|(i, _)| i)
+                        });
+                    if let Some(slot) = slot {
+                        room.apply_for_test(Command::DropItem(id, slot));
+                        drops += 1;
+                    }
+                }
+            }
+            load(&mut room);
+            room.tick_inline(SIM_DT);
+            if let Some(p) = room
+                .world()
+                .and_then(|w| w.players.iter().find(|p| p.id == id))
+            {
+                let n = p.inventory.iter().count();
+                most_held = most_held.max(n);
+                // A pickup: a stack gained within one life after the drop (a respawn's kit is a new life).
+                if drops > 0 && p.alive && last.is_some_and(|(alive, was)| alive && n > was) {
+                    pickups += 1;
+                }
+                last = Some((p.alive, n));
+            }
+        }
+        // The premises — each one a thing the owner's replay lost.
+        assert!(
+        most_held > 2,
+        "kit in lobby {kit_in_lobby}: the kit never reached the human: {most_held} stacks at most"
+    );
+        assert_eq!(drops, 1, "the drop never ran");
+        assert!(pickups > 0, "the human never picked anything up");
+
+        let expected = room.world_for_test().state_hash();
+        let at = room.tick();
+        room.finish_recording();
+        let file = replay::read_file(&s.only_file()).expect("decode");
+        let footer = file.footer.clone().expect("footer");
+        assert_eq!(
+            (footer.final_tick, footer.state_hash),
+            (at, expected),
+            "the premise: the footer is the live round's end"
+        );
+        let mut replayed = resimulate(&file, footer.final_tick);
+        let held = replayed
+            .world_for_test()
+            .players
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(0, |p| p.inventory.iter().count());
+        assert_eq!(
+        replayed.world_for_test().state_hash(),
+        footer.state_hash,
+        "kit in lobby {kit_in_lobby}: a human's private session did not reproduce (the replayed human holds {held} stacks)"
+    );
+    }
+}

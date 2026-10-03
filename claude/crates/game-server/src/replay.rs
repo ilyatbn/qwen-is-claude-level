@@ -479,6 +479,14 @@ pub enum ReplayCommand {
     SetGravity(PlayerId, GravityMode),
     /// T23.30: the lobby's map shape. Tag 25.
     SetMapShape(PlayerId, MapShape),
+    /// T23.29 item 4: the room learned whether it is **private** (`Command::SetIdentity`). Tag 26, appended.
+    ///
+    /// The owner's recorded round did not replay because this was missing. The header is written when the room is
+    /// constructed and the registry tells the room its identity a moment later, so nothing in the file said the room
+    /// was private — and a replayed public room refuses every lobby setting (`check_settings_change`): the host's
+    /// `SetStartKit(All)` was dropped, the human held only the shovel, and the lobby started on the public bot timeout
+    /// rather than on consent. Files older than this tag get the flag back by inference (`infer_privacy`).
+    SetPrivate(bool),
     /// Already filtered: duplicates and stale sequences are dropped before they
     /// reach here, so a replay applies exactly the input the live round did.
     Input(PlayerId, Vec<Input>),
@@ -557,6 +565,7 @@ impl ReplayCommand {
             ReplayCommand::SetGravity(..) => 23,
             ReplayCommand::SetMapShape(..) => 25,
             ReplayCommand::JoinSpectator { .. } => 24,
+            ReplayCommand::SetPrivate(_) => 26,
         }
     }
 }
@@ -943,6 +952,7 @@ fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayErro
         ReplayCommand::MoveItem(id, from, to) => w.write_all(&[*id, *from, *to])?,
         ReplayCommand::DropItem(id, slot) => w.write_all(&[*id, *slot])?,
         ReplayCommand::VoteRestart(id, v) => w.write_all(&[*id, u8::from(*v)])?,
+        ReplayCommand::SetPrivate(on) => w.write_all(&[u8::from(*on)])?,
         ReplayCommand::Checkpoint { tick, hash } => {
             put_u32(w, *tick)?;
             w.write_all(hash)?;
@@ -1157,11 +1167,38 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         body.push((first, read_command(&mut c)?));
     }
 
+    infer_privacy(&mut body);
     Ok(Replay {
         header,
         body,
         footer,
     })
+}
+
+/// T23.29 item 4: give a file recorded before `SetPrivate` (tag 26) existed the privacy its room had.
+///
+/// **The inference is sound in one direction only.** A private-only setting (`SetBots`, `SetStartKit`,
+/// `SetRoundSeconds`, `SetGravity`, `SetMapShape`) is recorded only when `check_settings_change` accepted it, and that
+/// refuses every public room — so one in the file proves the room was private, and a `SetPrivate(true)` at tick 0
+/// (where the registry's `SetIdentity` landed, before any seat) is what the live room had. A private lobby whose host
+/// changed nothing leaves no trace and stays unrecoverable. A file that carries any `SetPrivate` is left alone.
+fn infer_privacy(body: &mut Vec<(u32, ReplayCommand)>) {
+    let said = body
+        .iter()
+        .any(|(_, c)| matches!(c, ReplayCommand::SetPrivate(_)));
+    let private_only = body.iter().any(|(_, c)| {
+        matches!(
+            c,
+            ReplayCommand::SetBots(..)
+                | ReplayCommand::SetStartKit(..)
+                | ReplayCommand::SetRoundSeconds(..)
+                | ReplayCommand::SetGravity(..)
+                | ReplayCommand::SetMapShape(..)
+        )
+    });
+    if !said && private_only {
+        body.insert(0, (0, ReplayCommand::SetPrivate(true)));
+    }
 }
 
 fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
@@ -1223,6 +1260,12 @@ fn read_command(c: &mut Cursor) -> Result<ReplayCommand, ReplayError> {
             }
             ReplayCommand::Input(id, v)
         }
+        // Strict, like every flag added since v4.
+        26 => ReplayCommand::SetPrivate(match c.u8()? {
+            0 => false,
+            1 => true,
+            b => return Err(ReplayError::BadBool("private", b)),
+        }),
         4 => ReplayCommand::UseItem(c.u8()?, c.u8()?),
         5 => ReplayCommand::SelectSlot(c.u8()?, c.u8()?),
         6 => ReplayCommand::Fire(c.u8()?),
@@ -1366,6 +1409,8 @@ mod tests {
             ReplayCommand::SetGravity(0, GravityMode::Space),
             ReplayCommand::SetMapShape(0, MapShape::Hill),
             ReplayCommand::SetMapShape(0, MapShape::Random),
+            ReplayCommand::SetPrivate(true),
+            ReplayCommand::SetPrivate(false),
         ]
     }
 
@@ -1406,7 +1451,8 @@ mod tests {
                 | ReplayCommand::MoveItem(..)
                 | ReplayCommand::DropItem(..)
                 | ReplayCommand::SetGravity(..)
-                | ReplayCommand::SetMapShape(..) => {}
+                | ReplayCommand::SetMapShape(..)
+                | ReplayCommand::SetPrivate(_) => {}
             }
         }
         let all = every_command();
@@ -1427,11 +1473,11 @@ mod tests {
         // on `every_command`, not an assertion that the tags are contiguous —
         // renumbering would have made every later command's encoding depend on
         // this one's removal, for nothing.
-        // T23.27: 23 with `JoinSpectator` (tag 24). T23.30: 24 with `SetMapShape` (25).
+        // T23.27: 23 with `JoinSpectator` (tag 24). T23.30: 24 with `SetMapShape` (25). T23.29: 25 with `SetPrivate` (26).
         assert_eq!(
             tags.len(),
-            24,
-            "`every_command` returns {} distinct tags, not 24 — a variant was \
+            25,
+            "`every_command` returns {} distinct tags, not 25 — a variant was \
              added to the match above without being added to the list: {tags:?}",
             tags.len()
         );
@@ -1466,6 +1512,52 @@ mod tests {
         assert_eq!(r.header, h);
         assert_eq!(r.body, body);
         assert_eq!(r.footer, None, "no footer was written");
+    }
+
+    /// T23.29 item 4: a file from before `SetPrivate` that holds a private-only setting decodes **private** — the
+    /// owner's round's shape — and one with no such setting, or one that says its privacy, is left exactly as written.
+    #[test]
+    fn a_file_from_before_set_private_gets_its_privacy_back() {
+        let old = [
+            (
+                0,
+                ReplayCommand::Join {
+                    name: "ana".into(),
+                    skin_id: 0,
+                },
+            ),
+            (231, ReplayCommand::SetStartKit(0, StartKit::All)),
+        ];
+        let got = decode(&encode_round(&header(), &old)).expect("decode");
+        assert_eq!(
+            got.body.first(),
+            Some(&(0, ReplayCommand::SetPrivate(true)))
+        );
+        assert_eq!(&got.body[1..], &old[..], "the recorded commands moved");
+        // Controls: nothing private-only, and a file that names its privacy itself.
+        let public = [(
+            0,
+            ReplayCommand::Join {
+                name: "ana".into(),
+                skin_id: 0,
+            },
+        )];
+        assert_eq!(
+            decode(&encode_round(&header(), &public))
+                .expect("decode")
+                .body,
+            public
+        );
+        let said = [
+            (0, ReplayCommand::SetPrivate(false)),
+            (231, ReplayCommand::SetStartKit(0, StartKit::All)),
+        ];
+        assert_eq!(
+            decode(&encode_round(&header(), &said))
+                .expect("decode")
+                .body,
+            said
+        );
     }
 
     #[test]
