@@ -878,6 +878,8 @@ look up and see the earth, moved since the round began.
 - [x] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner) — ✔ gated 2026-10-03 (builderA, `check.sh --changed 68c83e3`: rust + vitest green, e2e 88/104 with the 16 reds all green alone at --jobs 1 — load; `gate-builderA{,-alone}.txt`)
 - [ ] [T23.35](M23/T23.35-flash-and-camera-follow-ups.md) — A moving player's muzzle flash 87 px off his body; the camera eases per frame, not per second
 - [x] [T23.36](M23/T23.36-crates-rain-and-one-grave.md) — Crates every 2 s up to 20, bots go for them; one tombstone per player with a glow in their colour (owner)
+- [ ] [T23.37](M23/T23.37-leftovers-from-replay-and-bots.md) — Partial pickups (client half), a build id in replays, winged bots pinned against rock, carving weapons dig
+- [ ] [T23.38](M23/T23.38-the-black-hole-swallows-everything.md) — The black hole swallows items, crates, tombstones, projectiles — nothing drawn on top of it (owner)
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [ ] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
