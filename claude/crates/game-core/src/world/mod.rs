@@ -326,6 +326,11 @@ pub enum GameEvent {
         tick: u32,
         world_item_id: WorldItemId,
         player_id: PlayerId,
+        /// T23.29 item 1: what is **still on the ground** after this pickup — 0 when the stack is gone. A partial
+        /// pickup (a full counter, a weapon topped to `max_stack`) leaves the remainder lying there, and a client
+        /// that read every `item_pickup` as a removal stopped drawing an item the server still had: one nobody could
+        /// see, and anyone could walk over. The client removes the item only on 0, and otherwise takes the count.
+        remaining: u8,
     },
     ItemDespawn {
         tick: u32,
@@ -4033,10 +4038,14 @@ impl World {
         let taken = self.items.resolve_pickups(&mut view, now);
         for (world_item_id, player_id) in taken {
             let tick = self.tick;
+            // Read after the whole resolution (`retain` has run): gone is 0. Two partial takers of one stack in a
+            // tick both report the final count, which is the state a client must end on.
+            let remaining = self.items.get(world_item_id).map_or(0, |it| it.count);
             self.events.push(GameEvent::ItemPickup {
                 tick,
                 world_item_id,
                 player_id,
+                remaining,
             });
             self.events.push(GameEvent::Inventory { tick, player_id });
         }
@@ -6288,6 +6297,64 @@ mod crate_motion_tests {
             let _ = w.drain_events();
         }
         assert!(w.items.get(id).is_some(), "picked up from 400 px away");
+    }
+
+    /// T23.29 item 1: **a partial pickup says what is left**, and it is what the world still holds. A stack of
+    /// `MAX_HEALS` medkits, taken by a player one short of the cap: one goes in, the rest stays — and the event's
+    /// `remaining` is that rest, not the 0 a removal means. The control: an empty-handed player takes a whole stack,
+    /// and the event says 0 with the item gone. Planted (`remaining` hardwired 0 at `World::resolve_pickups`) → red.
+    #[test]
+    fn a_partial_pickup_reports_what_is_left_on_the_ground() {
+        use crate::constants::MAX_HEALS;
+        let mut w = world();
+        let probe = drop_crate(&mut w, 300.0);
+        for _ in 0..600 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        let at = w.items.get(probe).expect("there").pos;
+        // Standing on the landed crate first, so the ground there is clear of anything but the stacks below.
+        w.add_player(0, 0, "ana".into());
+        w.player_mut(0).expect("added").body.pos = at;
+        for _ in 0..10 {
+            w.step(SIM_DT);
+            let _ = w.drain_events();
+        }
+        assert!(
+            w.items.get(probe).is_none(),
+            "the premise: the crate was taken"
+        );
+        let pick = |w: &mut World, heals: u8, count: u8| {
+            let now = w.round_time;
+            let id = w
+                .items
+                .spawn(MEDKIT, count, at, Vec2::ZERO, SpawnSource::Periodic, now);
+            let p = w.player_mut(0).expect("added");
+            p.heals = heals;
+            p.body.pos = at;
+            let mut said = None;
+            for _ in 0..10 {
+                w.step(SIM_DT);
+                for e in w.drain_events() {
+                    if let GameEvent::ItemPickup {
+                        world_item_id,
+                        remaining,
+                        ..
+                    } = e
+                    {
+                        if world_item_id == id {
+                            said = Some(remaining);
+                        }
+                    }
+                }
+            }
+            (said, w.items.get(id).map_or(0, |it| it.count))
+        };
+        let (said, left) = pick(&mut w, MAX_HEALS - 1, MAX_HEALS);
+        assert_eq!(said, Some(MAX_HEALS - 1), "the partial pickup's event");
+        assert_eq!(left, MAX_HEALS - 1, "the world's remainder");
+        let (said, left) = pick(&mut w, 0, 1);
+        assert_eq!((said, left), (Some(0), 0), "the control: a whole pickup");
     }
 }
 

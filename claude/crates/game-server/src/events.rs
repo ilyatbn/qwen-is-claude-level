@@ -368,11 +368,15 @@ pub fn payload_with_votes(
             "tick": tick, "world_item_id": world_item_id,
             "x": x, "y": y, "grounded": grounded
         }),
+        // T23.29 item 1: `remaining` — 0 is a removal, anything else the count still on the ground.
         GameEvent::ItemPickup {
             world_item_id,
             player_id,
+            remaining,
             ..
-        } => json!({"tick": tick, "world_item_id": world_item_id, "player_id": player_id}),
+        } => json!({
+            "tick": tick, "world_item_id": world_item_id, "player_id": player_id, "remaining": remaining
+        }),
         GameEvent::ItemDespawn { world_item_id, .. } => {
             json!({"tick": tick, "world_item_id": world_item_id})
         }
@@ -1159,6 +1163,26 @@ mod tests {
         let p = payload_of(&GameEvent::Score { tick: 1 }, &w);
         let scores = p["scores"].as_array().expect("scores array");
         assert_eq!(scores.len(), 2);
+    }
+
+    /// T23.29 item 1: `item_pickup` carries `remaining` — the client's only way to tell a partial pickup (the count
+    /// still on the ground) from a removal (0). Both values, so a payload that always wrote one would fail.
+    #[test]
+    fn the_item_pickup_payload_carries_what_is_left() {
+        let w = world();
+        for remaining in [0u8, 3] {
+            let e = GameEvent::ItemPickup {
+                tick: 1,
+                world_item_id: 7,
+                player_id: 0,
+                remaining,
+            };
+            assert_eq!(
+                payload_of(&e, &w)["remaining"],
+                remaining,
+                "remaining {remaining}"
+            );
+        }
     }
 
     /// T22.12E F2: **the wire's `ends_tick` is the world's.** A client derives the
