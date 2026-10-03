@@ -144,3 +144,10 @@ the view's edges frost over); fire rendered as ice. Builds on §A7–§A8. Task:
 - **`item_pickup`** carries the count left on the ground after a partial pickup (T23.29 item 1 / T23.37 item 1).
 - The replay header records the room's privacy (command tag 26), the warmup, the seat roster per round, and the build
   that recorded it (`REPLAY_VERSION` 41; older versions still read).
+
+## A11 — Crates have their own cap (amends `docs/30` / `docs/32`'s item cap)
+
+The ground-item cap (40) counts every ground item **except supply crates**; crates have their own cap
+(`CRATE_MAX_ON_MAP`, 20 — T23.36's crate rain). A landing crate never evicts a ground item (`docs/32` §4 already
+exempted crates from eviction; the shared count made the rain push other items out). Basis: measured in T23.41 —
+uncapped, crates peak at 17–20 and other items at 31–38 per round.
