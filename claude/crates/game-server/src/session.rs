@@ -1293,6 +1293,56 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                     },
                 );
             }
+            // T23.41 (e2e only, `DEV_PROBE=1`): T23.37 item 1's browser leg. `{key, count, x, y}` lays a
+            // stack of the registry item `key` there (`World::dev_drop_item`) and answers `{id, count}`;
+            // `{id}` alone answers what the server holds of that world item now (`count` 0: gone) — the
+            // server's end of "both ends agree after a partial pickup". Dev-only for `debug_effects`' reason.
+            if config.dev_probe {
+                let ctx = ctx.clone();
+                socket.on(
+                    "debug_item",
+                    move |socket: SocketRef, Data::<serde_json::Value>(p)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let Some((_, room, _)) = ctx.resolve(socket.id) else {
+                                return;
+                            };
+                            let num = |k: &str| p.get(k).and_then(|v| v.as_f64());
+                            let key = p.get("key").and_then(|v| v.as_str()).map(str::to_owned);
+                            let count = num("count").map(|c| c.clamp(0.0, 255.0) as u8);
+                            let at = num("x").zip(num("y"));
+                            let asked = num("id").map(|v| v as u32);
+                            let reply = room
+                                .inspect(move |w| {
+                                    if let (Some(key), Some(count), Some((x, y))) = (key, count, at)
+                                    {
+                                        let item = game_core::items::registry::ITEMS
+                                            .iter()
+                                            .find(|d| d.key == key)?
+                                            .id;
+                                        let at = game_core::math::Vec2::new(x as f32, y as f32);
+                                        let id = w.dev_drop_item(item, count, at)?;
+                                        return Some(serde_json::json!({"id": id, "count": count}));
+                                    }
+                                    let id = asked?;
+                                    let left = w
+                                        .items
+                                        .iter()
+                                        .find(|it| it.id == id)
+                                        .map_or(0, |it| it.count);
+                                    Some(serde_json::json!({"id": id, "count": left}))
+                                })
+                                .await
+                                .flatten();
+                            emit(
+                                &socket,
+                                "debug_item",
+                                &reply.unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    },
+                );
+            }
             {
                 let ctx = ctx.clone();
                 socket.on(

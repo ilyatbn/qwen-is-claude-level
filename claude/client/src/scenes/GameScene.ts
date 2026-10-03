@@ -271,6 +271,8 @@ function freshObserved() {
     lastBlackHole: null as unknown,
     /** e2e only (`DEV_PROBE=1`, T22.19): the server's answer to the last `debug_place`. */
     lastPlace: null as unknown,
+    /** e2e only (`DEV_PROBE=1`, T23.41): the server's answer to the last `debug_item`. */
+    lastItem: null as unknown,
   }
 }
 
@@ -1426,6 +1428,9 @@ export class GameScene extends Phaser.Scene {
     })
     this.conn.on('debug_place', (raw) => {
       this.observed.lastPlace = raw
+    })
+    this.conn.on('debug_item', (raw) => {
+      this.observed.lastItem = raw
     })
     this.conn.on('respawn', (raw) => {
       this.observed.respawns++
@@ -3786,6 +3791,14 @@ export class GameScene extends Phaser.Scene {
         self.conn.sendRaw('debug_place', { x, y, ...(id === undefined ? {} : { id }), ...(anchor === undefined ? {} : { anchor }) })
       },
       /**
+       * e2e only (`DEV_PROBE=1`, T23.41): lay `count` of registry item `key` at `(x, y)` (`World::dev_drop_item`), or
+       * with `id` alone ask what the server holds of that world item now. The answer lands in `debug().lastItem`.
+       */
+      debugItem(spec: { key: string; count: number; x: number; y: number } | { id: number }) {
+        self.observed.lastItem = null
+        self.conn.sendRaw('debug_item', spec)
+      },
+      /**
        * e2e only (T22.19, §C2): redraw the local figure at `tilt` (radians) for a frozen
        * photograph — the same instant upright, to compare the drawn figure against.
        * The next unfrozen frame draws the real tilt again.
@@ -4031,9 +4044,11 @@ export class GameScene extends Phaser.Scene {
           // drawn positions and the server's, not one number twice.
           drawnItems: self.world?.items.drawn ?? [],
           chutesDrawn: self.world?.items.chutesDrawn ?? 0,
+          lastItem: self.observed.lastItem,
           mirrorItems: [...self.mirror.items.values()].map((i) => ({
             id: i.id,
             item: i.item,
+            count: i.count,
             x: i.x,
             y: i.y,
             source: i.source,

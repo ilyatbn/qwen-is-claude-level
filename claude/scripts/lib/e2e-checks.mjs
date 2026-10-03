@@ -544,6 +544,10 @@ export const CHECKS = [
   // death (feed + overlay), no escape from inside the capture radius, the disc and ring
   // painted in both paths against a hidden frame, frozen at the bell. Standalone.
   { name: 'black-hole', file: 'scripts/checks/black-hole.mjs', standalone: true },
+  // T23.41 (T23.37 item 1's browser leg): a medkit stack over MAX_HEALS laid at a player's feet on a DEV_PROBE
+  // server — after the partial pickup the server's count and the client's mirror agree (control: a whole pickup is
+  // gone at both ends). Standalone: its own server.
+  { name: 'partial-pickup', file: 'scripts/checks/partial-pickup.mjs', standalone: true },
   // T22.19 (R107): a body in a rock's band is drawn with its feet along the pull — feet-up
   // under a rock (the figure matches itself posed upright turned 180°, against the
   // actors-hidden frame), upright on top and easing back in free space (the controls),

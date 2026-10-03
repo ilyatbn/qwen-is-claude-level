@@ -3651,6 +3651,41 @@ impl World {
         (placed_s, placed_b, placed_birds)
     }
 
+    /// T23.41 (T23.37 item 1's browser leg, dev only): `count` of `item_id` lying at `at`, announced as a periodic
+    /// spawn is — so a check can stage a stack a player can take only part of (a medkit stack over `MAX_HEALS`) and
+    /// compare the server's count with the client's after the pickup. Makes room as every spawn does. `None` for an
+    /// id the registry does not hold or a count of 0. Nothing in a real round calls it.
+    #[doc(hidden)]
+    pub fn dev_drop_item(&mut self, item_id: ItemId, count: u8, at: Vec2) -> Option<WorldItemId> {
+        if count == 0
+            || !crate::items::registry::ITEMS
+                .iter()
+                .any(|d| d.id == item_id)
+        {
+            return None;
+        }
+        let (tick, now) = (self.tick, self.round_time);
+        if let Some(evicted) = self.items.make_room() {
+            self.events.push(GameEvent::ItemDespawn {
+                tick,
+                world_item_id: evicted,
+            });
+        }
+        let id = self
+            .items
+            .spawn(item_id, count, at, Vec2::ZERO, SpawnSource::Periodic, now);
+        self.events.push(GameEvent::ItemSpawn {
+            tick,
+            world_item_id: id,
+            item_id,
+            count,
+            x: at.x,
+            y: at.y,
+            source: SpawnSource::Periodic,
+        });
+        Some(id)
+    }
+
     /// Test seam: start `kind` now, through the same install the scheduler uses.
     ///
     /// The sandbox's weather controls and the effect tests both need to say
@@ -8956,6 +8991,37 @@ mod birds_in_a_round {
             !w.birds.is_empty(),
             "a second into a live round and the sky is empty"
         );
+    }
+
+    /// T23.41: **`dev_drop_item` lays the stack it was asked for and says so** — the count on the ground and in the
+    /// announcement (a client mirrors the spawn's count). The control: an id the registry lacks lays nothing and
+    /// announces nothing.
+    #[test]
+    fn dev_drop_item_lays_the_stack_and_announces_its_count() {
+        let mut w = world();
+        let _ = w.drain_events();
+        let at = Vec2::new(300.0, 100.0);
+        let count = MAX_HEALS + 1;
+        let id = w.dev_drop_item(MEDKIT, count, at).expect("dropped");
+        assert_eq!(w.items.get(id).map(|it| it.count), Some(count));
+        let said: Vec<u8> = w
+            .drain_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                GameEvent::ItemSpawn {
+                    world_item_id,
+                    count,
+                    ..
+                } if world_item_id == id => Some(count),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, vec![count]);
+        let before = w.items.len();
+        assert!(w.dev_drop_item(ItemId::MAX, 1, at).is_none());
+        assert!(w.dev_drop_item(MEDKIT, 0, at).is_none());
+        assert_eq!(w.items.len(), before);
+        assert!(w.drain_events().is_empty());
     }
 
     /// T99.04: **`dev_spawn_fauna` puts a crowd on the ground and in the air, and the
