@@ -17,6 +17,8 @@ client/src/core/pkg/
 # and each one prints "everything" — so eighteen stale logs forced a 17-minute
 # full run on a prose-only change. Measured 2026-09-21, not assumed.
 gate-*.txt
+# Since 2026-10-03 (owner): every gate log goes in gates/, never the root.
+gates/
 
 # Debug artifacts
 /debug/

@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js Procedural Explosion</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#020308;font-family:Arial,sans-serif}
+canvas{display:block}
+#ui{position:fixed;top:20px;left:20px;width:250px;padding:16px;background:rgba(10,12,20,.82);border:1px solid rgba(255,255,255,.16);border-radius:10px;color:#fff;backdrop-filter:blur(8px)}
+h3{margin:0 0 14px;font-size:15px;letter-spacing:1px}
+.row{margin:10px 0}.row label{display:block;font-size:12px;margin-bottom:5px;opacity:.8}
+input[type=range]{width:100%}
+input[type=color]{width:100%;height:28px;border:0;background:none;padding:0}
+.value{float:right;opacity:.7}
+</style>
+</head>
+<body>
+<div id="ui">
+<h3>EXPLOSION SHADER</h3>
+<div class="row"><label>Speed <span class="value" id="speedV"></span></label><input id="speed" type="range" min=".1" max="4" step=".01" value="1"></div>
+<div class="row"><label>Strength <span class="value" id="strengthV"></span></label><input id="strength" type="range" min=".1" max="3" step=".01" value="1.35"></div>
+<div class="row"><label>Glow <span class="value" id="glowV"></span></label><input id="glow" type="range" min="0" max="3" step=".01" value="1.2"></div>
+<div class="row"><label>Primary</label><input id="colorA" type="color" value="#38bfff"></div>
+<div class="row"><label>Secondary</label><input id="colorB" type="color" value="#873cff"></div>
+<div class="row"><label>Hot</label><input id="colorC" type="color" value="#ff5a12"></div>
+</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1,1,1,-1,.1,10);
+camera.position.z=1;
+
+const renderer = new THREE.WebGLRenderer({antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const uniforms = {
+  uTime:{value:0},
+  uSpeed:{value:1},
+  uStrength:{value:1.35},
+  uGlow:{value:1.2},
+  uColorA:{value:new THREE.Color('#38bfff')},
+  uColorB:{value:new THREE.Color('#873cff')},
+  uColorC:{value:new THREE.Color('#ff5a12')}
+};
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader:`
+    varying vec2 vUv;
+    void main(){
+      vUv=uv;
+      gl_Position=vec4(position,1.0);
+    }
+  `,
+  fragmentShader:`
+precision highp float;
+varying vec2 vUv;
+uniform float uTime,uSpeed,uStrength,uGlow;
+uniform vec3 uColorA,uColorB,uColorC;
+
+float hash21(vec2 p){
+  p=fract(p*vec2(123.34,456.21));
+  p+=dot(p,p+45.32);
+  return fract(p.x*p.y);
+}
+float noise(vec2 p){
+  vec2 i=floor(p),f=fract(p);
+  f=f*f*(3.0-2.0*f);
+  float a=hash21(i),b=hash21(i+vec2(1,0));
+  float c=hash21(i+vec2(0,1)),d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){
+  float v=0.,a=.5;
+  for(int i=0;i<5;i++){
+    v+=noise(p)*a;
+    p=p*2.03+vec2(17.1,9.7);
+    a*=.5;
+  }
+  return v;
+}
+float diamond(vec2 p,float size){
+  p=abs(p);
+  return (p.x+p.y-size)/1.4142;
+}
+
+void main(){
+  vec2 p=vUv-.5;
+  p.x*=1.7778;
+  float d=length(p);
+  float ang=atan(p.y,p.x);
+
+  // Full repeating cycle.
+  float phase=fract(uTime*uSpeed*.22);
+  float explode=smoothstep(.10,.23,phase);
+  float fade=1.-smoothstep(.72,1.,phase);
+
+  // Small black diamond before the explosion.
+  float ds=diamond(p,.055+sin(phase*80.)*.003);
+  float seed=(1.-smoothstep(-.003,.004,ds));
+  seed*=1.-smoothstep(.07,.22,phase);
+
+  // Expanding radius.
+  float r=mix(.015,.78,smoothstep(.14,.70,phase));
+
+  // Turbulence.
+  float n1=fbm(vec2(ang*3.2,d*7.+phase*5.));
+  float n2=fbm(vec2(ang*9.-phase*4.,d*13.));
+  float spikes=pow(max(0.,n1*.75+n2*.35),2.2);
+
+  // Main irregular shell.
+  float shellR=r+(spikes-.35)*.16*explode;
+  float shell=exp(-abs(d-shellR)/(.030+.035*uStrength));
+  shell*=smoothstep(.12,.22,phase)*fade;
+
+  // Long sharp rays.
+  float rayNoise=pow(max(0.,noise(vec2(ang*8.,phase*2.))),5.);
+  float rays=exp(-abs(d-r*(.75+rayNoise*.55))/
+                  (.008+.018*uStrength));
+  rays*=rayNoise*explode*fade;
+
+  // Inner plasma.
+  float cloud=fbm(p*(7.+uStrength*4.)+
+                  vec2(phase*2.,-phase*1.4));
+  float inner=exp(-d*(5.+5.*uStrength));
+  inner*=(.45+cloud*1.25)*explode*fade;
+
+  // Central flash.
+  float flash=exp(-d*32.);
+  flash*=smoothstep(.12,.22,phase);
+  flash*=1.-smoothstep(.34,.55,phase);
+
+  // Shockwave.
+  float shockR=mix(.05,.72,smoothstep(.22,.75,phase));
+  float shock=exp(-abs(d-shockR)/.012);
+  shock*=smoothstep(.20,.28,phase)*
+         (1.-smoothstep(.70,.90,phase));
+
+  vec3 cool=mix(uColorA,uColorB,
+                clamp(n1+phase*.25,0.,1.));
+  vec3 hot=mix(cool,uColorC,
+               clamp(d*1.8+n2*.5,0.,1.));
+
+  vec3 col=vec3(0.);
+  col+=cool*shell*(1.1+uStrength);
+  col+=hot*rays*(1.8+uStrength*1.5);
+  col+=hot*inner*(1.2+uStrength);
+  col+=vec3(1.)*flash*(2.+uStrength*2.);
+  col+=mix(uColorA,uColorC,.55)*shock*(.7+uStrength);
+
+  // Soft atmospheric glow.
+  col+=mix(uColorA,uColorB,cloud)*
+       exp(-d*3.8)*cloud*.10*explode*fade;
+
+  col*=uGlow;
+
+  // Black diamond sits over everything before detonation.
+  col=mix(col,vec3(.002,.002,.004),seed);
+
+  gl_FragColor=vec4(col,1.);
+}
+`
+});
+
+const mesh=new THREE.Mesh(new THREE.PlaneGeometry(2,2),material);
+scene.add(mesh);
+
+function color(id,u){
+  document.getElementById(id).addEventListener('input',e=>{
+    uniforms[u].value.set(e.target.value);
+  });
+}
+function slider(id,u,label){
+  const el=document.getElementById(id), out=document.getElementById(label);
+  const update=()=>{uniforms[u].value=+el.value;out.textContent=(+el.value).toFixed(2)};
+  el.addEventListener('input',update); update();
+}
+slider('speed','uSpeed','speedV');
+slider('strength','uStrength','strengthV');
+slider('glow','uGlow','glowV');
+color('colorA','uColorA'); color('colorB','uColorB'); color('colorC','uColorC');
+
+function resize(){
+  renderer.setSize(innerWidth,innerHeight);
+  material.uniforms.uTime.needsUpdate=true;
+}
+addEventListener('resize',resize);
+
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  uniforms.uTime.value+=clock.getDelta();
+  renderer.render(scene,camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -8,8 +8,11 @@ not abandoned: each file is intact, so picking one up later costs nothing.
 | `T21.04` day/night setting | revisit with the UI redesign — half of it is client-side and the redesign will move that half anyway. **No longer blocks anything**: M22 was going to copy its settings pattern, and copies T20.07's directly instead |
 | `T21.10` match recording and a viewer | large, and its own file says split it into three before starting |
 | `T21.41` rewrite toxic rain | switched off by the owner 2026-09-15 ("not working properly"), T21.39; the rewrite waits for his description of what it should be |
-| `T21.42` the two lobby socket tests | disabled by the owner 2026-09-15 ("ignore these two tests for now"); each failed once under load at the test client's first emit, 5/5 alone — find the cause before re-enabling |
 | `M23` alien invasion — the first team match | asked for 2026-09-15 and parked on arrival: a whole milestone (teams, a match mode, the heart, aliens, balance), split into nine tasks in its one file; four questions for the owner before it starts |
+| `T23.33` volcanic disasters | owner 2026-10-02: ash clouds and lava bursts for the volcanic look — after T23.31 |
+| `T23.34` the ice world | owner 2026-10-02: a third look with hail, extreme frost, frost at night, ice flames — after T23.33 |
+| `T23.39` the round ends in a nuke | owner 2026-10-03: zoom out, a nuke obliterates the map, the camera breaks, then stats; space: the black hole's ring explodes (ref `refs/bang.html`) |
+| `T23.40` the durian tree and the alien cow | owner 2026-10-03: a durian tree spawn with glowing durian grenades to pick up, the durian cluster gas grenade, and a spiky-headed alien cow that eats from it (refs `tasks/parking-lot/refs/alien-cow-ref.jpg`, `tasks/parking-lot/refs/durianbombtree.jpg`) |
 
 **These are not listed in `tasks/TASKS.md`'s build order.** The tracker's link
 guard only walks `M<n>/T…` paths, so nothing here is checked by it; that is the

@@ -254,7 +254,7 @@ green suite and a working game.
   yours" to an agent while a gate was still running. *"Do not touch the browser"* is not
   enough — a Rust-side task that also edits one client file is enough to do it. **Nobody edits
   anything under `claude/` while a gate runs.** Commit first, then gate, then work.
-- **Name your output file after yourself: `gate-<who>.txt`, never a shared name.** With several
+- **Name your output file after yourself: `gates/gate-<who>.txt` (the `gates/` folder — owner, 2026-10-03: never the repo root), never a shared name.** With several
   agents in one tree there is **no local signal for who owns a process** — a shared shell
   snapshot means `ps -o ppid=` gives the same parent for everyone, and a start time only tells
   you the process is new, which is exactly what makes it look like yours. Two gates ran at once
