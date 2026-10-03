@@ -885,6 +885,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [x] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match — 2026-10-03: items 1–5 done (B, C, E, G); the owner round reproducing end to end needs a fresh owner recording (T23.37 item 2 note)
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
+- [ ] [T23.42](M23/T23.42-small-maps-only.md) — Every match is Small; the map-size picker switched off (not removed) behind one constant (owner)
 
 **Checkpoint:** host a match. It looks like F1 at night and F5 by moonlit day, the camera shows four times as much map, figures are rim-lit ink stick figures with a scarf in your colour, every gun has its own silhouette, and explosions, lasers and plumes light the rock and figures around them. Space looks like F3. The golden tables have not moved.
 
