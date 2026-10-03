@@ -317,6 +317,9 @@ export const CHECKS = [
   // T23.10 (R7): the night seeing rule in a real match on pixels — a remote at 0.9 × your night sight drawn, one at
   // 1.1 × not, in one frame. Standalone: three humans on a `DEV_PROBE=1` server at night.
   { name: 'night-view-match', file: 'scripts/checks/night-view-match.mjs', standalone: true },
+  // T23.10C F4: the zoom in a real match — `CAMERA_ZOOM` at the camera, four times the zoom-2 view, and a player past
+  // the zoom-2 half-view drawn on screen (pixels, with a control box across the centre).
+  { name: 'zoom-match', file: 'scripts/checks/zoom-match.mjs', standalone: true },
   // T23.27 (`docs/78` §A1): a spectator — no body, the camera on the watched player, Tab / Shift+Tab to switch.
   { name: 'spectate', file: 'scripts/checks/spectate.mjs', standalone: true },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345&worldlook=classic' },
