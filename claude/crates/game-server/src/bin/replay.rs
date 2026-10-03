@@ -11,7 +11,6 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use game_core::constants::SIM_DT;
 use game_server::replay::{self, Replay, ReplayCommand};
@@ -216,8 +215,7 @@ fn simulate(
     stats: bool,
     mut watch: Option<&mut game_core::bots::movement::Watcher>,
 ) -> Result<(Room, usize), Box<dyn std::error::Error>> {
-    let config = Arc::new(file.header.to_config());
-    let mut room = Room::new(config);
+    let mut room = Room::for_replay(&file.header);
     // §E1: no pre-built world. The recording starts at room construction and
     // includes the lobby, so the replay drives the same lifecycle — `tick_inline`
     // builds the world at the recorded `StartWithBots`, which is what puts the
@@ -331,8 +329,7 @@ fn find_divergence(file: &Replay, final_tick: u32) -> Option<u32> {
         return None;
     }
 
-    let config = Arc::new(file.header.to_config());
-    let mut room = Room::new(config);
+    let mut room = Room::for_replay(&file.header);
     // §E1: no pre-built world. The recording starts at room construction and
     // includes the lobby, so the replay drives the same lifecycle — `tick_inline`
     // builds the world at the recorded `StartWithBots`, which is what puts the

@@ -3051,12 +3051,23 @@ impl Room {
     /// write the same file name twice in a test, and the runner has no clock at
     /// all (`docs/61` §4).
     pub fn start_recording(&mut self, dir: &std::path::Path, stamp: &str) {
+        self.start_recording_with(dir, stamp, crate::replay::RoundRoster::default());
+    }
+
+    /// `start_recording`, with the roster a restart hands the new file (T23.29 item 2); empty at room construction.
+    fn start_recording_with(
+        &mut self,
+        dir: &std::path::Path,
+        stamp: &str,
+        roster: crate::replay::RoundRoster,
+    ) {
         if !self.config.record_replay {
             return;
         }
         self.replay_dir = Some(dir.to_path_buf());
-        let header =
+        let mut header =
             crate::replay::ReplayHeader::from_config(&self.config, self.seed, self.buried_secret);
+        header.roster = roster;
         match crate::replay::ReplayWriter::create(dir, stamp, &header) {
             Ok(w) => {
                 tracing::info!(
@@ -3180,6 +3191,47 @@ impl Room {
         let recording = self.replay.is_some();
         self.finish_recording();
         self.adopt_seed(seed);
+        self.bots.clear();
+        // Bot seats are freed here rather than carried: `seat_bots` (in `open_round`)
+        // allocates fresh ones, and a bot seat that outlived its `Bot` would be
+        // a seat nothing drives.
+        let bot_seats: Vec<PlayerId> = self
+            .seats
+            .seats
+            .iter()
+            .filter(|s| s.bot)
+            .map(|s| s.id)
+            .collect();
+        for id in bot_seats {
+            self.seats.free_seat(id);
+        }
+        // T23.29 item 2: what the next round begins from — taken here, between freeing the bots and seating new ones,
+        // because that is the state `open_round` turns into a round, and the state `for_replay` rebuilds.
+        let roster = self.round_roster(true);
+        self.open_round(seed);
+        tracing::info!(target: "game::round", seed, "round restarted");
+        if recording {
+            // The directory round one was recorded into, not `config.replay_dir`
+            // — see the field. The fallback is only reachable if `restart` ran
+            // without a prior `start_recording`, which cannot happen because
+            // `recording` is read off the live writer.
+            let dir = self
+                .replay_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(self.config.replay_dir.clone()));
+            self.start_recording_with(&dir, &stamp_for(seed), roster);
+        }
+        self.world
+            .as_mut()
+            .map(|w| w.drain_events())
+            .unwrap_or_default()
+    }
+
+    /// The round a restart begins, from the seats it left: a new world parked for the load, the humans in it, new bots.
+    ///
+    /// T23.29 item 2: **shared by `restart` and `for_replay`**, so a round-two replay is built by the code that built
+    /// the round — a second copy is where the two would drift (CLAUDE.md: share the guard, or share the function).
+    fn open_round(&mut self, seed: u64) {
         let buried_secret = self.buried_secret;
         // §E1.1: the seats are the roster. A restart used to copy the old
         // world's player list into the new one, which meant the identity of a
@@ -3230,20 +3282,6 @@ impl Room {
         // first place.
         self.started
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.bots.clear();
-        // Bot seats are freed here rather than carried: `seat_bots` below
-        // allocates fresh ones, and a bot seat that outlived its `Bot` would be
-        // a seat nothing drives.
-        let bot_seats: Vec<PlayerId> = self
-            .seats
-            .seats
-            .iter()
-            .filter(|s| s.bot)
-            .map(|s| s.id)
-            .collect();
-        for id in bot_seats {
-            self.seats.free_seat(id);
-        }
         self.populate_world();
         self.seat_bots(seed);
         // (T21.13's `announce_phase` was here: a world born in `Warmup` announced nothing on its own. T23.28 parks it in
@@ -3253,22 +3291,74 @@ impl Room {
         // zero — see `RoundController::step`, which resets its own rebroadcast
         // anchor when it sees the clock go backwards.
         self.last_checksum_at = 0.0;
-        tracing::info!(target: "game::round", seed, "round restarted");
-        if recording {
-            // The directory round one was recorded into, not `config.replay_dir`
-            // — see the field. The fallback is only reachable if `restart` ran
-            // without a prior `start_recording`, which cannot happen because
-            // `recording` is read off the live writer.
-            let dir = self
-                .replay_dir
-                .clone()
-                .unwrap_or_else(|| std::path::PathBuf::from(self.config.replay_dir.clone()));
-            self.start_recording(&dir, &stamp_for(seed));
+    }
+
+    /// T23.29 item 2: the seats, the id pool and the bot counter as they stand — what a restart's file opens with.
+    /// Bots are left out: `restart` has freed them by the time it asks, and `seat_bots` re-seats them from the pool.
+    fn round_roster(&self, restart: bool) -> crate::replay::RoundRoster {
+        crate::replay::RoundRoster {
+            restart,
+            private: self.private,
+            bot_seq: self.bot_seq,
+            next: self.seats.next,
+            free: self.seats.free.clone(),
+            seats: self
+                .seats
+                .seats
+                .iter()
+                .filter(|s| !s.bot)
+                .map(|s| crate::replay::RosterSeat {
+                    id: s.id,
+                    spectator: s.spectator,
+                    name: s.name.clone(),
+                    skin_id: s.skin_id,
+                    tombstone_skin_id: s.tombstone_skin_id,
+                })
+                .collect(),
         }
-        self.world
-            .as_mut()
-            .map(|w| w.drain_events())
-            .unwrap_or_default()
+    }
+
+    /// The room a recording replays into — the runner's and every replay test's, one constructor.
+    ///
+    /// T23.29: **the header's buried secret**, not the one a `fixed_seed` config implies (0). Every room recorded
+    /// without `FIXED_SEED` has a derived secret, and replaying under 0 buries a different set of items — the owner's
+    /// round diverged at its first checkpoint for this as well as for its privacy. And for a file a restart opened
+    /// (`roster.restart`), the round it began: the seats, the id pool and the bot counter restored, then `open_round`
+    /// — the restart's own code.
+    pub fn for_replay(header: &crate::replay::ReplayHeader) -> Room {
+        let mut room = Room::new(Arc::new(header.to_config()));
+        room.buried_secret = header.buried_secret;
+        let r = &header.roster;
+        if r.restart {
+            room.private = r.private;
+            room.bot_seq = r.bot_seq;
+            room.seats.next = r.next;
+            room.seats.free = r.free.clone();
+            for seat in &r.seats {
+                room.seats.seats.push(Seat {
+                    id: seat.id,
+                    name: seat.name.clone(),
+                    skin_id: seat.skin_id,
+                    tombstone_skin_id: seat.tombstone_skin_id,
+                    hat_id: 0,
+                    glasses_id: 0,
+                    bot: false,
+                    spectator: seat.spectator,
+                    ready: false,
+                    consent: false,
+                    joined_at: Instant::now(),
+                    last_seq: 0,
+                    accepted_this_tick: 0,
+                    dropped_this_tick: 0,
+                    stream: StreamStats::default(),
+                });
+            }
+            room.open_round(header.seed);
+            if let Some(w) = room.world.as_mut() {
+                let _ = w.drain_events();
+            }
+        }
+        room
     }
 
     /// Bots think **before** the step, so their input is consumed by the same

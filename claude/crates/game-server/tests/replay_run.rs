@@ -171,7 +171,7 @@ fn record_a_round_reporting(dir: &Path, ticks: u32) -> Recorded {
 /// Re-simulate exactly as the binary does. Kept in the test rather than exported
 /// so the binary stays the thing under test in the end-to-end case below.
 fn resimulate(file: &replay::Replay, until: u32) -> Room {
-    let mut room = Room::new(Arc::new(file.header.to_config()));
+    let mut room = Room::for_replay(&file.header);
     let mut next = 0usize;
     // Same guard as the binary: this loop is bounded by `world.tick`, and a room
     // in a phase that does not step never advances it. Without this the test
@@ -451,7 +451,7 @@ fn a_corrupted_file_is_a_clear_error_not_a_panic() {
     let path = record_a_round(s.path(), 300);
     let mut bytes = std::fs::read(&path).expect("read");
     // The first command tag sits just past the header and the command's u32 tick.
-    bytes[game_server::replay::HEADER_BYTES + 4] = 250;
+    bytes[game_server::replay::HEADER_BYTES + game_server::replay::V40_TAIL_BYTES + 4] = 250;
     let bad = s.path().join("corrupt.replay");
     std::fs::write(&bad, &bytes).expect("write");
 
@@ -1226,4 +1226,183 @@ fn a_human_style_private_session_replays_to_the_footer_hash() {
         "kit in lobby {kit_in_lobby}: a human's private session did not reproduce (the replayed human holds {held} stacks)"
     );
     }
+}
+
+/// T23.29 item 2: **round two's file re-simulates to its footer hash** — from its own header, with nothing from round
+/// one's file. A watched room (one spectator, bots; it restarts on its own at the window's close) and, the second arm,
+/// a player beside the spectator who votes the restart and loads each map as a client does. Round two is played well
+/// past its warmup before the file is closed.
+///
+/// Falsified (T23.29's task file has the output): `for_replay` without the roster restore replays a lobby that never
+/// starts, and the runner's stall guard fails it.
+#[test]
+fn round_two_replays_from_its_own_header() {
+    use game_core::world::RoundPhase;
+    for with_player in [false, true] {
+        let s = Scratch::new(if with_player {
+            "round2-player"
+        } else {
+            "round2-watched"
+        });
+        let mut room = Room::new(Arc::new(Config {
+            map_scale: MapScale::Small,
+            fixed_seed: Some(90210),
+            bot_count: 2,
+            record_replay: true,
+            round_seconds: 12.0,
+            warmup_seconds: 1.0,
+            lobby_bot_timeout: 0.5,
+            ..Config::default()
+        }));
+        room.start_recording(s.path(), "000000000001");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        room.apply_for_test(Command::Spectate {
+            name: "watcher".into(),
+            reply: tx,
+        });
+        rx.blocking_recv().ok().flatten().expect("a spectator seat");
+        let player = with_player.then(|| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            room.apply_for_test(Command::Join {
+                name: "ana".into(),
+                look: Default::default(),
+                reply: tx,
+            });
+            let id = rx.blocking_recv().ok().flatten().expect("seat");
+            room.apply_for_test(Command::StartWithBots(id));
+            id
+        });
+        let (mut round, mut was_ended, mut played_in_two, mut t) = (1u32, false, 0u32, 0u32);
+        while played_in_two < 600 {
+            t += 1;
+            assert!(
+                t < 20_000,
+                "with player {with_player}: round two never played 600 ticks"
+            );
+            if let Some(id) = player {
+                room.apply_for_test(Command::Input(
+                    id,
+                    vec![Input::new(
+                        t,
+                        if t % 90 < 45 {
+                            button::RIGHT
+                        } else {
+                            button::LEFT
+                        },
+                        0,
+                    )],
+                ));
+                if room.phase() == RoundPhase::Ended {
+                    room.apply_for_test(Command::VoteRestart(
+                        id,
+                        true,
+                        tokio::sync::oneshot::channel().0,
+                    ));
+                }
+            }
+            load(&mut room);
+            room.tick_inline(SIM_DT);
+            let ended = room.phase() == RoundPhase::Ended;
+            if was_ended && !ended {
+                round += 1;
+            }
+            was_ended = ended;
+            if round == 2 && room.phase() == RoundPhase::Playing {
+                played_in_two += 1;
+            }
+        }
+        let expected = room.world_for_test().state_hash();
+        let at = room.tick();
+        room.finish_recording();
+        let files: Vec<replay::Replay> = std::fs::read_dir(s.path())
+            .expect("read")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "replay"))
+            .map(|p| replay::read_file(&p).expect("decode"))
+            .collect();
+        assert_eq!(
+            files.len(),
+            2,
+            "with player {with_player}: one file per round"
+        );
+        let two = files
+            .iter()
+            .find(|f| f.header.roster.restart)
+            .expect("the restart's file says so");
+        // The premises: the roster holds who was seated, and the footer is the live round's end.
+        let kinds: Vec<bool> = two
+            .header
+            .roster
+            .seats
+            .iter()
+            .map(|s| s.spectator)
+            .collect();
+        assert_eq!(
+            kinds,
+            if with_player {
+                vec![true, false]
+            } else {
+                vec![true]
+            },
+            "with player {with_player}: the roster's seats"
+        );
+        let footer = two.footer.clone().expect("footer");
+        assert_eq!((footer.final_tick, footer.state_hash), (at, expected));
+        let mut replayed = resimulate(two, footer.final_tick);
+        assert_eq!(
+            replayed.world_for_test().state_hash(),
+            footer.state_hash,
+            "with player {with_player}: round two did not reproduce from its own file"
+        );
+    }
+}
+
+/// T23.29 item 4 (the second half of the owner's divergence): **a room recorded without `FIXED_SEED` replays** — its
+/// buried secret is derived, not 0, and the header carries it. Every other replay test pins the seed, so the secret
+/// was 0 on both sides and nothing could see that the replayed room ignored the header's. Planted (`for_replay`
+/// without `room.buried_secret = header.buried_secret`) → red.
+#[test]
+fn a_room_with_an_unpinned_seed_replays_with_its_own_buried_secret() {
+    let s = Scratch::new("unpinned");
+    let mut room = Room::new(Arc::new(Config {
+        map_scale: MapScale::Small,
+        fixed_seed: None,
+        bot_count: 2,
+        record_replay: true,
+        round_seconds: 20.0,
+        ..Config::default()
+    }));
+    room.start_recording(s.path(), "000000000001");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    room.apply_for_test(Command::Join {
+        name: "ana".into(),
+        look: Default::default(),
+        reply: tx,
+    });
+    let id = rx.blocking_recv().ok().flatten().expect("seat");
+    room.apply_for_test(Command::StartWithBots(id));
+    for t in 1..=900u32 {
+        let b = if t % 90 < 45 {
+            button::RIGHT
+        } else {
+            button::LEFT
+        };
+        room.apply_for_test(Command::Input(id, vec![Input::new(t, b, 0)]));
+        load(&mut room);
+        room.tick_inline(SIM_DT);
+    }
+    let expected = room.world_for_test().state_hash();
+    let at = room.tick();
+    room.finish_recording();
+    let file = replay::read_file(&s.only_file()).expect("decode");
+    assert_ne!(
+        file.header.buried_secret, 0,
+        "the premise: an unpinned room's secret is derived"
+    );
+    let mut replayed = resimulate(&file, at);
+    assert_eq!(
+        replayed.world_for_test().state_hash(),
+        expected,
+        "an unpinned room did not reproduce"
+    );
 }

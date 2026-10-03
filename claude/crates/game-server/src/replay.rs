@@ -13,14 +13,11 @@
 //! state the commands produce, and writing them would multiply the file size for
 //! no diagnostic value.
 //!
-//! **Known gap — round two and later carry no roster** (T23.27C F2, for the coordinator: fixing it is a format
-//! change). `Room::restart` opens a **new file** per round (`start_recording`) and writes no seat list into it, so
-//! only round one's file holds the `Join`s and `JoinSpectator`s that seated everyone. Replaying a later round's file
-//! seats nobody: it has no reserved spectator id, so `seat_bots` allocates different ids than the live round did, and
-//! the humans are missing altogether. A watched room never returns to a lobby, so after its first round it produces
-//! nothing but files of this kind; human rounds two and later have the same hole (`tests/replay.rs` checks only round
-//! two's *header*). Round one replays identically, spectators included
-//! (`tests/replay_run.rs::a_watched_round_replays_to_the_same_state_hash`). The fix is a roster preamble per file.
+//! **Round two and later carry their roster** (T23.29 item 2, `REPLAY_VERSION` 40). `Room::restart` opens a **new
+//! file** per round, and until v40 nothing in it said who was seated: the `Join`s and `JoinSpectator`s were in round
+//! one's file, so a later round's replay seated nobody and its bots took other ids. Every header now ends with a
+//! [`RoundRoster`] — empty for a file opened at room construction (the body seats everyone), the seats, the id pool and
+//! the bot counter for one opened by a restart — and `Room::for_replay` rebuilds the round from it.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -49,10 +46,17 @@ pub const FOOTER_MAGIC: u32 = 0x5250_4C45;
 /// (T23.30, v38 — a v37 header is one byte shorter), world_look 1 (T23.31, v39 — a
 /// v38 header is one byte shorter).
 ///
+/// **The fixed part only** since v40: a [`RoundRoster`] follows it, [`V40_TAIL_BYTES`] long for a round-one
+/// file — so a round-one body starts at `HEADER_BYTES + V40_TAIL_BYTES`.
+///
 /// Public because the body starts here, and a test that wants to corrupt the
 /// first command has to know where it is. Two of them used to carry the number
 /// inline and both broke the moment the header grew a field.
 pub const HEADER_BYTES: usize = 48;
+
+/// T23.29: what v40 appends for a round-one file — the warmup 4, then an empty [`RoundRoster`]: restart 1,
+/// private 1, bot_seq 4, next 2, free count 1, seat count 1.
+pub const V40_TAIL_BYTES: usize = 14;
 
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
@@ -394,7 +398,14 @@ pub const HEADER_BYTES: usize = 48;
 /// appended after the map shape — a record of how the round was drawn (render-only:
 /// nothing replayed reads it). **v37 and v38 files still read**, as `Classic` — they
 /// predate looks, and every round they recorded was drawn classic.
-pub const REPLAY_VERSION: u16 = 39;
+///
+/// Bumped to 40 by T23.29 item 2: the header gains the **round roster** ([`RoundRoster`]), appended after the look —
+/// so a file a restart opened replays from its own header. **v37–v39 files still read**, with an empty roster: their
+/// round-one files replay as before, and their later rounds stay as unreplayable as they always were.
+pub const REPLAY_VERSION: u16 = 40;
+
+/// The last version without the round roster (T23.29) — read with an empty one.
+pub const REPLAY_VERSION_NO_ROSTER: u16 = 39;
 
 /// The last version without the world-look byte (T23.31) — read as `Classic`.
 pub const REPLAY_VERSION_NO_LOOK: u16 = 38;
@@ -618,6 +629,42 @@ pub struct ReplayHeader {
     /// derived from the seed by the generator's own rule (`world_look_for`), and
     /// nothing in a replay run reads it; `Classic` for files older than v39.
     pub world_look: WorldLook,
+    /// T23.29 item 2: the warmup's length (`DEV_WARMUP_SECONDS`). Simulation input — it decides the tick `Playing`
+    /// begins on — and missing from every header before v40, which read as the default `WARMUP_SECONDS` (all a
+    /// live server without the dev switch ever ran). Found by the round-two test, whose 1 s warmup replayed as 10.
+    pub warmup_seconds: f32,
+    /// T23.29 item 2: who the round began with, when a restart opened the file. Empty (the default) for a file opened
+    /// at room construction and for every file older than v40.
+    pub roster: RoundRoster,
+}
+
+/// T23.29 item 2: the state a restart hands the next round, as `Room::restart` holds it **after** freeing the bot
+/// seats and **before** seating new bots — so `Room::for_replay` can run the same `open_round` on it and reach the
+/// same ids, the same bots and the same bodies.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RoundRoster {
+    /// `false`: the file was opened at room construction, and its body seats everyone — nothing else here is read.
+    pub restart: bool,
+    /// The room's privacy, which a restart's file has no `SetPrivate` for (round one's body carried it).
+    pub private: bool,
+    /// The bot counter: a bot's name and its `Bot::new` index come off it.
+    pub bot_seq: u32,
+    /// The id pool: the next fresh id, and the freed ids **in stack order** (`Seats::alloc_any` pops the last).
+    pub next: u16,
+    pub free: Vec<PlayerId>,
+    /// The seated humans and spectators, in seat order.
+    pub seats: Vec<RosterSeat>,
+}
+
+/// One seat of a [`RoundRoster`]: what `populate_world` reads off it. Hats and glasses are not here — cosmetic, and
+/// excluded from `state_hash` for `Join`'s reason.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterSeat {
+    pub id: PlayerId,
+    pub spectator: bool,
+    pub name: String,
+    pub skin_id: u16,
+    pub tombstone_skin_id: u16,
 }
 
 impl ReplayHeader {
@@ -645,6 +692,8 @@ impl ReplayHeader {
                 seed,
                 MapGenerator::for_gravity(config.gravity, config.map_generator),
             ),
+            warmup_seconds: config.warmup_seconds,
+            roster: RoundRoster::default(),
         }
     }
 
@@ -664,6 +713,7 @@ impl ReplayHeader {
             start_kit: self.start_kit,
             gravity: self.gravity,
             map_shape: self.map_shape,
+            warmup_seconds: self.warmup_seconds,
             record_replay: false,
             ..Config::default()
         }
@@ -882,7 +932,73 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
     w.write_all(&[h.map_shape.to_u8()])?;
     // T23.31, appended for the same reason.
     w.write_all(&[h.world_look.to_u8()])?;
+    // T23.29, appended for the same reason: the warmup, then the roster.
+    put_f32(w, h.warmup_seconds)?;
+    let r = &h.roster;
+    w.write_all(&[u8::from(r.restart), u8::from(r.private)])?;
+    put_u32(w, r.bot_seq)?;
+    put_u16(w, r.next)?;
+    let free = &r.free[..r.free.len().min(255)];
+    w.write_all(&[free.len() as u8])?;
+    w.write_all(free)?;
+    let seats = &r.seats[..r.seats.len().min(255)];
+    w.write_all(&[seats.len() as u8])?;
+    for seat in seats {
+        w.write_all(&[seat.id, u8::from(seat.spectator)])?;
+        put_u16(w, seat.skin_id)?;
+        put_u16(w, seat.tombstone_skin_id)?;
+        let bytes = seat.name.as_bytes();
+        let n = bytes.len().min(255);
+        w.write_all(&[n as u8])?;
+        w.write_all(&bytes[..n])?;
+    }
     Ok(())
+}
+
+/// A strict flag byte (every field since v4 is strict — see `decode`'s note on `dev_loadout`).
+fn strict_bool(c: &mut Cursor, what: &'static str) -> Result<bool, ReplayError> {
+    match c.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        b => Err(ReplayError::BadBool(what, b)),
+    }
+}
+
+/// T23.29: the [`RoundRoster`] a v40 header ends with.
+fn read_roster(c: &mut Cursor) -> Result<RoundRoster, ReplayError> {
+    let restart = strict_bool(c, "restart")?;
+    let private = strict_bool(c, "private")?;
+    let bot_seq = c.u32()?;
+    let next = c.u16()?;
+    let n = c.u8()? as usize;
+    let free = c.take(n)?.to_vec();
+    let n = c.u8()? as usize;
+    let mut seats = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = c.u8()?;
+        let spectator = strict_bool(c, "spectator")?;
+        let skin_id = c.u16()?;
+        let tombstone_skin_id = c.u16()?;
+        let len = c.u8()? as usize;
+        let name = std::str::from_utf8(c.take(len)?)
+            .map_err(|_| ReplayError::BadUtf8)?
+            .to_string();
+        seats.push(RosterSeat {
+            id,
+            spectator,
+            name,
+            skin_id,
+            tombstone_skin_id,
+        });
+    }
+    Ok(RoundRoster {
+        restart,
+        private,
+        bot_seq,
+        next,
+        free,
+        seats,
+    })
 }
 
 fn write_command(w: &mut impl Write, c: &ReplayCommand) -> Result<(), ReplayError> {
@@ -1067,10 +1183,7 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
         return Err(ReplayError::BadMagic(magic));
     }
     let version = c.u16()?;
-    if version != REPLAY_VERSION
-        && version != REPLAY_VERSION_NO_LOOK
-        && version != REPLAY_VERSION_NO_SHAPE
-    {
+    if !(REPLAY_VERSION_NO_SHAPE..=REPLAY_VERSION).contains(&version) {
         return Err(ReplayError::BadVersion {
             found: version,
             expected: REPLAY_VERSION,
@@ -1129,11 +1242,22 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
             MapShape::from_u8(b).ok_or(ReplayError::BadMapShape(b))?
         },
         // T23.31: strict; absent before v39, where every round was drawn classic.
-        world_look: if version < REPLAY_VERSION {
+        world_look: if version < REPLAY_VERSION_NO_ROSTER {
             WorldLook::Classic
         } else {
             let b = c.u8()?;
             WorldLook::from_u8(b).ok_or(ReplayError::BadWorldLook(b))?
+        },
+        // T23.29: both absent before v40 — the default warmup, and no roster.
+        warmup_seconds: if version < REPLAY_VERSION {
+            game_core::constants::WARMUP_SECONDS
+        } else {
+            c.f32()?
+        },
+        roster: if version < REPLAY_VERSION {
+            RoundRoster::default()
+        } else {
+            read_roster(&mut c)?
         },
     };
 
@@ -1353,6 +1477,10 @@ mod tests {
             map_shape: MapShape::Flat,
             // T23.31: off the default too.
             world_look: WorldLook::Volcanic,
+            // T23.29: the default — a v37/v38/v39 fixture cut from this reads it back as that.
+            warmup_seconds: game_core::constants::WARMUP_SECONDS,
+            // T23.29: a round-one file's — the v37/v38/v39 fixtures below cut `V40_TAIL_BYTES` off it.
+            roster: RoundRoster::default(),
         }
     }
 
@@ -1567,7 +1695,11 @@ mod tests {
         let r = decode(&bytes).expect("decode");
         assert_eq!(r.header, h);
         assert!(r.body.is_empty());
-        assert_eq!(bytes.len(), HEADER_BYTES, "header size is pinned");
+        assert_eq!(
+            bytes.len(),
+            HEADER_BYTES + V40_TAIL_BYTES,
+            "header size is pinned"
+        );
     }
 
     #[test]
@@ -1587,6 +1719,62 @@ mod tests {
     /// T23.30: a **v37** file — written before the shape byte — still reads, as
     /// Random, with its body intact; a v38 header carries the shape (the fixture's
     /// `Flat`, off the default); and a shape byte naming no shape is refused.
+    /// T23.29 item 2: **a restart's roster round-trips** — seats (a spectator among them), the id pool in stack order and
+    /// the bot counter, every field off its default — and a v39 file (no roster) still reads, as an empty one, with its
+    /// body aligned. Strict flags: a `2` in `restart` is a corrupt file.
+    #[test]
+    fn a_v40_header_carries_the_round_roster_and_a_v39_file_reads_without_one() {
+        let mut h = header();
+        h.warmup_seconds = 1.5;
+        h.roster = RoundRoster {
+            restart: true,
+            private: true,
+            bot_seq: 70_000,
+            next: 9,
+            free: vec![7, 3, 5],
+            seats: vec![
+                RosterSeat {
+                    id: 0,
+                    spectator: false,
+                    name: "ana".into(),
+                    skin_id: 4,
+                    tombstone_skin_id: 2,
+                },
+                RosterSeat {
+                    id: 6,
+                    spectator: true,
+                    name: "watcher".into(),
+                    skin_id: 0,
+                    tombstone_skin_id: 0,
+                },
+            ],
+        };
+        let body = [(3u32, ReplayCommand::Ready(1))];
+        let got = decode(&encode_round(&h, &body)).expect("v40");
+        assert_eq!(got.header, h, "the roster did not round-trip");
+        assert_eq!(got.body, body);
+
+        let empty = encode_round(&header(), &body);
+        let mut v39 = empty.clone();
+        v39.drain(HEADER_BYTES..HEADER_BYTES + V40_TAIL_BYTES);
+        v39[4..6].copy_from_slice(&REPLAY_VERSION_NO_ROSTER.to_le_bytes());
+        let old = decode(&v39).expect("a v39 file must still read");
+        assert_eq!(old.header.roster, RoundRoster::default());
+        assert_eq!(
+            old.header.world_look,
+            WorldLook::Volcanic,
+            "v39 header misaligned"
+        );
+        assert_eq!(old.body, body, "v39 body misaligned");
+
+        let mut bad = empty;
+        bad[HEADER_BYTES + 4] = 2;
+        assert!(matches!(
+            decode(&bad),
+            Err(ReplayError::BadBool("restart", 2))
+        ));
+    }
+
     #[test]
     fn a_v37_file_reads_as_random_and_a_v38_header_carries_the_shape() {
         let h = header();
@@ -1598,7 +1786,7 @@ mod tests {
 
         // The same round as v37 wrote it: no shape byte (nor T23.31's look), version 37.
         let mut v37 = v38.clone();
-        v37.drain(HEADER_BYTES - 2..HEADER_BYTES);
+        v37.drain(HEADER_BYTES - 2..HEADER_BYTES + V40_TAIL_BYTES);
         v37[4..6].copy_from_slice(&REPLAY_VERSION_NO_SHAPE.to_le_bytes());
         let old = decode(&v37).expect("a v37 file must still read");
         assert_eq!(old.header.map_shape, MapShape::Random);
@@ -1625,7 +1813,7 @@ mod tests {
         assert_eq!(now.header.version, REPLAY_VERSION);
 
         let mut v38 = v39.clone();
-        v38.remove(HEADER_BYTES - 1);
+        v38.drain(HEADER_BYTES - 1..HEADER_BYTES + V40_TAIL_BYTES);
         v38[4..6].copy_from_slice(&REPLAY_VERSION_NO_LOOK.to_le_bytes());
         let old = decode(&v38).expect("a v38 file must still read");
         assert_eq!(old.header.world_look, WorldLook::Classic);
@@ -1909,8 +2097,13 @@ mod format_tests {
             v.push(1);
         }
         // T23.31: the world look — Volcanic, off the default — from v39 on.
-        if version == REPLAY_VERSION {
+        if version >= REPLAY_VERSION_NO_ROSTER {
             v.push(1);
+        }
+        // T23.29: an empty round roster from v40 on.
+        if version == REPLAY_VERSION {
+            v.extend_from_slice(&2.5f32.to_le_bytes()); // warmup — off the default
+            v.extend_from_slice(&[0; V40_TAIL_BYTES - 4]);
         }
         v
     }
@@ -1920,8 +2113,8 @@ mod format_tests {
         let bytes = header_bytes(REPLAY_VERSION);
         assert_eq!(
             bytes.len(),
-            HEADER_BYTES,
-            "the hand-written header is not HEADER_BYTES long, so this fixture \
+            HEADER_BYTES + V40_TAIL_BYTES,
+            "the hand-written header is not HEADER_BYTES + V40_TAIL_BYTES long, so this fixture \
              cannot detect a shift in the real one"
         );
 
@@ -1951,6 +2144,7 @@ mod format_tests {
         assert_eq!(h.gravity, GravityMode::Space, "gravity did not read");
         assert_eq!(h.map_shape, MapShape::Hill, "map_shape did not read");
         assert_eq!(h.world_look, WorldLook::Volcanic, "world_look did not read");
+        assert_eq!(h.warmup_seconds, 2.5, "warmup_seconds did not read");
     }
 
     /// The v4 fields are decoded **strictly**, and `dev_loadout` is not.
