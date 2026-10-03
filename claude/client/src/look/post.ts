@@ -35,7 +35,7 @@ const GRADE_PARS =
   NOISE_GLSL +
   /* glsl */ `
   uniform float vig, sat, gradeOn; uniform vec3 warm, cool;
-  uniform sampler2D tBloom; uniform float bloomOn;
+  uniform sampler2D tBloom; uniform float bloomOn; uniform vec4 holeC;
   uniform float nightK, nightN; uniform vec3 nightFloor; uniform vec4 nightC[${NIGHT_CIRCLES}];
 `
 /**
@@ -45,7 +45,11 @@ const GRADE_PARS =
  * the same sum (bilinear read of the same texture at the same uv), in float instead of half float. Measured on the checks' SwiftShader (low tier, frozen sandbox): see `FoldedBloom`.
  */
 const BLOOM_ADD = /* glsl */ `
-  if (bloomOn > 0.5) { vec4 b = texture2D(tBloom, vUv); gl_FragColor.rgb += b.rgb * b.a; }
+  if (bloomOn > 0.5) { vec4 b = texture2D(tBloom, vUv);
+    // T23.20 part C: no bloom inside a black hole's shadow (applyHoleShade): its light is gone, and the glow of the
+    // disc round it would otherwise fill the shadow grey.
+    float hk = holeC.w > 0. ? 1. - smoothstep(holeC.z, holeC.w, distance(gl_FragCoord.xy, holeC.xy)) : 0.;
+    gl_FragColor.rgb += b.rgb * b.a * (1. - hk); }
 `
 /**
  * T23.10 (R7): **the night view** — outside the circles you see (your field of view, `fovRadius`), the scene fades into
@@ -88,6 +92,7 @@ function gradedOutput(): OutputPass {
     gradeOn: { value: 0 },
     tBloom: { value: null },
     bloomOn: { value: 0 },
+    holeC: { value: new Vector4() },
     warm: { value: new Vector3(1.03, 1, 0.95) },
     cool: { value: new Vector3(0.94, 0.98, 1.06) },
     nightK: { value: 0 },
@@ -115,6 +120,16 @@ export function applyNight(p: Post, n: NightUniforms | null): void {
   ;(u['nightFloor']!.value as Vector3).set(...n.floor)
   const arr = u['nightC']!.value as Vector4[]
   cs.forEach((c, i) => arr[i]!.set(c.x, c.y, c.inner, c.outer))
+}
+
+/**
+ * T23.20 part C: the black hole's shadow keeps out the bloom — a circle in drawing-buffer px (as `applyNight`'s): the
+ * bloom is gone inside `inner` and whole again at `outer`. `null`: no hole.
+ */
+export function applyHoleShade(p: Post, c: { x: number; y: number; inner: number; outer: number } | null): void {
+  const v = (p.output.uniforms as Record<string, { value: unknown }>)['holeC']!.value as Vector4
+  if (c) v.set(c.x, c.y, c.inner, c.outer)
+  else v.set(0, 0, 0, 0)
 }
 
 /** three's `UnrealBloomPass.BlurDirectionX/Y` (its static fields are not in the type declarations). */

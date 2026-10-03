@@ -107,6 +107,8 @@ export interface WorldHandle {
   atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
   /** T23.24: the fireflies — seeded on this map, laid out on the last drawn frame, their fade and clock. */
   fireflies(): ReturnType<WorldRenderer['firefliesDrawn']> | null
+  /** T23.20 part C: the black hole as the world renderer last drew it (`hideLayers(['blackHole'])` hides it). */
+  blackHole(): ReturnType<WorldRenderer['blackHoleDrawn']> | null
   /** T23.12: the cast as last laid out — quads, and the atlas's redraws/uploads/resets/cells. */
   actors(): ReturnType<WorldRenderer['actorsDrawn']> | null
   /** T23.18: the effects as last laid out, by list, and whether this renderer draws the game's (`fx/feed.ts`). */
@@ -393,6 +395,7 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
     atmosphere: () => three?.atmosphereDrawn() ?? null,
     actors: () => three?.actorsDrawn() ?? null,
     fireflies: () => three?.firefliesDrawn() ?? null,
+    blackHole: () => three?.blackHoleDrawn() ?? null,
     fx: () => three?.fxDrawn() ?? null,
     fxFeed: () => three?.fxFeed ?? null,
     nightDrawn: () => three?.nightDrawn() ?? null,

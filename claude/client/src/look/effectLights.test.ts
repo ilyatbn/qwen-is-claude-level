@@ -2,6 +2,7 @@
  * T23.09: the effect lights — built from the ordnance layer's own records, decaying with them, capped,
  * culled, and carrying the mockup's numbers (read from `f_scene.js` itself, not restated).
  */
+import { BLACK_HOLE_LIGHT } from './fx/blackHole'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -236,5 +237,19 @@ describe('the list the terrain gets: culled and capped (pickLights)', () => {
     const q = s.query(view)
     for (const l of pickLights(lights, view, 1000)) expect(q).toContain(l)
     expect(q.length).toBeLessThan(lights.length)
+  })
+})
+
+describe('the black hole is a light (T23.20 part C)', () => {
+  it('lights while shown, swells in, and goes when hidden or gone', () => {
+    const fx = new EffectLights()
+    const o = new OrdnanceState(LIFE, TRAIL)
+    const hole = { x: 1500, y: 800, growth: 0.5, hidden: false }
+    const on = fx.frame(sources(o, { hole }), view)
+    expect(fx.lastKinds).toEqual(['hole'])
+    expect(on[0]).toMatchObject({ x: 1500, y: 800, r: BLACK_HOLE_LIGHT.r })
+    expect(on[0]!.i).toBeCloseTo(BLACK_HOLE_LIGHT.i * 0.5)
+    expect(fx.frame(sources(o, { hole: { ...hole, hidden: true } }), view)).toEqual([])
+    expect(fx.frame(sources(o, { hole: null }), view)).toEqual([])
   })
 })

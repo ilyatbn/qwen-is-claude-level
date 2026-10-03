@@ -16,6 +16,7 @@ import { MUZZLE_LIGHT } from '../effectLights'
 import { beamFx, blastFx, bulletFx, cloudFx, coneFx, emberFx, flameFx, mineFx, muzzleFx, rocketFx, smokeLook, swingFx, type SmokeLook } from './game'
 import { clearFrame, type FxFrame } from './kit'
 import { weatherFrame, type WeatherSource } from './hazards'
+import type { BlackHoleView } from './blackHole'
 
 export interface OrdnanceSource {
   readonly state: OrdnanceState
@@ -41,6 +42,11 @@ export interface FxFeed {
   zones: ZonesSource | null
   /** T23.19E: the weather layer's vents, embers and toxic drops (`render/weather.ts`), drawn by `fx/hazards.ts`. */
   weather: WeatherSource | null
+  /**
+   * T23.20 part C: the black hole this frame (`render/blackHoleFx.ts` writes it every update; null with none) — drawn
+   * by `fx/blackHole.ts` while `worldDraws`, and a light for the rock and the figures near it.
+   */
+  blackHole: BlackHoleView | null
   /** The world renderer draws this scene's effects (see the file comment). Written only by `setWorldDraws`. */
   worldDraws: boolean
   /** T23.19D F1: the layers that draw themselves in the world or with Phaser by `worldDraws` (`followWorldDraws`). */
@@ -71,7 +77,7 @@ const feeds = new WeakMap<object, FxFeed>()
 export function fxFeed(scene: object): FxFeed {
   let f = feeds.get(scene)
   if (!f) {
-    f = { ordnance: null, zones: null, weather: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, fauna: 'classic', keepDrawing: false }
+    f = { ordnance: null, zones: null, weather: null, blackHole: null, worldDraws: false, readWorld: null, followers: new Set(), night: 0, fauna: 'classic', keepDrawing: false }
     feeds.set(scene, f)
   }
   return f

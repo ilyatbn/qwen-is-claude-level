@@ -15,6 +15,7 @@
 import type { Tracer, Impact, TrackedProjectile, ProjectileKind } from '../render/ordnance-state'
 import type { CombatPalette, Light, RgbString, ViewRect } from './scene'
 import { F1 } from './scenes/F1'
+import { BLACK_HOLE_LIGHT } from './fx/blackHole'
 
 /** One light's shape before it is placed: `L(x, y, z, r, rgb, i)` less the position. */
 export interface LightSpec {
@@ -170,10 +171,12 @@ export interface EffectSources {
    * gun (`WorldView.staleRounds`, marked in `syncProjectiles`). Absent: every round is fresh when first listed.
    */
   stale?: { has(round: object): boolean }
+  /** T23.20 part C: the black hole the world renderer draws (`fx/feed.ts::blackHole`) — a light while it is shown. */
+  hole?: { x: number; y: number; growth: number; hidden: boolean } | null
 }
 
 /** Which source each light in the last list came from — for the dev handle (count both ends). */
-export type EffectKind = 'static' | 'explosion' | 'laser' | 'muzzle' | 'rocket' | 'flame' | 'jet' | 'vent'
+export type EffectKind = 'static' | 'explosion' | 'laser' | 'muzzle' | 'rocket' | 'flame' | 'jet' | 'vent' | 'hole'
 
 /**
  * The per-frame builder. Stateful only for the muzzle flash, which is a light for the first
@@ -261,6 +264,8 @@ export class EffectLights {
       if (v.jetting) put(FLAMETHROWER_LIGHT, v.x, v.y - VENT_JET_RISE, 1, 'vent')
       else if (v.burning) put(LAVA_GLOW_LIGHT, v.x, v.y, 1, 'vent')
     }
+    // T23.20 part C: the black hole's disc lights the rock and the figures near it, as it swells in.
+    if (src.hole && !src.hole.hidden) put(BLACK_HOLE_LIGHT, src.hole.x, src.hole.y, src.hole.growth, 'hole')
     if (this.unchanged()) return this.last
     this.last = this.scratch.slice(0, this.n).map((l) => ({ ...l }))
     this.lastKinds = this.scratchKinds.slice(0, this.n)

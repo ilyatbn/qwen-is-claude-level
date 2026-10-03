@@ -33,6 +33,7 @@ import Phaser from 'phaser'
 import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
+import { fxFeed, type FxFeed } from '../look/fx/feed'
 import {
   BLACK_HOLE_DISC_COLOR,
   BLACK_HOLE_REACH_RING_ALPHA,
@@ -73,6 +74,11 @@ export interface BlackHoleWarnDraw {
 export interface BlackHoleFxState {
   drawn: boolean
   shader: boolean
+  /**
+   * T23.20 part C: drawn by the world renderer (`look/fx/blackHole.ts`, the owner's look) — the scene's `worldDraws`.
+   * Then this layer paints only the reach ring and the telegraph; `shader` is false.
+   */
+  world: boolean
   /** Frames in which it was painted. */
   frames: number
   hidden: boolean
@@ -172,11 +178,14 @@ export class BlackHoleFx {
   private hidden = false
   private frames = 0
   private last: BlackHoleFxState
+  /** T23.20 part C: the scene's effect feed — the world renderer draws the hole from it while it draws the scene. */
+  private readonly feed: FxFeed
 
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly webgl: boolean,
   ) {
+    this.feed = fxFeed(scene)
     // At the particles' depth, beside the vortices and the flare: over the rock and
     // the players, under the HUD. **Not a new depth** — `sceneDepths()` is pinned.
     this.glow = scene.add.graphics().setDepth(DEPTH.particles).setBlendMode(Phaser.BlendModes.ADD)
@@ -191,7 +200,8 @@ export class BlackHoleFx {
   update(hole: BlackHoleDraw | null, warn: BlackHoleWarnDraw | null, nowMs: number, t: number): void {
     this.gfx.clear()
     this.glow.clear()
-    const viaShader = this.webgl && isHighQuality()
+    const world = this.feed.worldDraws
+    const viaShader = this.webgl && isHighQuality() && !world
     let drawn = false
     let growth = 0
     let warned = false
@@ -203,7 +213,8 @@ export class BlackHoleFx {
       growth = blackHoleGrowth(hole.arrivedAt, nowMs)
       drawn = true
       const r = blackHoleRadii(C())
-      if (viaShader) this.paintShader(hole, growth, r)
+      if (world) this.handOver(hole, growth, r)
+      else if (viaShader) this.paintShader(hole, growth, r)
       else this.paintFlat(hole, growth, r, t)
       this.paintReach(hole, r)
     } else if (!hole && warn && !this.hidden) {
@@ -212,8 +223,9 @@ export class BlackHoleFx {
       warned = true
     }
     if (!(drawn && viaShader)) this.dropQuad()
+    if (!(drawn && world)) this.feed.blackHole = null
     if (drawn) this.frames++
-    this.last = this.stateOf(drawn, viaShader && drawn, growth, warned, progress, warned && warn ? warn : null)
+    this.last = this.stateOf(drawn, viaShader && drawn, growth, warned, progress, warned && warn ? warn : null, world && drawn)
   }
 
   /** e2e only (§C2): hide the layer for a same-instant control frame. */
@@ -223,6 +235,7 @@ export class BlackHoleFx {
       this.gfx.clear()
       this.glow.clear()
       this.dropQuad()
+      this.feed.blackHole = null
     }
   }
 
@@ -239,6 +252,7 @@ export class BlackHoleFx {
   /** A new round: nothing drawn; the position itself is the mirror's to clear. */
   clear(): void {
     this.dropQuad()
+    this.feed.blackHole = null
     this.gfx.clear()
     this.glow.clear()
   }
@@ -256,10 +270,12 @@ export class BlackHoleFx {
     warned = false,
     progress = 0,
     warnAt: { x: number; y: number } | null = null,
+    world = false,
   ): BlackHoleFxState {
     return {
       drawn,
       shader,
+      world,
       frames: this.frames,
       hidden: this.hidden,
       growth,
@@ -290,6 +306,20 @@ export class BlackHoleFx {
     this.gfx.strokeCircle(w.x, w.y, warnClosingRadius(r, u))
     this.gfx.lineStyle(BLACK_HOLE_WARN_W, BLACK_HOLE_WARN_COLOR, 1)
     this.gfx.strokeCircle(w.x, w.y, r.horizon)
+  }
+
+  /** T23.20 part C: the world renderer draws the hole — hand it the place, the swell and the rule's radii. */
+  private handOver(h: BlackHoleDraw, grow: number, r: BlackHoleRadii): void {
+    this.feed.blackHole = {
+      x: h.x,
+      y: h.y,
+      growth: grow,
+      hidden: false,
+      horizon: r.horizon,
+      ring: r.ring,
+      ringW: BLACK_HOLE_RING_W,
+      ringRgb: rgbOf(BLACK_HOLE_RING_COLOR),
+    }
   }
 
   private dropQuad(): void {

@@ -2837,6 +2837,7 @@ export class GameScene extends Phaser.Scene {
       jets: views.flatMap((v) => jetFlames(v)),
       vents: this.vents,
       ...(this.world ? { stale: this.world.staleRounds } : {}),
+      hole: fxFeed(this).blackHole,
     }
   }
 

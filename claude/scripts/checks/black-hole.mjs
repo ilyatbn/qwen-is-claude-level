@@ -69,6 +69,18 @@ const RING_PROBES = 24
 /** Per channel, how far a ring probe may be from the ring's colour (antialiasing). */
 const RING_TOLERANCE = 12
 const RING_COLOUR_SHARE = 0.8
+/**
+ * T23.20 part C: the world renderer's hole (the owner's look) goes through the HDR post — tone map, bloom, grade — so
+ * its ring band is not `ringRgb` to 12 any more; it is the lensed disc's light, white-gold. A ring probe is then
+ * **lit and warm**: mean channel ≥ `RING_LIT_MIN`, red over blue by `RING_WARM_MIN`, and changed against the hidden
+ * frame. Measured on the owner's GPU: mean 132–247, red − blue 44–134; the space sky it replaces reads ~20–40.
+ */
+const RING_LIT_MIN = 100
+const RING_WARM_MIN = 25
+/** The disc animates: of `SWIRL_PROBES` points on the disc, at least `SWIRL_MIN_SHARE` change across `SWIRL_MS`. */
+const SWIRL_PROBES = 16
+const SWIRL_MIN_SHARE = 0.25
+const SWIRL_MS = 700
 const MIN_ON_SCREEN = 0.5
 /** A disc probe is black if no channel exceeds this. */
 const DISC_MAX = 10
@@ -165,6 +177,7 @@ function pullSeries(page, near, budgetMs) {
 async function coverage(page, h, label, wantShader) {
   await page.evaluate(([x, y]) => window.__game.watch(x, y), [h.x, h.y])
   await frames(page, SETTLE_FRAMES)
+  await swirl(page, h, label)
   await page.evaluate(() => window.__game.freeze(true))
   try {
     await frames(page, 2)
@@ -173,7 +186,16 @@ async function coverage(page, h, label, wantShader) {
       fail(`${label}: the black hole is not drawn: ${JSON.stringify(fx)}`)
       return
     }
-    if (fx.shader !== wantShader) fail(`${label}: drawn by the ${fx.shader ? 'shader' : 'flat'} path, asked for ${wantShader ? 'shader' : 'flat'}`)
+    // T23.20 part C: with the world renderer drawing the scene the hole is its (both tiers); Phaser's two paths are the
+    // fallback without WebGL2 and are asked for only then.
+    if (fx.world) {
+      if (fx.shader) fail(`${label}: the world renderer draws the hole and Phaser's shader quad is up too`)
+    } else if (fx.shader !== wantShader) fail(`${label}: drawn by the ${fx.shader ? 'shader' : 'flat'} path, asked for ${wantShader ? 'shader' : 'flat'}`)
+    const ringOk = (q) =>
+      fx.world
+        ? (q.a[0] + q.a[1] + q.a[2]) / 3 >= RING_LIT_MIN && q.a[0] - q.a[2] >= RING_WARM_MIN && q.peak > 6
+        : q.a.every((c, i) => Math.abs(c - fx.ringRgb[i]) <= RING_TOLERANCE)
+    const ringWant = fx.world ? `lit and warm (mean ≥ ${RING_LIT_MIN}, r − b ≥ ${RING_WARM_MIN}, changed)` : `the ring's colour ${JSON.stringify(fx.ringRgb)}`
     if (fx.growth < 1) fail(`${label}: photographed while still swelling in (growth ${fx.growth})`)
     const bounds = await page.evaluate(() => {
       const r = document.querySelector('canvas').getBoundingClientRect()
@@ -211,10 +233,10 @@ async function coverage(page, h, label, wantShader) {
     const pts = [...ringPts, ...discPts, ...(ctrl ? [{ x: ctrl.x, y: ctrl.y }] : [])]
     const cmp = await comparePhotos(page, on, off, { points: pts })
     const ringDetail = cmp.detail.slice(0, ringPts.length)
-    const inRing = ringDetail.filter((q) => q.a.every((c, i) => Math.abs(c - fx.ringRgb[i]) <= RING_TOLERANCE)).length
+    const inRing = ringDetail.filter(ringOk).length
     if (ringPts.length < RING_PROBES * MIN_ON_SCREEN) fail(`${label}: only ${ringPts.length} of ${RING_PROBES} ring points in view — coverage would mean nothing`)
-    else if (inRing < ringPts.length * RING_COLOUR_SHARE) fail(`${label}: only ${inRing} of ${ringPts.length} accretion-ring points are the ring's colour ${JSON.stringify(fx.ringRgb)}: ${JSON.stringify(ringDetail.slice(0, 4))}`)
-    else ok(`${label}: ${inRing}/${ringPts.length} accretion-ring points in the ring's own colour where the hole is (${fx.shader ? 'shader' : 'flat'})`)
+    else if (inRing < ringPts.length * RING_COLOUR_SHARE) fail(`${label}: only ${inRing} of ${ringPts.length} accretion-ring points are ${ringWant}: ${JSON.stringify(ringDetail.slice(0, 4))}`)
+    else ok(`${label}: ${inRing}/${ringPts.length} accretion-ring points ${ringWant} where the hole is (${fx.world ? 'world renderer' : fx.shader ? 'shader' : 'flat'})`)
     const discDetail = cmp.detail.slice(ringPts.length, ringPts.length + discPts.length)
     const black = discDetail.filter((q) => q.a.every((c) => c <= DISC_MAX)).length
     if (discPts.length < 3) fail(`${label}: only ${discPts.length} disc points in view`)
@@ -234,7 +256,7 @@ async function coverage(page, h, label, wantShader) {
     const born = await photo(page)
     await page.screenshot({ path: join(shotsDir, `black-hole-${label}-arrival.png`) })
     const cmp0 = await comparePhotos(page, born, off, { points: [...ringPts, ...discPts] })
-    const ring0 = cmp0.detail.slice(0, ringPts.length).filter((q) => q.a.every((c, i) => Math.abs(c - fx.ringRgb[i]) <= RING_TOLERANCE)).length
+    const ring0 = cmp0.detail.slice(0, ringPts.length).filter(ringOk).length
     const black0 = cmp0.detail.slice(ringPts.length).filter((q) => q.a.every((c) => c <= DISC_MAX)).length
     if (!fx0 || !fx0.drawn || fx0.growth !== 0) fail(`${label}: the arrival frame was not drawn at growth 0: ${JSON.stringify(fx0)}`)
     else if (ring0 < ringPts.length * RING_COLOUR_SHARE || black0 < discPts.length)
@@ -243,6 +265,50 @@ async function coverage(page, h, label, wantShader) {
   } finally {
     await page.evaluate(() => window.__game.freeze(false))
   }
+}
+
+/**
+ * T23.20 part C (owner: *"like the image but animated"*): **the disc swirls** — two photographs `SWIRL_MS` apart, the
+ * scene running, differ at points on the disc (1.8–3 horizons out along its tilt, clear of the ring band) and not at a
+ * control point clear of the glow. Only for the world renderer's hole (Phaser's flat path turns streaks, not this).
+ */
+async function swirl(page, h, label) {
+  const fx = (await page.evaluate(() => window.__game.debug())).blackHole.fx
+  if (!fx?.world) return
+  const drawn = await page.evaluate(() => window.__world?.blackHole?.() ?? null)
+  if (!drawn?.drawn) {
+    fail(`${label} swirl: the hole is the world renderer's and it reports nothing drawn: ${JSON.stringify(drawn)}`)
+    return
+  }
+  const tilt = drawn.tilt
+  const pts = []
+  for (let i = 0; i < SWIRL_PROBES; i++) {
+    const side = i % 2 ? 1 : -1
+    const d = (1.8 + (1.2 * Math.floor(i / 2)) / (SWIRL_PROBES / 2)) * fx.radii.horizon * side
+    // Along the disc's tilt (rising to the right on screen: mask y goes up as x grows).
+    const s = await toScreen(page, h.x + d * Math.cos(tilt), h.y - d * Math.sin(tilt))
+    if (s.onScreen) pts.push({ x: s.x, y: s.y })
+  }
+  let ctrl = null
+  for (const a of [Math.PI / 2, -Math.PI / 2, 0, Math.PI]) {
+    const s = await toScreen(page, h.x + Math.cos(a) * (fx.radii.glow * 1.6 + 60), h.y + Math.sin(a) * (fx.radii.glow * 1.6 + 60))
+    if (s.onScreen) {
+      ctrl = s
+      break
+    }
+  }
+  const a = await photo(page)
+  await page.waitForTimeout(SWIRL_MS)
+  const b = await photo(page)
+  await page.screenshot({ path: join(shotsDir, `black-hole-${label}-swirl.png`) })
+  const cmp = await comparePhotos(page, a, b, { points: [...pts, ...(ctrl ? [{ x: ctrl.x, y: ctrl.y }] : [])] })
+  const moved = cmp.points.slice(0, pts.length).filter(Boolean).length
+  if (pts.length < SWIRL_PROBES / 2) fail(`${label} swirl: only ${pts.length} disc points on screen`)
+  else if (moved < pts.length * SWIRL_MIN_SHARE) fail(`${label} swirl: the disc did not move — ${moved} of ${pts.length} points changed in ${SWIRL_MS} ms`)
+  else ok(`${label} swirl: ${moved}/${pts.length} disc points changed in ${SWIRL_MS} ms`)
+  if (!ctrl) fail(`${label} swirl: no control point on screen`)
+  else if (cmp.points[pts.length]) fail(`${label} swirl: control — a point clear of the glow changed too: ${JSON.stringify(cmp.detail[pts.length])}`)
+  else ok(`${label} swirl: control — a point clear of the glow did not change`)
 }
 
 /**

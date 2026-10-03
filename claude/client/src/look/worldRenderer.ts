@@ -47,12 +47,13 @@ import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
 import { FireflyLayer } from './fireflyLayer'
+import { BlackHoleLayer, DISC_TILT, holeShade, type BlackHoleView } from './fx/blackHole'
 import { FIREFLY_HZ, fieldSampler, fireflyFade, placeFireflies, type Firefly } from './fireflies'
 import { clearFrame, emptyFrame, sceneFx, type FxFrame } from './fx/kit'
 import { fxFeed, gameFrame, setWorldDraws, type FxFeed } from './fx/feed'
 import { EARTH_BAND, MOON_BAND, SPACE_SMOKE, SpaceStars, spaceDescription, spaceFeed, starKey, type SpaceFeed } from './space'
 import { castOf } from './actors/cast'
-import { NIGHT_CIRCLES, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
+import { NIGHT_CIRCLES, applyHoleShade, applyNight, applyPost, buildPost, type NightUniforms, type Post } from './post'
 import { SkyQuad } from './skyMaterial'
 import { albedoTheme } from './albedo'
 import { Backdrop } from './backdrop'
@@ -238,6 +239,8 @@ export class WorldRenderer implements SceneRenderer {
    * look-lab's) once the terrain fields are in (`swarmKey`: seed and map), moved by the scene's clock (`setClock`).
    */
   private readonly fireflyLayer = new FireflyLayer()
+  /** T23.20 part C: the black hole, the owner's look (`fx/blackHole.ts`) — from the feed, on the scene's clock. */
+  private readonly holeLayer = new BlackHoleLayer()
   private swarm: Firefly[] = []
   private swarmKey: string | null = null
   private clock = 0
@@ -276,6 +279,8 @@ export class WorldRenderer implements SceneRenderer {
     this.addLayer({ object: this.glowLayer.mesh, animated: false })
     // T23.24: not animated as a layer — a swarm in view ends the redraw skip itself, `FIREFLY_HZ` times a second at most.
     this.addLayer({ object: this.fireflyLayer.mesh, animated: false })
+    // T23.20 part C: not animated as a layer — a hole on screen ends the redraw skip itself (`render`), none does not.
+    this.addLayer({ object: this.holeLayer.mesh, animated: false })
     // T23.18: not animated as a layer — an effect on screen ends the redraw skip itself (`placeFx`), an empty one does not.
     for (const m of this.fxLayer.meshes) this.addLayer({ object: m, animated: false })
     // R20: the tier this machine gets when the player has never chosen is read from this
@@ -285,6 +290,7 @@ export class WorldRenderer implements SceneRenderer {
     // T23.14C: the glow's program and geometry exist from scene start, not from the first jet.
     this.glowLayer.warm(this.renderer, this.composer.readBuffer)
     this.fireflyLayer.warm(this.renderer, this.composer.readBuffer)
+    this.holeLayer.warm(this.renderer, this.composer.readBuffer)
     this.fxLayer.warm(this.renderer, this.composer.readBuffer)
     this.mount()
     this.unsubscribe = onHighQualityChange(() => this.setTier(qualityTier(this.gl)))
@@ -487,6 +493,9 @@ export class WorldRenderer implements SceneRenderer {
     if (live || this.fxLive) this.dirty = true
     this.fxLive = live
     if (this.fireflyTick()) this.dirty = true
+    // T23.20 part C: the hole's disc turns on the scene's clock — a hole drawn or just gone is a new picture.
+    const hole = this.holeNow()
+    if (hole || this.holeLayer.drawn) this.dirty = true
     // An unchanged view of an unchanged, unanimated scene is an unchanged picture: the canvas
     // keeps showing the last one (`mustDraw`). Measured on the checks' SwiftShader in a match:
     // drawing every frame cost 60 → 51 fps and turned `birds` red (1/5 green; 3/3 with the
@@ -532,10 +541,12 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.place(this.desc.actors.map((a) => this.withDarkHalo(a)), this.desc.look.lights, this.desc.look.moon, this.desc.world.h)
     this.glowLayer.place(this.desc.actors, this.desc.world.h)
     this.fireflyLayer.place(this.swarm, this.clock, this.fireflyFadeNow, view, this.desc.world.h)
+    this.holeLayer.place(hole, this.clock, this.desc.world.h)
     this.fxLayer.place(this.fxFrame, this.desc.world.h, performance.now() / 1000)
     applyPost(this.post, this.desc.look, this.hidden)
     this.nightLast = this.hidden.has('night') ? null : nightUniforms(this.night, view, this.buf, NIGHT_CIRCLES)
     applyNight(this.post, this.nightLast)
+    applyHoleShade(this.post, hole && this.holeLayer.drawn ? holeShade(hole, view, this.buf) : null)
     if (this.albedoView) {
       syncAlbedoView(this.albedoView, this.terrain)
       this.renderer.setRenderTarget(null)
@@ -716,6 +727,19 @@ export class WorldRenderer implements SceneRenderer {
   /** Dev (T23.18): the scene's effect feed — the ordnance layers' live records, for a shot to stage effects in. */
   get fxFeed(): FxFeed | null {
     return this.fxSource
+  }
+
+  /** T23.20 part C: the hole to draw — the feed's, while this renderer draws the scene and no check hid `blackHole`. */
+  private holeNow(): BlackHoleView | null {
+    const f = this.fxSource
+    if (!f?.worldDraws || this.hidden.has('blackHole')) return null
+    return f.blackHole
+  }
+
+  /** Dev (T23.20 part C): the hole as last drawn — whether, where, at what swell. */
+  blackHoleDrawn(): { drawn: boolean; at: { x: number; y: number } | null; growth: number; tilt: number } {
+    const l = this.holeLayer
+    return { drawn: l.drawn, at: l.at ? { ...l.at } : null, growth: l.growth, tilt: DISC_TILT }
   }
 
   /** T23.24: the scene's own clock, s (`scene.time.now`): it stops while the scene is paused, and so do the fireflies. */
@@ -1225,6 +1249,7 @@ export class WorldRenderer implements SceneRenderer {
     this.actorLayer.dispose()
     this.glowLayer.dispose()
     this.fireflyLayer.dispose()
+    this.holeLayer.dispose()
     this.fxLayer.dispose()
     if (this.fxSource) {
       setWorldDraws(this.fxSource, false)
