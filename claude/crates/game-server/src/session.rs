@@ -88,6 +88,11 @@ impl Ctx {
         self.lock().attach(sid, room);
     }
 
+    /// T23.29 item 3: see `Registry::mark_spectator`.
+    pub fn mark_spectator(&self, sid: Sid) {
+        self.lock().mark_spectator(sid);
+    }
+
     pub fn create(
         &self,
         scale: game_core::constants::MapScale,
@@ -1567,6 +1572,10 @@ async fn seat(
     };
     sessions.insert(id, socket.id);
     ctx.attach(socket.id, room_id);
+    // T23.29 item 3: a watcher holds no player's seat, so quick match does not count it.
+    if spectate {
+        ctx.mark_spectator(socket.id);
+    }
 
     // **The socket may already be gone, and until this line nothing could tell.**
     //

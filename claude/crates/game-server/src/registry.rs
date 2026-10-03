@@ -20,7 +20,7 @@
 //! the largest new surface for that class of bug in the codebase. Every map here
 //! is lookup-only; anything that needs an order keeps an explicit `Vec`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -70,10 +70,13 @@ pub struct RoomEntry {
     shutdown: Option<oneshot::Sender<()>>,
     /// Humans only. Bots do not keep a room alive (§B1).
     ///
-    /// **Sockets, spectators included** (T23.27) — not `Room::human_count`, which counts players only. On purpose,
-    /// both ways: a watched room stays alive while watched (reaping), and quick match's `humans >= max_players` treats
-    /// a watcher as an occupant, which is the cautious side. Do not "correct" one to match the other.
+    /// **Sockets, spectators included** (T23.27) — not `Room::human_count`, which counts players only: a watched room
+    /// stays alive while watched (reaping). Quick match does **not** read this alone — see `watchers`.
     humans: usize,
+    /// T23.29 item 3 (coordinator's ruling): the sockets among `humans` seated as **spectators**. A spectator takes no
+    /// body, so it is no occupant for quick match (`occupants`): a room of five players and a watcher still has a
+    /// player's seat. Marked by the session once the spectator seat is taken (`mark_spectator`), cleared on detach.
+    watchers: HashSet<Sid>,
     /// When the last human left, or `None` while somebody is in it.
     empty_since: Option<Instant>,
 }
@@ -81,6 +84,11 @@ pub struct RoomEntry {
 impl RoomEntry {
     pub fn humans(&self) -> usize {
         self.humans
+    }
+
+    /// The sockets that hold, or may yet take, a **player's** seat: `humans` less the spectators.
+    pub fn occupants(&self) -> usize {
+        self.humans.saturating_sub(self.watchers.len())
     }
 }
 
@@ -310,6 +318,7 @@ impl RoomRegistry {
                 code: code.clone(),
                 shutdown: Some(shutdown),
                 humans: 0,
+                watchers: HashSet::new(),
                 // A room with nobody in it yet is already on the clock: a client
                 // that asks for a room and then vanishes must not leave one
                 // ticking forever.
@@ -348,6 +357,17 @@ impl RoomRegistry {
                     "a human arrived; room is off the clock"
                 );
             }
+        }
+    }
+
+    /// T23.29 item 3: this socket, attached to its room, took a **spectator's** seat — it stops counting as a quick-match
+    /// occupant. A no-op for a socket in no room, so a late call after a detach cannot mark anything.
+    pub fn mark_spectator(&mut self, sid: Sid) {
+        let Some(room) = self.sid_room.get(&sid) else {
+            return;
+        };
+        if let Some(e) = self.rooms.get_mut(room) {
+            e.watchers.insert(sid);
         }
     }
 
@@ -392,6 +412,7 @@ impl RoomRegistry {
                 e.handle.send(crate::room::Command::Leave(id));
             }
             e.sessions.remove_sid(sid);
+            e.watchers.remove(&sid);
             e.humans = e.humans.saturating_sub(1);
             if e.humans == 0 {
                 // The tick keeps running until reap; what stops immediately is
@@ -453,10 +474,11 @@ impl RoomRegistry {
             // settings, so matching on it would split every lobby by map size
             // and players would wait alone in three separate rooms.
             let _ = scale;
-            if e.private || e.handle.has_started() || e.humans >= max_players {
+            // T23.29 item 3: occupants, not sockets — a spectator takes no body.
+            if e.private || e.handle.has_started() || e.occupants() >= max_players {
                 continue;
             }
-            let seats = e.humans;
+            let seats = e.occupants();
             match best {
                 Some((n, _)) if n >= seats => {}
                 _ => best = Some((seats, *id)),
@@ -773,6 +795,36 @@ mod tests {
             QuickMatch::Created(id) => assert!(id != p2, "seated into the private room"),
             other => panic!("expected a fresh room, got {other:?}"),
         }
+    }
+
+    /// T23.29 item 3: **a watcher is not an occupant** — five players and a spectator still take a sixth player by
+    /// quick match. The control: six players fill it (the same room, unmarked), and a spectator's socket leaving takes
+    /// its mark with it. Planted (`occupants` returning `humans`) → red.
+    #[test]
+    fn quick_match_seats_a_player_beside_a_spectator() {
+        let mut r = reg();
+        let (a, _) = r.create(MapScale::Medium, false).expect("a");
+        for _ in 0..5 {
+            r.attach(Sid::new(), a);
+        }
+        let watcher = Sid::new();
+        r.attach(watcher, a);
+        r.mark_spectator(watcher);
+        assert_eq!(r.quick_match(MapScale::Medium, 6), QuickMatch::Existing(a));
+        // The control: a sixth *player* fills it.
+        let mut full = reg();
+        let (b, _) = full.create(MapScale::Medium, false).expect("b");
+        for _ in 0..6 {
+            full.attach(Sid::new(), b);
+        }
+        assert_ne!(
+            full.quick_match(MapScale::Medium, 6),
+            QuickMatch::Existing(b)
+        );
+        // A detached watcher's mark goes with it: a sixth player then fills the room.
+        r.detach(watcher);
+        r.attach(Sid::new(), a);
+        assert_eq!(r.get(a).map(|e| e.occupants()), Some(6));
     }
 
     #[test]
