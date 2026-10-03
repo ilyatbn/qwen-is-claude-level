@@ -88,11 +88,28 @@ const sample = () =>
   )
 
 // --- no crate, no dot ------------------------------------------------------------
+//
+// T23.36: crates rain every `CRATE_INTERVAL` (2 s) up to `CRATE_MAX_ON_MAP`, and they are
+// already falling by the time a client is in the round, so "no crate on the map yet" is
+// gone as a moment to photograph. The control is restated as a region instead: every
+// beacon-coloured pixel must sit within a dot's reach of **some** crate the server reports
+// at that same instant. A beacon drawn where no crate is (or the whole canvas tinted) puts
+// pixels outside every crate's cell and fails it. Beacons are drawn for landed crates only
+// in practice, but the falling ones are allowed too — the region is "near a crate".
+const DOT = 3
+const nearAny = (sm, h) =>
+  sm.crates.some((c) => {
+    const cx = (c.x / sm.map.w) * sm.canvas.w
+    const cy = (c.y / sm.map.h) * sm.canvas.h
+    return Math.abs(h[0] - cx) <= DOT && Math.abs(h[1] - cy) <= DOT
+  })
 const dry = await sample()
 if (!dry.canvas) fail('there is no minimap canvas to read')
-else if (dry.crates.length > 0) fail(`a crate was already on the map at the start: ${JSON.stringify(dry.crates)}`)
-else if (dry.hits.length > 0) fail(`${dry.hits.length} beacon-coloured pixels with no crate on the map`)
-else ok(`control: no crate, no beacon pixel on the ${dry.canvas.w}x${dry.canvas.h} minimap`)
+else {
+  const strays = dry.hits.filter((h) => !nearAny(dry, h)).length
+  if (strays > 0) fail(`${strays} beacon-coloured pixels away from every crate on the map (${dry.crates.length} crates)`)
+  else ok(`control: no beacon pixel away from the ${dry.crates.length} crate(s) on the ${dry.canvas.w}x${dry.canvas.h} minimap`)
+}
 
 // --- a crate lands ---------------------------------------------------------------
 const landed = await page
@@ -115,11 +132,7 @@ if (!landed) {
   const crate = first.crates.find((c) => c.grounded)
   const cellX = (crate.x / first.map.w) * first.canvas.w
   const cellY = (crate.y / first.map.h) * first.canvas.h
-  const near = (h) => Math.abs(h[0] - cellX) <= 3 && Math.abs(h[1] - cellY) <= 3
-  // The control region: the minimap's diagonally opposite quarter from the crate.
-  const farX = cellX < first.canvas.w / 2 ? [first.canvas.w * 0.75, first.canvas.w] : [0, first.canvas.w * 0.25]
-  const farY = cellY < first.canvas.h / 2 ? [first.canvas.h * 0.75, first.canvas.h] : [0, first.canvas.h * 0.25]
-  const far = (h) => h[0] >= farX[0] && h[0] < farX[1] && h[1] >= farY[0] && h[1] < farY[1]
+  const near = (h) => Math.abs(h[0] - cellX) <= DOT && Math.abs(h[1] - cellY) <= DOT
 
   const samples = []
   const until = first.t + k.MINIMAP_CRATE_PERIOD * 1.5
@@ -128,8 +141,9 @@ if (!landed) {
     samples.push({
       t: s.t,
       lit: s.hits.some(near),
-      stray: s.hits.filter((h) => !near(h)).length,
-      far: s.hits.some(far),
+      // T23.36: away from *every* crate, not from this one — the others blink too.
+      stray: s.hits.filter((h) => !nearAny(s, h)).length,
+      hits: s.hits.length,
       stats: s.stats,
       stillThere: s.crates.some((c) => c.id === crate.id),
     })
@@ -162,11 +176,11 @@ if (!landed) {
   if (disagree > samples.length * 0.1) {
     fail(`the canvas and minimap.stats() disagreed about the beacon in ${disagree} of ${samples.length} samples`)
   } else ok(`pixels and minimap.stats() agree (${disagree} of ${samples.length} samples differ)`)
-  // The control region.
-  if (samples.some((x) => x.far)) fail('beacon-coloured pixels appeared far from the only crate on the map')
-  else ok('control: nothing beacon-coloured in the far quarter of the minimap')
+  // The control region: everywhere on the minimap that is not a crate's cell.
   const strays = Math.max(...samples.map((x) => x.stray))
-  if (strays > 0) fail(`up to ${strays} beacon-coloured pixels away from the crate`)
+  const total = samples.reduce((a, x) => a + x.hits, 0)
+  if (strays > 0) fail(`up to ${strays} beacon-coloured pixels away from every crate on the map`)
+  else ok(`control: ${total} beacon-coloured pixels over the sample, none away from a crate's cell`)
 }
 
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)

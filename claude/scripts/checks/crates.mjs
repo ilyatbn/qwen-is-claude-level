@@ -28,7 +28,7 @@
  *
  * ## Why a real server
  *
- * Crates arrive on `CRATE_INTERVAL` (35 s) during `Playing`, from the server's
+ * Crates arrive on `CRATE_INTERVAL` (2 s since T23.36, up to `CRATE_MAX_ON_MAP` at once) during `Playing`, from the server's
  * spawn schedule. There is no sandbox path to one, and inventing a client-side
  * crate would test a code path no player ever runs.
  *
@@ -215,11 +215,19 @@ const screenPos = async (world) => {
 }
 
 /** The crate as the client draws it, and as the server reports it. */
+//
+// T23.36: crates rain every `CRATE_INTERVAL` (2 s) up to `CRATE_MAX_ON_MAP`, so "the
+// crate" is the first one seen, followed **by id** from then on — `find` on the first
+// crate in the list would hop to another one as they come and go. `falling` is how many
+// crates the server says are still in the air, at the same instant as `chutes`.
+let trackedId = null
 const crateNow = async () => {
   const d = await dbg()
-  const drawn = (d.drawnItems ?? []).find((i) => i.source === 'Crate')
-  const mirror = (d.mirrorItems ?? []).find((i) => i.source === 'Crate')
-  return { drawn, mirror, chutes: d.chutesDrawn ?? 0, d }
+  const mine = (i) => i.source === 'Crate' && (trackedId === null || i.id === trackedId)
+  const drawn = (d.drawnItems ?? []).find(mine)
+  const mirror = (d.mirrorItems ?? []).find(mine)
+  const falling = (d.mirrorItems ?? []).filter((i) => i.source === 'Crate' && !i.grounded).length
+  return { drawn, mirror, chutes: d.chutesDrawn ?? 0, falling, d }
 }
 
 // --- wait for a crate -----------------------------------------------------
@@ -249,9 +257,10 @@ for (let i = 0; i < 260 && !seen; i++) {
   else await sleep(250)
 }
 if (!seen) {
-  fail(`no crate arrived in ${ROUND_SECONDS}s — CRATE_INTERVAL is ${35}s, so this is a real failure`)
+  fail(`no crate arrived in ${ROUND_SECONDS}s — crates arrive every CRATE_INTERVAL (2 s since T23.36), so this is a real failure`)
 } else {
   const id = seen.mirror.id
+  trackedId = id
   ok(`crate ${id} spawned at y=${seen.mirror.y.toFixed(0)}`)
 
   // --- how far this crate is going to fall, before it falls ---------------
@@ -654,8 +663,20 @@ if (!seen) {
     )
     if (supported) ok(`it is resting on solid ground at y=${rest.mirror.y.toFixed(0)}`)
     else fail(`it "landed" at y=${rest.mirror.y.toFixed(0)} with nothing under it`)
-    if (rest.chutes === 0) ok('the parachute is gone once it has landed')
-    else fail('a landed crate is still drawing a parachute')
+    // Both ends (T23.36): other crates are in the air now, so the parachutes drawn
+    // must equal the crates the server says are falling — this landed one is not among
+    // them. A landed crate that kept its canopy makes `chutes` the falling count + 1 on
+    // every frame, so equality in any of a few samples cannot be reached by that bug; the
+    // samples only absorb a crate touching down between the last draw and the read.
+    let eq = null
+    let last = rest
+    for (let i = 0; i < 5 && !eq; i++) {
+      last = i === 0 ? rest : await crateNow()
+      if (last.chutes === last.falling) eq = last
+      else await sleep(100)
+    }
+    if (eq) ok(`the parachute is gone once it has landed (${eq.chutes} drawn = ${eq.falling} crates still falling)`)
+    else fail(`a landed crate is still drawing a parachute: ${last.chutes} drawn, ${last.falling} crates falling`)
 
     // --- the pixels ------------------------------------------------------
     //

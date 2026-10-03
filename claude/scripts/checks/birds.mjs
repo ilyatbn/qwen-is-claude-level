@@ -781,7 +781,11 @@ if (onScreen && onScreen.inView.length > 0) {
     const until = Date.now() + 8000
     while (Date.now() < until) {
       const now = await dbg()
-      fresh = (now.mirrorItems ?? []).filter((i) => !before.has(i.id))
+      // T23.36: crates now rain every `CRATE_INTERVAL` (2 s) and fall from the top of the
+      // map, so a crate's first sighting can sit in the bird's column too. A bird never
+      // drops a crate (its drop is `SpawnSource::Periodic`, a heal or a battery), so a
+      // crate is not a candidate — the kind check below still pins what the bird dropped.
+      fresh = (now.mirrorItems ?? []).filter((i) => !before.has(i.id) && i.source !== 'Crate')
       for (const i of fresh) if (!firstSeen.has(i.id)) firstSeen.set(i.id, { x: i.x, y: i.y })
       // **Wait for the drop, not for any item.** This broke on the first new
       // item of any kind, and the world spawns items on a cadence of its own —
