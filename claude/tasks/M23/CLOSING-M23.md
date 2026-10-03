@@ -3,7 +3,11 @@
 **Headline: the game now looks like the owner's pictures.** Every reference (F1 night, F2 volcanic, F3 space, F4 cast,
 F5 moonlit day, F6 weapons, F7 poses) is reproduced through the game's own renderer within measured thresholds, each with
 a control that must fail; the live game, staged on four maps by night and day, sits inside the bounds the approved
-pictures set. The simulation's golden tables did not move in M23. Full gate result: see the last JOURNAL entry.
+pictures set. The simulation's golden tables did not move in M23.
+
+**Full gate** (`./scripts/check.sh` at 608bae0 — `gates/gate-builderH-full.txt`, builder H): fmt, clippy, `cargo test
+--workspace`, typecheck, vitest 1256/1256, repo guards green; e2e **97/116** at `--jobs 4` (load average up to ~17); the 19
+reds re-run alone at `--jobs 1`: **19/19 green** (`gates/gate-builderH-alone.txt`). No red reproduced alone.
 
 ## What shipped
 - **The art** (T23.00–T23.21B, T23.24): three.js world renderer under Phaser on WebGL2, two tiers; stepped hazy sky,

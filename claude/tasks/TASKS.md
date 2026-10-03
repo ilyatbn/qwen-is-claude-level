@@ -861,7 +861,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost — part A 2cd5842, part B as T23.21B
 - [x] [T23.21B](M23/T23.21B-the-hud-overlays-and-the-lab.md) — The HUD part B: killfeed, death, results, escape/options, minimap frame in F's look; the look-lab draws the HUD, Level A against hudE (`look-hud`)
 - [x] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
-- [ ] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
+- [x] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
 - [x] [T23.24](M23/T23.24-fireflies.md) — Fireflies at night — small drifting lights that glow and light the rock nearby (owner ask, after T23.11)
 - [x] [T23.19G](M23/T23.19G-what-the-daylight-review-found.md) — What the review of T23.19F + T23.11 found — space always moonlit day, a mid-fight sky shader compile at first dusk/night, tests that cannot see a mid-dusk pop (handoff item 3)
 - [x] [T23.25](M23/T23.25-the-batch-gate-reds.md) — The batch gate's reds on bcc5b30 — platforms, crates, lava-lights, debug-mode, swing-mine-fx (handoff item 1)
