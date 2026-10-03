@@ -281,7 +281,14 @@ ${bandMix}
     col = mix(col, haze, q.a);
     // Per pixel, verbatim: a hash of the pixel's own position. Baked, its input differed by an ulp
     // from the frame's and the hash scattered it — measured, F1's deltaE 0.00001 → 0.00012.
-    col += (hash12(vec2(vUv.x*RES.x, (1.-vUv.y)*RES.y)) - 0.5)*grainK;
+    // T23.13B: the frame size is a compile-time constant here (GRAIN_RES), as bgMaterial's W/H literals are. On the
+    // owner's D3D12 GPU (ANGLE → Mesa d3d12 → the Intel driver) the compiler folds a literal size into the hash's own
+    // constants — it reassociates — so the hash is of a differently rounded number than with a uniform size; measured,
+    // that alone put 47 % of the grain's px elsewhere (lab F4 world vs the mockup's, both D3D12: deltaE 0.094; grain off
+    // 0.016). The vector form is the one whose folding matches the mockup's own shader in context (0 px differ, read
+    // back on that GPU); the scalar form with literals did not (434 328 px). On SwiftShader the lab frame is byte-identical
+    // either way (measured, F4 world).
+    col += (hash12(vec2(vUv.x, 1.-vUv.y)*GRAIN_RES) - 0.5)*grainK;
     if (lin > 0.5) col = pow(max(col, 0.), vec3(2.2));
     gl_FragColor = vec4(col, 1.);
   }`
@@ -309,6 +316,11 @@ const target = (w: number, h: number, float32: boolean, linear: boolean): WebGLR
     depthBuffer: false,
     generateMipmaps: false,
   })
+/** T23.13B: the grain's frame size as GLSL literal text (`vec2(1280.0, 720.0)`) — see the composite's grain line. */
+export const grainRes = (w: number, h: number): string => {
+  const f = (v: number): string => (Number.isInteger(v) ? v.toFixed(1) : String(v))
+  return `vec2(${f(w)}, ${f(h)})`
+}
 /** Bytes per baked texel: RGBA float32 or half float. */
 const texelBytes = (float32: boolean): number => (float32 ? 16 : 8)
 const rect = (e: Extent): Vector4 => new Vector4(e.org[0], e.org[1], e.ext[0], e.ext[1])
@@ -422,7 +434,7 @@ export class SkyQuad {
       fragmentShader: COMPOSITE,
       // T23.11: the band slots compiled are the sky's own (`setSky`): SwiftShader runs every slot's arithmetic even
       // when its uniform switch skips it (the game's sky has four bands in six slots).
-      defines: { NB: N, NSET: 1, DSET: 1, SSTARS: 0 },
+      defines: { NB: N, NSET: 1, DSET: 1, SSTARS: 0, GRAIN_RES: grainRes(1280, 720) },
       depthTest: false,
       depthWrite: false,
     })
@@ -535,7 +547,7 @@ export class SkyQuad {
     r.autoClear = autoClear
   }
 
-  private define(name: string, v: number): void {
+  private define(name: string, v: number | string): void {
     const mat = this.mesh.material
     if (mat.defines[name] === v) return
     mat.defines[name] = v
@@ -616,6 +628,7 @@ export class SkyQuad {
     for (let i = 0; i < N; i++) E[i]!.set(drawn.layers[i]?.[0] ?? 0, drawn.layers[i]?.[1] ?? 0)
     ;(this.u['skyOff']!.value as Vector2).set(drawn.horizon[0], drawn.horizon[1])
     ;(this.u['RES']!.value as Vector2).set(frame[0], frame[1])
+    this.define('GRAIN_RES', grainRes(frame[0], frame[1]))
     // The moon sets move in whole texels (as the gradient does), so their nearest reads are the bake's own values —
     // measured on SwiftShader, linear reads of the two sets cost ~0.7 ms a frame more.
     const snap = (v: number): number => Math.round(v / texel) * texel + 0

@@ -172,6 +172,9 @@ export class LookScene extends Phaser.Scene {
         else if (knob === 'game-blast') gameBlast = true
         // T23.20: F3's rock painted with the ground's palette — look-gate-f3's control that the asteroid's is drawn.
         else if (knob === 'albedo-dusk') albedoDusk = true
+        // T23.13B: the sky's two hashed layers out, one at a time — the per-layer instrument for a back end's difference.
+        else if (knob === 'stars-off' && look.bg) look.bg = { ...look.bg, stars: 0 }
+        else if (knob === 'grain-off' && look.bg) look.bg = { ...look.bg, grainK: 0 }
         else handle.error = `unknown knob "${knob}"`
       }
       // T23.04–T23.07's references were rendered without fog, foreground, bloom or grade (`skyonly.js`, `terrainonly.js`).

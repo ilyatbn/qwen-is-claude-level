@@ -7965,3 +7965,10 @@ Done-when: tsc clean, vitest 1251/1251 (leaves.test.ts: determinism, seed moves 
 `check.sh --changed e6a24b3`: fmt/clippy/cargo/vitest green; e2e 89/109 in the batch, the 20 reds re-run alone at
 --jobs 1: 19/20 green (gate-coordinator-merge3-alone.txt); `bullets-visible` red — already parked (flaky-test.md,
 screenshot sampling too slow). Then T23.21B + T23.08B (builder D) merged on top, their own checks green; gated next batch.
+
+## T23.13B — the sky port on D3D12 (builder, 2026-10-03) — IN PROGRESS: sky fixed, terrain remains
+Layer named on the GPU: the sky's per-pixel grain (F4 world lab vs mockup, D3D12: 0.094, grain off 0.016, stars off 0.094). Cause: D3D12's compiler folds bgMaterial's literal W/H into the hash; the lab's uniform RES could not — read back, mockup in-context hash = `hash12(vec2(x,1−y)*vec2(1280.,720.))` 0 px, lab form 434k px off.
+Fix: composite grain p = `vec2(vUv.x,1.-vUv.y)*GRAIN_RES` (define, literal frame size). SwiftShader frame byte-identical. Lab knobs `stars-off`/`grain-off` added.
+D3D12 before→after: F4 cast deltaE_actors 0.1941 → 0.1375 (max 0.1726) ok; rim-off leg 0.1389 → 0.0756; F4 world 0.094 → 0.015; F1 world 0.085 → 0.028.
+NOT done: F1 world still fails gpu deltaE_cave 0.030 (max 0.0152) and paletteDE 1.37 (max 0.82) — lit terrain differs on D3D12 (30k px by 1 level vs 5k on SwiftShader); literal RES in the field read tried, no change, reverted. That max sits below the mockup's own SW-vs-D3D12 spread (0.029) — put to coordinator in the task file. Box not ticked.
+SwiftShader: look-lab, look-gate-f1, actor-atlas, look-sky, look-day-night 5/5 (gates/builderF-donewhen.txt).
