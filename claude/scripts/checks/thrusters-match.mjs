@@ -49,7 +49,13 @@ import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { deadlineMs } from '../lib/deadline.mjs'
 import { join } from 'node:path'
 
-const { fail, ok, finish } = tally('thrusters-match')
+/**
+ * T23.10C F11 (T22.00C's split): **which arms run.** `flaky: true` parks a whole check, and only arm 3's rubber-band
+ * half is parked (tasks/flaky-test.md) — so `thrusters-match-remote.mjs` runs this file with `THRUSTERS_ARMS=gating`:
+ * every arm but the bell's, gated again. Run bare, it is the whole check, as before.
+ */
+const BELL_ARM = process.env.THRUSTERS_ARMS !== 'gating'
+const { fail, ok, finish } = tally(BELL_ARM ? 'thrusters-match' : 'thrusters-match-remote')
 const K = rustConstants()
 
 /**
@@ -317,6 +323,9 @@ try {
   }
 
   // --- arm 3: the round-over bell (F3) -------------------------------------
+  // T23.10C F11: run only by `thrusters-match` (parked); `thrusters-match-remote` gates every other arm.
+  if (!BELL_ARM) console.log('  arm 3 (the round-over bell) not run here: it is parked in `thrusters-match` (tasks/flaky-test.md)')
+  else {
   const lead = await waitOn(
     bo,
     (s) => {
@@ -476,6 +485,8 @@ try {
       await bo.page.keyboard.up(side)
       await bo.page.keyboard.up(vert)
     }
+  }
+
   }
 
   // --- arm 4: standard gravity, the flame below the body on both clients (T23.14B; T22.04B asserted none) ---

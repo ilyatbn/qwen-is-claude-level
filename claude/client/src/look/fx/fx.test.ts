@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { F1 } from '../scenes/F1'
 import { explosion, emptyFrame, Lcg, sceneFx, SMOKE_TEX_DRAWS, STILL } from './kit'
 import { blastFx, blastScale, BLAST_REACH, cloudFx, CLOUD_SIZE, CLOUD_SPREAD, CLOUD_SPRITES, FLAME_LIFT, FLAME_REACH, flameFx, IMPACT_LIFE, IMPACT_MAX_R } from './game'
-import { fxFeed, gameFrame, MINE_FAR, MINE_NEAR } from './feed'
+import { fxFeed, gameFrame } from './feed'
+
+/** A mine's fade range for these fixtures — the scene passes `MINE_NEAR` / `MINE_FAR`; here it is a parameter. */
+const FADE = { mineNear: 10, mineFar: 50 }
 import { beamFx, LASER_CORE, MUZZLE_SIZE } from './game'
 import { MUZZLE_LIGHT } from '../effectLights'
 import { OrdnanceState } from '../../render/ordnance-state'
@@ -114,7 +117,7 @@ describe('the feed', () => {
     z.hazards.get(7)!.ttl = 4
     const src = { state: o, visible: true, flameRadius: 10, bulletLength: 10 }
     feed.ordnance = src
-    feed.zones = { state: z, visible: true, eye: { x: 0, y: 0 }, nowMs: 0, armTime: 1 }
+    feed.zones = { state: z, visible: true, eye: { x: 0, y: 0 }, nowMs: 0, armTime: 1, ...FADE }
     const out = emptyFrame()
     gameFrame(feed, out, 1)
     expect(out.discs.filter((d) => d.max).length).toBe(1)
@@ -130,7 +133,7 @@ describe('part B: beams, rounds, muzzles, swings, mines', () => {
   const feedWith = (o: OrdnanceState, z: OrdnanceFxState, eye = { x: 0, y: 0 }) => {
     const feed = fxFeed({})
     feed.ordnance = { state: o, visible: true, flameRadius: 10, bulletLength: 10 }
-    feed.zones = { state: z, visible: true, eye, nowMs: 0, armTime: 1 }
+    feed.zones = { state: z, visible: true, eye, nowMs: 0, armTime: 1, ...FADE }
     return feed
   }
 
@@ -179,10 +182,10 @@ describe('part B: beams, rounds, muzzles, swings, mines', () => {
     z.addMine(1, 0, 0, 0)
     z.addSwing(0, 0, 0, 40, 1.6, 0)
     const near = emptyFrame()
-    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: MINE_NEAR - 1, y: 0 }), near, 0)
+    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: FADE.mineNear - 1, y: 0 }), near, 0)
     expect(near.ink.length).toBe(1)
     const far = emptyFrame()
-    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: MINE_FAR + 1, y: 0 }), far, 0)
+    gameFrame(feedWith(new OrdnanceState(0.35, 8), z, { x: FADE.mineFar + 1, y: 0 }), far, 0)
     expect(far.ink.length).toBe(0)
     const arc = near.ribbons[0]!.pts
     for (const [x, y] of arc) expect(Math.hypot(x, y)).toBeCloseTo(40, 9)

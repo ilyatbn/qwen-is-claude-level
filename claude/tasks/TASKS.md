@@ -829,7 +829,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.09D](M23/T23.09D-the-batch-gate-reds.md) — The batch gate's reds — a round shorter than a frame is drawn once, a landing's sound survives a multi-step frame; your own swing is predicted
 - [x] [T23.10](M23/T23.10-zoom-out-and-the-night-view.md) — Zoom out (`CAMERA_ZOOM` 2 → 1) and the night view drawn F's way — `BOT_ENGAGE_RANGE` lands first so bots do not change
 - [x] [T23.10B](M23/T23.10B-what-the-zoom-review-found.md) — What the zoom/night review found — **night light pools reveal where hidden players stand (fairness)**, space moon inside the earth, real-camera zoom check, restated bases
-- [ ] [T23.10C](M23/T23.10C-the-zoom-review-remainder.md) — The zoom review's remainder (split from T23.10B) — real-match zoom check, balance/mine/deadzone restated for zoom 1, Phaser-fallback night, use_command tests, rock-opaque cites and ceiling, thrusters-match split
+- [x] [T23.10C](M23/T23.10C-the-zoom-review-remainder.md) — The zoom review's remainder (split from T23.10B) — real-match zoom check, balance/mine/deadzone restated for zoom 1, Phaser-fallback night, use_command tests, rock-opaque cites and ceiling, thrusters-match split
 - [x] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
 - [x] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels

@@ -2188,9 +2188,15 @@ pub const CAMERA_LERP: f32 = 0.12;
 /// Medium was 4.8 x 4.3 screens of world — at 1.0 (T23.10, R6) it is 2.4 x 2.1, still
 /// more world than one screen shows (`zoomed_viewport_is_smaller_than_the_smallest_map`).
 ///
+/// **T23.10C F5: what the table's last column is** (it read "in sight"). It is the encounter report's `near` — a pair within
+/// `BOT_ENGAGE_RANGE` (320 px), the range a bot engages at — not a person's sight: that was 320 at zoom 2 and is
+/// `FOV_DAY` 640 at zoom 1, so a human now sees each such pair from twice as far. The basis stands because it is a
+/// measure of the bots' fighting, which R6 left alone (bots do not change with the view). Re-measured for the label,
+/// not the numbers: `balance.rs::encounter_report` prints both ranges.
+///
 /// What changed is measured. At the shipping player count, 8 seeds x 150 s:
 ///
-/// | scale | plrs | fought | 1st contact | in sight |
+/// | scale | plrs | fought | 1st contact | in engage range |
 /// |---|---|---|---|---|
 /// | Large  | 4 | **0/8** | 100 s | 8.6 % |
 /// | Large  | 6 | 3/8 | 89 s | 33.1 % |
@@ -2212,11 +2218,26 @@ pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Medium;
 /// `the_view_shows_four_times_the_zoom_2_area` pins that, not the number. Not simulation: nothing in `game-core`'s
 /// step reads it (the bird test's half-view is a test).
 pub const CAMERA_ZOOM: f32 = 1.0;
-/// The camera does not move while the player is inside this box.
+/// The camera does not move while the player is inside this box. World px (`docs/70` §A1's table: 120 × 90).
+///
+/// **T23.10C F5: on screen it is half what §A1 tuned.** §A1 set it at `CAMERA_ZOOM` 2.0 — 240 × 180 screen px, a
+/// fifth of the view's width; at zoom 1.0 (T23.10, R6) the same world box is 120 × 90 screen px, a tenth. Unlike the
+/// sight radii (`FOV_DAY`, restated with the zoom so their on-screen share held), this one is the spec's number and was
+/// not restated: the camera follows a little sooner than §A1's did. Doubling it is a `docs/` amendment, not a builder's
+/// call — reported to the coordinator with this note.
 pub const CAMERA_DEADZONE_W: f32 = 120.0;
 pub const CAMERA_DEADZONE_H: f32 = 90.0;
 /// px of aim-direction lead added to the follow target.
 pub const CAMERA_LOOKAHEAD: f32 = 70.0;
+/// T23.10C F5: **a placed mine's visibility by distance** — fully drawn within `MINE_NEAR` of the viewer, fading to
+/// nothing at `MINE_FAR` (`OrdnanceFxState::mineAlpha`; client only). §B6: "a mine must be visible at close range" —
+/// and invisible from afar, which is what makes it a mine. They lived as two TS copies (40 / 300) tuned at
+/// `CAMERA_ZOOM` 2.0, where 300 world px was 600 screen px, nearly half the view; at zoom 1.0 it was under a quarter,
+/// while a person's day sight is half the view (`FOV_DAY`). **Restated as the sight radii were (R6)**: the same share
+/// of the view, so 40 → 80 and 300 → 600 world px — still inside `FOV_DAY`, so a mine fades out before the edge of
+/// what you see. `mine_fade_is_the_same_share_of_the_view` pins that basis.
+pub const MINE_NEAR: f32 = 80.0;
+pub const MINE_FAR: f32 = 600.0;
 pub const CAMERA_LOOKAHEAD_LERP: f32 = 0.06;
 
 // --- A2: map generation v2 ---
@@ -5086,6 +5107,19 @@ mod tests {
         let (w2, w1) = (VIEWPORT_W as f32 / ZOOM_2, VIEWPORT_W as f32 / CAMERA_ZOOM);
         assert_eq!(FOV_DAY / w1, FOV_DAY_AT_ZOOM_2 / w2);
         assert_eq!(FOV_NIGHT / w1, FOV_NIGHT_AT_ZOOM_2 / w2);
+    }
+
+    #[test]
+    fn mine_fade_is_the_same_share_of_the_view() {
+        // T23.10C F5: the client's 40 / 300 at zoom 2, restated as the sight radii were.
+        const ZOOM_2: f32 = 2.0;
+        const MINE_NEAR_AT_ZOOM_2: f32 = 40.0;
+        const MINE_FAR_AT_ZOOM_2: f32 = 300.0;
+        let (w2, w1) = (VIEWPORT_W as f32 / ZOOM_2, VIEWPORT_W as f32 / CAMERA_ZOOM);
+        assert_eq!(MINE_NEAR / w1, MINE_NEAR_AT_ZOOM_2 / w2);
+        assert_eq!(MINE_FAR / w1, MINE_FAR_AT_ZOOM_2 / w2);
+        // And a mine is gone before the edge of a person's day sight.
+        assert!(MINE_NEAR < MINE_FAR && MINE_FAR < FOV_DAY);
     }
 
     #[test]

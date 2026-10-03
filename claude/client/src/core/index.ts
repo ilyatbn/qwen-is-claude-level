@@ -385,6 +385,8 @@ export interface Constants {
   CAMERA_DEADZONE_H: number
   CAMERA_LOOKAHEAD: number
   CAMERA_LOOKAHEAD_LERP: number
+  MINE_NEAR: number
+  MINE_FAR: number
   SIM_DT: number
   SIM_HZ: number
   AIM_RADIUS: number

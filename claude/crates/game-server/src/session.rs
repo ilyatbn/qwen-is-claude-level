@@ -2141,6 +2141,39 @@ mod tests {
         assert_eq!(promo_target(&serde_json::json!({"id": past})), None);
     }
 
+    /// T23.10C F7: `fire`/`quick_throw`'s `seq` is a `u32` on the wire or it is not one — anything else is the plain
+    /// command (no echo), never a wrapped or rounded seq the client would pair a stranger's swing with. The control:
+    /// a real seq (and `u32::MAX`, the edge) is a `UseAt` carrying exactly it.
+    #[test]
+    fn use_command_takes_only_a_u32_seq() {
+        let cmd = |quick: bool, p: serde_json::Value| format!("{:?}", use_command(4, quick, &p));
+        // The control: real seqs.
+        assert_eq!(
+            cmd(false, serde_json::json!({"seq": 7})),
+            "UseAt(4, quick false, seq 7)"
+        );
+        assert_eq!(
+            cmd(true, serde_json::json!({"seq": 7})),
+            "UseAt(4, quick true, seq 7)"
+        );
+        assert_eq!(
+            cmd(false, serde_json::json!({"seq": u32::MAX})),
+            format!("UseAt(4, quick false, seq {})", u32::MAX)
+        );
+        // Missing, negative, fractional, a string, and one past `u32`: the plain command.
+        let past = u64::from(u32::MAX) + 1;
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"seq": -1}),
+            serde_json::json!({"seq": 1.5}),
+            serde_json::json!({"seq": "7"}),
+            serde_json::json!({"seq": past}),
+        ] {
+            assert_eq!(cmd(false, bad.clone()), "Fire(4)", "{bad}");
+            assert_eq!(cmd(true, bad.clone()), "QuickThrow(4)", "{bad}");
+        }
+    }
+
     #[test]
     fn names_are_trimmed_stripped_and_bounded() {
         assert_eq!(sanitise_name("  ana  ").as_deref(), Some("ana"));

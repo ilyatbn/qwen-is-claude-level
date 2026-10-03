@@ -119,6 +119,7 @@ import { DebugHud } from '../ui/debugHud'
 import { ITEM_ATLAS } from '../render/itemSprites'
 import { artFor } from '../render/itemSprites-math'
 import { gunAt, muzzleDir, type Pt } from '../render/muzzle-math'
+import { FALLBACK_NIGHT_COLOUR, fallbackNightAlpha } from '../render/fallbackNight-math'
 import { shakeOrigin, traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
@@ -295,6 +296,8 @@ export class GameScene extends Phaser.Scene {
    * `createWorldRenderer` itself. `null` until its chunk has loaded (T23.03B, F10).
    */
   private worldRenderer: GameWorld | null = null
+  /** T23.10C F6: the fallback's night dim, made on the first dark frame with no world renderer. */
+  private fallbackDim: Phaser.GameObjects.Rectangle | null = null
   /** T23.06: this map's terrain fields (worker full pass, carve updates, blasts) for the world renderer. */
   private terrainFields: TerrainFields | null = null
   /** T22.06's space backdrop, shown only on a space map (T23.04: `SkyLayer`, which owned it, is retired). */
@@ -758,6 +761,8 @@ export class GameScene extends Phaser.Scene {
     this.overlay = null
     this.jetReadout = null
     this.spectateLine = null
+    // T23.10C F6: the fallback's dim belonged to the old display list; made again on the first dark frame.
+    this.fallbackDim = null
     // T21.24. The element is removed and the subscription dropped in SHUTDOWN;
     // these two lines are the other half of that, so a rebuilt scene cannot find
     // a handle to a node that is no longer in the document.
@@ -2857,12 +2862,34 @@ export class GameScene extends Phaser.Scene {
     })
     this.sightFov = fov
     // T23.10B F1: the sight circle and the lights the remotes were judged by (`renderRemotes`), not a second choice.
-    this.worldRenderer?.setNightView(nightView(darkness, [{ x: rp.x, y: rp.y, r: fov }], this.sightLit))
+    const nightDrawn = this.worldRenderer?.setNightView(nightView(darkness, [{ x: rp.x, y: rp.y, r: fov }], this.sightLit)) ?? false
+    // T23.10C F6: where no picture took the night view (the stub — no WebGL2, `?world=off` — or no renderer at all,
+    // once that is settled), the night is a flat dim (`fallbackNightAlpha`); none where the night view draws.
+    this.fallbackNight(this.rendererSettled && !nightDrawn ? darkness : 0)
     // T23.09C F7: built every frame whether or not the world renderer is up — its bookkeeping (which rounds have
     // flashed) must not go stale while the renderer loads: a round first listed then would flash late, mid-air.
     const effectLights = this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView))
     this.worldRenderer?.setLights(effectLights)
     this.refreshHud()
+  }
+
+  /**
+   * T23.10C F6: the fallback's night — a screen-fixed dim at the retired lightmap's depth, made only on a dark frame
+   * that no world picture took (so the depth list `terrain-render` compares, with a renderer, is unchanged). See
+   * `fallbackNight-math.ts`. `darkness` 0 hides it.
+   */
+  private fallbackNight(darkness: number): void {
+    const a = fallbackNightAlpha(darkness, C().NIGHT_DARKNESS)
+    if (!this.fallbackDim) {
+      if (!(a > 0)) return
+      this.fallbackDim = this.add
+        .rectangle(0, 0, this.scale.width, this.scale.height, FALLBACK_NIGHT_COLOUR)
+        .setOrigin(0)
+        .setScrollFactor(0)
+        .setDepth(DEPTH.lightmap)
+    }
+    this.fallbackDim.setAlpha(a)
+    this.fallbackDim.setVisible(a > 0)
   }
 
   /**

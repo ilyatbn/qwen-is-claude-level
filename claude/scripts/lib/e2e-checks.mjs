@@ -504,6 +504,9 @@ export const CHECKS = [
   // second poisons everyone, for the death) and six clients.
   // T22.14E: parked — the bell arm fails at random, on two assertions; see `tasks/flaky-test.md`.
   { name: 'thrusters-match', file: 'scripts/checks/thrusters-match.mjs', standalone: true, flaky: true },
+  // T23.10C F11 (T22.00C): the same file without the parked bell arm — the remote plume, braking, standard gravity and
+  // death mid-burn gate again.
+  { name: 'thrusters-match-remote', file: 'scripts/checks/thrusters-match-remote.mjs', standalone: true },
   // T22.09C F1: GameScene's bit-7 reader, which no sandbox run reaches — a flat suit
   // (`DEV_START_BATTERY=0`) irradiated in a real space match, a full one sealed, and
   // neither drawn in warmup. Standalone: two servers, one client each.

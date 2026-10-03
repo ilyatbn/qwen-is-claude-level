@@ -2609,6 +2609,8 @@ pub fn constants_json() -> String {
         CAMERA_DEADZONE_H => c::CAMERA_DEADZONE_H,
         CAMERA_LOOKAHEAD => c::CAMERA_LOOKAHEAD,
         CAMERA_LOOKAHEAD_LERP => c::CAMERA_LOOKAHEAD_LERP,
+        MINE_NEAR => c::MINE_NEAR,
+        MINE_FAR => c::MINE_FAR,
         SIM_DT => c::SIM_DT,
         SIM_HZ => c::SIM_HZ,
         AIM_RADIUS => c::AIM_RADIUS,

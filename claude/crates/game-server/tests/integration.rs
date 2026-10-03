@@ -852,6 +852,87 @@ async fn select_slot_then_fire_fires_the_newly_selected_weapon() {
     );
 }
 
+/// T23.10C F7: **a real seq over a real socket comes back on the round it fired.** `fire` with `{"seq": 7}` reaches the
+/// room as `UseAt` (`session.rs::use_command`), and the `projectile_spawn` its smg round makes carries `use_seq` 7 —
+/// the pairing the client's predicted swing relies on (T23.19D F4). The control: the same fire with no seq spawns a
+/// round with no `use_seq`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fire_sent_with_a_seq_comes_back_on_its_round() {
+    use game_core::items::registry::SMG;
+    // A short warmup: the round clock stands still before `Playing`, so a second use is held by the first one's
+    // cooldown (measured: the smg's 59th round never came while the room sat in its pre-round phase).
+    let s = spawn_server(Config {
+        dev_loadout: true,
+        warmup_seconds: 0.5,
+        ..test_config()
+    })
+    .await;
+    let (addr, room) = (s.addr, s.room.clone());
+    let rt = tokio::runtime::Handle::current();
+    let (with_seq, without) = tokio::task::spawn_blocking(move || {
+        let (c, inbox, rx) = join_and_ready(addr, "ana", &["projectile_spawn"]);
+        let id = got(&inbox, "welcome")[0]["player_id"].as_u64().expect("id");
+        c.emit("start_with_bots", serde_json::json!({}))
+            .expect("start");
+        // T23.28's load hold: the round waits for every seated body's `ready` on the new map, as a client sends on loading.
+        wait_for(&rx, "map_init", 30);
+        c.emit("ready", serde_json::json!({})).expect("ready");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while rt.block_on(room.inspect(|w| w.phase)) != Some(game_core::world::RoundPhase::Playing)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the round never reached Playing"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let smg = rt
+            .block_on(room.inspect(move |w| {
+                let inv = &w.player(id as u8)?.inventory;
+                (0..=u8::MAX).find(|&k| inv.slot(k).is_some_and(|st| st.item == SMG))
+            }))
+            .flatten()
+            .expect("the dev loadout carries an smg");
+        c.emit("select_slot", serde_json::json!({ "slot": smg }))
+            .expect("select");
+        // My rounds' `use_seq`s, as they arrive (bots fire too: owner-filtered).
+        let mine = |inbox: &Inbox| -> Vec<Option<u64>> {
+            got(inbox, "projectile_spawn")
+                .iter()
+                .filter(|p| p["owner"].as_u64() == Some(id))
+                .map(|p| p.get("use_seq").and_then(|v| v.as_u64()))
+                .collect()
+        };
+        let fire_until = |payload: serde_json::Value, n: usize| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while mine(&inbox).len() < n && std::time::Instant::now() < deadline {
+                c.emit("fire", payload.clone()).expect("fire");
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            mine(&inbox)
+        };
+        fire_until(serde_json::json!({ "seq": 7 }), 1);
+        // Let every seq-7 round that is still on the wire land before the control fires.
+        std::thread::sleep(Duration::from_millis(600));
+        let first = mine(&inbox);
+        let n = first.len();
+        let all = fire_until(serde_json::json!({}), n + 1);
+        let _ = c.disconnect();
+        (first, all.get(n).copied())
+    })
+    .await
+    .expect("client thread");
+    assert!(
+        !with_seq.is_empty() && with_seq.iter().all(|s| *s == Some(7)),
+        "fire with seq 7: my rounds carried {with_seq:?}, want every one Some(7)"
+    );
+    assert_eq!(
+        without,
+        Some(None),
+        "control: a fire with no seq must spawn a round with no use_seq"
+    );
+}
+
 /// **The seed is stated, not inherited** (T20.18/T20.20).
 #[test]
 fn the_fixture_states_its_seed() {

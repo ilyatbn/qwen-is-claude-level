@@ -1427,8 +1427,11 @@ export interface GameWorld {
   caveWallDrawn(): boolean | null
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
-  /** T23.10 (R7): this frame's night view; dropped where three did not start. */
-  setNightView(v: NightView | null): void
+  /**
+   * T23.10 (R7): this frame's night view; dropped where three did not start. T23.10C F6: **returns whether a picture
+   * took it** — false on the stub (no WebGL2, `?world=off`), where the scene draws its own fallback night.
+   */
+  setNightView(v: NightView | null): boolean
   /** T23.11 (R7): this frame's hour — `t` = darkness / `NIGHT_DARKNESS`, `u` the cycle position (`WorldRenderer.setDaylight`). */
   setDaylight(t: number, u: number | null): void
   /** T23.13/T23.14: this frame's cast (`look/actors/`); dropped where three did not start. */
@@ -1495,7 +1498,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
       if (renderer instanceof WorldRenderer) renderer.setLights(lights)
     },
     setNightView: (v) => {
-      if (renderer instanceof WorldRenderer) renderer.setNightView(v)
+      if (!(renderer instanceof WorldRenderer)) return false
+      renderer.setNightView(v)
+      return true
     },
     setDaylight: (t, u) => {
       if (renderer instanceof WorldRenderer) renderer.setDaylight(t, u)

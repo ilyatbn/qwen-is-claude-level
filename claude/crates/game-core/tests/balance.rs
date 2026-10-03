@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use game_core::bots::{drive, Bot};
 use game_core::constants::{
     GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE, BOT_SKILL_DEFAULT,
-    BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
+    BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
     ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
@@ -1803,7 +1803,7 @@ fn density_report() {
 /// One round's encounter record.
 ///
 /// Two measures, not one, and the gap between them is the point: `near` counts
-/// ticks where a pair is within sight *range*, `los` counts ticks where the line
+/// ticks where a pair is within `BOT_ENGAGE_RANGE` (a bot's reach; a person sees `FOV_DAY`), `los` counts ticks where the line
 /// between them is also clear. If `near` is high and `los` is low, terrain is
 /// what keeps players apart; if both are low, distance is. Tuning the wrong one
 /// of those does nothing, which is why the decomposition comes before the lever.
@@ -2237,13 +2237,37 @@ fn the_balance_floors_record_their_basis() {
     }
 }
 
+/// The encounter report's title: what its range is. T23.10C F5: it said "sight {BOT_ENGAGE_RANGE}" — 320, a bot's
+/// engage range, which was a person's day sight only at zoom 2; at zoom 1 a person sees `FOV_DAY` (640). `near%` is
+/// pairs within the engage range, so the title names that range for what it is and gives a person's sight beside it.
+fn encounters_title(seeds: usize) -> String {
+    format!(
+        "== ENCOUNTERS — {seeds} seeds x {POOL_SECONDS}s, near = within bot engage range {BOT_ENGAGE_RANGE:.0}px \
+         (a person's day sight is {FOV_DAY:.0}px) =="
+    )
+}
+
+#[test]
+fn encounter_report_labels_say_what_each_range_is() {
+    let t = encounters_title(SEEDS.len());
+    assert!(
+        t.contains(&format!("bot engage range {BOT_ENGAGE_RANGE:.0}px")),
+        "{t}"
+    );
+    assert!(t.contains(&format!("day sight is {FOV_DAY:.0}px")), "{t}");
+    // The old label, gone: the engage range called "sight".
+    assert!(
+        !t.contains(&format!("sight {BOT_ENGAGE_RANGE:.0}px")),
+        "{t}"
+    );
+    // Control: the two ranges are different numbers, or the labels could not be told apart by value.
+    assert_ne!(BOT_ENGAGE_RANGE, FOV_DAY);
+}
+
 #[test]
 #[ignore = "measurement: minutes in release"]
 fn encounter_report() {
-    println!(
-        "\n== ENCOUNTERS — {} seeds x {POOL_SECONDS}s, sight {BOT_ENGAGE_RANGE:.0}px ==",
-        SEEDS.len()
-    );
+    println!("\n{}", encounters_title(SEEDS.len()));
     println!("   shipping config is {DEFAULT_MAP_SCALE:?} with {BOT_COUNT_DEFAULT} bots + 1 human");
     println!(
         "\n   {:<8} {:>5}  {:>6}  {:>7}  {:>7}  {:>7}  {:>6}  {:>6}  {:>6}  {:>7}",

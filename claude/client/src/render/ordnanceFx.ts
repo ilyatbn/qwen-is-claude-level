@@ -20,14 +20,12 @@
 
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
+import { C } from '../core'
 import { OrdnanceFxState, fade, type HazardKind } from './ordnanceFx-math'
 import { fxFeed, type FxFeed } from '../look/fx/feed'
 
 const SWING_LIFE = 0.15
 const JET_LIFE = 0.08
-/** §B6's numbers: unmissable at 40 px, gone by 300. */
-const MINE_NEAR = 40
-const MINE_FAR = 300
 
 const HAZARD_COLOUR: Record<HazardKind, number> = {
   toxic: 0x7fe04a,
@@ -49,6 +47,10 @@ export class OrdnanceFxLayer {
   /** What the last `update` was given, so a repaint draws the same instant. */
   private eyeAt = { x: 0, y: 0 }
   private now = 0
+
+  /** T23.10C F5: §B6 — unmissable within `MINE_NEAR`, gone by `MINE_FAR` (constants.rs; were 40 / 300 here and in `feed.ts`). */
+  readonly mineNear = C().MINE_NEAR
+  readonly mineFar = C().MINE_FAR
 
   constructor(
     scene: Phaser.Scene,
@@ -198,7 +200,7 @@ export class OrdnanceFxLayer {
     // --- mines ---------------------------------------------------------------
     for (const m of worldFx ? [] : this.state.mines.values()) {
       const d = Math.hypot(m.x - eye.x, m.y - eye.y)
-      const alpha = OrdnanceFxState.mineAlpha(d, MINE_NEAR, MINE_FAR)
+      const alpha = OrdnanceFxState.mineAlpha(d, this.mineNear, this.mineFar)
       if (alpha <= 0) continue
       const armed = OrdnanceFxState.isArmed(m.age, this.armTime)
       // Big enough, and outlined, to read *over a sprite*: a mine sits at the

@@ -37,6 +37,9 @@ export interface ZonesSource {
   readonly eye: { x: number; y: number }
   readonly nowMs: number
   readonly armTime: number
+  /** T23.10C F5: a mine's fade by distance from `eye` — `MINE_NEAR` / `MINE_FAR` (constants.rs, restated for zoom 1). */
+  readonly mineNear: number
+  readonly mineFar: number
 }
 
 export interface FxFeed {
@@ -112,10 +115,6 @@ export function followWorldDraws(scene: object, use: (on: boolean) => void): () 
   return () => void f.followers.delete(use)
 }
 
-/** §B6: a mine reads at 40 px and is gone by 300 (`ordnanceFx.ts`'s numbers). */
-export const MINE_NEAR = 40
-export const MINE_FAR = 300
-
 /**
  * This frame's game effects from `feed` into `out` (cleared first). `seconds`: the clock the fire and smoke move on;
  * `lights`: this frame's effect lights, whose muzzle lights are where the muzzle glows go.
@@ -131,7 +130,7 @@ export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: r
     for (const j of st.jets) coneFx(out, j)
     for (const s of st.swings) swingFx(out, s)
     for (const m of st.mines.values()) {
-      const alpha = OrdnanceFxState.mineAlpha(Math.hypot(m.x - z.eye.x, m.y - z.eye.y), MINE_NEAR, MINE_FAR)
+      const alpha = OrdnanceFxState.mineAlpha(Math.hypot(m.x - z.eye.x, m.y - z.eye.y), z.mineNear, z.mineFar)
       mineFx(out, m, alpha, OrdnanceFxState.isArmed(m.age, z.armTime), z.nowMs)
     }
   }

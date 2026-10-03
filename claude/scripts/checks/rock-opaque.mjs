@@ -24,7 +24,7 @@
  *
  * Four seeds × three views at night (a population, not one draw), on the checks' low tier; the entry
  * `rock-opaque-full` runs the same on the full tier (`&tier=full`). Plant: the terrain's coverage × 0.97 in
- * `terrainMaterial.ts::SHADE` must turn this red on every view with rock.
+ * `terrainMaterial.ts::shade(slots)` must turn this red on every view with rock.
  */
 import { HIGH_QUALITY_KEY } from '../lib/check-tier.mjs'
 
@@ -36,6 +36,15 @@ const PIXEL_STEP = 3
 const MAX_ROCK_CHANGED = 0.002
 /** The share of open-air pixels that must move (the control; measured 98.0–100 %). */
 const MIN_AIR_CHANGED = 0.9
+/**
+ * T23.10C F10: **a loose ceiling on the real sky's bloom into deep rock** (bloom on, real vs black sky), pooled over
+ * every view: its p95 in levels (0–255). Logged only until now. Measured pooled at T23.10C, low tier, the four seeds ×
+ * three views: **p95 3** (p50 1, max 53) — the per-view figures above are the moon's worst frames, not the pool. The
+ * ceiling is four times that: loose, so it catches a bloom gone wrong (a sky bleeding through the rock as a glow), not
+ * one retuned. Planted `bloomStrength × 4` (`post.ts::FoldedBloom`): pooled p95 33 — red. (A first ceiling of 48, off
+ * the per-view figures, let that plant through.)
+ */
+const BLOOM_P95_MAX = 12
 /** Seeds (31337 is the report's). */
 const SEEDS = ['31337', '4242', '7', '11']
 /**
@@ -109,6 +118,12 @@ function rockDeltas(cls, f, a, b) {
       if (cls[k++] === 1) out.push(Math.max(Math.abs(a[p] - b[p]), Math.abs(a[p + 1] - b[p + 1]), Math.abs(a[p + 2] - b[p + 2])))
     }
   return out
+}
+/** The `f` quantile of `v` (sorted copy), or null with nothing to rank. */
+function quantile(v, f) {
+  if (!v.length) return null
+  const s = [...v].sort((x, y) => x - y)
+  return s[Math.min(s.length - 1, Math.floor(s.length * f))]
 }
 function quantiles(v) {
   if (!v.length) return 'n/a'
@@ -212,6 +227,10 @@ export default async function ({ page, shot, log }) {
   })
   if (rockAll < MIN_ROCK_TOTAL) problems.push(`only ${rockAll} deep-rock px sampled over every view — the rock half measured too little`)
   log(`all views: deep rock ${rockAll} px, ${rockMovedAll} moved with the sky swapped (bloom off); the real sky's bloom into rock (bloom on, real vs black sky): ${quantiles(leaks)}`)
+  const p95 = quantile(leaks, 0.95)
+  if (p95 === null) problems.push('no deep-rock px to rank the bloom over')
+  else if (p95 > BLOOM_P95_MAX) problems.push(`the real sky's bloom into deep rock: pooled p95 ${p95} levels, over the ceiling ${BLOOM_P95_MAX}`)
+  else log(`bloom into rock: pooled p95 ${p95} ≤ ${BLOOM_P95_MAX}`)
   await page.evaluate((m) => {
     window.__world.hideLayers(['bloom'])
     window.__world.skyFlat(m)
