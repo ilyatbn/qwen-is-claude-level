@@ -727,7 +727,16 @@ export class WorldMirror {
         if (list.length > SWALLOWS_KEPT) list.splice(0, list.length - SWALLOWS_KEPT)
         break
       }
-      case 'item_pickup':
+      case 'item_pickup': {
+        // T23.37 item 1: a partial pickup leaves the rest on the ground — the server says how many (`remaining`, read
+        // after its pickup pass: 0 is gone). Absent (an older server) means gone, as before.
+        const id = n(p['world_item_id'])
+        const left = p['remaining']
+        const it = this.items.get(id)
+        if (typeof left === 'number' && left > 0 && it) it.count = left
+        else this.items.delete(id)
+        break
+      }
       case 'item_despawn':
         this.items.delete(n(p['world_item_id']))
         break

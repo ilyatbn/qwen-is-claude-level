@@ -451,6 +451,22 @@ describe('roster and entities', () => {
   })
 
   /**
+   * T23.37 item 1: **a partial pickup leaves the rest** — the server's `remaining` (read after its pickup pass) is
+   * the count left on the ground; the item goes only at 0. Controls: `remaining: 0` and an old server's absent field
+   * both remove it, as before.
+   */
+  it('keeps what a partial pickup left, and drops the item at 0', () => {
+    const { mirror } = freshMirror()
+    for (const id of [7, 8, 9]) mirror.applyEvent('item_spawn', { world_item_id: id, item_id: 3, count: 4, x: 10, y: 20 }, 0)
+    mirror.applyEvent('item_pickup', { world_item_id: 7, player_id: 1, remaining: 3 }, 0)
+    expect(mirror.items.get(7)?.count).toBe(3)
+    mirror.applyEvent('item_pickup', { world_item_id: 8, player_id: 1, remaining: 0 }, 0)
+    expect(mirror.items.has(8)).toBe(false)
+    mirror.applyEvent('item_pickup', { world_item_id: 9, player_id: 1 }, 0)
+    expect(mirror.items.has(9)).toBe(false)
+  })
+
+  /**
    * T19.17. `crate_spawn`'s payload is `{tick, world_item_id, x, y}` — no
    * `item_id`, no `count` — and the arm that handles it is shared with
    * `item_spawn`. It used to coerce the missing fields with `n(p['item_id'])`,
