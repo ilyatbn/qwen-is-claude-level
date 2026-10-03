@@ -219,6 +219,30 @@
         "reference/controls/F1-lab-swiftshader.png (look-lab F1 world, SwiftShader)",
         "reference/controls/F1-lab-d3d12.png (look-lab F1 world, D3D12 Arc B390)"
       ],
+      "spread": {
+        "about": "T23.41 (coordinator ruling on T23.13B): the mockup's own back-end spread raises this set's floor for deltaE_cave and paletteDE — the two metrics whose lab-vs-lab floor (above) sat below what the MOCKUP moves between SwiftShader and D3D12, so no D3D12 frame could meet them (T23.13B: F1 world cave 0.030 > max 0.0152, paletteDE 1.37 > 0.82). Floor = the largest of: the mockup's F1/F5/F3 world on D3D12 against the same world on SwiftShader (the pairs), and the mockup on D3D12 twice (two separate headed google-chrome launches, GALLIUM_DRIVER=d3d12, Intel Arc B390, worldonly.js / spaceworld.js under render-gpu.mjs: byte-identical, cmp — so 0, not committed twice). Measured 2026-10-03: deltaE_cave F1 0.0288, F5 0.0534, F3 0.0385; paletteDE F1 1.39, F5 1.05, F3 1.10. Then R19's rule unchanged (R25): paletteDE threshold = midpoint of 1.39 and exposure+10's 1.63; deltaE_cave's floor (0.0534) is past fog-off's 0.0250, so on a real GPU it is DROPPED (the cave region cannot tell fog-off from the back end) — the whole-frame deltaE and deltaE_terrain still gate there. The SwiftShader set is untouched. The SwiftShader frames: F1-world.png and F3-world.png are the existing controls (a re-render cmp-equal), F5-world.png new (variant W5 = worldOnly(P_MOONLIT_DAY), render.mjs).",
+        "metrics": [
+          "deltaE_cave",
+          "paletteDE"
+        ],
+        "pairs": [
+          [
+            "reference/controls/F1-world-d3d12.png",
+            "reference/controls/F1-world.png",
+            "F1"
+          ],
+          [
+            "reference/controls/F5-world-d3d12.png",
+            "reference/controls/F5-world.png",
+            "F1"
+          ],
+          [
+            "reference/controls/F3-world-d3d12.png",
+            "reference/controls/F3-world.png",
+            "F3"
+          ]
+        ]
+      },
       "floor": {
         "dssim": 0.004635463670099815,
         "deltaE": 0.12176910264195527,
@@ -226,13 +250,13 @@
         "p5": 0,
         "p50": 0,
         "p95": 0,
-        "paletteDE": 0.017868347222645332,
+        "paletteDE": 1.38980358842006,
         "satW1": 0.00008880615234373168,
         "edgeDensity": 0.00019398346127523503,
         "bloomFrac": 0,
         "deltaE_sky": 0.1868387309717099,
         "deltaE_terrain": 0.028384336397961382,
-        "deltaE_cave": 0.005316343907938902
+        "deltaE_cave": 0.05340635028894104
       },
       "metrics": {
         "dssim": {
@@ -271,10 +295,10 @@
           "F0": 90
         },
         "paletteDE": {
-          "floor": 0.017868347222645332,
+          "floor": 1.38980358842006,
           "smallestControl": "exposure+10",
           "smallest": 1.6300283163923859,
-          "threshold": 0.8239,
+          "threshold": 1.51,
           "F0": 24.138078294605997
         },
         "satW1": {
@@ -304,13 +328,6 @@
           "smallest": 0.944069145478233,
           "threshold": 0.4862,
           "F0": 42.80833351042933
-        },
-        "deltaE_cave": {
-          "floor": 0.005316343907938902,
-          "smallestControl": "fog-off",
-          "smallest": 0.025017768124074958,
-          "threshold": 0.01517,
-          "F0": 42.70895490656444
         }
       },
       "dropped": {
@@ -325,13 +342,18 @@
           "smallestControl": "fog-off",
           "smallest": 0,
           "reason": "fog-off does not move it off the floor"
+        },
+        "deltaE_cave": {
+          "floor": 0.05340635028894104,
+          "smallestControl": "fog-off",
+          "smallest": 0.025017768124074958,
+          "reason": "this set's floor is at or past fog-off"
         }
       },
       "sensitivity": {
         "rim-off": [
           "paletteDE",
-          "edgeDensity",
-          "deltaE_cave"
+          "edgeDensity"
         ],
         "F2": [
           "dssim",
@@ -343,8 +365,7 @@
           "satW1",
           "edgeDensity",
           "deltaE_sky",
-          "deltaE_terrain",
-          "deltaE_cave"
+          "deltaE_terrain"
         ]
       },
       "box": {

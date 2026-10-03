@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ACTOR_MUST_FAIL, DEFERRED, MUST_FAIL, actorBoxes, actorSet, areaDelta, backEnd, boxesDeltaE, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, thresholdsFor, withActors } from './look-compare.mjs'
+import { ACTOR_MUST_FAIL, DEFERRED, MUST_FAIL, actorBoxes, actorSet, areaDelta, backEnd, boxesDeltaE, compare, deltaE2000, deriveThresholds, failures, labFloor, loadPng, spreadOf, thresholdsFor, withActors } from './look-compare.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const ref = p => join(root, 'tasks/M23', p)
@@ -257,4 +257,28 @@ test('T23.12: castonly.js draws variant_F4.js\'s cast call for call, less the te
   assert.equal(from(f4, 'draw2d: g => {', 'fx3d: fx => {').filter(l => text.test(l)).length, 6, 'F4\'s text lines')
   assert.equal(want.length, 17, 'F4\'s cast calls')
   assert.deepEqual(got, want)
+})
+
+test('T23.41: the gpu floor of deltaE_cave and paletteDE is the mockup\'s own D3D12-vs-SwiftShader spread; nothing else moves', () => {
+  const load = p => loadPng(ref(p))
+  const gpu = th.sets.gpu
+  assert.deepEqual(gpu.spread.metrics, ['deltaE_cave', 'paletteDE'])
+  assert.ok(!th.sets.swiftshader.spread, 'the swiftshader set carries no spread — its thresholds are unchanged')
+  for (const [a, b] of gpu.spread.pairs) {
+    assert.match(a, /d3d12/, 'each pair is the mockup on D3D12 …')
+    assert.doesNotMatch(b, /d3d12/, '… against its SwiftShader self')
+  }
+  const pairs = spreadOf(gpu, load)
+  const [a, b] = gpu.frames.map(f => load(f.split(' ')[0]))
+  const lab2 = compare(a, b, { regions })
+  for (const m of gpu.spread.metrics) {
+    const top = Math.max(...pairs.map(c => c[m]))
+    assert.ok(top > lab2[m], `${m}: the mockup's spread does not exceed the lab-vs-lab floor — it would change nothing`)
+    assert.equal(gpu.floor[m], top, `${m}: the floor is the largest pair`)
+  }
+  // Control: a metric the spread does not name keeps the lab-vs-lab floor (deltaE moves 0.12 across back ends too).
+  assert.equal(gpu.floor.deltaE, lab2.deltaE)
+  // The ruling's outcome, R19 unchanged: paletteDE placed between the spread and exposure+10; deltaE_cave dropped.
+  assert.ok(gpu.metrics.paletteDE.floor < gpu.metrics.paletteDE.threshold && gpu.metrics.paletteDE.threshold < gpu.metrics.paletteDE.smallest)
+  assert.ok('deltaE_cave' in gpu.dropped && !('deltaE_cave' in gpu.metrics))
 })

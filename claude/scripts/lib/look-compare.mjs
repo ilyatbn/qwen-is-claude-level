@@ -405,6 +405,21 @@ export function labFloor(th, name, regions, load) {
   const [a, b] = set.frames.map(f => load(f.split(' ')[0]))
   const metrics = compare(a, b, { regions })
   const floor = Object.fromEntries(Object.entries(metrics).filter(([k, v]) => typeof v === 'number' && !(k in DEFERRED)))
+  // T23.41 (coordinator ruling on T23.13B): a set may carry `spread` — the mockup itself rendered on that back end
+  // against its SwiftShader self (and twice on it), per F world — raising the floor of the metrics it names to the
+  // largest such distance. A port cannot be held closer to the mockup than the mockup is to itself across back ends.
+  const spread = spreadOf(set, load)
+  for (const m of set.spread?.metrics ?? []) floor[m] = Math.max(floor[m], ...spread.map(c => c[m]))
+  return { floor, box: placeBoxes(th, a, b, load) }
+}
+
+/** T23.41: `set.spread`'s pairs compared (`[a, b, regions]`: paths, regions `F1` or `F3`) — one `compare` each. */
+export function spreadOf(set, load) {
+  const regionMap = { F1: () => withActors(load('reference/controls/regions-F1.png'), actorBoxes('F1')), F3: () => load('reference/controls/regions-F3.png') }
+  return (set.spread?.pairs ?? []).map(([pa, pb, r]) => compare(load(pa.split(' ')[0]), load(pb.split(' ')[0]), { regions: regionMap[r]() }))
+}
+
+function placeBoxes(th, a, b, load) {
   const box = {}
   for (const [k, def] of Object.entries(th.boxes)) {
     const f = areaDelta(a, b, def)
@@ -416,7 +431,7 @@ export function labFloor(th, name, regions, load) {
       ? { floor: f, smallestControl, smallest, threshold: sig4((f + smallest) / 2) }
       : { floor: f, smallestControl, smallest, threshold: null, dropped: `this set's floor is at or past ${smallestControl}` }
   }
-  return { floor, box }
+  return box
 }
 
 /** Which retained metrics exceed their threshold. `thresholds.metrics[name].threshold` is a max. */
