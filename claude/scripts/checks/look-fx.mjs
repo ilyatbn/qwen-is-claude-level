@@ -16,8 +16,11 @@
  * **Must fail:** `&knob=fx-off` against F1 on the same pixels, every box — so every box is one its effect decides.
  * The floor: the mockup's F1 re-rendered through the same harness is byte-identical to F1-night-combat.png (T23.18).
  *
- * F3's effects (space) are not measured: the lab draws no terrain or sky for F3 until T23.20 (`labFields.ts`), so no
- * box of it can agree with the picture — owed to T23.20.
+ * **F3's effects (space), T23.20 part C:** the same metric on F3's boxes (`SCENES.F3.fx`: the turret's four tracers and
+ * muzzle glow, the laser and its impact, the rocket's motor glow, the explosion) against `F3-space.png`, masked where
+ * the lab's `&knob=fx-off` agrees with `controls/F3-nofx.png` (`variant_F3nofx.js`: variant_F3.js with only its fx3d
+ * group taken out). Floor: the mockup's F3 re-rendered through the same harness is byte-identical to F3-space.png
+ * (T23.20 part C). Must fail: fx-off on the same pixels, every box.
  */
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -41,6 +44,8 @@ const AGREE = 1
 const MIN_KEPT = 0.5
 /** F1's effects (`scenes.test.ts`): 5 ribbons, 5 sprites, 1 explosion. */
 const F1_FX = 11
+/** F3's (`variant_F3.js::fx3d`): 5 ribbons, 3 sprites, 1 explosion. */
+const F3_FX = 9
 
 const dE = (a, b, o) =>
   a.data[o] === b.data[o] && a.data[o + 1] === b.data[o + 1] && a.data[o + 2] === b.data[o + 2]
@@ -91,13 +96,13 @@ const AROUND_PEAK = [-0.06, 0.08]
 /** The strip's ages (shares of the blast's life). */
 const STRIP_KS = [0.02, 0.06, 0.12, 0.2, 0.3, 0.45, 0.6, 0.8]
 
-async function lab(page, origin, knob) {
-  await page.goto(`${origin}/?look=F1&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
+async function lab(page, origin, knob, look = 'F1') {
+  await page.goto(`${origin}/?look=${look}&e2e=1${knob ? `&knob=${knob}` : ''}`, { waitUntil: 'load' })
   // A staged game blast is drawn from the feed on the frames after the scene's first: wait a few.
   if (knob?.startsWith('game-blast')) await page.waitForFunction(() => window.__look && window.__look.frames > 5, null, { timeout: 120_000 })
   await page.waitForFunction(() => window.__look && (window.__look.ready || window.__look.error) && !!window.__world, null, { timeout: 120_000 })
   const err = await page.evaluate(() => window.__look.error)
-  if (err) throw new Error(`look-lab F1: ${err}`)
+  if (err) throw new Error(`look-lab ${look}: ${err}`)
   return { frame: decode(await page.evaluate(() => window.__world.readFrame())), info: await page.evaluate(() => window.__world.info()), fx: await page.evaluate(() => window.__world.fx()) }
 }
 
@@ -190,6 +195,38 @@ export default async function ({ page, shot, log }) {
       log(`game path at its peak: ${peak.toFixed(4)} (Level A max ${thr}); no explosion on the same box ${ctl.toFixed(3)} (must fail)`)
       if (!(peak <= thr)) problems.push(`Level A on the game path's blast at its peak: ${peak.toFixed(4)} > ${thr}`)
       if (!(ctl > thr)) problems.push(`no explosion passes Level A on the explosion box (${ctl.toFixed(3)}) — the box cannot see it`)
+    }
+    // T23.20 part C: F3's effect boxes, the same metric and must-fail.
+    {
+      const f3 = await own.evaluate(async () => {
+        const { SCENES } = await import('/src/look/scenes/index.ts')
+        const { fxBox } = await import('/src/look/fx/kit.ts')
+        return SCENES.F3.fx.map((f) => ({ kind: f.kind, box: fxBox(f) }))
+      })
+      if (f3.length !== F3_FX) problems.push(`F3 describes ${f3.length} effects, want ${F3_FX}`)
+      const ref3 = loadPng(join(root, 'tasks/M23/reference/F3-space.png'))
+      const ref3Off = loadPng(join(root, 'tasks/M23/reference/controls/F3-nofx.png'))
+      const on3 = await lab(own, origin, '', 'F3')
+      const off3 = await lab(own, origin, 'fx-off', 'F3')
+      log(`F3 both ends: describes ${f3.length} effects; the layer laid out ${JSON.stringify(on3.fx)}; fx-off ${off3.fx.ribbons + off3.fx.soft + off3.fx.discs + off3.fx.smoke}`)
+      if (!(on3.fx.ribbons === 5 + 22 && on3.fx.soft === 3 + 1 && on3.fx.discs === 2 && on3.fx.smoke === 22)) problems.push(`F3: the effects layer laid out ${JSON.stringify(on3.fx)}`)
+      if (off3.fx.ribbons + off3.fx.soft + off3.fx.discs + off3.fx.smoke !== 0) problems.push('F3: fx-off still laid out effects')
+      let gatedN = 0
+      for (const { kind, box } of f3) {
+        const m = masked(on3.frame, ref3, off3.frame, ref3Off, box)
+        const c = masked(off3.frame, ref3, off3.frame, ref3Off, box)
+        const gated = m.kept >= MIN_KEPT
+        if (gated) gatedN++
+        log(`F3 ${kind} ${JSON.stringify(box)}: ${m.d.toFixed(4)} over ${(m.kept * 100).toFixed(1)}% of the box (max ${thr}) ${gated ? (m.d <= thr ? 'ok' : 'FAIL') : 'reported'}; fx-off ${c.d.toFixed(3)} ${c.d > thr ? 'fails, as it must' : 'PASSES'}; mask: ${dropped(m)}`)
+        if (gated && !(m.d <= thr)) problems.push(`Level A on F3's ${kind} box ${JSON.stringify(box)}: ${m.d.toFixed(4)} > ${thr}`)
+        if (!(c.d > thr)) problems.push(`control fx-off passes on F3's ${kind} box ${JSON.stringify(box)} (${c.d.toFixed(4)}) — the box cannot see its effect`)
+      }
+      if (gatedN === 0) problems.push('F3: no effect box kept enough agreeing pixels to gate — nothing was measured')
+      const sb3 = new PNG({ width: 1280 * 2 + 8, height: 720 })
+      sb3.data.fill(255)
+      for (let y = 0; y < 720; y++) for (const [img, x0] of [[on3.frame, 0], [ref3, 1288]]) Buffer.from(img.data.buffer, img.data.byteOffset + y * 1280 * 4, 1280 * 4).copy(sb3.data, (y * sb3.width + x0) * 4)
+      writeFileSync(join(root, 'shots/look-fx-F3-lab-vs-ref.png'), PNG.sync.write(sb3))
+      log(`F3: ${gatedN} of ${f3.length} boxes gated; looked at: shots/look-fx-F3-lab-vs-ref.png (lab | F3)`)
     }
   } finally {
     await browser.close()

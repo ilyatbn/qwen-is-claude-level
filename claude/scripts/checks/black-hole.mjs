@@ -62,8 +62,12 @@ import { join } from 'node:path'
 const frames = (page, n) => drawnFrames(page, n)
 const { fail, ok, finish } = tally('black-hole')
 const WARMUP_S = 3
-/** Long enough for every arm before the bell; the natural arrival is replaced by the probe's. */
-const ROUND_S = 70
+/**
+ * Long enough for every arm before the bell; the natural arrival is replaced by the probe's. *T23.20 part C: 70 → 90* —
+ * with the swirl legs (2 × 700 ms + photos) the arms ran past the bell's lead by ~1.5 s on one run of three at 70
+ * (server tick 4905 against the bell's 4817), green on the others: a margin, not a cause.
+ */
+const ROUND_S = 90
 const SETTLE_FRAMES = 6
 const RING_PROBES = 24
 /** Per channel, how far a ring probe may be from the ring's colour (antialiasing). */
