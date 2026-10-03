@@ -86,7 +86,7 @@ import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
 import { firstSeqAfter, roundClockOnSnapshot } from '../net/seqClock'
 import { SpaceSky } from '../render/spaceSky'
 import { fovRadius, nightView } from '../render/lightmap-math'
-import { NIGHT_CIRCLES, seenAt, sightLights } from '../look/worldRenderer-math'
+import { NIGHT_CIRCLES, seeingLights, seenAt, sightLights } from '../look/worldRenderer-math'
 import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
@@ -103,7 +103,7 @@ import { FeelLayer, type FeelFrame } from '../ui/feelLayer'
 import { feedCause } from '../ui/killfeed-state'
 import { RadiationFx } from '../render/radiationFx'
 import { Minimap } from '../ui/minimap'
-import { beaconCrates } from '../ui/minimap-math'
+import { beaconCrates, seenDots } from '../ui/minimap-math'
 import { Hud, type EffectPhase } from '../ui/hud'
 import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
@@ -2816,10 +2816,8 @@ export class GameScene extends Phaser.Scene {
     if (this.minimap) {
       // T23.10B F1: where the rule measured each remote this frame (`sightSeen`) — a hidden container is not moved, and
       // its stale place could sit in a light the remote has left.
-      const dots = [...this.remotes.keys()].flatMap((id) => {
-        const at = this.sightSeen.get(id)
-        return at ? [{ id, x: at.x, y: at.y }] : []
-      })
+      // T23.25B F3: and **its verdict** — a dot for exactly the remotes the screen draws (`seenDots`), not a re-judging.
+      const dots = seenDots(this.remotes.keys(), this.sightSeen)
       // The *same* fov the night view and the renderer cull with — computed once,
       // above, rather than recomputed here. Two copies of this number would let
       // the minimap and the screen disagree about who is visible (§A6).
@@ -2828,7 +2826,7 @@ export class GameScene extends Phaser.Scene {
       // T22.12C R93: and the black hole, once it is here — hidden with its layer, so
       // the check's hidden frame is a control for the minimap too.
       const hole = this.blackHoleFx.state.hidden ? null : this.mirror.blackHole
-      this.minimap.update(dt, rp, dots, this.sight, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
+      this.minimap.update(dt, rp, dots, beaconCrates(this.mirror.items.values()), this.roundTime, hole)
     }
 
     // T23.10 (R7): the player's field of view is drawn as F1 draws night — a soft falloff into the night palette
@@ -2974,8 +2972,11 @@ export class GameScene extends Phaser.Scene {
     // list handed to the renderer (this frame's is built after the bodies, which its jets depend on) — so a pool opens,
     // and a player in it appears, one frame after its light; both together.
     const own = { x: localPos.x, y: localPos.y, r: fov }
-    this.sightLit = sightLights(this.effectLights.last, viewRect(this.cameras.main.worldView), NIGHT_CIRCLES - 1)
-    this.sight = [own, ...this.sightLit]
+    // T23.25B F2: the night view draws its capped list; the rule judges **every** revealing light (`seeingLights`) —
+    // capped, 7 flashes took a gate's slot and a player standing in its light blinked out.
+    const view = viewRect(this.cameras.main.worldView)
+    this.sightLit = sightLights(this.effectLights.last, view, NIGHT_CIRCLES - 1)
+    this.sight = [own, ...seeingLights(this.effectLights.last, view)]
 
     for (const [id, p] of sampled) {
       let r = this.remotes.get(id)
@@ -2989,7 +2990,7 @@ export class GameScene extends Phaser.Scene {
       // Cull outside your field of view (`docs/14` §5): at night you do not see
       // someone standing in the dark, and drawing them anyway is the whole
       // see-in-the-dark hole. T23.10B F1: "…outside your FoV **and not inside any
-      // light**" — the lights' circles are the night view's own (`this.sight`).
+      // light**" — every revealing light's circle (`this.sight`, T23.25B F2: uncapped; the night view draws a capped few).
       const visible = darkness <= 0.01 || seenAt(this.sight, p.x, p.y)
       r.view.container.setVisible(visible && flag(p.flags, FLAG.alive))
       // T23.10: where the rule measured this remote (its sampled place — a hidden container is not moved) and the verdict.
@@ -3052,6 +3053,8 @@ export class GameScene extends Phaser.Scene {
       })
     }
 
+    // T23.25B F3: a remote with no sample this frame keeps no verdict (it held a stale place the minimap dotted).
+    for (const id of [...this.sightSeen.keys()]) if (!sampled.has(id)) this.sightSeen.delete(id)
     for (const [id, r] of [...this.remotes]) {
       if (!sampled.has(id)) {
         r.view.destroy()
@@ -4433,8 +4436,10 @@ export class GameScene extends Phaser.Scene {
           // remote's drawn place and whether it is drawn (`renderRemotes` hides one beyond it at night).
           sight: {
             fov: self.sightFov,
-            // T23.10B F1: the lights' circles the remotes were judged against (and the night view drew).
+            // T23.10B F1: the lights' circles the night view drew (capped at its slots)…
             lit: self.sightLit.map((c) => ({ ...c })),
+            // …and T23.25B F2: the ones the remotes were judged against — every revealing light in view, uncapped.
+            seeing: self.sight.slice(1).map((c) => ({ ...c })),
             remotes: [...self.sightSeen].filter(([id]) => self.remotes.has(id)).map(([id, r]) => ({ id, ...r })),
           },
           // T23.06B (F3/F9): why this map's terrain fields are not the full picture — the worker

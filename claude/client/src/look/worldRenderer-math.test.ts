@@ -3,7 +3,7 @@
  * tiers, and the CPU copy of the output transform `world-canvas` compares the screen against.
  */
 import { describe, expect, it } from 'vitest'
-import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP, hourFromUrl, sightLights, seenAt, NIGHT_CIRCLES } from './worldRenderer-math'
+import { TIER_SAMPLES, TIER_SCALE, bufferFor, mustDraw, orthoFromView, sameView, toWorld, nightUniforms, NIGHT_VIEW_KEEP, hourFromUrl, sightLights, seeingLights, seenAt, NIGHT_CIRCLES } from './worldRenderer-math'
 
 describe('orthoFromView', () => {
   it('is the mockup camera for the mockup view (kit.js::orthoCam: 0, W, H, 0)', () => {
@@ -125,6 +125,20 @@ describe('sightLights and seenAt (T23.10B F1/F2: the seeing rule, one list)', ()
     // Control: with room for both, both.
     expect(sightLights([gate, blast], view, 2)).toHaveLength(2)
     expect(sightLights([gate, blast], view, 0)).toEqual([])
+  })
+
+  it('T23.25B F2: a player in a gate’s light is seen with more combat lights on screen than the night view has slots', () => {
+    // NIGHT_CIRCLES combat lights in view (one more than the night view's light slots), none near the gate.
+    const blasts = Array.from({ length: NIGHT_CIRCLES }, (_, k) => ({ ...L(600 + k * 40, 1, 30), y: 100 }))
+    const gate = L(100, 1, 80, { fixed: true })
+    const at = { x: 100, y: 500 } // the remote, standing in the gate's light
+    expect(seenAt(seeingLights([gate, ...blasts], view), at.x, at.y)).toBe(true)
+    // The night view's capped list is the combat lights alone (the gate lost its slot) — drawn, not judged.
+    expect(seenAt(sightLights([gate, ...blasts], view, NIGHT_CIRCLES - 1), at.x, at.y)).toBe(false)
+    // Control: the same fight without the gate — nothing lights him.
+    expect(seenAt(seeingLights(blasts, view), at.x, at.y)).toBe(false)
+    // Every revealing light, not a body's own jet nor one off view.
+    expect(seeingLights([gate, L(300, 1, 50, { body: true }), L(-500, 1, 50), ...blasts], view)).toHaveLength(1 + blasts.length)
   })
 
   it('seenAt is inside any circle, the edge included', () => {

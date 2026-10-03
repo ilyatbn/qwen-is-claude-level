@@ -321,6 +321,12 @@ export const SWING_POINTS = 12
  */
 export const SWING_WIDTH = 8
 export const SWING_HIT_WIDTH = 12
+/**
+ * How the arc fades in from its tail (`layer.ts`: `pow(u, fadePow)` along it). T23.25B F1: 1.5 → 1.0 — additive, the
+ * tail is laid over the pale noon sky with little left to brighten, and `swing-mine-fx`'s day leg read its first point
+ * 23–27 against `VISIBLE` 24 (night 36). Linear keeps it a sweep that brightens to the leading edge.
+ */
+export const SWING_FADE_POW = 1.0
 export function swingFx(out: FxFrame, s: { x: number; y: number; aim: number; reach: number; arc: number; hits: number; ttl: number; life: number }): void {
   const k = s.life > 0 ? clamp01(s.ttl / s.life) : 0
   if (!(k > 0)) return
@@ -333,7 +339,7 @@ export function swingFx(out: FxFrame, s: { x: number; y: number; aim: number; re
   const hit = s.hits > 0
   const core: Rgb = hit ? [1.6, 1.55, 1.45] : [1.0, 1.05, 1.15]
   const glow: Rgb = hit ? [0.35, 0.3, 0.25] : [0.12, 0.13, 0.16]
-  out.ribbons.push({ pts, width: hit ? SWING_HIT_WIDTH : SWING_WIDTH, core: scale(core, k), glow: scale(glow, k), fadePow: 1.5, headBoost: 0.5 })
+  out.ribbons.push({ pts, width: hit ? SWING_HIT_WIDTH : SWING_WIDTH, core: scale(core, k), glow: scale(glow, k), fadePow: SWING_FADE_POW, headBoost: 0.5 })
 }
 
 /** A mine: an ink disc and its tell — amber until armed, then a red blink (danger, R10). `alpha`: its visibility by distance. */

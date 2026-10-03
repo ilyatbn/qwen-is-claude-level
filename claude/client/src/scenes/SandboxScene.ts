@@ -1869,11 +1869,10 @@ export class SandboxScene extends Phaser.Scene {
       // silently ignored `fovOverride`, which this branch honours.
       this.lastFov = fov
       sight.push({ x: body.x, y: body.y, r: fov })
-      // The same `fov` the night view uses, not a second copy of the formula —
-      // two of them would let the minimap and the screen disagree (§A6).
+      // No remotes (T23.25B F3: the minimap draws the screen's verdict, and the sandbox has nobody to judge).
       // No crates: the sandbox has no world items to beacon (T21.19).
       // No black hole either: it is a networked round's (T22.12C R93).
-      this.minimap?.update(dt, { x: body.x, y: body.y }, [], [{ x: body.x, y: body.y, r: fov }], [], this.roundTime, null)
+      this.minimap?.update(dt, { x: body.x, y: body.y }, [], [], this.roundTime, null)
     }
     // T23.10 (R7): the field of view above, drawn as F1's night (`nightView` — the same derivation the match uses;
     // the lightmap's call here passed a fog flag the match's left out). Ordnance and lava light the lit terrain, as

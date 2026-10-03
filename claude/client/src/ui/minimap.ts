@@ -21,7 +21,6 @@ import {
   ExploredMask,
   crateBeaconLit,
   radiusToCells,
-  visibleRemotes,
   worldToCell,
   worldToMinimap,
   type MinimapGeometry,
@@ -126,10 +125,8 @@ export class Minimap {
   update(
     dt: number,
     me: { x: number; y: number },
+    // T23.25B F3: the remotes the screen draws (`seenDots`, its own verdict) — every one gets a dot, none is re-judged.
     others: readonly RemoteDot[],
-    // T23.10B F1: the circles the screen's seeing rule used (the player's sight, then the lights they see in) — the
-    // dots are the same verdict, not a second radius.
-    sight: readonly { x: number; y: number; r: number }[],
     // T21.19: dropped crates (`beaconCrates`) and the round clock the blink runs on.
     // Required, not defaulted: an empty default is a scene that forgot to pass its
     // crates and still typechecks — the minimap drew no items for this whole game.
@@ -154,7 +151,7 @@ export class Minimap {
       this.resampleTerrain()
       this.terrainAge = 0
     }
-    this.draw(me, others, sight, crates, hole)
+    this.draw(me, others, crates, hole)
   }
 
   /**
@@ -192,7 +189,6 @@ export class Minimap {
   private draw(
     me: { x: number; y: number },
     others: readonly RemoteDot[],
-    sight: readonly { x: number; y: number; r: number }[],
     crates: readonly { x: number; y: number }[],
     hole: { x: number; y: number } | null,
   ): void {
@@ -226,9 +222,9 @@ export class Minimap {
     }
     this.ctx.putImageData(img, 0, 0)
 
-    // Remote players, filtered by FoV *before* they are drawn (§A6).
+    // Remote players — already the screen's verdict (§A6; T23.25B F3: `seenDots`).
     this.ctx.fillStyle = '#ff5a5a'
-    for (const o of visibleRemotes(others, sight)) {
+    for (const o of others) {
       const p = worldToMinimap(o.x, o.y, this.geo)
       this.ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3)
     }

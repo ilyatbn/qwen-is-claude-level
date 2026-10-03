@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ExploredMask,
   radiusToCells,
-  visibleRemotes,
+  seenDots,
   worldToCell,
   worldToMinimap,
   type MinimapGeometry,
@@ -89,44 +89,23 @@ describe('ExploredMask', () => {
   })
 })
 
-describe('visibleRemotes', () => {
-  const me = { x: 1000, y: 1000 }
-  /** The player's own sight circle alone. */
-  const own = (r: number) => [{ ...me, r }]
+describe('seenDots (T23.25B F3: the screen\'s verdict, read)', () => {
+  const at = (x: number, visible: boolean) => ({ x, y: 1000, visible })
 
-  it('shows a player inside the FoV', () => {
-    expect(visibleRemotes([{ x: 1100, y: 1000 }], own(220))).toHaveLength(1)
+  it('gives a dot to every remote the screen draws, at the place the rule measured it', () => {
+    const v = new Map([[1, at(1100, true)], [2, at(1400, false)]])
+    expect(seenDots([1, 2], v)).toEqual([{ id: 1, x: 1100, y: 1000 }])
   })
 
-  /**
-   * §A6, and the reason this function exists: the minimap must not leak a
-   * position the screen is not already giving you.
-   */
-  it('hides a player outside the FoV', () => {
-    expect(visibleRemotes([{ x: 1400, y: 1000 }], own(220))).toHaveLength(0)
+  it('gives a dead remote inside sight no dot — the screen does not draw him', () => {
+    // The verdict for a dead remote standing well inside sight: the rule saw the place, `FLAG.alive` hid the body.
+    const v = new Map([[3, at(1010, false)]])
+    expect(seenDots([3], v)).toEqual([])
+    // Control: the same place alive is drawn, and dotted.
+    expect(seenDots([3], new Map([[3, at(1010, true)]]))).toHaveLength(1)
   })
 
-  it('is exact at the boundary', () => {
-    expect(visibleRemotes([{ x: 1220, y: 1000 }], own(220))).toHaveLength(1)
-    expect(visibleRemotes([{ x: 1221, y: 1000 }], own(220))).toHaveLength(0)
-  })
-
-  it('shrinks what it shows when the FoV shrinks, which is what night does', () => {
-    const others = [
-      { x: 1100, y: 1000 },
-      { x: 1300, y: 1000 },
-      { x: 1600, y: 1000 },
-    ]
-    expect(visibleRemotes(others, own(640))).toHaveLength(3)
-    expect(visibleRemotes(others, own(220))).toHaveLength(1)
-  })
-
-  // T23.10B F1: docs/14 §5 — "outside your FoV **and not inside any light**". The same circles the screen's rule uses.
-  it('shows a player outside the sight who stands inside a light, and not one outside both', () => {
-    const lit = [{ x: 1600, y: 1000, r: 150 }]
-    const out = [{ x: 1600, y: 1000 }, { x: 1300, y: 1000 }]
-    expect(visibleRemotes(out, [...own(220), ...lit])).toEqual([{ x: 1600, y: 1000 }])
-    // Control: the light taken away, neither is shown.
-    expect(visibleRemotes(out, own(220))).toHaveLength(0)
+  it('gives no dot to a remote with no verdict this frame (not sampled)', () => {
+    expect(seenDots([4], new Map())).toEqual([])
   })
 })

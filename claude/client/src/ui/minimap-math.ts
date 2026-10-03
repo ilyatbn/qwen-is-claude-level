@@ -14,8 +14,6 @@
  * looking at the corner of the screen.
  */
 
-import { seenAt } from '../look/worldRenderer-math'
-
 /** One byte per minimap cell: 0 unexplored, 255 fully explored. */
 export class ExploredMask {
   readonly w: number
@@ -99,18 +97,25 @@ export function radiusToCells(worldR: number, g: MinimapGeometry): number {
 }
 
 /**
- * Which remote players may be drawn.
+ * Which remote players get a dot: **the screen's own verdict**, read rather than re-derived (T23.25B F3).
  *
- * The test is the same one the renderer uses to decide whether to draw the
- * player at all, so the minimap can never show someone the screen is hiding.
- * T23.10B F1: that test is `seenAt` over the scene's sight circles — the
- * player's own sight and the lights they see in (docs/14 §5) — not a radius.
+ * `GameScene.renderRemotes` decides, per remote per frame, whether it is drawn — the seeing rule (`seenAt` over the
+ * sight and every revealing light, docs/14 §5), the day bypass and `FLAG.alive` — and keeps that verdict and the place
+ * it measured (`sightSeen`). Re-deriving it here from the circles disagreed both ways: a **dead** remote inside sight
+ * got a dot the screen did not draw, and by day a remote on screen outside the circles was drawn and got none. So the
+ * minimap can never show someone the screen is hiding, nor hide someone it shows. A remote with no verdict this frame
+ * gets no dot.
  */
-export function visibleRemotes<T extends { x: number; y: number }>(
-  others: readonly T[],
-  sight: readonly { x: number; y: number; r: number }[],
-): T[] {
-  return others.filter((o) => seenAt(sight, o.x, o.y))
+export function seenDots(
+  ids: Iterable<number>,
+  verdicts: ReadonlyMap<number, { x: number; y: number; visible: boolean }>,
+): { id: number; x: number; y: number }[] {
+  const out: { id: number; x: number; y: number }[] = []
+  for (const id of ids) {
+    const v = verdicts.get(id)
+    if (v?.visible) out.push({ id, x: v.x, y: v.y })
+  }
+  return out
 }
 
 /**
@@ -130,7 +135,7 @@ export function crateBeaconLit(roundTime: number, period: number, on: number): b
  * Which world items get a beacon: **dropped crates** — from a crate, and landed.
  *
  * A crate still under its parachute is not a pickup yet, so it does not blink on the
- * way down. And **regardless of field of view**, unlike `visibleRemotes`: the point
+ * way down. And **regardless of field of view**, unlike `seenDots`: the point
  * is finding crates, and the coordinator ruled the beacon map-wide — a deliberate
  * exception to §A6's "the minimap never shows what the screen hides", decided for
  * crates and nothing else. Buried items are not world items, so `docs/32` §5's

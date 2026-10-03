@@ -37,6 +37,8 @@
  * good part of that, so betting on two exact moments would be a coin flip, and a
  * gate that fails on a coin flip gates nothing (§A28).
  */
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   startStack,
   enterBattle,
@@ -50,6 +52,18 @@ import {
 
 const PORT = await freePort()
 const { fail, ok, failures } = tally('bullets-visible')
+// T23.25B F1: **night and day.** Every round opens by day (T23.11), so the picture players see first is gated too: run
+// alone, this check runs itself once more at noon (`CHECK_HOUR=0` → `&hour=0`, still: the moons stay at the picture's
+// places with `u` absent) against the **same** floors, and fails if that leg does. Shots of the day leg end `-day`.
+const HOUR = process.env.CHECK_HOUR ?? '1'
+const DAY = HOUR === '0'
+/** The day leg: this same script at `&hour=0`, run after the night leg's stack is closed. */
+function runDayLeg(fail) {
+  if (process.env.CHECK_HOUR) return
+  console.log(`\n  --- the same at noon (&hour=0) ---`)
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, CHECK_HOUR: '0' }, stdio: 'inherit' })
+  if (r.status !== 0) fail(`the day leg (&hour=0) failed (exit ${r.status}) — its lines are above`)
+}
 
 // No bots: a bot's gunfire crossing the strip would be indistinguishable from
 // ours, and this check is about a round *we* fired.
@@ -62,7 +76,10 @@ const stack = await startStack({
 // arcs, and a moon crossing the lane's strip was a bright column creeping 276 → 360 px over two seconds — "a round
 // lit the lane" and "no bright column travelled" at once, red 3 runs in 3 alone and under load; pinned, the fired-away
 // control reads 0.0–1.9 where it read 73–77.
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
+// T23.25B F1: and the still day (`&hour=0`, `runDayLeg`) at the same floors.
+const { page, dbg, shot: shotRaw, pageErrors } = await stack.openClient({ name: 'ana', query: `&hour=${HOUR}` })
+const shot = (name) => shotRaw(DAY ? `${name}-day` : name)
+console.log(`  hour ${HOUR} (${DAY ? 'day' : 'night'})`)
 await enterBattle(page, { waitPlaying: true, label: 'bullets-visible' })
 // **The DOM HUD is taken off the photograph** (T23.19F). The round timer (`ui/hud.ts`, `#hud-timer`,
 // top-centre) sits over the lane whenever the lane climbs to the top of the screen, as it does here
@@ -114,16 +131,8 @@ async function columnProfile(clip) {
     // thing under test.
     const dbg = window.__game.debug()
     const live = dbg.projectilesLive ?? 0
-    // T23.19F: where the pickups lie in this strip, in strip columns (see `mostChanged`).
-    // T23.25 (T23.19G F3): only pickups **in** the strip — `itemPositions` is every item on the map, and one above or
-    // below the lane at a lane x used to blank its columns in both the lane and the control.
-    const reach = pickupRadius * dbg.zoom
-    const items = (dbg.itemPositions ?? [])
-      .filter((i) => {
-        const sy = (i.y - dbg.worldView.y) * dbg.zoom
-        return sy >= clip.y - reach && sy <= clip.y + clip.height + reach
-      })
-      .map((i) => (i.x - dbg.worldView.x) * dbg.zoom - clip.x)
+    // T23.19F: where the pickups are on screen; `stripItems` (below, in node) keeps the ones in this strip.
+    const items = (dbg.itemPositions ?? []).map((i) => ({ sx: (i.x - dbg.worldView.x) * dbg.zoom, sy: (i.y - dbg.worldView.y) * dbg.zoom }))
     const img = new Image()
     img.src = `data:image/png;base64,${src}`
     await img.decode()
@@ -146,7 +155,17 @@ async function columnProfile(clip) {
       cols[x] = peak
     }
     return { cols, live, items }
-  }, [b64, clip, K.PICKUP_RADIUS])
+  }, [b64, clip, K.PICKUP_RADIUS]).then((r) => ({ ...r, items: stripItems(r.items, clip, ITEM_MASK) }))
+}
+
+/**
+ * The pickups in a screen strip, as strip columns (see `mostChanged`). T23.25 (T23.19G F3): only pickups **in** the
+ * strip — `itemPositions` is every item on the map, and one above or below the lane at a lane x used to blank its
+ * columns in both the lane and the control. T23.25B F6: pulled out of the page so it is self-tested below (a pickup in
+ * the strip is kept, one at the same x above it is not) — unplanted, a broken filter went back to x-only silently.
+ */
+function stripItems(items, clip, reach) {
+  return items.filter((i) => i.sy >= clip.y - reach && i.sy <= clip.y + clip.height + reach).map((i) => i.sx - clip.x)
 }
 
 /**
@@ -187,6 +206,26 @@ function mostChanged(profile, baseline, items = []) {
 }
 
 const ITEM_MASK = K.PICKUP_RADIUS * (await dbg()).zoom
+
+// T23.25B F6: the pickup mask's instruments. (1) `stripItems` keeps a pickup in a strip and drops one at the same x
+// outside it, both ways — the plant and its control in one. (2) Its screen y is the canvas's, and the strip is a page
+// clip: the two agree only while the game's canvas sits at the page's origin at 1:1, so that is asserted, not assumed.
+{
+  const clip = { x: 100, y: 200, width: 300, height: 40 }
+  const inside = stripItems([{ sx: 250, sy: 220 }], clip, ITEM_MASK)
+  const above = stripItems([{ sx: 250, sy: clip.y - ITEM_MASK - 1 }], clip, ITEM_MASK)
+  const below = stripItems([{ sx: 250, sy: clip.y + clip.height + ITEM_MASK + 1 }], clip, ITEM_MASK)
+  if (!(inside.length === 1 && inside[0] === 150 && above.length === 0 && below.length === 0)) {
+    fail(`the pickup mask's strip filter: in ${JSON.stringify(inside)}, above ${JSON.stringify(above)}, below ${JSON.stringify(below)} — want [150], [], []`)
+  }
+  const cv = await page.evaluate(() => {
+    const c = document.querySelector('canvas')
+    const r = c.getBoundingClientRect()
+    return { x: r.x, y: r.y, w: r.width, h: r.height, iw: window.innerWidth, ih: window.innerHeight }
+  })
+  if (!(cv.x === 0 && cv.y === 0 && cv.w === cv.iw && cv.h === cv.ih)) fail(`the canvas is not the page at 1:1 (${JSON.stringify(cv)}) — the pickup mask's screen y would miss`)
+  else ok(`pickup mask: strip filter in/above/below ${inside.length}/${above.length}/${below.length}; canvas at the page origin ${cv.w}x${cv.h}`)
+}
 
 /** World point to screen, the §A35-correct way: `worldView` and zoom. */
 const toScreen = (d, wx, wy) => ({
@@ -535,5 +574,6 @@ if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`
 else ok('no page errors')
 
 await stack.close()
+runDayLeg(fail)
 console.log(failures.length ? `\nbullets-visible: ${failures.length} FAILED` : '\nbullets-visible: ok')
 process.exit(failures.length ? 1 : 0)

@@ -124,8 +124,8 @@ export const NIGHT_CIRCLES = 8
  * T23.10B F1/F2: the effect lights a player sees in at night, as circles (world px) — at most `slots`, chosen as the
  * terrain chooses its lights (`terrainLights.ts::pickLights`: culled to `view`, combat before a map's standing ones,
  * the strongest by intensity × coverage). docs/14 §5: "a remote player whose position is outside your FoV **and not
- * inside any light** is simply not rendered" — so this one list is what `nightUniforms` opens, what `GameScene`'s
- * remotes are drawn by and what the minimap's dots are filtered by (`seenAt`).
+ * inside any light** is simply not rendered". Capped, it is what `nightUniforms` opens; T23.25B F2: who is seen is
+ * judged on the same rule **uncapped** (`seeingLights`), so the number of flashes on screen decides nothing.
  *
  * **A body's own jet light is left out** (`Light.body`): it exists only for a body already drawn (`jetFlames`), so
  * counting it would let a remote keep itself visible by its own flame once seen, and never when not — the rule would
@@ -138,6 +138,17 @@ export function sightLights(lights: readonly Light[], view: ViewRect, slots: num
     view,
     slots,
   ).map((l) => ({ x: l.x, y: l.y, r: l.r }))
+}
+
+/**
+ * T23.25B F2: **the seeing rule's lights** — every light in view that reveals (statics included), not the night view's
+ * slots. docs/14 §5 hides a remote "outside your FoV and not inside any light"; who is seen must not depend on how many
+ * flashes are on screen. Judged from `sightLights` capped at the night view's `NIGHT_CIRCLES - 1`, combat took a gate's
+ * slot first (`pickLights`), and a player standing in a gate's steady light blinked out while 7 shots flashed elsewhere.
+ * The night view still draws its capped list; the rock still lights its `TERRAIN_LIGHTS`.
+ */
+export function seeingLights(lights: readonly Light[], view: ViewRect): { x: number; y: number; r: number }[] {
+  return sightLights(lights, view, Infinity)
 }
 
 /** T23.10B F1: is world point (x, y) inside any of `circles` (a sight circle or a light's) — the seeing rule. */

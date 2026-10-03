@@ -121,6 +121,13 @@ try {
   const bB = await box(rB)
   const bC = await box(rC)
   const ctl = { ...bB, y: Math.max(0, bB.y - bB.h * 3) }
+  // The crates T23.36 rains every 2 s fall through ana's frame with their beacons and canopies: one crossing a box
+  // between two photographs read 4.2 % in this leg's control and 65 % in the gate leg's (0.0 % on the runs between).
+  // Nobody here is measuring a crate, so ana's pickups are hidden for every photograph from here on (`setItemsVisible`,
+  // the drawers' own switch — asserted to have taken).
+  const hid = await ana.evaluate(() => window.__game.setItemsVisible(false))
+  if (hid !== false) fail(`the pickups did not hide for the photographs (${hid})`)
+  await drawnFrames(ana, 3)
   const withThem = await photo(ana)
   await place(bo, { x: spot.a.x + 2 * F * 2.2, y: spot.a.y - 400 })
   await place(cy, { x: spot.a.x - 2 * F * 2.2, y: spot.a.y - 400 })
@@ -178,12 +185,14 @@ try {
     await drawnFrames(ana, 10)
     const s2 = await ana.evaluate(() => {
       const d = window.__game.debug()
-      return { fov: d.sight.fov, me: d.renderPos, lit: d.sight.lit, remotes: d.sight.remotes, drawn: window.__world.nightDrawn() }
+      return { fov: d.sight.fov, me: d.renderPos, lit: d.sight.lit, seeing: d.sight.seeing, remotes: d.sight.remotes, drawn: window.__world.nightDrawn() }
     })
+    // T23.25B F2: the rule judges every revealing light (`sight.seeing`, uncapped); the night view draws `sight.lit`.
+    if (!Array.isArray(s2.seeing)) fail(`debug().sight.seeing is ${JSON.stringify(s2.seeing)} — the judged list is not exposed`)
     const r = s2.remotes.find((x) => x.id === cyId)
     const d = r ? Math.hypot(r.x - s2.me.x, r.y - s2.me.y) / s2.fov : NaN
-    const inLit = r ? s2.lit.filter((c) => Math.hypot(r.x - c.x, r.y - c.y) <= c.r) : []
-    const l2 = `cy beside the gate at ${JSON.stringify(litSpot.pad)}, ${d.toFixed(2)} × ana's sight away, inside ${inLit.length} of the ${s2.lit.length} lights she sees in; drawn ${r?.visible}; the night view drew ${s2.drawn?.circles.length ?? 0} circles`
+    const inLit = r ? (s2.seeing ?? []).filter((c) => Math.hypot(r.x - c.x, r.y - c.y) <= c.r) : []
+    const l2 = `cy beside the gate at ${JSON.stringify(litSpot.pad)}, ${d.toFixed(2)} × ana's sight away, inside ${inLit.length} of the ${s2.seeing?.length} lights she sees in (${s2.lit.length} drawn); drawn ${r?.visible}; the night view drew ${s2.drawn?.circles.length ?? 0} circles`
     if (!r || !(d > 1)) fail(`${l2} — the stand is not outside her sight`)
     else if (inLit.length === 0) fail(`${l2} — no light's circle covers him (the gate's light not seen in)`)
     else if (!(s2.drawn && s2.drawn.circles.length >= 1 + s2.lit.length)) fail(`${l2} — the night view did not draw the lights the rule used`)
@@ -191,14 +200,20 @@ try {
     else ok(`both ends, a light: ${l2}`)
     if (r) {
       const bL = await box(r)
+      // T23.25B F4: the control region — a box the same size on the gate's other side (cy mirrored through the pad):
+      // in the same light, by the same gate, with nobody in it. A lit, animated gate is the one place most likely to
+      // move on its own; the leg's "cy's box changes when he leaves" means nothing if this changes too.
+      const bK = await box({ x: 2 * litSpot.pad.x - r.x, y: r.y })
+      // (ana's pickups are still hidden — the crates, above.)
       const lit1 = await photo(ana)
       await place(cy, { x: spot.a.x - 2 * F * 2.2, y: spot.a.y - 400 })
       await sleep(1200)
       await drawnFrames(ana, 10)
       const lit0 = await photo(ana)
       const pL = (await comparePhotos(ana, lit1, lit0, { rect: bL })).fraction
-      const m2 = `pixels: cy's box in the gate's light ${(pL * 100).toFixed(1)} % changes when he leaves (min ${DRAWN_MIN * 100})`
-      if (pL >= DRAWN_MIN) ok(m2)
+      const pLK = (await comparePhotos(ana, lit1, lit0, { rect: bK })).fraction
+      const m2 = `pixels: cy's box in the gate's light ${(pL * 100).toFixed(1)} % changes when he leaves (min ${DRAWN_MIN * 100}); the box across the gate ${(pLK * 100).toFixed(1)} % (max ${BLANK_MAX * 100})`
+      if (pL >= DRAWN_MIN && pLK <= BLANK_MAX) ok(m2)
       else fail(m2)
     }
   }

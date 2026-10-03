@@ -77,6 +77,13 @@ export class ItemLayer {
    * canvas cannot leave a parachute behind on an item that has landed.
    */
   private readonly chutes: Phaser.GameObjects.Graphics
+  /**
+   * T23.25B F1: the canopies, on their own **normal-blend** layer. Drawn additively with the beams they read at night
+   * and washed out by day — ADD can only brighten, and a pale noon haze has little left to brighten: the check's canopy
+   * rect moved 43.1 at noon against its floor of 45 (74.3 at night). A painted canopy covers the sky behind it, so it
+   * reads against any sky.
+   */
+  private readonly canopies: Phaser.GameObjects.Graphics
   private defs: Map<number, ItemDefView> = new Map()
   private spriteByKey: Map<string, string> = new Map()
   private fireByKey: Map<string, FireProfile> = new Map()
@@ -97,6 +104,8 @@ export class ItemLayer {
     // ADD, so the beam brightens whatever is behind it instead of laying a
     // translucent wash over it — over a bright sky a wash is invisible.
     this.chutes.setBlendMode(Phaser.BlendModes.ADD)
+    // Over the beam (which is drawn up through the canopy) and under the crate.
+    this.canopies = scene.add.graphics().setDepth(DEPTH.worldItems - 0.5)
     this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
   }
 
@@ -137,6 +146,7 @@ export class ItemLayer {
   setVisible(on: boolean): boolean {
     this.container.setVisible(on)
     this.chutes.setVisible(on)
+    this.canopies.setVisible(on)
     return this.container.visible
   }
 
@@ -285,6 +295,8 @@ export class ItemLayer {
   private drawCrateMarkers(live: WorldItemView[]): void {
     const g = this.chutes
     g.clear()
+    const cg = this.canopies
+    cg.clear()
     let chutes = 0
     for (const item of live) {
       if (item.source !== 'Crate') continue
@@ -312,18 +324,26 @@ export class ItemLayer {
       if (!isFallingCrate(item, item.grounded)) continue
       chutes++
 
-      // Canopy: an arc above, with two rigging lines down to the crate's top
+      // Canopy: a dome above, with two rigging lines down to the crate's top
       // corners. Drawn from the crate's position, so it tracks the fall exactly
       // rather than being animated separately and drifting off it.
+      // T23.25B F1: painted (normal blend), a red dome with a white middle panel and a dark rim — it reads over the
+      // pale day sky as over the night, where the additive one faded by day.
       const cy = item.y - 34
-      g.lineStyle(2, 0xf2f5ff, 0.85)
-      g.beginPath()
-      g.arc(item.x, cy, 20, Math.PI, Math.PI * 2)
-      g.strokePath()
-      g.lineBetween(item.x - 20, cy, item.x - 9, item.y - 11)
-      g.lineBetween(item.x + 20, cy, item.x + 9, item.y - 11)
-      g.fillStyle(0xd94f4f, 0.65)
-      g.fillEllipse(item.x, cy + 2, 40, 12)
+      cg.lineStyle(1.5, 0x2a1c1c, 0.9)
+      cg.lineBetween(item.x - 19, cy, item.x - 9, item.y - 11)
+      cg.lineBetween(item.x + 19, cy, item.x + 9, item.y - 11)
+      cg.fillStyle(0xd94f4f, 1)
+      cg.slice(item.x, cy, 20, Math.PI, Math.PI * 2, false)
+      cg.fillPath()
+      cg.fillStyle(0xf2f5ff, 1)
+      cg.slice(item.x, cy, 20, Math.PI * 1.4, Math.PI * 1.6, false)
+      cg.fillPath()
+      cg.lineStyle(2, 0x2a1c1c, 0.95)
+      cg.beginPath()
+      cg.arc(item.x, cy, 20, Math.PI, Math.PI * 2)
+      cg.closePath()
+      cg.strokePath()
     }
     this.chutes_ = chutes
   }
@@ -373,6 +393,7 @@ export class ItemLayer {
     this.unfollow()
     this.clear()
     this.chutes.destroy()
+    this.canopies.destroy()
     this.labels.destroy()
     this.container.destroy()
   }

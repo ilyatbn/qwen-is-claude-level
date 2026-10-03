@@ -16,11 +16,25 @@
  *   away does not move. Both ends: the server's placed − ended against the layer's count.
  * - **Neither is on Phaser's canvas any more** (the flat arc and disc retired off space).
  */
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { startStack, enterBattle, standStill, selectWeapon, tally, sleep, freePort, drawnFrames } from './harness.mjs'
 import { photo, comparePhotos, phaserPatch, phaserDelta } from './pixels.mjs'
 
 const PORT = await freePort()
 const { fail, ok, finish } = tally('swing-mine-fx')
+// T23.25B F1: **night and day.** Every round opens by day (T23.11), so the picture players see first is gated too: run
+// alone, this check runs itself once more at noon (`CHECK_HOUR=0` → `&hour=0`, still: the moons stay at the picture's
+// places with `u` absent) against the **same** floors, and fails if that leg does. Shots of the day leg end `-day`.
+const HOUR = process.env.CHECK_HOUR ?? '1'
+const DAY = HOUR === '0'
+/** The day leg: this same script at `&hour=0`, run after the night leg's stack is closed. */
+function runDayLeg(fail) {
+  if (process.env.CHECK_HOUR) return
+  console.log(`\n  --- the same at noon (&hour=0) ---`)
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, CHECK_HOUR: '0' }, stdio: 'inherit' })
+  if (r.status !== 0) fail(`the day leg (&hour=0) failed (exit ${r.status}) — its lines are above`)
+}
 
 const VISIBLE = 24
 const ARC_POINTS = 5
@@ -35,8 +49,11 @@ const stack = await startStack({
 })
 // T23.25: `&hour=1` holds F1's night sky, which this check was calibrated on. Unpinned, a round opens in moonlit day
 // with the moons on their arcs, and the arc's first point (the fading tail) read 23 one run and 50 the next over the
-// moving sky, the other four within 4 of each other — red 2 runs in 3 at `VISIBLE` 24.
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
+// moving sky, the other four within 4 of each other — red 2 runs in 3 at `VISIBLE` 24. T23.25B F1: and the still day
+// (`&hour=0`, `runDayLeg`) at the same `VISIBLE`.
+const { page, dbg, shot: shotRaw, pageErrors } = await stack.openClient({ name: 'ana', query: `&hour=${HOUR}` })
+const shot = (name) => shotRaw(DAY ? `${name}-day` : name)
+console.log(`  hour ${HOUR} (${DAY ? 'day' : 'night'})`)
 await enterBattle(page, { waitPlaying: true, label: 'swing-mine-fx' })
 const freeze = (on) => page.evaluate((v) => window.__game.freeze(v), on)
 const hideFx = (on) => page.evaluate((v) => window.__world.hideLayers(v ? ['fx'] : []), on)
@@ -121,10 +138,17 @@ if (swing) {
   await freeze(false)
 }
 // The layer's clock given back (T23.25): the mine below, and the swing's own fade, run on it.
-await page.evaluate(() => {
-  window.__world.fxFeed().zones.state.update = window.__swingAge
-  delete window.__swingAge
-})
+// T23.25B F6: the own property taken off (`delete`), not the prototype's method put back as one — the state is exactly
+// as it was before the leg.
+{
+  const back = await page.evaluate(() => {
+    const st = window.__world.fxFeed().zones.state
+    delete st.update
+    delete window.__swingAge
+    return typeof st.update === 'function' && !Object.prototype.hasOwnProperty.call(st, 'update')
+  })
+  if (!back) fail("the ordnance layer's clock is not its own method again after the swing's leg")
+}
 
 // --- the mine ---------------------------------------------------------------------------------
 await selectWeapon(page, 'mine')
@@ -178,4 +202,7 @@ if (mine) {
 if (pageErrors.length) fail(`page errors: ${pageErrors.slice(0, 3).join(' | ')}`)
 else ok('no page errors')
 
-await finish(() => stack.close())
+await finish(async () => {
+  await stack.close()
+  runDayLeg(fail)
+})

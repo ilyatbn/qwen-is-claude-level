@@ -35,10 +35,11 @@ const MIN_TURRET_SHARE = 0.15
 const MAX_CONTROL_SHARE = 0.02
 
 /**
- * T23.25: wait until the camera has held one place for a few samples (or give up after `timeoutMs` and let the
- * frozen-frame geometry below cope). The player `place`d beside a platform falls onto the ground; the camera follows.
+ * T23.25: wait until the camera has held one place for a few samples. The player `place`d beside a platform falls onto
+ * the ground; the camera follows. T23.25B F5: **a camera that never settles fails the check, named** — giving up
+ * quietly put back exactly the race this wait exists for ((975,179) → (953,189) under load), with nothing in the log.
  */
-async function waitForStillCamera(page, timeoutMs = 4000) {
+async function waitForStillCamera(page, log, where, timeoutMs = 4000) {
   const view = () => page.evaluate(() => {
     const v = window.__game.debug().worldView
     return `${Math.round(v.x)},${Math.round(v.y)}`
@@ -46,12 +47,15 @@ async function waitForStillCamera(page, timeoutMs = 4000) {
   const end = Date.now() + timeoutMs
   let last = await view()
   let still = 0
+  const t0 = Date.now()
   while (still < 3 && Date.now() < end) {
     await page.waitForTimeout(100)
     const now = await view()
     still = now === last ? still + 1 : 0
     last = now
   }
+  if (still < 3) throw new Error(`${where}: the camera did not settle in ${timeoutMs} ms (last view ${last}) — the screen rects below would sample a moving frame`)
+  log(`${where}: the camera settled at ${last} in ${Date.now() - t0} ms`)
 }
 
 export default async function ({ page, shot, log }) {
@@ -125,7 +129,7 @@ export default async function ({ page, shot, log }) {
   // screen clips derived through the camera; taken while it was still following the fall and photographed after it
   // moved on, they sampled rock beside the turret: under load (16 fps) the platform projected to (975,179) before the
   // freeze and (953,189) after it, and the band read 0.0 % / 20.6 % with the turret plainly in the shot.
-  await waitForStillCamera(page)
+  await waitForStillCamera(page, log, 'before the turret pair')
   await page.evaluate(() => window.__game.freeze(true))
   await page.waitForTimeout(200)
 
@@ -243,7 +247,7 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(([x, y]) => window.__game.place(x, y - 30), [target.x, target.y])
   await page.waitForTimeout(500)
   // T23.25: and wait for the camera to arrive (see `waitForStillCamera`) — the batch read the control 29.0 here.
-  await waitForStillCamera(page)
+  await waitForStillCamera(page, log, 'the rider placed')
   // **Recompute the rects: `place` moved the camera.**
   //
   // `shownAt` and `controlAt` are *screen-space* clips derived from a world
@@ -301,7 +305,7 @@ export default async function ({ page, shot, log }) {
   await page.waitForTimeout(300)
   // T23.25: mounting seats the rider and the camera follows; the same *world* rects are re-derived through the
   // camera as it now stands, so a camera that moved samples the same rock rather than its neighbour.
-  await waitForStillCamera(page)
+  await waitForStillCamera(page, log, 'mounted')
   const lampAtMounted = await rectAround(target.x + lamp.dx, target.y + lamp.dy, lamp.w * 0.55, lamp.h * 1.4)
   const lampCtrlAtMounted = await rectAround(controlX + lamp.dx, target.y + lamp.dy, lamp.w * 0.55, lamp.h * 1.4)
   const mountedPatch = await samplePatch(page, lampAtMounted)

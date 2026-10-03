@@ -1548,3 +1548,13 @@ spends time on the wall's look again.
 low tier for speed; T23.23's "low-tier fps re-measure" is dropped. The GPU tier's 60 fps still matters.
 **Consequence:** a check that fails only on a low-tier fps number is converted to a logged report when it is next touched.
 **Reverse it by:** restoring the floors in `perf.mjs` / T23.18B's checks.
+
+## D-77 — The day is gated like the night; who is seen is not capped by render slots  ·  M23 (T23.25B)
+**Decided by:** the coordinator, 2026-10-01 (T23.25B's rulings).
+**Chosen:** `crates`, `swing-mine-fx` and `bullets-visible` run a still-day leg (`&hour=0`) at the **same** floors as
+their night legs; a day picture that misses one is fixed in the look, not by lowering the floor (the canopy is painted
+on a normal-blend layer, the swing's tail fades in linearly). The seeing rule (docs/14 §5) judges every revealing light
+in view (`seeingLights`, uncapped); only the night view's drawing is capped by its slots.
+**Consequence:** each of the three checks takes about twice as long (it re-runs itself at noon).
+**Reverse it by:** `CHECK_HOUR=1` in the three checks' environment (runs the night leg only), and `seeingLights` back to
+`sightLights(…, NIGHT_CIRCLES - 1)`.

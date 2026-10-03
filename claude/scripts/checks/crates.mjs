@@ -43,6 +43,8 @@
  * uses the same mechanism a player would.
  */
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { samplePatch } from './pixels.mjs'
 import {
   startStack,
@@ -58,6 +60,18 @@ import {
 
 const PORT = await freePort()
 const { fail, ok, failures } = tally('crates')
+// T23.25B F1: **night and day.** Every round opens by day (T23.11), so the picture players see first is gated too: run
+// alone, this check runs itself once more at noon (`CHECK_HOUR=0` → `&hour=0`, still: the moons stay at the picture's
+// places with `u` absent) against the **same** floors, and fails if that leg does. Shots of the day leg end `-day`.
+const HOUR = process.env.CHECK_HOUR ?? '1'
+const DAY = HOUR === '0'
+/** The day leg: this same script at `&hour=0`, run after the night leg's stack is closed. */
+function runDayLeg(fail) {
+  if (process.env.CHECK_HOUR) return
+  console.log(`\n  --- the same at noon (&hour=0) ---`)
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, CHECK_HOUR: '0' }, stdio: 'inherit' })
+  if (r.status !== 0) fail(`the day leg (&hour=0) failed (exit ${r.status}) — its lines are above`)
+}
 
 /**
  * Long enough for a crate (35 s) plus enough round left afterwards to fly to it
@@ -184,11 +198,12 @@ const stack = await startStack({
     WEATHER: 'off',
   },
 })
-// T23.25: `&hour=1` holds F1's night sky, the sky the canopy floor below was calibrated on. Since T23.11 a round
-// opens in moonlit day, and the parachute (additive, `itemSprites.ts`) over that pale haze moved its rect 39.7-40.2
-// against the floor of 45 (red on every run measured); held at night it moves 70.8, and with the canopy's draw
-// calls deleted 0.0 (planted, red). The daytime contrast is reported in T23.25, not gated here.
-const { page, dbg, shot, pageErrors } = await stack.openClient({ name: 'ana', query: '&hour=1' })
+// T23.25: `&hour=1` holds F1's night sky, the sky the canopy floor below was calibrated on (70.8 at night; 0.0 with the
+// canopy's draw calls deleted, planted, red). T23.25B F1: and `&hour=0` the day leg, at the same floor of 45 — the
+// parachute moved its rect 39.7-40.2 over the pale day haze before its look was fixed (`runDayLeg`).
+const { page, dbg, shot: shotRaw, pageErrors } = await stack.openClient({ name: 'ana', query: `&hour=${HOUR}` })
+const shot = (name) => shotRaw(DAY ? `${name}-day` : name)
+console.log(`  hour ${HOUR} (${DAY ? 'day' : 'night'})`)
 await enterBattle(page, { waitPlaying: true, label: 'crates' })
 console.log(`  round ${ROUND_SECONDS}s`)
 
@@ -1125,6 +1140,7 @@ if (!seen) {
 if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`)
 
 await stack.close()
+runDayLeg(fail)
 
 if (failures.length) {
   console.error(`\ncrates: ${failures.length} failure(s)`)
