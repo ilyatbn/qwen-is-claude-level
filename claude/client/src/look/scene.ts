@@ -426,6 +426,11 @@ export interface SceneDescription {
    * them. Absent: none (space, every look-lab scene).
    */
   fireflies?: { seed: number }
+  /**
+   * T23.08B: the map's foreground leaf clusters (`leaves.ts`), world-anchored, mask px — the renderer hands the shader the
+   * ones in view each frame (`look.fg.spots` is then ignored). Absent: the look's own spots (the look-lab's F1).
+   */
+  leaves?: Foreground['spots'] | null
   /** T23.13: draw `lit()`'s two rim passes on the actors (absent: drawn; the look-lab's `knob=actor-rim-off` is the control). */
   actorRim?: boolean
   id: string

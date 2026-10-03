@@ -159,6 +159,9 @@ export const CHECKS = [
   // T23.24: fireflies — at night each drawn firefly changes its patch (ink darker, glint brighter) against the same
   // frozen frame with the layer hidden, the clear patches do not; by day and in space hiding the layer changes nothing.
   { name: 'fireflies', file: 'scripts/checks/fireflies.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
+  // T23.08B: the foreground leaves in a live scene — the map's clusters drawn in view (both ends counted, the layer
+  // hidden as the control), the scene's player box handed over, a cluster on the player faded (one beside it is not).
+  { name: 'leaves', file: 'scripts/checks/leaves.mjs', url: '?sandbox=1&seed=4242&worldlook=classic' },
   // T23.04C (R22): one page cycles title → quick match → results → exit twenty times; live WebGL
   // contexts ≤ 3, Phaser's never lost, three's memory and the GPU process flat. Serial: it reads the
   // GPU process's memory, which other checks' pages would move.

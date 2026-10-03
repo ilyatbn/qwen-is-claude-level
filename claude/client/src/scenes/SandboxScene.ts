@@ -19,6 +19,7 @@ import { WorldView } from '../render/worldView'
 import { setCaveBackdropDefault } from '../render/terrain'
 import { PlayerView } from '../render/playerView'
 import { setGroundProbe } from '../look/actors/cast'
+import { leafClusters, occluderBox } from '../look/leaves'
 import { standTarget, stepTilt } from '../render/standTilt-math'
 import { loadAssetManifest, runLoader } from '../render/assets'
 import { Crosshair, LocalInput } from '../input/localInput'
@@ -435,7 +436,9 @@ export class SandboxScene extends Phaser.Scene {
     const cloudSea = core.meta.shape === 'Islands' ? core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
     // T23.31: the world look — the generator's pick from this seed (`MapMeta::look`, the server's rule), or the dev
     // override (`?look=volcanic`) that `regenerate` wrote into the core (`adoptWorldLook`).
-    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea, look: worldLookOfMeta(core.meta.look) }
+    // T23.08B: the map's foreground leaves (none in space), placed from this seed and mask.
+    const leaves = this.isSpaceMap() ? null : leafClusters(core.meta.seed, core.width, core.height, (x, y) => core.solidAt(x, y))
+    return { w: core.width, h: core.height, seed: core.meta.seed, space: this.isSpaceMap(), cloudSea, look: worldLookOfMeta(core.meta.look), leaves }
   }
 
   private isSpaceMap(): boolean {
@@ -1899,6 +1902,8 @@ export class SandboxScene extends Phaser.Scene {
       viewRect(this.cameras.main.worldView),
     )
     this.worldRenderer?.setLights(effectLights)
+    // T23.08B: a leaf never hides a player — the sandbox draws one, the body.
+    this.worldRenderer?.setOccluders(body ? [occluderBox(body.x, body.y, C().PLAYER_W, C().PLAYER_H)] : [])
 
     this.overlay.update(
       this.cameras.main,

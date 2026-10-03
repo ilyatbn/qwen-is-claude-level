@@ -80,6 +80,7 @@ import { DEPTH } from '../render/backdrop'
 import { PlayerView, SCARF_COLOURS } from '../render/playerView'
 import { HUD_SERIF } from '../ui/hudStyle'
 import { setGroundProbe } from '../look/actors/cast'
+import { leafClusters, occluderBox } from '../look/leaves'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
 import { MAX_FRAME_DT, RepeatFire, repeatSource } from '../input/autoFire'
@@ -1770,7 +1771,9 @@ export class GameScene extends Phaser.Scene {
     const cloudSea = this.core.meta.shape === 'Islands' ? this.core.height * C().ISLANDS_CLOUD_SEA_FRAC : null
     // T23.31 (docs/78 §A7): the world look `map_init` carries (the server's pick from the seed), or the dev override
     // (`?worldlook=volcanic`) `onMapInit` wrote into the core over it (`adoptWorldLook`).
-    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea, look: worldLookOfMeta(this.core.meta.look) }
+    // T23.08B: the map's foreground leaves (none in space), placed from this seed and mask — every client alike.
+    const leaves = this.onSpaceMap ? null : leafClusters(this.mapSeed, this.core.width, this.core.height, (x, y) => this.core.solidAt(x, y))
+    return { w: this.core.width, h: this.core.height, seed: this.mapSeed, space: this.onSpaceMap, cloudSea, look: worldLookOfMeta(this.core.meta.look), leaves }
   }
 
   /**
@@ -2870,6 +2873,10 @@ export class GameScene extends Phaser.Scene {
     // flashed) must not go stale while the renderer loads: a round first listed then would flash late, mid-air.
     const effectLights = this.effectLights.frame(this.effectSources(), viewRect(this.cameras.main.worldView))
     this.worldRenderer?.setLights(effectLights)
+    // T23.08B: a leaf never hides a player — every player this frame draws (you, unless spectating, and the remotes the
+    // screen shows: `seenDots`, the minimap's verdict) is a box the foreground fades over.
+    const drawn = [...(this.spectating ? [] : [rp]), ...seenDots(this.remotes.keys(), this.sightSeen)]
+    this.worldRenderer?.setOccluders(drawn.map((p) => occluderBox(p.x, p.y, C().PLAYER_W, C().PLAYER_H)))
     this.refreshHud()
   }
 

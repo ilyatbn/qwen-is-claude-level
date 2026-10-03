@@ -103,6 +103,9 @@ export interface WorldHandle {
   backAt(x: number, y: number): boolean
   /** T23.08: player boxes (mask px) the foreground leaves fade over. */
   setOccluders(boxes: [number, number, number, number][]): void
+  /** T23.08B: the map's leaf clusters and how many the last frame drew; `setLeaves` replaces them (a check plants one). */
+  leaves(): ReturnType<WorldRenderer['leavesDrawn']> | null
+  setLeaves(spots: { x: number; y: number; r: number; n: number }[]): void
   /** T23.08: what the last frame drew of the fog, leaves and post passes, and the boxes the leaves faded over. */
   atmosphere(): ReturnType<WorldRenderer['atmosphereDrawn']> | null
   /** T23.24: the fireflies — seeded on this map, laid out on the last drawn frame, their fade and clock. */
@@ -396,6 +399,10 @@ export function exposeWorldHandle(scene: Phaser.Scene, r: SceneRenderer, three: 
       three?.setOccluders(boxes)
     },
     atmosphere: () => three?.atmosphereDrawn() ?? null,
+    leaves: () => three?.leavesDrawn() ?? null,
+    setLeaves(spots) {
+      three?.setLeaves(spots)
+    },
     actors: () => three?.actorsDrawn() ?? null,
     fireflies: () => three?.firefliesDrawn() ?? null,
     blackHole: () => three?.blackHoleDrawn() ?? null,

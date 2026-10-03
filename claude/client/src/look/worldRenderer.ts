@@ -42,7 +42,8 @@ import { devSurface } from '../dev'
 import { detectTier, onHighQualityChange, qualityTier, rendererString } from '../ui/settings'
 import { StubRenderer, driveFromScene, sceneCounts, type RenderStats, type SceneRenderer } from './renderer'
 import type { Actor, Background, Box, FrameLook, Light, SceneDescription, ViewRect } from './scene'
-import { Atmosphere } from './atmosphere'
+import { Atmosphere, FG_SPOTS } from './atmosphere'
+import { visibleSpots, type LeafSpot } from './leaves'
 import { ActorLayer } from './actors/layer'
 import { GlowLayer } from './actors/glow'
 import { FxLayer } from './fx/layer'
@@ -189,6 +190,8 @@ export class WorldRenderer implements SceneRenderer {
   private readonly backdrop = new Backdrop()
   /** T23.08: player boxes (mask px) the foreground fades over, besides the description's stick figures — `setOccluders`. */
   private occluders: Box[] = []
+  /** T23.08B: the leaf clusters the last frame handed the shader (`leavesDrawn`). */
+  private shownLeaves = 0
   /** Dev (T23.08): layers and passes switched off — `fogBack`, `fogFront`, `fg`, `bloom`, `grade` (`hideLayers`). */
   private hidden = new Set<string>()
   private desc: SceneDescription | null = null
@@ -544,7 +547,7 @@ export class WorldRenderer implements SceneRenderer {
       this.backdrop.place(!!b && !!bg && !this.hidden.has('backdrop'), b?.seed ?? 0, bg?.horizon ?? 0, view, this.desc.world, frame, [this.buf.w, this.buf.h], this.desc.daylight ? this.hour.t : 1)
     }
     this.placeTerrain(view)
-    this.atmos.place(this.desc.look, view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null, this.desc.seaTint ?? null)
+    this.atmos.place(this.lookWithLeaves(view), view, [this.buf.w, this.buf.h], this.occluderBoxes(), this.hidden, this.desc.cloudSea ?? null, this.desc.seaTint ?? null)
     this.actorLayer.rimOn = this.desc.actorRim !== false
     // **Two light lists, and it is a known disagreement** (T23.27C F10, filed for the coordinator): the terrain above
     // draws `pickedLights` — culled to the view and capped to the tier's slots (`pickLights`: 12 gates + a muzzle + an
@@ -612,6 +615,30 @@ export class WorldRenderer implements SceneRenderer {
    * T23.08: the boxes the foreground may not hide — the description's stick figures (the look-lab; the
    * game's once T23.12 describes its actors) and the boxes a scene hands over (`setOccluders`).
    */
+  private lookWithLeaves(view: ViewRect): FrameLook {
+    const d = this.desc
+    if (!d?.leaves || !d.look.fg) {
+      this.shownLeaves = d?.look.fg?.spots.length ?? 0
+      return d!.look
+    }
+    // T23.08B: the shader's six slots get the map's clusters that reach into this view, nearest its centre first.
+    const spots = visibleSpots(d.leaves, view, FG_SPOTS)
+    this.shownLeaves = spots.length
+    return { ...d.look, fg: { ...d.look.fg, spots } }
+  }
+
+  /** Dev (T23.08B): replace the map's leaf clusters (a check plants one on a player); `invalidate`s. */
+  setLeaves(spots: LeafSpot[]): void {
+    if (!this.desc) return
+    this.desc.leaves = spots
+    this.invalidate()
+  }
+
+  /** Dev (T23.08B): the map's clusters and how many the last frame handed the shader. */
+  leavesDrawn(): { clusters: LeafSpot[]; shown: number } {
+    return { clusters: [...(this.desc?.leaves ?? [])], shown: this.shownLeaves }
+  }
+
   private occluderBoxes(): Box[] {
     const sticks = (this.desc?.actors ?? []).flatMap((a) => (a.kind === 'stick' && a.box ? [a.box] : []))
     return [...sticks, ...this.occluders]
@@ -1339,6 +1366,8 @@ export interface GameMap {
   cloudSea?: number | null
   /** T23.31 (docs/78 §A7): the map's world look (`worlds.ts`); absent: classic. Space keeps its own look whatever this says. */
   look?: WorldLookId
+  /** T23.08B: the map's foreground leaf clusters (`leaves.ts::leafClusters`, mask px); absent / null: no leaves. */
+  leaves?: LeafSpot[] | null
 }
 
 /**
@@ -1360,7 +1389,8 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     ...look,
     bg: gameSky(map.seed, map.cloudSea != null ? { ...bg, layers: [] } : bg),
     lights: [],
-    fg: null,
+    // T23.08B: the look's leaf tint (blended by the hour like the rest); the spots are the map's (`leaves`, below).
+    fg: map.leaves?.length && look.fg ? { tint: look.fg.tint, spots: [] } : null,
   })
   const night = end(wl.night.look, f1)
   return {
@@ -1380,9 +1410,9 @@ export function gameDescription(map: GameMap, caveWall = CAVE_WALL_DEFAULT): Sce
     caveWall,
     // T23.24: fireflies at night, seeded by the map — none in space (`spaceDescription`) or the look-lab.
     fireflies: { seed: map.seed },
-    // T23.08: F1's fog, bloom and grade. **No foreground leaves in the game yet** (T23.08B): F1's two
-    // clusters are placed for its 1280×720 frame, not a map, and a leaf may never hide a player — which
-    // needs the scenes to hand over their players' boxes (`setOccluders`) before leaves are placed.
+    // T23.08: F1's fog, bloom and grade. T23.08B: and the foreground leaves — the map's own world-anchored clusters
+    // (F1's are placed for its frame, not a map), faded over every player box the scenes hand over (`setOccluders`).
+    leaves: map.leaves ?? null,
     look: { ...night },
     palette: wl.night.palette,
     actors: [],
@@ -1427,6 +1457,8 @@ export interface GameWorld {
   caveWallDrawn(): boolean | null
   /** T23.09: this frame's effect lights (`effectLights.ts::EffectLights.frame`); dropped where three did not start. */
   setLights(lights: Light[]): void
+  /** T23.08B: this frame's drawn players' boxes (mask px, `leaves.ts::occluderBox`) — the foreground leaves fade over them. */
+  setOccluders(boxes: Box[]): void
   /**
    * T23.10 (R7): this frame's night view; dropped where three did not start. T23.10C F6: **returns whether a picture
    * took it** — false on the stub (no WebGL2, `?world=off`), where the scene draws its own fallback night.
@@ -1496,6 +1528,9 @@ export function createGameWorld(scene: Phaser.Scene, map: GameMap): GameWorld {
     terrainSwapPending: () => renderer instanceof WorldRenderer && renderer.litTerrainWanted && !renderer.drawsTerrain,
     setLights: (lights) => {
       if (renderer instanceof WorldRenderer) renderer.setLights(lights)
+    },
+    setOccluders: (boxes) => {
+      if (renderer instanceof WorldRenderer) renderer.setOccluders(boxes)
     },
     setNightView: (v) => {
       if (!(renderer instanceof WorldRenderer)) return false
