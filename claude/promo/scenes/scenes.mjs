@@ -133,53 +133,44 @@ export const SCENES = {
     // From the upside-down fight, the pan, to the bot dragged into the hole (~5–7 s into the take).
     cut: { dur: 7, in: 0.3 },
   },
+  // Scene 4 (owner, 2026-10-03): six map layouts, two seconds each, zoomed out so the layout reads. Each shot is a
+  // take of its own (`scene4-<shape>`); `scene4` is the montage cut from them (`cut.montage`). Medium maps
+  // (3072x1536) so a 0.5 zoom (2560x1440 of world) stays inside the map. Looks by seed (`world_look_for`):
+  // 10/12/13 classic, 8/11/14 volcanic; day at 20 s, night at 80 s (multilevel by day: at volcanic night its
+  // levels did not read). The owner allows Random here.
+  ...Object.fromEntries(
+    [
+      ['islands', { FIXED_SEED: '10', DEV_MAP_SHAPE: 'islands', DEV_ROUND_CLOCK: '20' }],
+      ['hill', { FIXED_SEED: '8', DEV_MAP_SHAPE: 'hill', DEV_ROUND_CLOCK: '20' }],
+      ['flat', { FIXED_SEED: '12', DEV_MAP_SHAPE: 'flat', DEV_ROUND_CLOCK: '80' }],
+      ['multilevel', { FIXED_SEED: '11', DEV_MAP_SHAPE: 'multilevel', DEV_ROUND_CLOCK: '20' }],
+      ['random1', { FIXED_SEED: '13', DEV_MAP_SHAPE: 'random', DEV_ROUND_CLOCK: '20' }],
+      ['random2', { FIXED_SEED: '14', DEV_MAP_SHAPE: 'random', DEV_ROUND_CLOCK: '80' }],
+    ].map(([shape, env]) => [
+      `scene4-${shape}`,
+      {
+        env: { ...ARMED, MAP_SCALE: 'medium', WEATHER: 'off', ...env },
+        director: 'busy',
+        zoom: 0.5,
+        seconds: 9,
+        // Wide enough that the camera eases across the fight rather than snapping between fighters.
+        directorOpts: { ease: 0.03, range: 700, lift: 0 },
+        hide: ['items'],
+      },
+    ]),
+  ),
   scene4: {
-    // Islands (seed 9: three high islands with open air between, measured). The bots start on the facing edges of
-    // the west and middle islands and one in the air between, so the fight is across the gap — on jetpacks. At the
-    // cue one bot is put on the middle island's teleport pad (1104,238) and held there (anchored) while it charges;
-    // the camera closes on it, it vanishes, and the clip fades to black (`cut.fadeOut`).
-    env: { ...ARMED, FIXED_SEED: '9', DEV_MAP_SHAPE: 'islands', DEV_ROUND_CLOCK: '30', WEATHER: 'off' },
-    director: 'busy',
-    zoom: 1.2,
-    seconds: 16,
-    stage: async (page) => {
-      await place(page, [[470, 225], [520, 255], [930, 260], [990, 225], [720, 170]], 2)
-      return { focus: { x: 730, y: 260 } }
-    },
-    cues: [
-      { at: 3, what: 'free the camera', run: (page) => focus(page, null) },
-      {
-        at: 4.2,
-        what: 'close in on the pad',
-        run: async (page) => {
-          // The pad, not the bot: the camera must stay where it vanishes, not follow it to the far pad.
-          await focus(page, { x: 1104, y: 222, lift: 10 }, 0.07)
-          await zoomTo(page, 2, 1.8)
-        },
-      },
-      {
-        at: 5.6,
-        what: 'a bot on the pad',
-        run: async (page) => {
-          const ids = (await server(page)).players.map((p) => p.id).sort((a, b) => a - b)
-          const id = ids[3]
-          await page.evaluate(([id]) => window.__game.debugPlace(1104, 222, id, 5), [id])
-          const t0 = Date.now()
-          // Watch the server for the jump (a pad moves you to another pad): the cut ends just after it.
-          for (let i = 0; i < 40; i++) {
-            await sleep(100)
-            const me = (await server(page)).players.find((p) => p.id === id)
-            if (me && Math.hypot(me.x - 1104, me.y - 222) > 200) {
-              console.log(`teleported ${((Date.now() - t0) / 1000 + 5.6).toFixed(2)} s into the take`)
-              break
-            }
-          }
-        },
-      },
-    ],
     caption: { text: 'MILLIONS OF RANDOMIZED MAPS' },
-    // Take 2: the bot stands in the gate and is gone at ~7.1 s (by the frames' own clock); the fade follows it.
-    cut: { dur: 8, in: 0.6, fadeOut: [-0.75, -0.02] },
+    // Six hard cuts, two seconds each, then the fade.
+    cut: {
+      dur: 12,
+      fadeOut: [-0.9, -0.02],
+      montage: ['islands', 'hill', 'flat', 'multilevel', 'random1', 'random2'].map((shape) => ({
+        take: `scene4-${shape}-1`,
+        in: 4,
+        dur: 2,
+      })),
+    },
   },
   final: {
     // Every creature on one moonlit hillside: seed 7's bowl (x 560–880) from dusk into night, the classic beetle and spider
