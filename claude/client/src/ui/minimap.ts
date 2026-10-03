@@ -26,6 +26,7 @@ import {
   type MinimapGeometry,
 } from './minimap-math'
 import { BLACK_HOLE_RING_COLOR } from '../render/blackHoleFx-math'
+import { HUD_HAIRLINE } from './hudStyle'
 
 /**
  * T22.21 (R113): an iron cell on the minimap — dark blue-grey, well apart from the
@@ -86,9 +87,11 @@ export class Minimap {
 
     this.root = document.createElement('div')
     this.root.dataset.minimap = 'root'
+    // T23.21B: F's frame — the HUD's hairline in its warm ink (`hudStyle.ts`), square, with a dark outline outside it so
+    // the line reads on moonlit day's brighter sky too. Its place (right 10, bottom 10) and the map inside are unchanged.
     this.root.style.cssText = `position:fixed;right:10px;bottom:10px;z-index:9;
       pointer-events:none;opacity:${c.MINIMAP_ALPHA};
-      border:1px solid rgba(255,255,255,0.25);background:#05070d;
+      border:${HUD_HAIRLINE};outline:1px solid rgba(0,0,0,.55);background:#05070d;
       image-rendering:pixelated;line-height:0`
 
     this.canvas = document.createElement('canvas')

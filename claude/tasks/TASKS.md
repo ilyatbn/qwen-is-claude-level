@@ -820,7 +820,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.07B](M23/T23.07B-what-the-lit-terrain-review-found.md) — What the lit-terrain review found — cave walls fade into the sky (R24), rock pattern per map, gate-ground wall, check bases
 - [x] [T23.07C](M23/T23.07B-what-the-lit-terrain-review-found.md) — R24 final form: hard wall = closing(48) ∪ enclosed, the rest fades; seed 9's runs named; chamber guard (as built in T23.07B's file)
 - [x] [T23.08](M23/T23.08-fog-depth-and-post.md) — Fog, foreground depth and the post chain — **the first picture gate**: nothing after it starts until F1's numbers are in — gate numbers in the journal 2026-09-27; lab floor (SwiftShader vs D3D12) measured, thresholds re-derived
-- [ ] [T23.08B](M23/T23.08-fog-depth-and-post.md) — The foreground leaves in the game: world-anchored clusters per map + the scenes hand over their players' boxes (`setOccluders`) (filed by T23.08, see its As built)
+- [ ] [T23.08B](M23/T23.08B-the-foreground-leaves-in-the-game.md) — The foreground leaves in the game: world-anchored clusters per map + the scenes hand over their players' boxes (`setOccluders`) (filed by T23.08, see its As built)
 - [x] [T23.08C](M23/T23.08C-what-the-post-review-found.md) — What the post review found — thresholds per back end (R25), `--only` exits 2 on an unknown name, bloom halo box, R24 term deleted, exceptions that can fail, loud worker guard, fog/seed live check
 - [x] [T23.09](M23/T23.09-effects-are-the-lights.md) — Effects are the lights — one light list per frame from game events, every source with a production caller
 - [x] [T23.09A](M23/T23.09-effects-are-the-lights.md) — The cave wall switchable, off by default in the game (owner request; ruling pending — the look-lab keeps F1's walls)
@@ -858,7 +858,8 @@ look up and see the earth, moved since the round began.
 - [x] [T23.19D](M23/T23.19D-what-the-fx-furniture-review-found.md) — What the fx/furniture review found — pickups visible without the world renderer, no halo at noon, sharp labels, echoes paired by seq, game-path blast Level A, dead constants
 - [x] [T23.19F](M23/T23.19F-two-parked-checks-are-broken.md) — Two parked checks are broken, not flaky — bullets-visible's static column, perf's 6 ms chunk rebake
 - [x] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture — 2026-10-02: A + B landed (F3 look, Level A, live sky); 2026-10-03: C — black hole, flare, vortex in the world renderer, F3 effect boxes at Level A (9/9); Phaser flat paths kept as the no-WebGL2 fallback (ruling) — ✔ gated (builderA2, `check.sh --changed 6c8a595`: rust + vitest green, e2e 87/104, the 17 reds all green alone at --jobs 1; `gate-builderA2-t2320{,-alone}.txt`)
-- [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
+- [x] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost — part A 2cd5842, part B as T23.21B
+- [x] [T23.21B](M23/T23.21B-the-hud-overlays-and-the-lab.md) — The HUD part B: killfeed, death, results, escape/options, minimap frame in F's look; the look-lab draws the HUD, Level A against hudE (`look-hud`)
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
 - [ ] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
 - [x] [T23.24](M23/T23.24-fireflies.md) — Fireflies at night — small drifting lights that glow and light the rock nearby (owner ask, after T23.11)

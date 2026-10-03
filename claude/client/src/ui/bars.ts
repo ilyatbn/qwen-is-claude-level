@@ -12,7 +12,7 @@
  */
 
 import { consumablePips, type BarView } from './bars-math'
-import { HUD_INK, HUD_SERIF, HUD_SHADOW, HUD_TRACK, installHudFont } from './hudStyle'
+import { HUD_INK, HUD_INK_BOTTOM, HUD_SERIF, HUD_SHADOW, HUD_TRACK, installHudFont } from './hudStyle'
 
 /** T23.21: `hudE`'s track — a hairline, 130 px in the picture; 3 px tall here so a state colour still reads. */
 export const BAR_TRACK_H = 3
@@ -179,7 +179,7 @@ export class Bars {
     // T23.21: `hudE`'s place, left 26 — and 56 px up, which clears `#game-hud` (a ~30 px strip at bottom:0) and the
     // jetpack readout that sits at bottom:36.
     this.root.style.cssText =
-      `position:fixed;left:26px;bottom:56px;z-index:12;pointer-events:none;color:${HUD_INK};text-shadow:${HUD_SHADOW};`
+      `position:fixed;left:26px;bottom:56px;z-index:12;pointer-events:none;color:${HUD_INK_BOTTOM};text-shadow:${HUD_SHADOW};`
 
     // **No shield ring** (T20.08). It drew `shieldRing`'s 0..1 fraction of a 20 s
     // window, and the shield is a held generator paying per hit now — there is no

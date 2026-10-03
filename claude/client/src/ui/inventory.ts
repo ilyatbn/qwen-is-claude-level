@@ -11,7 +11,7 @@
  */
 
 import { iconWeapon } from '../look/actors/icons'
-import { HUD_ACCENT, HUD_INK, HUD_INK_DIM, HUD_SERIF, HUD_SHADOW, installHudFont } from './hudStyle'
+import { HUD_ACCENT, HUD_INK, HUD_INK_DIM, HUD_SERIF, HUD_SHADOW, installHudFont, setHudAccent } from './hudStyle'
 import {
   backpackGrid,
   isDragWorthSending,
@@ -215,6 +215,8 @@ export class InventoryPanel {
   /** T23.21 (R10): the selected slot's underline is the player's colour — the seat's scarf. Redraws at once. */
   setAccent(colour: string): void {
     this.accent = colour
+    // T23.21B: the same colour for every overlay styled in CSS — this is its one writer (`hudStyle.ts::setHudAccent`).
+    setHudAccent(this.root.ownerDocument, colour)
     this.update(this.slots, this.selected)
   }
 

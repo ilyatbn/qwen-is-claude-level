@@ -52,6 +52,7 @@ import { albedoTheme } from './albedo'
 import { fxFeed } from './fx/feed'
 import { BLAST_PEAK, BLAST_REACH, MOCKUP_STREAM } from './fx/game'
 import { OrdnanceState } from '../render/ordnance-state'
+import { mountLabHud } from '../ui/labHud'
 
 export interface LookHandle {
   ready: boolean
@@ -76,6 +77,8 @@ export interface LookHandle {
   terrain: boolean | string
   /** T23.19D F6 (`&knob=game-blast`): the staged game blast — its age share and the blasts in its state. */
   gameBlast?: { k: number; blasts: number }
+  /** T23.21B: whether the game's HUD is mounted over the scene (its `hud`, the picture's `hudE`) — and its faces loaded. */
+  hud?: boolean
 }
 
 /** T23.19D F6: the staged game blast's default age, as a share of its life — its peak (R27). */
@@ -202,6 +205,24 @@ export class LookScene extends Phaser.Scene {
       desc.actors = desc.actors.map((a) =>
         a.kind === 'figure' && a.opts.J ? { ...a, opts: { ...a.opts, J: { ...a.opts.J, jet: 0 } } } : a.kind === 'stick' ? { ...a, opts: { ...a.opts, jet: false } } : a,
       )
+    }
+    // T23.21B: the scene's HUD (`hudE` in the mockup) is the game's own (`ui/labHud.ts`), over the full scene; `only=hud`
+    // draws it alone on black and no world — `look-hud`'s side of Level A, against `hudE` itself on black.
+    const hudData = only === null || only === 'hud' ? full.hud : null
+    if (hudData) {
+      void Core.init().then(async () => {
+        const mounted = mountLabHud(document, hudData)
+        this.events.once('shutdown', () => mounted.destroy())
+        await document.fonts.ready
+        handle.hud = true
+        if (only === 'hud') handle.ready = true
+      })
+    }
+    if (only === 'hud') {
+      if (!hudData) handle.error = `only=hud: scene "${id}" has no hud`
+      document.body.style.background = '#000'
+      this.game.canvas.style.visibility = 'hidden'
+      return
     }
     handle.camera = desc.camera
     handle.described = sceneCounts(desc)

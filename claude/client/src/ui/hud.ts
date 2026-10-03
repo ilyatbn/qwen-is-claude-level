@@ -227,15 +227,16 @@ export class Hud {
     installFont(doc)
     installHudFont(doc)
 
-    // T23.21: `hudE`'s timer — a thin, widely letter-spaced serif, top-centre. The trailing letter-space is taken
-    // back off the right (`margin-right:-.35em`), so the digits, not the box, are centred.
+    // T23.21: `hudE`'s timer — a thin, widely letter-spaced serif, top-centre, at its `opacity:.8` over `timerLight`'s
+    // ink. T23.21B: **the box is centred with its trailing letter-space**, exactly as `hudE`'s `text-align:center` centres
+    // it (`look-hud` measured part A's `margin-right:-.35em` 5 px off the picture).
     this.timer = doc.createElement('div')
     this.timer.id = 'hud-timer'
     this.timer.dataset['warn'] = '0'
     this.timer.style.cssText =
       `position:fixed;top:${TIMER_TOP}px;left:50%;transform:translateX(-50%);` +
       'z-index:12;pointer-events:none;' +
-      `font:300 ${TIMER_H}px/1 ${HUD_SERIF};letter-spacing:.35em;margin-right:-.35em;` +
+      `font:300 ${TIMER_H}px/1 ${HUD_SERIF};letter-spacing:.35em;opacity:.8;` +
       `color:${TIMER_INK};text-shadow:${HUD_SHADOW};`
     doc.body.appendChild(this.timer)
 
@@ -247,7 +248,9 @@ export class Hud {
     // none) but does make the empty case impossible to assert on by geometry.
     this.banner.style.cssText =
       `position:fixed;top:${BANNER_TOP}px;left:50%;transform:translateX(-50%);z-index:12;` +
-      `pointer-events:none;font:16px/1.1 ${HUD_SERIF};letter-spacing:.25em;` +
+      // T23.21B: bold — the warning is danger's colour on thin Liberation Serif strokes, and at the regular weight it
+      // put too little red on the frame to read (`hud-timer` measured its rect 21.5 redder up than down, under 25).
+      `pointer-events:none;font:700 16px/1.1 ${HUD_SERIF};letter-spacing:.2em;` +
       `color:${TIMER_WARN};text-shadow:0 1px 4px rgba(0,0,0,.9);display:none;white-space:nowrap;`
     doc.body.appendChild(this.banner)
   }

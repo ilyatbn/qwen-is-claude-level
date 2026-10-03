@@ -61,6 +61,14 @@ export const CHECKS = [
     url: '?look=F4',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.21B: the look-lab's HUD (the game's classes, F1's hudE values) at Level A against e_style.js::hudE itself,
+  // both on black, per text element; font fallback, white ink and no letter-spacing are its must-fail controls.
+  {
+    name: 'look-hud',
+    file: 'scripts/checks/look-hud.mjs',
+    url: '?look=F1&only=hud',
+    ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
+  },
   // T23.18: the look-lab's F1 with its effects against F1 at Level A on each effect's box (where the lab without
   // effects agrees with the mockup without them, `controls/F1-nofx.png`); fx-off is every box's must-fail.
   {

@@ -12,6 +12,7 @@
  * and it is a function rather than a chain of `if`s in the scene so it can be
  * driven under node — key handling is where this kind of thing usually breaks.
  */
+import { HUD_BUTTON, HUD_HAIRLINE, HUD_INK, HUD_PANEL_BG, HUD_SERIF, installHudFont } from './hudStyle'
 
 /** What `Esc` did, so the caller can act and a test can assert. */
 export type EscapeAction =
@@ -62,11 +63,8 @@ export interface EscapeMenuDeps {
   onOptions(): void
 }
 
-const BUTTON =
-  'display:block;width:220px;margin:0 auto 10px;padding:11px 0;border-radius:6px;' +
-  'border:1px solid rgba(255,255,255,.25);background:rgba(30,38,56,.92);' +
-  'font:700 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e9edf5;' +
-  'text-align:center;cursor:pointer;pointer-events:auto;'
+/** T23.21B: F's button (`hudStyle.ts::HUD_BUTTON`) — a hairline in the serif — at the old size and spacing. */
+const BUTTON = `${HUD_BUTTON}display:block;width:220px;margin:0 auto 10px;padding:11px 0;text-align:center;`
 
 export class EscapeMenu {
   readonly root: HTMLDivElement
@@ -74,6 +72,7 @@ export class EscapeMenu {
   private open = false
 
   constructor(deps: EscapeMenuDeps, doc: Document = document) {
+    installHudFont(doc)
     this.root = doc.createElement('div')
     this.root.id = 'escape-menu'
     // Centred over the field, and **transparent to the field behind it**: it is
@@ -82,21 +81,22 @@ export class EscapeMenu {
     // pains about.
     this.root.style.cssText =
       'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:20;' +
-      'display:none;padding:22px 26px 12px;border-radius:10px;' +
-      'background:rgba(8,10,16,.86);border:1px solid rgba(255,255,255,.2);' +
+      // T23.21B: F's panel — night ink, one hairline, square (`hudStyle.ts`).
+      `display:none;padding:22px 26px 12px;background:${HUD_PANEL_BG};border:${HUD_HAIRLINE};` +
       'box-shadow:0 8px 40px rgba(0,0,0,.6);pointer-events:auto;'
 
     const title = doc.createElement('div')
     title.textContent = 'Paused menu'
     title.style.cssText =
-      'font:700 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9aa4b8;' +
-      'text-align:center;margin-bottom:14px;letter-spacing:1px;'
+      `font:12px/1 ${HUD_SERIF};color:${HUD_INK};opacity:.75;` +
+      'text-align:center;margin-bottom:16px;letter-spacing:.2em;'
     this.root.appendChild(title)
 
     const resume = doc.createElement('button')
     resume.id = 'escape-resume'
     resume.textContent = 'Resume'
     resume.style.cssText = BUTTON
+    resume.className = 'hud-btn'
     resume.addEventListener('click', () => deps.onResume())
 
     // **Present and disabled, not hidden** — the same treatment weapon skins get
@@ -110,12 +110,14 @@ export class EscapeMenu {
     this.options.id = 'escape-options'
     this.options.textContent = 'Options'
     this.options.style.cssText = BUTTON
+    this.options.className = 'hud-btn'
     this.options.addEventListener('click', () => deps.onOptions())
 
     const quit = doc.createElement('button')
     quit.id = 'escape-quit'
     quit.textContent = 'Quit to title'
     quit.style.cssText = BUTTON
+    quit.className = 'hud-btn'
     quit.addEventListener('click', () => deps.onQuit())
 
     this.root.append(resume, this.options, quit)

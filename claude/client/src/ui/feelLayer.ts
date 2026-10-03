@@ -24,6 +24,7 @@ import {
 } from '../render/feel-math'
 import { KillFeed, killLine, type DeathCause } from './killfeed-state'
 import { isOnScreen, worldToCss, type Rect } from './feelLayer-math'
+import { HUD_ACCENT_CSS, HUD_INK, HUD_SERIF, HUD_SHADOW, installHudFont } from './hudStyle'
 
 /** What the layer needs from the scene each frame. It does not reach for a camera. */
 export interface FeelFrame {
@@ -53,6 +54,7 @@ export class FeelLayer {
   readonly feed = new KillFeed()
 
   constructor() {
+    installHudFont(document)
     this.root = document.createElement('div')
     this.root.dataset.feel = 'root'
     this.root.style.cssText = `position:fixed;inset:0;z-index:${Z};pointer-events:none;
@@ -79,9 +81,11 @@ export class FeelLayer {
 
     this.feedEl = document.createElement('div')
     this.feedEl.dataset.feel = 'killfeed'
-    this.feedEl.style.cssText = `position:absolute;right:10px;top:10px;text-align:right;
-      font-size:13px;color:#e8e8ea;text-shadow:0 1px 2px #000;display:flex;
-      flex-direction:column;gap:3px`
+    // T23.21B: F's type (`hudE`): the serif in the HUD's warm ink, letter-spaced, set in from the corner by the
+    // picture's own 26 px margin and level with its timer (22 px).
+    this.feedEl.style.cssText = `position:absolute;right:26px;top:22px;text-align:right;
+      font:13px/1.25 ${HUD_SERIF};letter-spacing:.06em;color:${HUD_INK};text-shadow:${HUD_SHADOW};
+      display:flex;flex-direction:column;align-items:flex-end;gap:4px`
 
     this.root.append(this.vignetteEl, this.numbersEl, this.markersEl, this.bannerEl, this.feedEl)
     document.body.append(this.root)
@@ -177,6 +181,12 @@ export class FeelLayer {
         const el = document.createElement('div')
         el.textContent = killLine(e)
         el.style.opacity = String(e.alpha)
+        // T23.21B: `involvesYou` was documented as "drawn highlighted" and drawn like every other line. Now a line you
+        // are in carries your colour as a hairline on its right (R10: identity), at full ink.
+        if (e.involvesYou) {
+          el.dataset.you = '1'
+          el.style.cssText += `;padding-right:7px;border-right:2px solid ${HUD_ACCENT_CSS};color:rgba(236,230,220,1)`
+        }
         return el
       }),
     )

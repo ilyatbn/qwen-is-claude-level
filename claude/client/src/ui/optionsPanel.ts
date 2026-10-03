@@ -13,20 +13,22 @@
  */
 
 import { highQualityChoice, isFpsCounter, setFpsCounter, setHighQuality } from './settings'
+import { HUD_ACCENT_CSS, HUD_BUTTON, HUD_HAIRLINE, HUD_INK, HUD_INK_DIM, HUD_PANEL_BG, HUD_SERIF, HUD_SHADOW } from './hudStyle'
 
+/**
+ * T23.21B: F's panel and type (`hudStyle.ts`) — night ink, one hairline, square; the serif in the HUD's ink. The font
+ * face is installed by the HUD and the escape menu this opens from (this constructor is also driven under node with a
+ * fake document, which has no `<head>`).
+ */
 const PANEL =
   'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:46;' +
-  'min-width:320px;padding:18px 20px;border-radius:10px;' +
-  'border:1px solid rgba(255,255,255,.22);background:rgba(18,24,38,.96);' +
-  'font:400 14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e9edf5;' +
+  `min-width:320px;padding:18px 20px;border:${HUD_HAIRLINE};background:${HUD_PANEL_BG};` +
+  `font:400 14px/1.5 ${HUD_SERIF};letter-spacing:.04em;color:${HUD_INK};text-shadow:${HUD_SHADOW};` +
   'pointer-events:auto;'
 
 const ROW = 'display:flex;align-items:center;justify-content:space-between;gap:16px;margin:14px 0;'
 
-const BTN =
-  'padding:7px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.25);' +
-  'background:rgba(40,50,72,.95);font:700 13px/1 ui-monospace,monospace;' +
-  'color:#e9edf5;cursor:pointer;pointer-events:auto;'
+const BTN = `${HUD_BUTTON}padding:7px 14px;font-size:13px;`
 
 /**
  * One button's appearance, from one boolean.
@@ -37,7 +39,8 @@ const BTN =
 function paint(btn: HTMLButtonElement, on: boolean, label: string = on ? 'On' : 'Off'): void {
   btn.textContent = label
   btn.setAttribute('aria-pressed', String(on))
-  btn.style.borderColor = on ? 'rgba(120,220,255,.75)' : 'rgba(255,255,255,.25)'
+  // T23.21B: "on" is the player's colour (R10), "off" the hairline — the quick bar's selected/idle rule.
+  btn.style.borderColor = on ? HUD_ACCENT_CSS : HUD_INK_DIM
 }
 
 /** The hint under High Quality when the machine can run it. */
@@ -105,7 +108,7 @@ export class OptionsPanel {
 
     const title = doc.createElement('div')
     title.textContent = 'Options'
-    title.style.cssText = 'font-weight:700;font-size:16px;margin-bottom:4px;'
+    title.style.cssText = 'font-size:15px;letter-spacing:.2em;margin-bottom:4px;opacity:.85;'
 
     const row = doc.createElement('div')
     row.style.cssText = ROW
@@ -120,6 +123,7 @@ export class OptionsPanel {
 
     this.quality = doc.createElement('button')
     this.quality.id = 'options-quality'
+    this.quality.className = 'hud-btn'
     this.quality.style.cssText = BTN
     this.quality.addEventListener('click', () => {
       // A disabled button fires no click, but the rule belongs to the row, not to the DOM.
@@ -152,6 +156,7 @@ export class OptionsPanel {
 
     this.fps = doc.createElement('button')
     this.fps.id = 'options-fps'
+    this.fps.className = 'hud-btn'
     this.fps.style.cssText = BTN
     this.fps.addEventListener('click', () => {
       // Read back, never tracked here — the same rule the button above follows.
@@ -164,6 +169,7 @@ export class OptionsPanel {
     const close = doc.createElement('button')
     close.id = 'options-close'
     close.textContent = 'Back'
+    close.className = 'hud-btn'
     close.style.cssText = BTN + 'display:block;margin:18px auto 0;'
     close.addEventListener('click', () => this.deps.onClose())
 
