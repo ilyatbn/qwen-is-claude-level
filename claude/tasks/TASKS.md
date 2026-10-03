@@ -857,7 +857,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.19C](M23/T23.19C-sky-through-the-rock.md) — The sky shows through the rock — solid rock stays opaque on every seed and tier (a check swaps the sky)
 - [x] [T23.19D](M23/T23.19D-what-the-fx-furniture-review-found.md) — What the fx/furniture review found — pickups visible without the world renderer, no halo at noon, sharp labels, echoes paired by seq, game-path blast Level A, dead constants
 - [x] [T23.19F](M23/T23.19F-two-parked-checks-are-broken.md) — Two parked checks are broken, not flaky — bullets-visible's static column, perf's 6 ms chunk rebake
-- [ ] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture — 2026-10-02: A + B landed (F3 look, Level A, live sky); C owed: flare/vortex/black hole ports, ordnance flat paths, F3 effect boxes
+- [x] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture — 2026-10-02: A + B landed (F3 look, Level A, live sky); 2026-10-03: C — black hole, flare, vortex in the world renderer, F3 effect boxes at Level A (9/9); Phaser flat paths kept as the no-WebGL2 fallback (ruling) — ✔ gated (builderA2, `check.sh --changed 6c8a595`: rust + vitest green, e2e 87/104, the 17 reds all green alone at --jobs 1; `gate-builderA2-t2320{,-alone}.txt`)
 - [ ] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost
 - [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
 - [ ] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
