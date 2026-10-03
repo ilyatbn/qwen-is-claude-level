@@ -4354,6 +4354,17 @@ pub const BOT_JETPACK_RISE: f32 = 120.0;
 pub const BOT_LOS_MAX_BLOCKED: u32 = 24;
 /// Spacing of those samples, px — finer than the thinnest rock a carve leaves.
 pub const BOT_LOS_STEP: f32 = 8.0;
+/// T23.37 item 5 (owner: *"bots fire into rock instead of moving for a clear shot"*):
+/// **a shot's** line may cross rock as thick as this many of the weapon's own carves
+/// (`blast_radius` each — the depth one impact bites into a face), so a bazooka (42 px)
+/// fires through ~126 px of rock and a bullet (3 px) through none past the tolerance
+/// below. `BOT_LOS_MAX_BLOCKED` stays the item-choice rule. "A few", by the task.
+pub const BOT_LOS_CARVES: f32 = 3.0;
+/// ...and never less than this, px: one sample — a lip the line grazes, not a wall.
+pub const BOT_LOS_TOLERANCE_PX: f32 = BOT_LOS_STEP;
+/// The report's "fired into rock" cut (`BotStats::fires_into_rock_near`), px: rock on
+/// the line within this of the shooter. A report's instrument, read by nothing that steers.
+pub const BOT_ROCK_NEAR_PX: f32 = 64.0;
 /// Health below which a bot uses a medkit it carries (and `BOT_FLEE_HEALTH` sits under
 /// it: heal first, run only when that has not saved you).
 pub const BOT_HEAL_BELOW: f32 = 40.0;
@@ -4543,6 +4554,14 @@ pub const BOT_HIDE_KEEP_OFF: f32 = 0.9;
 pub const BOT_NAV_FUEL_STEP: f32 = JETPACK_MAX_FUEL / 20.0;
 /// Nodes one bot's search may expand per tick. A **count**, never a clock: the server
 /// re-runs bots on replay, and a clock would make it think differently.
+///
+/// **Its cost, the basis (T23.26B item 4, stated at T23.37):** `bot_terrain_report`'s tick
+/// cost, 5 bots on Medium, release, 8 seeds × 20 s after 10 s warm — the bots' half (think
+/// + commands) **mean 145.6 µs, p99 868 µs, max 2.6 ms** (2026-10-03, on a box shared
+/// with other builds; T23.26 measured 48 µs mean, 385 p99 on a quiet one). Against the
+/// 16.7 ms tick (`SIM_HZ` 60) the p99 is ~5 %: the budget is not what limits a room.
+/// Raising it shortens a search's wall-clock only; the cap that bounds one search is
+/// `BOT_NAV_NODES_MAX`.
 pub const BOT_NAV_NODES_PER_TICK: u32 = 300;
 /// Nodes one search may expand before it answers "no route" — twenty ticks of budget.
 pub const BOT_NAV_NODES_MAX: u32 = 20 * BOT_NAV_NODES_PER_TICK;

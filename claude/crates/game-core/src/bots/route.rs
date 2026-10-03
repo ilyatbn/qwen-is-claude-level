@@ -195,6 +195,9 @@ pub(super) struct Route {
     pub open_ground_off: bool,
     /// Where the body was last tick (a teleport is a jump in it).
     last_pos: Vec2,
+    /// T23.37 item 3: a winged body's plan that broke on a step (took twice its price),
+    /// and until when a second break on the same goal refuses it.
+    broke: Option<(Target, f32)>,
 }
 
 impl Route {
@@ -378,7 +381,28 @@ impl Route {
         let s = self.path[self.next];
         if self.on_step > 2.0 * s.cost + BOT_NAV_STEP_SLACK {
             // A step that took twice its price is a plan the world disagrees with.
+            //
+            // **T23.37 item 3: and a winged body's second break on the same goal gives
+            // the goal up** (`refuse`). The fly planner's edges include steps a winged
+            // body cannot make (a gap its box clips), and the planner found the same
+            // route again: traced in `space_bots_report` (`BOTS_PINNED_TRACE`), 13 of the
+            // standard arm's 15 winged runs ≥ 10 s (32 seeds) were a bot re-planning one
+            // route to its goal (11 an item), swinging at a lip 15–18 times in ten seconds.
+            let target = self.target;
             self.clear();
+            if me.move_mods().flying {
+                if let Some(t) = target {
+                    let again = self
+                        .broke
+                        .is_some_and(|(b, until)| same_target(&b, &t) && now < until);
+                    if again {
+                        self.broke = None;
+                        self.refuse(t, now);
+                    } else {
+                        self.broke = Some((t, now + BOT_NAV_RETRY));
+                    }
+                }
+            }
             return None;
         }
         // **The jetpack is a tank** (T23.26C item 4, `docs/78` §A3). The plan priced every

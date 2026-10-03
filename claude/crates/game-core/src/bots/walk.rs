@@ -19,7 +19,14 @@ use crate::world::World;
 /// Probed one window's flight along the leg, the distance a first leg covers.
 fn leg_barred(world: &World, pos: Vec2, b: u8) -> bool {
     let reach = WINGS_FLY_SPEED * BOT_STUCK_WINDOW;
-    let at = pos + Vec2::new(0.0, if b == button::UP { -reach } else { reach });
+    // T23.37 item 3: LEFT and RIGHT legs too (the sideways sweep of a vertical press).
+    let step = match b {
+        button::UP => Vec2::new(0.0, -reach),
+        button::LEFT => Vec2::new(-reach, 0.0),
+        button::RIGHT => Vec2::new(reach, 0.0),
+        _ => Vec2::new(0.0, reach),
+    };
+    let at = pos + step;
     world.body_in_the_void(&crate::physics::body::Body::new(at)) || space::forbidden(world, at)
 }
 
@@ -104,13 +111,37 @@ impl Bot {
                 button::RIGHT
             };
         } else {
-            let stop_within = self.stop_within(world);
+            // T23.37 item 3: a winged bot whose weapon cannot shoot through what is between
+            // it and its enemy closes in (`shot_clear`) rather than holding a stand-off it
+            // cannot fire from — the space arm's winged fighters hovered at 65–140 px under
+            // their enemy, refusing every shot on the line (traced, `BOTS_PINNED_TRACE`).
+            let stop_within = if winged
+                && matches!(self.goal, Goal::Enemy(_))
+                && !self.shot_clear(world, pos, aim_at)
+            {
+                0.0
+            } else {
+                self.stop_within(world)
+            };
             if dx.abs() > stop_within {
                 buttons |= if dx > 0.0 {
                     button::RIGHT
                 } else {
                     button::LEFT
                 };
+            }
+            // T23.37 item 3: **and a winged body closes the height too.** The walking
+            // model pressed UP only for a rise past `BOT_JETPACK_RISE` (a jetpack climb),
+            // so a winged bot under an item 43 px up hovered pressing nothing, touching
+            // rock, for the rest of the round (traced: 16 of the space arm's 20 winged
+            // runs ≥ 10 s were item goals, none of them pressing sideways).
+            // **Only once the width is closed** (no sideways press): pressed together, a
+            // DOWN toward an enemy below held a bot under the top of the wall its sweep had
+            // just lifted it over (`a_winged_bot_against_a_wall_rises_over_it` was red so).
+            let dy = move_to.y - pos.y;
+            let sideways = buttons & (button::LEFT | button::RIGHT) != 0;
+            if winged && !sideways && dy.abs() > stop_within {
+                buttons |= if dy < 0.0 { button::UP } else { button::DOWN };
             }
         }
 
@@ -170,7 +201,7 @@ impl Bot {
 
         // T22.03I F4: a winged bot that gave its way up hovers instead of pressing.
         if winged && now < self.sweep_refused_until {
-            buttons &= !(button::LEFT | button::RIGHT);
+            buttons &= !(button::LEFT | button::RIGHT | button::UP | button::DOWN);
         }
 
         // Stuck against a wall: pressing a direction and going nowhere.
@@ -188,20 +219,32 @@ impl Bot {
         // (A first cut measured from where it last moved `BOT_STUCK_PX` instead; a bot
         // sliding a few px a second along a face then resets every few windows and
         // never reaches the long legs. The window is what `BOT_STUCK_PX`'s doc says.)
-        let pressing = buttons & (button::LEFT | button::RIGHT) != 0;
+        let lateral = buttons & (button::LEFT | button::RIGHT) != 0;
+        // T23.37 item 3: a winged bot pressing **only** up or down (the height it now
+        // closes, above) is stuck the same way, measured on that axis — and swept
+        // sideways (below), round what is over or under it.
+        let vertical = winged && !lateral && buttons & (button::UP | button::DOWN) != 0;
+        let pressing = lateral || vertical;
         if !pressing {
             self.still_for = 0.0;
             self.stuck_window = 0.0;
             self.stuck_from = pos.x;
+            self.stuck_from_y = pos.y;
         } else if winged {
             self.still_for += dt;
             self.stuck_window += dt;
             if self.stuck_window >= BOT_STUCK_WINDOW {
-                if (pos.x - self.stuck_from).abs() >= BOT_STUCK_PX {
+                let moved = if vertical {
+                    (pos.y - self.stuck_from_y).abs()
+                } else {
+                    (pos.x - self.stuck_from).abs()
+                };
+                if moved >= BOT_STUCK_PX {
                     self.still_for = 0.0;
                 }
                 self.stuck_window = 0.0;
                 self.stuck_from = pos.x;
+                self.stuck_from_y = pos.y;
             }
         } else {
             if (pos.x - self.stuck_from).abs() < BOT_STUCK_PX {
@@ -264,7 +307,36 @@ impl Bot {
         // `BOT_STUCK_WINDOW`, down for two, up for three — each leg one window longer,
         // so the search reaches past the start in both directions and a face of any
         // height is eventually rounded.
-        if winged && stuck {
+        if winged && stuck && vertical {
+            // T23.37 item 3: stuck pressing up or down — the same outward sweep, sideways,
+            // with the vertical press kept, so the body slides along what is over (or
+            // under) it until it is round the edge. Given up as the vertical sweep is.
+            self.stats.ticks_winged_stuck += 1;
+            let leg = winged_sweep_leg(self.still_for - BOT_STUCK_WINDOW);
+            if leg >= BOT_WINGED_SWEEP_LEGS {
+                self.sweep_refused_until = now + BOT_WANDER_GIVE_UP;
+                self.still_for = 0.0;
+                self.stuck_window = 0.0;
+                self.stuck_from_y = pos.y;
+                if matches!(self.goal, Goal::Item(_)) {
+                    self.route.refuse(super::route::item_target(aim_at), now);
+                }
+                if self.goal == Goal::Wander {
+                    self.wander_for = BOT_WANDER_GIVE_UP;
+                }
+                buttons &= !(button::UP | button::DOWN);
+            } else {
+                let (first, second) = if leg.is_multiple_of(2) {
+                    (button::RIGHT, button::LEFT)
+                } else {
+                    (button::LEFT, button::RIGHT)
+                };
+                buttons |= [first, second]
+                    .into_iter()
+                    .find(|&b| !leg_barred(world, pos, b))
+                    .unwrap_or(0);
+            }
+        } else if winged && stuck {
             self.stats.ticks_winged_stuck += 1;
             if me.body.vel.x.abs() > WINGS_FLY_SPEED * 0.5 {
                 self.stats.ticks_winged_stuck_moving += 1;
@@ -279,6 +351,11 @@ impl Bot {
                 self.still_for = 0.0;
                 self.stuck_window = 0.0;
                 self.stuck_from = pos.x;
+                // T23.37 item 3: an item the sweep could not get round to is refused, as an
+                // unreachable route is, so the goal moves on rather than hovering under it.
+                if matches!(self.goal, Goal::Item(_)) {
+                    self.route.refuse(super::route::item_target(aim_at), now);
+                }
                 if self.goal == Goal::Wander {
                     self.wander_for = BOT_WANDER_GIVE_UP;
                 }
@@ -1149,5 +1226,88 @@ mod tests {
             "did not press right toward a target 200 px to the right"
         );
         assert!(inp.buttons & button::LEFT == 0);
+    }
+
+    /// **T23.37 item 3: a winged bot closes the height to an item** — a gun straight
+    /// above it in open space, half a jetpack rise up (`BOT_JETPACK_RISE`, the only rise
+    /// the walking model pressed UP for), is flown to and picked up, in both gravities.
+    /// Before, a winged bot under such an item hovered pressing nothing — the space
+    /// arm's commonest winged pinned run. (Plant: the vertical press off → red.)
+    #[test]
+    fn a_winged_bot_flies_up_to_an_item_above_it() {
+        use crate::constants::{MapScale, DEFAULT_MAP_GENERATOR};
+        use crate::items::registry::UNICORN_WINGS;
+        use crate::items::world::SpawnSource;
+        use crate::world::{GameEvent, RoundPhase};
+        let rise = BOT_JETPACK_RISE * 0.5;
+        for gravity in [GravityMode::Standard, GravityMode::Space] {
+            let mut w =
+                World::with_gravity(SEED, MapScale::Small, 0, DEFAULT_MAP_GENERATOR, gravity);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "wings".into());
+            let ids: Vec<_> = w.items.iter().map(|i| i.id).collect();
+            for id in ids {
+                w.items.remove(id);
+            }
+            // A column of open air a body fits all the way up.
+            let fits = |w: &World, p: Vec2| {
+                !crate::physics::collide::aabb_overlaps_solid(
+                    &w.map,
+                    crate::physics::body::Body::new(p).aabb(),
+                )
+            };
+            let w0 = &w;
+            let at = (0..w0.map.mask.h as i32)
+                .step_by(16)
+                .flat_map(|y| (0..w0.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
+                .map(|(x, y)| Vec2::new(x as f32, y as f32))
+                .filter(|p| !w0.body_in_the_void(&crate::physics::body::Body::new(*p)))
+                .filter(|p| {
+                    w0.map
+                        .space_geometry()
+                        .is_none_or(|g| g.norm(p.x, p.y) < 0.6)
+                })
+                .find(|p| {
+                    (0..=(2.0 * rise) as i32)
+                        .step_by(4)
+                        .all(|k| fits(w0, *p - Vec2::new(0.0, k as f32)))
+                })
+                .expect("a column of open air");
+            give(&mut w, 1, UNICORN_WINGS, 1);
+            if let Some(p) = w.player_mut(1) {
+                p.body.pos = at;
+                p.body.grounded = false;
+            }
+            assert!(w.player(1).unwrap().move_mods().flying, "no wings");
+            let gun = w.items.spawn(
+                PISTOL,
+                10,
+                at - Vec2::new(0.0, rise),
+                Vec2::ZERO,
+                SpawnSource::Periodic,
+                0.0,
+            );
+            let _ = w.drain_events();
+            let mut b = Bot::new(1, SEED, 0, 1.0);
+            let mut taken = false;
+            for t in 0..(4 * crate::constants::SIM_HZ) {
+                let inp = b.think(&w, t as f32 * SIM_DT, SIM_DT);
+                w.queue_input(1, inp);
+                w.step(SIM_DT);
+                taken |= w.drain_events().iter().any(|e| {
+                    matches!(e, GameEvent::ItemPickup { world_item_id, .. } if *world_item_id == gun)
+                });
+                if taken {
+                    break;
+                }
+            }
+            assert!(
+                taken,
+                "{gravity:?}: a gun {rise:.0} px straight above a winged bot was never picked up \
+                 (bot at {:?}, goal {})",
+                w.player(1).unwrap().body.pos,
+                b.goal_kind()
+            );
+        }
     }
 }

@@ -4,15 +4,56 @@
 use super::Bot;
 use crate::constants::{
     GravityMode, BATTERY_MAX, BOT_BLAST_GUARD, BOT_CHARGE_BELOW, BOT_FLAME_REACH_SCALE,
-    BOT_GUN_HOLD_SHARE, BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOB_SWEEP, BOT_LOS_MAX_BLOCKED,
-    BOT_LOS_STEP, BOT_OUT_OF_REACH_SCORE, BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE,
-    BOT_SPACE_ZONE_REACH, BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, FLAME_DPS, FLAME_GRAVITY_SCALE,
-    FLAME_LIFE, FLAME_RADIUS, GRAVITY, INVENTORY_SLOTS,
+    BOT_GUN_HOLD_SHARE, BOT_HAZARD_CLEARANCE, BOT_HEAL_BELOW, BOT_LOB_SWEEP, BOT_LOS_CARVES,
+    BOT_LOS_MAX_BLOCKED, BOT_LOS_STEP, BOT_LOS_TOLERANCE_PX, BOT_OUT_OF_REACH_SCORE,
+    BOT_PREDICT_TICKS, BOT_REFUSED_SCORE, BOT_SPACE_IN_RANGE, BOT_SPACE_ZONE_REACH,
+    BOT_STAND_OFF_MIN, BOT_STAND_OFF_SCALE, FLAME_DPS, FLAME_GRAVITY_SCALE, FLAME_LIFE,
+    FLAME_RADIUS, GRAVITY, INVENTORY_SLOTS,
 };
 use crate::items::registry::{def, ItemId, ItemKind};
 use crate::math::Vec2;
 use crate::weapons::defs::Delivery;
 use crate::world::World;
+
+/// T23.37 item 5: how many solid samples (at `BOT_LOS_STEP`) a shot with `w` may
+/// cross — rock as thick as `BOT_LOS_CARVES` of its own carves (`blast_radius`: a
+/// bazooka's 42 px gets ~126 px, a bullet's 3 px nothing), and never less than
+/// `BOT_LOS_TOLERANCE_PX` (a lip the line grazes).
+pub(super) fn shot_allowance(w: &crate::weapons::defs::WeaponDef) -> u32 {
+    let px = (BOT_LOS_CARVES * w.blast_radius).max(BOT_LOS_TOLERANCE_PX);
+    (px / BOT_LOS_STEP).floor() as u32
+}
+
+/// Solid samples at `BOT_LOS_STEP` on the open segment `from`–`to`, counted up to
+/// one past `cap` (the callers only ask "more than `cap`?").
+pub(super) fn blocked_along(world: &World, from: Vec2, to: Vec2, cap: u32) -> u32 {
+    let steps = ((to - from).len() / BOT_LOS_STEP).ceil() as u32;
+    let mut blocked = 0u32;
+    for i in 1..steps {
+        let p = from + (to - from) * (i as f32 / steps as f32);
+        if crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32) {
+            blocked += 1;
+            if blocked > cap {
+                break;
+            }
+        }
+    }
+    blocked
+}
+
+/// The distance along `from`–`to` to its first solid sample, if any — the report's
+/// "fired into rock" instrument (`BotStats::fires_into_rock`).
+pub(super) fn first_rock(world: &World, from: Vec2, to: Vec2) -> Option<f32> {
+    let len = (to - from).len();
+    let steps = (len / BOT_LOS_STEP).ceil() as u32;
+    (1..steps)
+        .map(|i| i as f32 / steps as f32)
+        .find(|t| {
+            let p = from + (to - from) * *t;
+            crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32)
+        })
+        .map(|t| t * len)
+}
 
 /// **The trap fired, and this is what it caught** (T22.03).
 ///
@@ -407,7 +448,15 @@ impl Bot {
                 self.stats.rej_range += 1;
                 return false;
             }
-            if !self.reachable(world, pos, target) {
+            // T23.37 item 5: the platform gun's rounds dig as its def says.
+            let gun = crate::weapons::defs::def(crate::items::registry::WEAPON_PLATFORM_GUN);
+            let clear = match gun.filter(|_| !self.generous_sight) {
+                Some(g) => {
+                    blocked_along(world, pos, target, shot_allowance(g)) <= shot_allowance(g)
+                }
+                None => self.reachable(world, pos, target),
+            };
+            if !clear {
                 self.stats.rej_los += 1;
                 return false;
             }
@@ -503,13 +552,21 @@ impl Bot {
             }
         }
 
-        // Line of sight. A weapon that carves 42 px treats a hill as cover to
-        // remove rather than a wall to walk around, so the tolerance is
-        // generous — but it stays a *count*, not a distance test: a
-        // near-the-muzzle guard was measured and refused 87 % of the shots the
-        // count allows, because a bot standing on the ground has rock within
-        // 28 px of its muzzle almost always.
-        if !self.reachable(world, pos, target) {
+        // Line of sight, **per weapon** (T23.37 item 5): rock as thick as a few of its
+        // own carves (`shot_allowance`) — a rocket digs, a laser does not. It was one
+        // count for every weapon, ~190 px of rock (`BOT_LOS_MAX_BLOCKED`), from when
+        // "every weapon digs" (§A3): bots held a stand-off and emptied lasers into an
+        // asteroid. Still a *count*, not a distance test (a near-the-muzzle guard was
+        // measured refusing 87 % of shots). A blocked line is a reason to move, not to
+        // fire: the route goes for a clear line (`navigate`), and in space the
+        // stand-off closes in (`space_buttons`).
+        let clear = if self.generous_sight {
+            self.reachable(world, pos, target)
+        } else {
+            let allowed = shot_allowance(w);
+            blocked_along(world, pos, target, allowed) <= allowed
+        };
+        if !clear {
             self.stats.rej_los += 1;
             return false;
         }
@@ -531,20 +588,32 @@ impl Bot {
     /// straight line clips every one of them, so anything stricter would reject
     /// items on the far side of ordinary ground.
     pub(super) fn reachable(&self, world: &World, from: Vec2, to: Vec2) -> bool {
-        let dist = (to - from).len();
-        let steps = (dist / BOT_LOS_STEP).ceil() as u32;
-        let mut blocked = 0u32;
-        for i in 1..steps {
-            let t = i as f32 / steps as f32;
-            let p = from + (to - from) * t;
-            if crate::physics::collide::solid_at(&world.map, p.x as i32, p.y as i32) {
-                blocked += 1;
-                if blocked > BOT_LOS_MAX_BLOCKED {
-                    return false;
-                }
-            }
+        blocked_along(world, from, to, BOT_LOS_MAX_BLOCKED) <= BOT_LOS_MAX_BLOCKED
+    }
+
+    /// T23.37 item 5 (owner: *"bots fire into rock instead of moving for a clear
+    /// shot"*): whether **the weapon in hand** gets through the line from `from` to
+    /// `to` — at most [`shot_allowance`] solid samples. [`Bot::reachable`]'s ~190 px
+    /// was written when "every weapon digs"; a laser, a bullet or a flame does not get
+    /// through 190 px of rock. With nothing firable in hand this is `reachable`.
+    pub(super) fn shot_clear(&self, world: &World, from: Vec2, to: Vec2) -> bool {
+        if self.generous_sight {
+            return self.reachable(world, from, to);
         }
-        true
+        let w = self
+            .selected_weapon(world)
+            .and_then(def)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            });
+        match w {
+            Some(w) => {
+                let allowed = shot_allowance(w);
+                blocked_along(world, from, to, allowed) <= allowed
+            }
+            None => self.reachable(world, from, to),
+        }
     }
 
     /// Pick the best **firable** weapon slot, or `None` to keep the current one.
@@ -976,7 +1045,7 @@ mod tests {
     /// The space fixtures below search "well inside the arena, off the rim": within
     /// this share of the way from the centre to the rim, by the rim predicate's own
     /// `SpaceGeometry::norm` (T22.17 — they carried the ellipse's formula as a copy).
-    const WELL_INSIDE: f32 = 0.6;
+    pub(super) const WELL_INSIDE: f32 = 0.6;
 
     /// T22.02 — the flame stand-off follows the match's gravity.
     ///
@@ -2229,6 +2298,140 @@ mod bots_already_throw_what_they_carry {
             asked == held || Some(selected) == held,
             "the bot neither selected nor asked for its grenade: asked {asked:?}, \
              selected {selected}, grenade in {held:?}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod clear_shots {
+    use super::super::tests::*;
+    use super::tests::WELL_INSIDE;
+    use super::*;
+    use crate::constants::{BOT_ENGAGE_RANGE, SIM_DT};
+    use crate::world::{RoundPhase, World};
+
+    /// **T23.37 item 5 (owner: *"bots fire into rock instead of moving for a clear
+    /// shot"*)**: a space bot with a laser, an enemy across a rock whose line the old
+    /// count let through (more solid samples than the laser's [`shot_allowance`], no
+    /// more than `BOT_LOS_MAX_BLOCKED`). Over `RUN_S`: **no laser fired with more rock
+    /// on the line than the laser gets through, and some fired clear** — it moved for
+    /// the shot. Controls: the old count (`generous_sight`) on the same pair fires into
+    /// the rock (the fixture has rock where it matters); the same distance across open
+    /// space fires.
+    #[test]
+    fn a_space_bot_does_not_laser_into_rock_and_moves_for_a_clear_shot() {
+        use crate::constants::{MapScale, BATTERY_MAX, DEFAULT_MAP_GENERATOR};
+        use crate::items::registry::LASER_PISTOL;
+        const RUN_S: f32 = 8.0;
+        let space = || {
+            let mut w = World::with_gravity(
+                SEED,
+                MapScale::Small,
+                0,
+                DEFAULT_MAP_GENERATOR,
+                GravityMode::Space,
+            );
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(1, 0, "shooter".into());
+            w.add_player(2, 0, "target".into());
+            w
+        };
+        let w0 = space();
+        let laser = crate::items::registry::def(LASER_PISTOL)
+            .and_then(|d| match d.kind {
+                ItemKind::Weapon(wid) => crate::weapons::defs::def(wid),
+                _ => None,
+            })
+            .expect("the laser is a weapon");
+        let allowed = shot_allowance(laser);
+        assert!(
+            allowed < BOT_LOS_MAX_BLOCKED,
+            "the laser gets through as much as the old count"
+        );
+        let clear = |w: &World, p: Vec2| {
+            !crate::physics::collide::aabb_overlaps_solid(
+                &w.map,
+                crate::physics::body::Body::new(p).aabb(),
+            )
+        };
+        let d = BOT_ENGAGE_RANGE * 0.6;
+        let geo = w0.map.space_geometry().expect("space");
+        let dirs = [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.0, -1.0),
+        ];
+        let pairs: Vec<(Vec2, Vec2)> = (0..w0.map.mask.h as i32)
+            .step_by(16)
+            .flat_map(|y| (0..w0.map.mask.w as i32).step_by(16).map(move |x| (x, y)))
+            .map(|(x, y)| Vec2::new(x as f32, y as f32))
+            .filter(|p| geo.norm(p.x, p.y) < WELL_INSIDE && clear(&w0, *p))
+            .flat_map(|from| dirs.iter().map(move |&dir| (from, from + dir * d)))
+            .filter(|&(_, to)| geo.norm(to.x, to.y) < WELL_INSIDE && clear(&w0, to))
+            .collect();
+        let rocky = pairs
+            .iter()
+            .copied()
+            .find(|&(a, b)| {
+                let n = blocked_along(&w0, a, b, BOT_LOS_MAX_BLOCKED);
+                n > allowed && n <= BOT_LOS_MAX_BLOCKED
+            })
+            .expect("a pair across a rock the old count shot through");
+        let open = pairs
+            .iter()
+            .copied()
+            .find(|&(a, b)| blocked_along(&w0, a, b, 0) == 0)
+            .expect("a pair across open space");
+        // Laser fires over RUN_S: (into rock past the laser's allowance, clear).
+        let run = |(from, to): (Vec2, Vec2), generous: bool| {
+            let mut w = space();
+            w.player_mut(1).expect("shooter").body.pos = from;
+            w.player_mut(1).expect("shooter").battery = BATTERY_MAX;
+            give(&mut w, 1, LASER_PISTOL, 1);
+            wield(&mut w, 1, LASER_PISTOL);
+            let mut b = Bot::new(1, SEED, 0, 1.0).generous_sight(generous);
+            let (mut rock, mut clean) = (0u32, 0u32);
+            for t in 0..(RUN_S / SIM_DT) as u32 {
+                if let Some(p) = w.player_mut(2) {
+                    p.body.pos = to;
+                    p.body.vel = Vec2::ZERO;
+                    p.health = 100.0;
+                }
+                let at = w.player(1).expect("shooter").body.pos;
+                let d = crate::bots::drive(
+                    &mut w,
+                    std::slice::from_mut(&mut b),
+                    t as f32 * SIM_DT,
+                    SIM_DT,
+                )[0];
+                if d.held == Some(LASER_PISTOL) && d.fired.is_some_and(|r| r.is_ok()) {
+                    if blocked_along(&w, at, to, allowed) > allowed {
+                        rock += 1;
+                    } else {
+                        clean += 1;
+                    }
+                }
+                w.step(SIM_DT);
+                let _ = w.drain_events();
+            }
+            (rock, clean, b.stats())
+        };
+        let (rock, _, stats) = run(rocky, true);
+        assert!(
+            rock > 0,
+            "control: the old count never lasered the rock: {stats:?}"
+        );
+        let (_, clean, stats) = run(open, false);
+        assert!(
+            clean > 0,
+            "control: never fired across open space: {stats:?}"
+        );
+        let (rock, clean, stats) = run(rocky, false);
+        assert_eq!(rock, 0, "lasered into rock it cannot cut: {stats:?}");
+        assert!(
+            clean > 0,
+            "never moved for a clear shot in {RUN_S} s: {stats:?}"
         );
     }
 }

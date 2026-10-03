@@ -91,6 +91,11 @@ pub struct BotStats {
     pub ticks_armed: u32,
     /// Trigger pulls actually issued.
     pub fires: u32,
+    /// T23.37 item 5: ...of those, with rock on the line to the aim point
+    /// (`arms::first_rock`), and with it within `BOT_ROCK_NEAR_PX` of the shooter — shots
+    /// into rock. A report.
+    pub fires_into_rock: u32,
+    pub fires_into_rock_near: u32,
     pub rej_cooldown: u32,
     pub rej_unarmed: u32,
     /// Target inside our own blast radius.
@@ -286,6 +291,8 @@ pub struct Bot {
     /// current `BOT_STUCK_WINDOW`'s start, `stuck_window` s ago (T22.03I F4); for a
     /// walking bot, the last tick's (see `think`).
     stuck_from: f32,
+    /// T23.37 item 3: ...and the `y`, for a winged bot pressing only up or down.
+    stuck_from_y: f32,
     stuck_window: f32,
     still_for: f32,
     /// T22.03I F4: a winged bot that swept for `BOT_WINGED_SWEEP_LEGS` legs and stayed
@@ -315,6 +322,9 @@ pub struct Bot {
     routes_off: bool,
     /// Tests only: the meteor dodge planted out (`without_dodge`).
     dodge_off: bool,
+    /// T23.37 item 5's control: one generous line-of-sight count for every weapon
+    /// (`reachable`), as before — `generous_sight`. Never set in a round.
+    generous_sight: bool,
     /// T23.26D item 3: the solved launch angle for the arcing weapon in hand at the
     /// current enemy (`arms::lob_angle`), and when it was solved — re-solved every
     /// `BOT_LOB_EVERY`, not every tick (a solve walks up to a dozen flights).
@@ -385,6 +395,7 @@ impl Bot {
             coverage: None,
             wander_for: 0.0,
             stuck_from: 0.0,
+            stuck_from_y: 0.0,
             stuck_window: 0.0,
             still_for: 0.0,
             sweep_refused_until: 0.0,
@@ -401,6 +412,7 @@ impl Bot {
             route: route::Route::default(),
             routes_off: false,
             dodge_off: false,
+            generous_sight: false,
             lob: None,
             lob_at: f32::NEG_INFINITY,
             strafe_until: 0.0,
@@ -432,6 +444,14 @@ impl Bot {
     /// real round's default.
     pub fn frenzied(mut self, on: bool) -> Self {
         self.frenzy = on;
+        self
+    }
+
+    /// T23.37 item 5's control: shots judged by the old generous count for every
+    /// weapon (`Bot::reachable`, ~190 px of rock) — the report's before
+    /// (`BOTS_SIGHT=generous`). Never a real round's setting.
+    pub fn generous_sight(mut self, on: bool) -> Self {
+        self.generous_sight = on;
         self
     }
 
@@ -529,6 +549,22 @@ impl Bot {
     /// Where the kill chain broke. Read by the lethality harness; free otherwise.
     pub fn stats(&self) -> BotStats {
         self.stats
+    }
+
+    /// T23.37 item 3: the point the goal resolves to now, for a report's trace.
+    pub fn goal_point(&self, world: &World) -> Option<Vec2> {
+        let pos = world.player(self.player)?.body.pos;
+        self.target_pos(world, pos)
+    }
+
+    /// T23.37 item 3: the goal's kind, for a report's trace (`BOTS_PINNED_TRACE`).
+    pub fn goal_kind(&self) -> &'static str {
+        match self.goal {
+            Goal::Enemy(_) => "enemy",
+            Goal::Flee(_) => "flee",
+            Goal::Item(_) => "item",
+            Goal::Wander => "wander",
+        }
     }
 
     /// Item use is a command rather than an input, so it is reported separately
@@ -761,6 +797,11 @@ impl Bot {
             if dig_at.is_none() && self.should_fire(world, me, pos, aim_at, now) {
                 buttons |= button::FIRE;
                 self.stats.fires += 1;
+                if let Some(d) = arms::first_rock(world, pos, aim_at) {
+                    self.stats.fires_into_rock += 1;
+                    self.stats.fires_into_rock_near +=
+                        u32::from(d <= crate::constants::BOT_ROCK_NEAR_PX);
+                }
                 fighting = true;
                 let held = me.inventory.slot(me.inventory.selected()).map(|s| s.item);
                 if let Some(k) = held.and_then(weapon_kind) {
@@ -852,7 +893,13 @@ impl Bot {
             // standing at a pillar plinking at it is what watching it showed (T23.26).
             // T23.26E: **over open ground first** — a route with no dig step; the tunnel
             // only once the planner has refused every open one (cornered, sealed in).
-            Goal::Enemy(_) if !nav::Grid::new(&world.map).clear(pos, aim_at) => {
+            // T23.37 item 5: **and when the weapon in hand cannot shoot through what is
+            // there** (`shot_clear`) — the grid's coarse line can be clear where a laser's
+            // is not, and the bot then held its ground refusing every shot.
+            Goal::Enemy(_)
+                if !nav::Grid::new(&world.map).clear(pos, aim_at)
+                    || !self.shot_clear(world, pos, aim_at) =>
+            {
                 let open = route::enemy_target(aim_at, self.hold_off(world), self.dig_first);
                 if self.route.refused(&open, now) {
                     route::enemy_target(aim_at, self.hold_off(world), true)
@@ -1022,7 +1069,10 @@ impl Bot {
             // of range (`should_fire`'s `rej_range`).
             Goal::Enemy(_) => space::Dest {
                 at: aim_at,
-                stop: if self.reachable(world, pos, aim_at) {
+                // T23.37 item 5: "can shoot from here" is the weapon in hand's line
+                // (`shot_clear`), not the generous item-choice count — a laser held at
+                // its stand-off across an asteroid fired into the rock (the owner's shot).
+                stop: if self.shot_clear(world, pos, aim_at) {
                     self.hold_off(world)
                 } else {
                     0.0
@@ -1150,11 +1200,12 @@ impl Bot {
                 if d > BOT_ENGAGE_RANGE && !far_gun && !beacon {
                     continue;
                 }
-                if routes {
-                    if self.route.refused(&route::item_target(at), now) {
-                        continue;
-                    }
-                } else if !self.reachable(world, pos, at) {
+                // T23.37 item 3: refused either way — a winged sweep refuses an item it
+                // could not get round to (`walk_buttons`) on the greedy path too.
+                if self.route.refused(&route::item_target(at), now) {
+                    continue;
+                }
+                if !routes && !self.reachable(world, pos, at) {
                     continue;
                 }
                 // T22.12C F2: never shop inside the black hole's reach (or where a
@@ -2286,6 +2337,8 @@ pub(crate) mod harness {
             ticks_engaged: a.ticks_engaged + b.ticks_engaged,
             ticks_armed: a.ticks_armed + b.ticks_armed,
             fires: a.fires + b.fires,
+            fires_into_rock: a.fires_into_rock + b.fires_into_rock,
+            fires_into_rock_near: a.fires_into_rock_near + b.fires_into_rock_near,
             rej_cooldown: a.rej_cooldown + b.rej_cooldown,
             rej_unarmed: a.rej_unarmed + b.rej_unarmed,
             rej_blast_guard: a.rej_blast_guard + b.rej_blast_guard,

@@ -26,9 +26,9 @@ use std::collections::BTreeMap;
 
 use game_core::bots::{drive, Bot};
 use game_core::constants::{
-    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE, BOT_SKILL_DEFAULT,
-    BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS, MAX_WORLD_ITEMS, PLAYER_H,
-    ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
+    GravityMode, MapScale, BATTERY_MAX, BOT_COUNT_DEFAULT, BOT_ENGAGE_RANGE, BOT_ROCK_NEAR_PX,
+    BOT_SKILL_DEFAULT, BOT_SPACE_FUEL_RESERVE, DEFAULT_MAP_SCALE, FOV_DAY, INVENTORY_SLOTS,
+    MAX_WORLD_ITEMS, PLAYER_H, ROUND_SECONDS, SIM_DT, SURFACE_SAMPLE_STEP, WORLD_ITEM_TTL,
 };
 use game_core::items::registry::{ItemDef, ItemId, ItemKind, ITEMS, PISTOL};
 use game_core::math::Vec2;
@@ -736,6 +736,11 @@ struct BotRound {
     runs_vortex: u32,
     /// T22.03I F4: the bots' own winged stuck ticks, and of them the ones moving
     /// sideways faster than half `WINGS_FLY_SPEED` (`BotStats`).
+    /// T23.37 item 5: trigger pulls (the bots' own count), and of them into rock / into rock within
+    /// `BOT_ROCK_NEAR_PX` (`BotStats::fires_into_rock`).
+    bot_fires: u32,
+    fires_into_rock: u32,
+    fires_into_rock_near: u32,
     winged_stuck: u32,
     winged_stuck_moving: u32,
     /// T22.14B M5: trips by their captor — a live (pulling) vortex, or a spent one the
@@ -800,7 +805,7 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                 w.select_slot(id, slot);
             }
         }
-        bots.push(Bot::new(id, seed, i as u32, SKILL));
+        bots.push(Bot::new(id, seed, i as u32, SKILL).generous_sight(generous_sight()));
     }
     let mut what: BTreeMap<u32, u16> = w.items.iter().map(|i| (i.id, i.item)).collect();
     let mut last_weather: BTreeMap<u8, Option<EffectKind>> = BTreeMap::new();
@@ -813,6 +818,8 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
     // Per player: the current pinned run (at the reserve, any fuel), in ticks.
     let mut run: BTreeMap<u8, (u32, u32, u32)> = BTreeMap::new();
     let run_ticks = (PINNED_RUN_S / SIM_DT).round() as u32;
+    let trace = std::env::var("BOTS_PINNED_TRACE").is_ok();
+    let mut at_start: BTreeMap<u8, game_core::bots::BotStats> = BTreeMap::new();
     while w.phase == RoundPhase::Playing {
         let now = w.round_time;
         for d in drive(&mut w, &mut bots, now, SIM_DT) {
@@ -893,6 +900,53 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
                 &mut r.longest_wings,
                 &mut r.runs_wings,
             );
+            // T23.37 item 3: `BOTS_PINNED_TRACE=1` prints each winged run as it reaches
+            // `PINNED_RUN_S` — what the bot was doing over it.
+            if trace {
+                let b = bots.get(p.id as usize);
+                if cur.2 == 1 {
+                    if let Some(b) = b {
+                        at_start.insert(p.id, b.stats());
+                    }
+                }
+                if cur.2 == run_ticks {
+                    if let (Some(b), Some(s0)) = (b, at_start.get(&p.id)) {
+                        let s = b.stats();
+                        let foe = w
+                            .players
+                            .iter()
+                            .filter(|q| q.alive && q.id != p.id)
+                            .map(|q| (q.body.pos - p.body.pos).len())
+                            .fold(f32::INFINITY, f32::min);
+                        println!(
+                            "PINNED seed {seed} {gravity:?} bot {} at ({:.0},{:.0}) goal {} {:?} foe {foe:.0} px | \
+                             engaged {} routed {} fires {} rej_los {} rej_range {} stuck {} winged_stuck {} digs {} lips {} vel ({:.0},{:.0}) fuel {:.2} still {:?}",
+                            p.id,
+                            p.body.pos.x,
+                            p.body.pos.y,
+                            b.goal_kind(),
+                            b.goal_point(&w).map(|g| (g.x as i32, g.y as i32, game_core::physics::collide::solid_at(&w.map, g.x as i32, g.y as i32))),
+                            s.ticks_engaged - s0.ticks_engaged,
+                            s.ticks_routed - s0.ticks_routed,
+                            s.fires - s0.fires,
+                            s.rej_los - s0.rej_los,
+                            s.rej_range - s0.rej_range,
+                            s.ticks_pressing_still - s0.ticks_pressing_still,
+                            s.ticks_winged_stuck - s0.ticks_winged_stuck,
+                            s.dig_swings - s0.dig_swings,
+                            s.lip_swings - s0.lip_swings,
+                            p.body.vel.x,
+                            p.body.vel.y,
+                            p.jetpack.fuel,
+                            s.ticks_still
+                                .iter()
+                                .zip(s0.ticks_still)
+                                .map(|(a, b)| a - b)
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                }
+            }
         }
         // A dead bot's run ends.
         for p in w.players.iter().filter(|p| !p.alive) {
@@ -1018,6 +1072,9 @@ fn run_bots(seed: u64, gravity: GravityMode, hold: Option<ItemId>) -> BotRound {
         r.winged_stuck_moving += b.stats().ticks_winged_stuck_moving;
         r.dest_forbidden += b.stats().ticks_dest_forbidden;
         r.dest_forbidden_idle += b.stats().ticks_dest_forbidden_idle;
+        r.bot_fires += b.stats().fires;
+        r.fires_into_rock += b.stats().fires_into_rock;
+        r.fires_into_rock_near += b.stats().fires_into_rock_near;
     }
     r
 }
@@ -1144,6 +1201,16 @@ fn space_bots_report() {
             rs.iter().map(|r| r.zone_self_hits).sum::<u32>() as f32
                 / rs.iter().map(|r| r.zone_shots).sum::<u32>().max(1) as f32,
             per(|r| r.zone_self_kills as f32)
+        );
+        // T23.37 item 5: shots into rock (`BOTS_SIGHT=generous` is the before).
+        let fires = total_runs(&rs, |r| r.bot_fires).max(1) as f32;
+        println!(
+            "          T23.37: sight {}, into rock {:.1} % of {:.0} fires, within {BOT_ROCK_NEAR_PX} \
+             px {:.1} %",
+            if generous_sight() { "generous (before)" } else { "per weapon" },
+            100.0 * total_runs(&rs, |r| r.fires_into_rock) as f32 / fires,
+            fires,
+            100.0 * total_runs(&rs, |r| r.fires_into_rock_near) as f32 / fires,
         );
         let secs = |t: u32| t as f32 * SIM_DT;
         println!(
@@ -3091,6 +3158,12 @@ fn armed_at_range(p: &game_core::player::state::PlayerState) -> bool {
     })
 }
 
+/// T23.37 item 5's before: `BOTS_SIGHT=generous` judges every shot by the old one count
+/// (`Bot::generous_sight`) — the reports' control arm.
+fn generous_sight() -> bool {
+    std::env::var("BOTS_SIGHT").is_ok_and(|v| v == "generous")
+}
+
 /// T23.36: the bot population's seeds — `SEEDS`, or `BOTS_SEEDS=n` seeds `s × 7919`,
 /// s = 1..=n (T23.26F's 96-seed method; 8 seeds sit inside the noise, kills 7–15 a seed).
 fn terrain_seeds() -> Vec<u64> {
@@ -3123,7 +3196,7 @@ fn terrain_round(seed: u64) -> TerrainRound {
             if kit {
                 all_kit(&mut w, i as u8);
             }
-            Bot::new(i as u8, seed, i as u32, BOT_SKILL_DEFAULT)
+            Bot::new(i as u8, seed, i as u32, BOT_SKILL_DEFAULT).generous_sight(generous_sight())
         })
         .collect();
     let _ = w.drain_events();
@@ -3219,6 +3292,8 @@ fn terrain_round(seed: u64) -> TerrainRound {
         r.stats.ticks_melee_with_ranged += s.ticks_melee_with_ranged;
         r.stats.melee_fires_with_ranged += s.melee_fires_with_ranged;
         r.stats.fires += s.fires;
+        r.stats.fires_into_rock += s.fires_into_rock;
+        r.stats.fires_into_rock_near += s.fires_into_rock_near;
         r.stats.ticks_engaged += s.ticks_engaged;
         r.moved.add(&watch.of(b.player));
     }
@@ -3449,6 +3524,20 @@ fn bot_terrain_report() {
             .unwrap_or(0),
         100.0 * sum(|r| r.unarmed_ticks) / sum(|r| r.alive_ticks).max(1.0),
         sum(|r| r.crate_wire) / (ticks * SIM_DT),
+    );
+    // T23.37 item 5: shots into rock (`BOTS_SIGHT=generous` is the before).
+    let fires = sum(|r| r.stats.fires).max(1.0);
+    println!(
+        "  T23.37: sight {}, fires {:.0} a round, into rock {:.1} %, into rock within \
+         {BOT_ROCK_NEAR_PX} px {:.1} %",
+        if generous_sight() {
+            "generous (before)"
+        } else {
+            "per weapon"
+        },
+        fires / n,
+        100.0 * sum(|r| r.stats.fires_into_rock) / fires,
+        100.0 * sum(|r| r.stats.fires_into_rock_near) / fires,
     );
     assert!(bot_min > 0.0, "control: no bot was ever alive");
     assert!(
