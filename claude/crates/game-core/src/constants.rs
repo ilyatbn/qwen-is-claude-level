@@ -1610,15 +1610,24 @@ pub const ITEM_SPAWN_BATCH_MAX: u32 = 2;
 /// dropped and opened a round, crates on the map, melee share of kills, unarmed time.
 pub const CRATE_INTERVAL: f32 = 2.0;
 /// T23.36: no crate drops while this many are on the map — falling or landed, unopened. An
-/// opened (picked-up) crate, or one lost through the floor, frees its slot. Under
-/// `MAX_WORLD_ITEMS` (crates are never evicted, so the rest stays for ground items).
+/// opened (picked-up) crate, or one lost through the floor, frees its slot. **The crates' own
+/// cap** (T23.41): `MAX_WORLD_ITEMS` counts every item but the crates, so up to this many
+/// crates sit on the map beside a full ground.
 /// **Basis: the owner's "as long as there are less than 20 crates on the map".**
 pub const CRATE_MAX_ON_MAP: usize = 20;
 pub const CRATE_W: f32 = 24.0;
 pub const CRATE_H: f32 = 24.0;
 /// Horizontal drag while falling.
 pub const CRATE_DRAG: f32 = 0.02;
-/// Hard cap; oldest un-picked item despawns first.
+/// Hard cap on the items in the world **other than crates**; past it the oldest despawns first.
+///
+/// **T23.41: crates are not counted** — they have their own cap, [`CRATE_MAX_ON_MAP`] (docs/32 §4
+/// already exempts them from this eviction). Counted together, T23.36's rain (up to 20 crates)
+/// took half the room and every landing crate past 40 evicted a ground item: `density_report`
+/// and `item_population_report` read 40 of 40 on Small. Measured with no cap at all (8 seeds ×
+/// 150 s): crates peak 17 / 20 / 20 and the other items 38 / 38 / 31 (Small / Medium / Large) —
+/// the ground alone fits under 40, with the crates beside it. So the 40 stands, restated as the
+/// ground's: up to 60 things on a map. *Reverse it by:* `WorldItems::ground_len` → `len`.
 pub const MAX_WORLD_ITEMS: usize = 40;
 /// Seconds before an untouched ground item despawns. **90.0 → 70.0** (T11.13).
 ///
@@ -4557,7 +4566,7 @@ pub const BOT_NAV_FUEL_STEP: f32 = JETPACK_MAX_FUEL / 20.0;
 ///
 /// **Its cost, the basis (T23.26B item 4, stated at T23.37):** `bot_terrain_report`'s tick
 /// cost, 5 bots on Medium, release, 8 seeds × 20 s after 10 s warm — the bots' half (think
-/// + commands) **mean 145.6 µs, p99 868 µs, max 2.6 ms** (2026-10-03, on a box shared
+/// and commands) **mean 145.6 µs, p99 868 µs, max 2.6 ms** (2026-10-03, on a box shared
 /// with other builds; T23.26 measured 48 µs mean, 385 p99 on a quiet one). Against the
 /// 16.7 ms tick (`SIM_HZ` 60) the p99 is ~5 %: the budget is not what limits a room.
 /// Raising it shortens a search's wall-clock only; the cap that bounds one search is

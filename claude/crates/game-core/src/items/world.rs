@@ -292,7 +292,7 @@ impl WorldItems {
         // `cull`, because this is the pass that owns the map and just moved
         // them; `cull` has neither. A crate dropped down a shaft someone dug
         // through the floor would otherwise fall forever, and every one of them
-        // counts against `MAX_WORLD_ITEMS` until it does.
+        // counts against `CRATE_MAX_ON_MAP` until it does.
         //
         // Crates are **not** exempt the way they are from the TTL. The TTL
         // exemption is about not deleting a contested reward out from under a
@@ -358,10 +358,13 @@ impl WorldItems {
             }
         });
 
-        while self.items.len() > MAX_WORLD_ITEMS {
+        // T23.41: the cap counts **every item but the crates** — crates have their own
+        // (`CRATE_MAX_ON_MAP`, enforced where they drop). Counted together, T23.36's rain
+        // (up to 20 crates) took half the room, and each landing crate past 40 evicted a
+        // ground item — the rain deleting the loot it was meant to add to.
+        while self.ground_len() > MAX_WORLD_ITEMS {
             match self.evict_oldest_non_crate() {
                 Some(id) => gone.push(id),
-                // Everything left is a crate; the cap yields rather than evicting one.
                 None => break,
             }
         }
@@ -375,7 +378,7 @@ impl WorldItems {
     /// cap it has nothing to do, and a spawn straight after it lands on MAX + 1.
     /// Callers about to add an item ask for room explicitly.
     pub fn make_room(&mut self) -> Option<WorldItemId> {
-        if self.items.len() < MAX_WORLD_ITEMS {
+        if self.ground_len() < MAX_WORLD_ITEMS {
             return None;
         }
         self.evict_oldest_non_crate()
@@ -495,6 +498,11 @@ impl WorldItems {
 
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// T23.41: the items `MAX_WORLD_ITEMS` caps — every one but the crates (`CRATE_MAX_ON_MAP` caps those).
+    pub fn ground_len(&self) -> usize {
+        self.items.iter().filter(|it| !it.is_crate()).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -949,8 +957,56 @@ mod tests {
         let gone = w.cull(3.0);
         assert!(gone.contains(&oldest), "the oldest non-crate must go first");
         assert!(!gone.contains(&crate_id), "a crate must never be evicted");
-        assert!(w.len() <= MAX_WORLD_ITEMS);
+        assert!(w.ground_len() <= MAX_WORLD_ITEMS);
         assert!(w.get(crate_id).is_some());
+    }
+
+    /// T23.41: crates and the rest are capped apart — a full crate rain evicts no ground item, and
+    /// the ground cap still bites on its own (the control: one more ground item evicts the oldest).
+    #[test]
+    fn crates_do_not_take_the_ground_items_room() {
+        use crate::constants::CRATE_MAX_ON_MAP;
+        // Every time below is well inside the TTL: only the cap can remove anything.
+        const _: () = assert!(WORLD_ITEM_TTL > 3.0);
+        let mut w = WorldItems::new();
+        let oldest = w.spawn(MEDKIT, 1, Vec2::ZERO, Vec2::ZERO, SpawnSource::Initial, 0.0);
+        for i in 1..MAX_WORLD_ITEMS {
+            w.spawn(
+                MEDKIT,
+                1,
+                Vec2::ZERO,
+                Vec2::ZERO,
+                SpawnSource::Initial,
+                i as f32 * 0.01,
+            );
+        }
+        for i in 0..CRATE_MAX_ON_MAP {
+            w.spawn(
+                MEDKIT,
+                1,
+                Vec2::ZERO,
+                Vec2::ZERO,
+                SpawnSource::Crate,
+                1.0 + i as f32 * 0.01,
+            );
+        }
+        assert!(
+            w.cull(2.0).is_empty(),
+            "a full crate rain evicted ground items"
+        );
+        assert!(
+            w.make_room().is_some(),
+            "at the ground cap, a spawn must make room"
+        );
+        assert!(
+            w.get(oldest).is_none(),
+            "the room made is the oldest ground item's"
+        );
+        assert_eq!(w.len(), MAX_WORLD_ITEMS - 1 + CRATE_MAX_ON_MAP);
+        w.spawn(MEDKIT, 1, Vec2::ZERO, Vec2::ZERO, SpawnSource::Initial, 2.1);
+        w.spawn(MEDKIT, 1, Vec2::ZERO, Vec2::ZERO, SpawnSource::Initial, 2.2);
+        assert_eq!(w.cull(2.3).len(), 1, "one over the ground cap evicts one");
+        assert_eq!(w.ground_len(), MAX_WORLD_ITEMS);
     }
 
     #[test]

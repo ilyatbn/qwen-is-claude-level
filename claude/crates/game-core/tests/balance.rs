@@ -1705,6 +1705,9 @@ struct Density {
     /// being tripled.
     periodic: u32,
     live_peak: usize,
+    /// T23.41: the peak split by kind — crates (falling or landed, unopened) and every other item.
+    crate_peak: usize,
+    ground_peak: usize,
     evicted: u32,
     first_weapon_s: Option<f32>,
 }
@@ -1737,6 +1740,9 @@ fn density(seed: u64, seconds: f32, scale: MapScale) -> Density {
         drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
         d.live_peak = d.live_peak.max(w.items.iter().count());
+        let crates = w.items.iter().filter(|it| it.is_crate()).count();
+        d.crate_peak = d.crate_peak.max(crates);
+        d.ground_peak = d.ground_peak.max(w.items.iter().count() - crates);
         for e in w.drain_events() {
             match e {
                 GameEvent::ItemSpawn { item_id, .. } => {
@@ -1823,13 +1829,16 @@ fn density_report() {
         let mean_spawn = ds.iter().map(|d| d.spawned).sum::<u32>() as f32 / ds.len() as f32;
         let peak = ds.iter().map(|d| d.live_peak).max().unwrap_or(0);
         let evict: u32 = ds.iter().map(|d| d.evicted).sum();
+        let crate_peak = ds.iter().map(|d| d.crate_peak).max().unwrap_or(0);
+        let ground_peak = ds.iter().map(|d| d.ground_peak).max().unwrap_or(0);
         let first: Vec<f32> = ds.iter().filter_map(|d| d.first_weapon_s).collect();
         println!(
             "\n   {scale:?}: distinct {mean_distinct:.1}/{} ({:.0}%)  spawns {mean_spawn:.1}  \
-             peak live {peak}/{}  despawns {evict}  1st weapon {:.0}s",
+             peak live {peak} (items {ground_peak}/{}, crates {crate_peak}/{})  despawns {evict}  1st weapon {:.0}s",
             pool,
             100.0 * mean_distinct / pool as f32,
             game_core::constants::MAX_WORLD_ITEMS,
+            game_core::constants::CRATE_MAX_ON_MAP,
             // `sum / len.max(1)` printed **0 s** for a round in which no
             // weapon ever spawned — the healthiest possible number for the worst
             // possible outcome (T20.26). `NaN` prints as `NaN` and cannot be
@@ -1849,9 +1858,11 @@ fn density_report() {
         // the live count into `MAX_WORLD_ITEMS`, the cap starts evicting the
         // oldest non-crate item and a higher rate deletes what spawned two
         // minutes ago instead of adding to it — churn that looks like density.
+        // T23.41: the cap counts every item but the crates (`CRATE_MAX_ON_MAP` caps those), so it
+        // is the non-crate peak that must stay under it.
         assert!(
-            peak < game_core::constants::MAX_WORLD_ITEMS,
-            "{scale:?}: {peak} items alive against a cap of {} — eviction is now routine",
+            ground_peak < game_core::constants::MAX_WORLD_ITEMS,
+            "{scale:?}: {ground_peak} items alive against a cap of {} — eviction is now routine",
             game_core::constants::MAX_WORLD_ITEMS
         );
         // Control: without this, both assertions above pass for a round that
@@ -2419,6 +2430,10 @@ struct Population {
     /// whole run, and what is left is the void and the blasts.
     removed_other: BTreeMap<ItemId, u32>,
     live_peak: usize,
+    /// T23.41: the peak of what `MAX_WORLD_ITEMS` caps — every item but the crates — and of the crates
+    /// (`CRATE_MAX_ON_MAP` caps those). The cap can only fire at `MAX_WORLD_ITEMS` of the first.
+    ground_peak: usize,
+    crate_peak: usize,
 }
 
 fn bump_map<K: Ord>(m: &mut BTreeMap<K, u32>, k: K) {
@@ -2470,6 +2485,9 @@ fn population(seed: u64, seconds: f32, scale: MapScale) -> Population {
             }
         }
         p.live_peak = p.live_peak.max(now_live.len());
+        let crates = w.items.iter().filter(|it| it.is_crate()).count();
+        p.crate_peak = p.crate_peak.max(crates);
+        p.ground_peak = p.ground_peak.max(now_live.len() - crates);
 
         for (id, (item, spawned_at)) in &live {
             if now_live.contains_key(id) {
@@ -2539,9 +2557,12 @@ fn item_population_report() {
         let total: f64 = rows.iter().map(|r| r.1).sum();
 
         println!(
-            "\n   {scale:?}: peak live {}/{}   total item-seconds {:.0}",
+            "\n   {scale:?}: peak live {} (items {}/{}, crates {}/{})   total item-seconds {:.0}",
             ps.iter().map(|p| p.live_peak).max().unwrap_or(0),
+            ps.iter().map(|p| p.ground_peak).max().unwrap_or(0),
             MAX_WORLD_ITEMS,
+            ps.iter().map(|p| p.crate_peak).max().unwrap_or(0),
+            game_core::constants::CRATE_MAX_ON_MAP,
             total,
         );
         println!(
@@ -2583,7 +2604,20 @@ fn item_population_report() {
         // **Cause 4, asserted rather than assumed.** `ITEM_SPAWN_INTERVAL`'s doc
         // comment says the live count is "well clear" of the cap; this is that
         // claim as a test, on the same run that produces the table.
-        let peak = ps.iter().map(|p| p.live_peak).max().unwrap_or(0);
+        // T23.41: the cap counts every item but the crates, so this is that count's peak — the
+        // total (crates included) reached 40 of 40 under T23.36's rain while the cap counted both.
+        let peak = ps.iter().map(|p| p.ground_peak).max().unwrap_or(0);
+        let crate_peak = ps.iter().map(|p| p.crate_peak).max().unwrap_or(0);
+        assert!(
+            crate_peak <= game_core::constants::CRATE_MAX_ON_MAP,
+            "{scale:?}: {crate_peak} crates on the map against their cap of {}",
+            game_core::constants::CRATE_MAX_ON_MAP
+        );
+        // Control: the rain is in this run — a peak of crates, not a round without them.
+        assert!(
+            crate_peak > 1,
+            "{scale:?}: a crate peak of {crate_peak} — the rain is not in this run"
+        );
         assert!(
             peak < MAX_WORLD_ITEMS,
             "{scale:?}: {peak} items alive against a cap of {MAX_WORLD_ITEMS} — eviction is \
