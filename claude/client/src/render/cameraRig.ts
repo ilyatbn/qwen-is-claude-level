@@ -10,6 +10,7 @@ import {
   Trauma,
   clampCenter,
   desiredCenter,
+  frameLerp,
   stepCenter,
   stepLookahead,
   visibleSize,
@@ -90,10 +91,10 @@ export class CameraRig {
   update(dt: number): void {
     this.phase += 1
     if (this.target) {
-      this.lookahead = stepLookahead(this.lookahead, this.aim, this.tuning)
+      this.lookahead = stepLookahead(this.lookahead, this.aim, this.tuning, dt)
       const want = desiredCenter(this.center, this.target, this.lookahead, this.tuning)
       this.center = clampCenter(
-        stepCenter(this.center, want, this.tuning.lerp),
+        stepCenter(this.center, want, frameLerp(this.tuning.lerp, dt)),
         this.mapW,
         this.mapH,
         this.live(),

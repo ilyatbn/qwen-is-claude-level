@@ -75,7 +75,26 @@ export function desiredCenter(
   return { x, y }
 }
 
-/** One step of exponential follow. */
+/**
+ * T23.35: the frame rate `CAMERA_LERP` and `CAMERA_LOOKAHEAD_LERP` are stated at. Each is "the fraction of the gap
+ * closed in one frame **at 60 fps**" (docs/02, docs/70 §A1 — tuned on a 60 Hz screen), not a per-frame constant:
+ * applied once per frame whatever the frame took, a 15 fps spectator's follow closed a quarter of the gap per second
+ * a 60 fps one did, and lagged 0.5–0.7 s behind the watched player.
+ */
+export const LERP_REFERENCE_FPS = 60
+
+/**
+ * T23.35: the fraction of the gap to close over `dt` seconds for a lerp stated per 60 fps frame —
+ * `1 - (1-k)^(dt·60)`. At `dt = 1/60` it is exactly `k`, so a 60 fps follow is unchanged; four 60 fps frames and one
+ * 15 fps frame close the same gap. Clamped to [0, 1]: a zero or negative `dt` holds still, a huge one arrives.
+ */
+export function frameLerp(perFrame60: number, dt: number): number {
+  if (!(dt > 0)) return 0
+  const k = Math.min(1, Math.max(0, perFrame60))
+  return 1 - Math.pow(1 - k, dt * LERP_REFERENCE_FPS)
+}
+
+/** One step of exponential follow; `lerp` is this step's fraction (`frameLerp` of the constant). */
 export function stepCenter(current: Vec, desired: Vec, lerp: number): Vec {
   return {
     x: current.x + (desired.x - current.x) * lerp,
@@ -83,15 +102,16 @@ export function stepCenter(current: Vec, desired: Vec, lerp: number): Vec {
   }
 }
 
-/** Aim-direction lead, eased toward the new value so it never snaps. */
-export function stepLookahead(current: Vec, aimAngle: number | null, t: CameraTuning): Vec {
+/** Aim-direction lead, eased toward the new value so it never snaps; `dt` in seconds (T23.35). */
+export function stepLookahead(current: Vec, aimAngle: number | null, t: CameraTuning, dt: number): Vec {
   const goal =
     aimAngle === null
       ? { x: 0, y: 0 }
       : { x: Math.cos(aimAngle) * t.lookahead, y: Math.sin(aimAngle) * t.lookahead }
+  const k = frameLerp(t.lookaheadLerp, dt)
   return {
-    x: current.x + (goal.x - current.x) * t.lookaheadLerp,
-    y: current.y + (goal.y - current.y) * t.lookaheadLerp,
+    x: current.x + (goal.x - current.x) * k,
+    y: current.y + (goal.y - current.y) * k,
   }
 }
 

@@ -73,7 +73,7 @@ import { WorldView } from '../render/worldView'
 import { loadWorldRenderer } from '../look/loadWorldRenderer'
 import type { GameMap, GameWorld } from '../look/worldRenderer'
 import { adoptWorldLook, worldLookByte, worldLookOfMeta } from '../look/worldLookId'
-import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
+import { EffectLights, MUZZLE_FRAMES, gateLights, jetFlames, viewRect, type EffectSources } from '../look/effectLights'
 import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
@@ -118,6 +118,7 @@ import { energyBar, healthBar, inRefillDelay, jetpackBar } from '../ui/bars-math
 import { DebugHud } from '../ui/debugHud'
 import { ITEM_ATLAS } from '../render/itemSprites'
 import { artFor } from '../render/itemSprites-math'
+import { gunAt, muzzleDir, type Pt } from '../render/muzzle-math'
 import { shakeOrigin, traumaFromExplosion } from '../render/cameraRig-math'
 import { Mixer } from '../audio/mixer'
 import { loadAudio } from '../audio/sfx'
@@ -377,6 +378,8 @@ export class GameScene extends Phaser.Scene {
   private readonly remoteTilts = new Map<number, TiltTrack>()
   /** T23.09C F2: each live round's `projectile_spawn` point — where it left the gun — by id. */
   private readonly roundOrigins = new Map<number, { x: number; y: number }>()
+  /** T23.35: fresh rounds that left a gun — owner and direction — kept on the drawn gun for their flash (`anchorMuzzles`). */
+  private readonly gunRounds = new Map<number, { owner: number; dir: Pt; frames: number }>()
   /** T23.14D F4: each remote's jet push, estimated from its motion (its input is not on the wire). */
   private readonly remotePushes = new Map<number, PushEstimate>()
   private get localTilt(): number {
@@ -847,6 +850,7 @@ export class GameScene extends Phaser.Scene {
     this.remoteTilts.clear()
     this.remotePushes.clear()
     this.roundOrigins.clear()
+    this.gunRounds.clear()
     this.frameDt = 0
     this.pendingUses.clear()
     this.fuel = 0
@@ -1234,7 +1238,9 @@ export class GameScene extends Phaser.Scene {
         // T23.14D F8: a thrown weapon leaving a hand throws its figure — the server's word, anyone's.
         if (ev === 'projectile_spawn') this.swingOf(p['owner'], p['weapon'], p['use_seq'])
         // T23.09C F2: where each round left the gun, for its muzzle flash (`WorldView.syncProjectiles`'s `origin`).
-        if (ev === 'projectile_spawn') this.roundOrigins.set(Number(p['id'] ?? -1), { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) })
+        // T23.35: at the gun of the body this client **draws** — the server's point is at its own body, which a moving
+        // shooter is drawn up to ~87 px from (`render/muzzle-math.ts::gunOrigin`).
+        if (ev === 'projectile_spawn') this.roundOrigins.set(Number(p['id'] ?? -1), this.spawnOrigin(p))
         // T23.14E F4: **the round goes into the ordnance layer as it spawns**, as the sandbox's `noteOrigin` does — not at
         // the next frame's sync. A round that spawns and despawns between two frames (an smg round into rock ~3 ticks;
         // a slow frame holds more) was in the mirror at no sync and never drawn; added now, the layer keeps it for one
@@ -2107,6 +2113,43 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * T23.35: a `projectile_spawn`'s first point — on the owner's **drawn** gun when it left his gun (`muzzleDir`), which
+   * `anchorMuzzles` then keeps it on for its flash's frames; else the server's point.
+   */
+  private spawnOrigin(p: Record<string, unknown>): Pt {
+    const spawn = { x: Number(p['x'] ?? 0), y: Number(p['y'] ?? 0) }
+    const owner = Number(p['owner'] ?? -1)
+    const vel = { x: Number(p['vx'] ?? 0), y: Number(p['vy'] ?? 0) }
+    const dir = muzzleDir(spawn, vel, this.mirror.players.get(owner) ?? null, C().MUZZLE_OFFSET, C().PLAYER_H)
+    if (!dir) return spawn
+    this.gunRounds.set(Number(p['id'] ?? -1), { owner, dir, frames: 0 })
+    const drawn = this.drawnCentre(owner)
+    return drawn ? gunAt(drawn, dir, C().MUZZLE_OFFSET) : spawn
+  }
+
+  /** T23.35: a player's drawn body centre, or `null` when it is not drawn (a hidden container is not moved). */
+  private drawnCentre(id: number): Pt | null {
+    const view = id === this.me ? this.localView : this.remotes.get(id)?.view
+    return view?.container.visible ? { x: view.container.x, y: view.container.y - C().PLAYER_H / 2 } : null
+  }
+
+  /**
+   * T23.35: each fresh round's first point (its muzzle flash) onto its shooter's gun **as drawn this frame**, for the
+   * `MUZZLE_FRAMES` frames the flash is listed — a point fixed where the gun was when the event arrived was left behind
+   * by a falling body (163 px measured at a hitch). Called once the bodies and the rounds are placed, before the lights.
+   */
+  private anchorMuzzles(): void {
+    for (const [id, g] of this.gunRounds) {
+      const drawn = this.drawnCentre(g.owner)
+      if (drawn) {
+        const at = gunAt(drawn, g.dir, C().MUZZLE_OFFSET)
+        this.world?.anchorRound(id, at.x, at.y)
+      }
+      if (++g.frames >= MUZZLE_FRAMES) this.gunRounds.delete(id)
+    }
+  }
+
   /** The mirror's live rounds, each with its `roundOrigins` entry — or `null`: this client never heard it spawn. */
   private *withOrigins(): Iterable<{ id: number; x: number; y: number; weapon: number; origin: { x: number; y: number } | null }> {
     for (const p of this.mirror.projectiles.values()) yield { id: p.id, x: p.x, y: p.y, weapon: p.weapon, origin: this.roundOrigins.get(p.id) ?? null }
@@ -2641,6 +2684,7 @@ export class GameScene extends Phaser.Scene {
     // T23.09C F2: each round with where it left the gun — `null` for one whose spawn this client never heard (in flight
     // before it joined, or across a resync), which then flashes no muzzle.
     this.world?.syncProjectiles(this.withOrigins())
+    this.anchorMuzzles()
     // Toxic rain is on while any recorded effect is in its active phase. The
     // lifecycle is already tracked for the e2e; nothing consumed it visually,
     // which is §B21 exactly — the number was right and never reached the screen.

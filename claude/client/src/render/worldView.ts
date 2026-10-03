@@ -263,6 +263,18 @@ export class WorldView {
   }
 
   /**
+   * T23.35: move a round's first point — where it left the gun, which its muzzle flash is drawn and lit at
+   * (`effectLights.ts`: `trail[0]`). The game re-anchors a fresh round to its shooter's **drawn** gun each frame of the
+   * flash (`GameScene.anchorMuzzles`). A round the layer does not hold is left alone.
+   */
+  anchorRound(id: number, x: number, y: number): void {
+    const first = this.ordnance.state.projectiles.get(id)?.trail[0]
+    if (!first) return
+    first.x = x
+    first.y = y
+  }
+
+  /**
    * How many projectiles the **layer** holds. For counting at both ends.
    *
    * Deliberately not `this.tracked.size`: that is a set this class fills in the

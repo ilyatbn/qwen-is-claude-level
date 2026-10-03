@@ -877,6 +877,8 @@ look up and see the earth, moved since the round began.
 - [x] [T23.31](M23/T23.31-the-volcanic-world.md) — The volcanic world: a second look picked at random per map (open list), F2's lava-cracked rock, a volcano background, tripod and octopus creatures — 2026-10-02: look from the seed (~50/50) on the wire and in the replay; relief per look; checks pin classic unless they name a look
 - [x] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner) — ✔ gated 2026-10-03 (builderA, `check.sh --changed 68c83e3`: rust + vitest green, e2e 88/104 with the 16 reds all green alone at --jobs 1 — load; `gate-builderA{,-alone}.txt`)
 - [ ] [T23.35](M23/T23.35-flash-and-camera-follow-ups.md) — A moving player's muzzle flash 87 px off his body; the camera eases per frame, not per second
+- [ ] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner)
+- [x] [T23.35](M23/T23.35-flash-and-camera-follow-ups.md) — A moving player's muzzle flash 87 px off his body; the camera eases per frame, not per second
 - [x] [T23.36](M23/T23.36-crates-rain-and-one-grave.md) — Crates every 2 s up to 20, bots go for them; one tombstone per player with a glow in their colour (owner)
 - [ ] [T23.37](M23/T23.37-leftovers-from-replay-and-bots.md) — Partial pickups (client half), a build id in replays, winged bots pinned against rock, carving weapons dig
 - [ ] [T23.38](M23/T23.38-the-black-hole-swallows-everything.md) — The black hole swallows items, crates, tombstones, projectiles — nothing drawn on top of it (owner)

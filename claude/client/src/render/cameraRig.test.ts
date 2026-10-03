@@ -109,24 +109,24 @@ describe('follow', () => {
 describe('lookahead', () => {
   it('eases toward the aim direction and never snaps', () => {
     let look = { x: 0, y: 0 }
-    const first = stepLookahead(look, 0, T)
+    const first = stepLookahead(look, 0, T, 1 / 60)
     expect(first.x).toBeCloseTo(70 * T.lookaheadLerp, 6)
 
     look = { x: 0, y: 0 }
-    for (let i = 0; i < 500; i++) look = stepLookahead(look, 0, T)
+    for (let i = 0; i < 500; i++) look = stepLookahead(look, 0, T, 1 / 60)
     expect(look.x).toBeCloseTo(70, 3)
     expect(look.y).toBeCloseTo(0, 3)
   })
 
   it('returns to zero when there is no aim', () => {
     let look = { x: 70, y: 0 }
-    for (let i = 0; i < 500; i++) look = stepLookahead(look, null, T)
+    for (let i = 0; i < 500; i++) look = stepLookahead(look, null, T, 1 / 60)
     expect(look.x).toBeCloseTo(0, 3)
   })
 
   it('points the lead the way the player aims', () => {
     let look = { x: 0, y: 0 }
-    for (let i = 0; i < 500; i++) look = stepLookahead(look, Math.PI, T)
+    for (let i = 0; i < 500; i++) look = stepLookahead(look, Math.PI, T, 1 / 60)
     expect(look.x).toBeCloseTo(-70, 3)
   })
 })

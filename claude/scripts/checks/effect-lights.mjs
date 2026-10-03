@@ -19,7 +19,8 @@
  * pack and cal's list carries a `jet` light at **cal's view of dee's flame** (a remote's jet, off the wire's flag) —
  * held by cal's renderer too; then dee fires the smg and every muzzle light cal lists sits at a drawn body's gun
  * (networked rounds, T23.09C F2: they flashed ~speed × latency ahead, or in mid-air at a late join), with at least one
- * seen (the presence control).
+ * seen (the presence control). T23.35: and again with dee firing **while falling** from a climb — at least one muzzle light seen while
+ * cal's drawn dee moves at `FAST` px/s or more, every one within `MUZZLE_REACH` of a drawn body.
  *
  * - **Near:** rock pixels (`core.solidAt`) within `NEAR_FRAC` of the light's radius of it gain at least
  *   `NEAR_MIN` in mean luminance (0–255).
@@ -335,6 +336,10 @@ export default async function ({ page, shot, log }) {
 const MUZZLE_REACH = 48
 /** §4: frames cal watches while dee fires, and dee's bursts. */
 const MATCH_FRAMES = 90
+/** §4c (T23.35): how long dee climbs before he falls firing, the frames cal watches, and the drawn speed (px/s) that counts as moving fast. */
+const CLIMB_MS = 1500
+const MOVING_FRAMES = 90
+const FAST = 250
 
 async function matchLegs(problems, log) {
   const { startStack, freePort, privateMatch, selectWeapon } = await import('./harness.mjs')
@@ -372,8 +377,7 @@ async function matchLegs(problems, log) {
     // T23.32: a held Space climbs now, so (a)'s burn left dee in the air, and (b) fired from a moving body: the light
     // and cal's drawn dee parted by 87 px (red alone at 6c9b306; dee's muzzle y 384–423 against ~452 standing in every
     // gate before the merge — why a moving gunner's light leaves his drawn body is not measured). (b) is the gun-on-a-standing-body
-    // case it was written for — dee lands first, and cal's view of him settles. A falling gunner's flash is not
-    // measured here (reported to the coordinator).
+    // case it was written for — dee lands first, and cal's view of him settles. A moving gunner is (c) (T23.35).
     await dee.page.waitForFunction(() => window.__game.debug().player?.grounded === true, null, { timeout: 15_000 })
     await cal.page.waitForTimeout(500)
     await selectWeapon(dee.page, 'smg')
@@ -402,6 +406,50 @@ async function matchLegs(problems, log) {
     log(`4b. dee's smg on cal's client: ${seen.muzzles} muzzle lights over ${seen.frames} frames; farthest ${seen.far.toFixed(1)} px from a drawn body (max ${MUZZLE_REACH}) ${JSON.stringify(seen.farAt)}`)
     if (seen.muzzles === 0) problems.push("match: dee's smg fire put no muzzle light in cal's list (the presence control)")
     else if (seen.far > MUZZLE_REACH) problems.push(`match: a networked round flashed ${seen.far.toFixed(1)} px from any drawn body — not at the gun`)
+    // (c) T23.35: dee fires **while moving fast** — falling from a climb — and every muzzle light cal lists is still at
+    // a drawn body's gun, by (b)'s bound. The server spawns a round at its own body; cal draws dee an interpolation delay
+    // behind it, so before T23.35 a falling gunner's flash hung ~87 px off his figure (`render/muzzle-math.ts::gunOrigin`).
+    // Its presence control: muzzle lights seen while cal's drawn dee was moving at least `FAST` px/s.
+    // Up first, then fire on the way down: a fall is the fast case (the 87 px it was filed at); a climb is slow.
+    await dee.page.keyboard.down('Space')
+    await dee.page.waitForTimeout(CLIMB_MS)
+    await dee.page.keyboard.up('Space')
+    await dee.page.evaluate(() => {
+      window.__burst = setInterval(() => window.__game.fire(), 50)
+    })
+    let moving
+    try {
+      moving = await cal.page.evaluate(([N, id, fast]) => new Promise((res) => {
+        const out = { frames: 0, muzzles: 0, fastMuzzles: 0, far: 0, farAt: null, topSpeed: 0 }
+        let prev = null
+        const f = () => {
+          const d = window.__game.debug()
+          const bodies = d.drawnPlayers ?? []
+          const me = bodies.find((b) => b.id === id)
+          const t = performance.now()
+          const speed = me && prev && t > prev.t ? (Math.hypot(me.x - prev.x, me.y - prev.y) * 1000) / (t - prev.t) : 0
+          prev = me ? { x: me.x, y: me.y, t } : null
+          out.topSpeed = Math.max(out.topSpeed, speed)
+          for (const l of window.__game.effectLights().filter((e) => e.kind === 'muzzle')) {
+            out.muzzles++
+            if (speed >= fast) out.fastMuzzles++
+            const near = Math.min(...bodies.map((b) => Math.hypot(l.x - b.x, l.y - b.y)))
+            if (near > out.far) {
+              out.far = near
+              out.farAt = { x: l.x, y: l.y, speed: Math.round(speed) }
+            }
+          }
+          if (++out.frames < N) requestAnimationFrame(f)
+          else res(out)
+        }
+        requestAnimationFrame(f)
+      }), [MOVING_FRAMES, dee.id, FAST])
+    } finally {
+      await dee.page.evaluate(() => clearInterval(window.__burst))
+    }
+    log(`4c. dee's smg while moving on cal's client: ${moving.muzzles} muzzle lights (${moving.fastMuzzles} at ≥ ${FAST} px/s; top ${moving.topSpeed.toFixed(0)} px/s) over ${moving.frames} frames; farthest ${moving.far.toFixed(1)} px from a drawn body (max ${MUZZLE_REACH}) ${JSON.stringify(moving.farAt)}`)
+    if (moving.fastMuzzles === 0) problems.push(`match: no muzzle light seen while dee moved at ≥ ${FAST} px/s (top ${moving.topSpeed.toFixed(0)}) — the moving leg measured nothing`)
+    else if (moving.far > MUZZLE_REACH) problems.push(`match: a moving gunner's round flashed ${moving.far.toFixed(1)} px from any drawn body — not at the gun`)
     for (const c of [cal, dee]) if (c.errors?.length) problems.push(`match: ${c.name} page errors: ${c.errors.join(' | ')}`)
   } catch (e) {
     problems.push(`match: ${e?.message ?? e}`)
