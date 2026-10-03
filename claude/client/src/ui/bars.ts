@@ -12,45 +12,47 @@
  */
 
 import { consumablePips, type BarView } from './bars-math'
+import { HUD_INK, HUD_SERIF, HUD_SHADOW, HUD_TRACK, installHudFont } from './hudStyle'
 
-/** One labelled track. */
+/** T23.21: `hudE`'s track — a hairline, 130 px in the picture; 3 px tall here so a state colour still reads. */
+export const BAR_TRACK_H = 3
+
+/**
+ * One labelled track, T23.21's look (`e_style.js::hudE`): a letter-spaced serif caption, a hairline track in the
+ * ink's tint with the fill in the bar's state colour (`bars-math.ts`, unchanged: health's ramp and poison, energy's
+ * blue, the jet's yellow / refilling / refused), and the number after it — the number the old bar printed inside it,
+ * kept (no information is lost). **The id is on the track**, so a check sampling `#hud-bar-*` measures the fill.
+ */
 class Bar {
+  readonly row: HTMLDivElement
   readonly root: HTMLDivElement
   private readonly fill: HTMLDivElement
   private readonly over: HTMLDivElement
-  private readonly text: HTMLDivElement
+  private readonly value: HTMLSpanElement
 
   constructor(doc: Document, id: string, caption: string, width: number) {
+    this.row = doc.createElement('div')
+    this.row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:7px;'
+    const cap = doc.createElement('span')
+    cap.textContent = caption
+    cap.style.cssText = `width:28px;font:11px/1 ${HUD_SERIF};letter-spacing:.2em;opacity:.75;`
+
     this.root = doc.createElement('div')
     this.root.id = id
-    this.root.style.cssText =
-      `position:relative;width:${width}px;height:16px;margin-top:4px;` +
-      'background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.28);' +
-      'border-radius:3px;overflow:hidden;'
-
+    this.root.style.cssText = `position:relative;width:${width}px;height:${BAR_TRACK_H}px;background:${HUD_TRACK};overflow:hidden;`
     this.fill = doc.createElement('div')
     this.fill.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:0;'
     this.root.appendChild(this.fill)
-
     // Its own element, drawn after `fill`, so the overheal band starts where the
     // base health ends instead of being blended into one colour ramp.
     this.over = doc.createElement('div')
     this.over.style.cssText = 'position:absolute;top:0;bottom:0;width:0;background:#ffc93f;'
     this.root.appendChild(this.over)
 
-    this.text = doc.createElement('div')
-    this.text.style.cssText =
-      'position:relative;height:100%;display:flex;align-items:center;' +
-      'justify-content:space-between;padding:0 5px;' +
-      'font:700 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;' +
-      'color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.95);'
-    const cap = doc.createElement('span')
-    cap.textContent = caption
-    cap.style.opacity = '0.75'
-    const val = doc.createElement('span')
-    val.dataset['value'] = ''
-    this.text.append(cap, val)
-    this.root.appendChild(this.text)
+    this.value = doc.createElement('span')
+    this.value.dataset['value'] = ''
+    this.value.style.cssText = `min-width:34px;font:11px/1 ${HUD_SERIF};letter-spacing:.08em;opacity:.8;`
+    this.row.append(cap, this.root, this.value)
   }
 
   set(view: BarView): void {
@@ -58,8 +60,7 @@ class Bar {
     this.fill.style.background = view.colour
     this.over.style.left = `${(view.fill * 100).toFixed(2)}%`
     this.over.style.width = `${(view.over * 100).toFixed(2)}%`
-    const val = this.text.querySelector('[data-value]')
-    if (val) val.textContent = view.label
+    this.value.textContent = view.label
   }
 }
 
@@ -171,13 +172,14 @@ export class Bars {
   readonly counters: HTMLDivElement
   private readonly pipRows: { heals: PipRow; batteries: PipRow }
 
-  constructor(doc: Document = document, width = 168) {
+  constructor(doc: Document = document, width = 130) {
+    installHudFont(doc)
     this.root = doc.createElement('div')
     this.root.id = 'hud-bars'
-    // 56 px clears `#game-hud` (a ~30 px strip at bottom:0) and the jetpack
-    // readout that sits at bottom:36.
+    // T23.21: `hudE`'s place, left 26 — and 56 px up, which clears `#game-hud` (a ~30 px strip at bottom:0) and the
+    // jetpack readout that sits at bottom:36.
     this.root.style.cssText =
-      'position:fixed;left:10px;bottom:56px;z-index:12;pointer-events:none;'
+      `position:fixed;left:26px;bottom:56px;z-index:12;pointer-events:none;color:${HUD_INK};text-shadow:${HUD_SHADOW};`
 
     // **No shield ring** (T20.08). It drew `shieldRing`'s 0..1 fraction of a 20 s
     // window, and the shield is a held generator paying per hit now — there is no
@@ -190,7 +192,7 @@ export class Bars {
       jetpack: new Bar(doc, 'hud-bar-jet', 'JET', width),
     }
     for (const b of [this.bars.health, this.bars.energy, this.bars.jetpack]) {
-      this.root.appendChild(b.root)
+      this.root.appendChild(b.row)
     }
     this.health = this.bars.health.root
     this.energy = this.bars.energy.root
@@ -209,9 +211,8 @@ export class Bars {
     this.counters = doc.createElement('div')
     this.counters.id = 'hud-consumables'
     this.counters.style.cssText =
-      'position:absolute;left:100%;bottom:0;margin-left:8px;white-space:nowrap;' +
-      'font:700 13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;' +
-      'color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.95);'
+      'position:absolute;left:100%;bottom:0;margin-left:14px;white-space:nowrap;' +
+      `font:12px/1.5 ${HUD_SERIF};letter-spacing:.08em;color:${HUD_INK};text-shadow:${HUD_SHADOW};`
     this.pipRows = {
       heals: new PipRow(doc, 'hud-heals', 'Q', HEAL_COLOUR),
       batteries: new PipRow(doc, 'hud-batteries', 'R', BATTERY_COLOUR),

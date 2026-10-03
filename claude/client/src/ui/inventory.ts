@@ -11,6 +11,7 @@
  */
 
 import { iconWeapon } from '../look/actors/icons'
+import { HUD_ACCENT, HUD_INK, HUD_INK_DIM, HUD_SERIF, HUD_SHADOW, installHudFont } from './hudStyle'
 import {
   backpackGrid,
   isDragWorthSending,
@@ -60,6 +61,14 @@ export interface InventoryDeps {
 }
 
 const TILE = 46
+/**
+ * T23.21: `hudE`'s weapon strip — the quick bar's slots sit on the world with no box, each over a hairline, the
+ * selected one underlined thicker in the player's own colour (`setAccent`, R10) and at full strength, the others at
+ * `IDLE_OPACITY`. The backpack (right-click) keeps a dark panel: it is a menu over the fight, not the strip.
+ */
+const IDLE_OPACITY = '0.6'
+const UNDERLINE = 1
+const UNDERLINE_ON = 2
 
 export class InventoryPanel {
   readonly root: HTMLDivElement
@@ -82,6 +91,7 @@ export class InventoryPanel {
   private selected = 0
   private open = false
   private dragFrom: number | null = null
+  private accent = HUD_ACCENT
 
   constructor(
     private readonly deps: InventoryDeps,
@@ -90,6 +100,7 @@ export class InventoryPanel {
     doc: Document = document,
   ) {
     const total = quickSlots + backpackSlots
+    installHudFont(doc)
 
     this.root = doc.createElement('div')
     this.root.id = 'inventory'
@@ -122,13 +133,13 @@ export class InventoryPanel {
     const { cols } = backpackGrid(backpackSlots)
     this.backpack.style.cssText =
       `display:none;grid-template-columns:repeat(${cols}, ${TILE}px);gap:4px;` +
-      'padding:6px;border-radius:6px;background:rgba(8,10,16,.82);' +
-      'border:1px solid rgba(255,255,255,.18);'
+      'padding:6px;background:rgba(8,10,16,.82);' +
+      `border:1px solid ${HUD_INK_DIM};`
     this.root.appendChild(this.backpack)
 
     this.bar = doc.createElement('div')
     this.bar.id = 'inventory-bar'
-    this.bar.style.cssText = `display:grid;grid-template-columns:repeat(${quickSlots}, ${TILE}px);gap:4px;`
+    this.bar.style.cssText = `display:grid;grid-template-columns:repeat(${quickSlots}, ${TILE}px);gap:10px;`
     this.root.appendChild(this.bar)
 
     for (let i = 0; i < total; i++) {
@@ -137,10 +148,9 @@ export class InventoryPanel {
       tile.draggable = true
       tile.style.cssText =
         `width:${TILE}px;height:${TILE}px;box-sizing:border-box;pointer-events:auto;` +
-        'border:2px solid rgba(255,255,255,.22);border-radius:5px;' +
-        'background:rgba(8,10,16,.72);position:relative;overflow:hidden;' +
-        'font:600 9px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e9edf5;' +
-        'display:flex;align-items:flex-end;padding:3px;text-shadow:0 1px 2px #000;' +
+        'border:0 solid transparent;position:relative;overflow:hidden;' +
+        `font:11px/1 ${HUD_SERIF};letter-spacing:.08em;color:${HUD_INK};` +
+        `display:flex;align-items:flex-end;justify-content:flex-end;padding:3px;text-shadow:${HUD_SHADOW};` +
         'cursor:grab;user-select:none;'
 
       // Two layers, because `textContent` on the tile would wipe the art. The
@@ -200,6 +210,12 @@ export class InventoryPanel {
     }
 
     doc.body.appendChild(this.root)
+  }
+
+  /** T23.21 (R10): the selected slot's underline is the player's colour — the seat's scarf. Redraws at once. */
+  setAccent(colour: string): void {
+    this.accent = colour
+    this.update(this.slots, this.selected)
   }
 
   /** `true` while the backpack is showing. */
@@ -294,9 +310,18 @@ export class InventoryPanel {
       // The picture says which item it is, so the text is only the count. With
       // no art the key comes back — that is the fallback, not a second style.
       this.texts[i]!.textContent = url ? tileCount(slot) : tileLabel(slot)
-      const isSelected = i === selected && regionOf(i, this.quickSlots) === 'quick'
-      tile.style.borderColor = isSelected ? '#ffd23f' : 'rgba(255,255,255,.22)'
-      tile.style.background = slot?.key ? 'rgba(30,38,56,.86)' : 'rgba(8,10,16,.72)'
+      const quick = regionOf(i, this.quickSlots) === 'quick'
+      const isSelected = i === selected && quick
+      if (quick) {
+        // T23.21: no box — the slot's line under it, thicker and in the player's colour when selected.
+        tile.style.borderBottom = `${isSelected ? UNDERLINE_ON : UNDERLINE}px solid ${isSelected ? this.accent : HUD_INK_DIM}`
+        tile.style.background = 'transparent'
+        tile.style.opacity = isSelected ? '1' : IDLE_OPACITY
+      } else {
+        // The backpack's tiles keep a cell each (filled reads apart from empty, `inventory-ui`'s control).
+        tile.style.border = `1px solid ${HUD_INK_DIM}`
+        tile.style.background = slot?.key ? 'rgba(30,38,56,.86)' : 'rgba(8,10,16,.72)'
+      }
       tile.dataset['filled'] = slot?.key ? '1' : '0'
       tile.dataset['selected'] = isSelected ? '1' : '0'
     }

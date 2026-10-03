@@ -77,7 +77,8 @@ import { EffectLights, gateLights, jetFlames, viewRect, type EffectSources } fro
 import { fxFeed } from '../look/fx/feed'
 import { TerrainFields } from '../look/terrainFields'
 import { DEPTH } from '../render/backdrop'
-import { PlayerView } from '../render/playerView'
+import { PlayerView, SCARF_COLOURS } from '../render/playerView'
+import { HUD_SERIF } from '../ui/hudStyle'
 import { setGroundProbe } from '../look/actors/cast'
 import { standTarget, trackTilt, type TiltTrack } from '../render/standTilt-math'
 import { Crosshair, LocalInput } from '../input/localInput'
@@ -2898,7 +2899,15 @@ export class GameScene extends Phaser.Scene {
     this.localView = new PlayerView(this)
     // T23.14 (R10): the scarf is the seat's colour.
     this.localView.setSeat(this.me)
+    // T23.21 (R10): the quick bar's selected slot is underlined in the same colour.
+    this.inventory?.setAccent(this.seatColour())
     this.localView.container.setDepth(DEPTH.actors)
+  }
+
+  /** T23.21: the local seat's scarf colour (`PlayerView.setSeat`'s rule). */
+  private seatColour(): string {
+    const n = SCARF_COLOURS.length
+    return SCARF_COLOURS[((this.me % n) + n) % n]!
   }
 
   /**
@@ -3016,8 +3025,9 @@ export class GameScene extends Phaser.Scene {
     this.hud.dataset['hud'] = 'root'
     this.hud.id = 'game-hud'
     this.hud.style.cssText =
-      'position:fixed;left:0;right:0;bottom:0;padding:6px 10px;font:12px/1.5 monospace;' +
-      'color:#fff;text-shadow:0 1px 2px #000;pointer-events:none;z-index:10;' +
+      // T23.21: F's serif and ink (`ui/hudStyle.ts`), letter-spaced as `hudE`'s labels.
+      `position:fixed;left:0;right:0;bottom:0;padding:6px 26px;font:12px/1.5 ${HUD_SERIF};letter-spacing:.06em;` +
+      'color:rgba(236,230,220,.85);text-shadow:0 1px 2px #000;pointer-events:none;z-index:10;' +
       // The strip, the inventory panel and the scoreboard are separate lines.
       // Without this they collapse into one unreadable run of text — the
       // newlines are in `textContent` and HTML simply does not honour them.
@@ -3037,8 +3047,9 @@ export class GameScene extends Phaser.Scene {
     // `bottom:12px` this landed **on top of** the round clock; the screenshot
     // showed "JET 2.2" overprinting "2:53" (§C2: look at the picture).
     jet.style.cssText =
-      'position:fixed;left:10px;bottom:36px;z-index:12;' +
-      'font:600 15px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      // T23.21: under the bars' captions (left 26), in F's serif; the yellow is the jet's own colour, kept.
+      'position:fixed;left:26px;bottom:34px;z-index:12;' +
+      `font:12px/1.2 ${HUD_SERIF};letter-spacing:.12em;` +
       'color:#ffd23f;text-shadow:0 1px 2px rgba(0,0,0,.9);pointer-events:none;'
     document.body.appendChild(jet)
     this.jetReadout = jet
@@ -3114,6 +3125,7 @@ export class GameScene extends Phaser.Scene {
       C().QUICK_SLOTS,
       C().BACKPACK_SLOTS,
     )
+    this.inventory.setAccent(this.seatColour())
 
     // §C13. Quitting **leaves the room** as well as changing scene: a scene
     // change alone keeps the seat, and the room then never reaps (§B14's shape,
@@ -3210,8 +3222,9 @@ export class GameScene extends Phaser.Scene {
       const line = document.createElement('div')
       line.id = 'spectate-line'
       line.style.cssText =
-        'position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:12;pointer-events:none;' +
-        'font:600 15px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9fe7ff;' +
+        // T23.21: F's serif, under the event banner (which ends at BANNER_TOP + 18 now; the old 64 sat on it).
+        'position:fixed;left:50%;top:76px;transform:translateX(-50%);z-index:12;pointer-events:none;' +
+        `font:13px/1.3 ${HUD_SERIF};letter-spacing:.12em;color:#9fe7ff;` +
         'text-shadow:0 1px 2px rgba(0,0,0,.9);white-space:pre'
       document.body.appendChild(line)
       this.spectateLine = line

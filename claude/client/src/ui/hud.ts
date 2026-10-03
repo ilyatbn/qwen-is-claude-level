@@ -22,6 +22,8 @@
  * `scripts/checks/hud-timer.mjs` (§C2).
  */
 
+import { HUD_SERIF, HUD_SHADOW, installHudFont } from './hudStyle'
+
 /** Effect lifecycle, as the wire spells it (`docs/40` §3). */
 export type EffectPhase = 'telegraph' | 'active' | 'end'
 
@@ -169,10 +171,13 @@ export function installFont(doc: Document): void {
  */
 export const DISPLAY_STACK = `'${FONT_FAMILY}',ui-monospace,SFMono-Regular,Menlo,monospace`
 
-/** Round timer: distance from the top of the viewport, px. */
-export const TIMER_TOP = 10
-/** Round timer: line height, px. Its `font` size and its box are the same number. */
-export const TIMER_H = 40
+/** Round timer: distance from the top of the viewport, px — T23.21: `hudE`'s 22. */
+export const TIMER_TOP = 22
+/** Round timer: line height, px. Its `font` size and its box are the same number — T23.21: `hudE`'s 22 px serif. */
+export const TIMER_H = 22
+/** T23.21: the timer's ink (`hudE`'s `timerLight`, the pictures') and its warning red (unchanged, `hud-timer`'s). */
+export const TIMER_INK = 'rgba(236,230,220,.9)'
+export const TIMER_WARN = '#ff3b30'
 /**
  * Event banner: directly below the timer, **derived** from it.
  *
@@ -208,15 +213,18 @@ export class Hud {
 
   constructor(doc: Document = document) {
     installFont(doc)
+    installHudFont(doc)
 
+    // T23.21: `hudE`'s timer — a thin, widely letter-spaced serif, top-centre. The trailing letter-space is taken
+    // back off the right (`margin-right:-.35em`), so the digits, not the box, are centred.
     this.timer = doc.createElement('div')
     this.timer.id = 'hud-timer'
     this.timer.dataset['warn'] = '0'
     this.timer.style.cssText =
       `position:fixed;top:${TIMER_TOP}px;left:50%;transform:translateX(-50%);` +
       'z-index:12;pointer-events:none;' +
-      `font:700 ${TIMER_H}px/1 ${DISPLAY_STACK};letter-spacing:1px;` +
-      'color:#ffffff;text-shadow:0 2px 4px rgba(0,0,0,.85);'
+      `font:300 ${TIMER_H}px/1 ${HUD_SERIF};letter-spacing:.35em;margin-right:-.35em;` +
+      `color:${TIMER_INK};text-shadow:${HUD_SHADOW};`
     doc.body.appendChild(this.timer)
 
     this.banner = doc.createElement('div')
@@ -227,8 +235,8 @@ export class Hud {
     // none) but does make the empty case impossible to assert on by geometry.
     this.banner.style.cssText =
       `position:fixed;top:${BANNER_TOP}px;left:50%;transform:translateX(-50%);z-index:12;` +
-      `pointer-events:none;font:700 34px/1.1 ${DISPLAY_STACK};letter-spacing:2px;` +
-      'color:#ff3b30;text-shadow:0 2px 6px rgba(0,0,0,.9);display:none;'
+      `pointer-events:none;font:16px/1.1 ${HUD_SERIF};letter-spacing:.25em;` +
+      `color:${TIMER_WARN};text-shadow:0 1px 4px rgba(0,0,0,.9);display:none;white-space:nowrap;`
     doc.body.appendChild(this.banner)
   }
 
@@ -283,7 +291,7 @@ export class Hud {
     // A data attribute as well as the colour: a pixel check reads the colour, a
     // DOM check reads this, and the two can then be asserted against each other.
     this.timer.dataset['warn'] = warn ? '1' : '0'
-    this.timer.style.color = warn ? '#ff3b30' : '#ffffff'
+    this.timer.style.color = warn ? TIMER_WARN : TIMER_INK
 
     // Drop finished runs here rather than trusting `effect_end` to arrive: it is
     // an event, and an event can be missed by a client that joined mid-effect.
