@@ -197,7 +197,9 @@ function particles(t) {
   const pull = smooth(T.inhale - 0.1, T.inhale + 1.2, t) * (1 - smooth(T.hold + 0.4, T.hold + 0.6, t))
   for (let i = 0; i < sporeSeed.length; i++) {
     const [a, b, c, d] = sporeSeed[i]
-    const near = i < 420
+    // The cluster round his head only from the tablet shot on (owner: before that it clumped on the door and followed
+    // the crew); until then these spores are ambient like the rest.
+    const near = i < 420 && t >= T.tablet
     const cx = near ? mouth.x + (a - 0.5) * 3.2 : (a - 0.5) * 40
     const cz = near ? mouth.z + (b - 0.5) * 3.2 : (b - 0.5) * 34 + 3
     let x = cx + Math.sin(t * (0.3 + c) + d * 9) * 0.4

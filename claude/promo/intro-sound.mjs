@@ -179,7 +179,6 @@ BEEPS.forEach((b, k) => beep(b, k % 2 ? 1568 : 2093, 0.11, b < T.turn ? 1 : 0.6)
   put(o, T.turn, 0.35, 0, 0.3)
 }
 impact(T.black, 1.25, 33, 3.5)
-clank(T.black, 0.6)
 for (let t = T.black + 0.9; t < T.end - 0.5; t += 0.95) heartbeat(t, 0.8)
 
 // --- the bed: the owner's track ------------------------------------------------------------
