@@ -140,6 +140,8 @@ function heartbeat(t, vel = 1) {
 // The descent and touchdown.
 /** Owner, 2026-10-03: the landing and the breath 10 % quieter. */
 const QUIETER = 0.9
+/** And the breath 10 % lower again (owner, 2026-10-03). */
+const BREATH = QUIETER * 0.9
 sweep(0.2, T.land - 0.2, 80, 420, 0.42 * QUIETER, (u) => u * u)
 impact(T.land, 0.9 * QUIETER, 38)
 sweep(T.land, 1.6, 3000, 600, 0.12 * QUIETER, (u) => Math.exp(-u * 4)) // debris
@@ -155,9 +157,9 @@ chirp(clear + 0.13, 2093, 2093, 0.3, 0.9)
 // His helmet's seal, then the breath (the calm chord went).
 seal(T.breath + 0.45, 1, 0.1)
 // The breath in, held, and out (owner kept it).
-sweep(T.inhale, T.hold - T.inhale, 420, 1400, 0.95 * QUIETER, (u) => Math.pow(u, 0.7) * Math.min(1, (1 - u) * 14), 0, 1.1)
-sweep(T.inhale, T.hold - T.inhale, 2200, 3600, 0.25 * QUIETER, (u) => u * Math.min(1, (1 - u) * 14), 0, 2)
-sweep(T.exhale, 1.3, 1200, 380, 0.85 * QUIETER, (u) => Math.sin(Math.PI * Math.min(1, u * 1.15)) * (1 - u * 0.3), 0, 1.1)
+sweep(T.inhale, T.hold - T.inhale, 420, 1400, 0.95 * BREATH, (u) => Math.pow(u, 0.7) * Math.min(1, (1 - u) * 14), 0, 1.1)
+sweep(T.inhale, T.hold - T.inhale, 2200, 3600, 0.25 * BREATH, (u) => u * Math.min(1, (1 - u) * 14), 0, 2)
+sweep(T.exhale, 1.3, 1200, 380, 0.85 * BREATH, (u) => Math.sin(Math.PI * Math.min(1, u * 1.15)) * (1 - u * 0.3), 0, 1.1)
 // The others' seals.
 seal(T.helmets + 0.5, 0.9, 0.4)
 seal(T.helmets + 0.9, 0.9, -0.4)
