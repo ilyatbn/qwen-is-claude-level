@@ -451,7 +451,7 @@ fn a_corrupted_file_is_a_clear_error_not_a_panic() {
     let path = record_a_round(s.path(), 300);
     let mut bytes = std::fs::read(&path).expect("read");
     // The first command tag sits just past the header and the command's u32 tick.
-    bytes[game_server::replay::HEADER_BYTES + game_server::replay::V40_TAIL_BYTES + 4] = 250;
+    bytes[game_server::replay::round_one_body_at(game_server::replay::BUILD_ID) + 4] = 250;
     let bad = s.path().join("corrupt.replay");
     std::fs::write(&bad, &bytes).expect("write");
 

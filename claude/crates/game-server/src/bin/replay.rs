@@ -137,6 +137,15 @@ fn run(opts: &Opts) -> Result<bool, Box<dyn std::error::Error>> {
         h.bot_count,
         file.body.len()
     );
+    // T23.37 item 2: which build recorded it, against this one.
+    match h.build.as_str() {
+        "" => println!("  build not recorded (a v{} file)", h.version),
+        b if b == replay::BUILD_ID => println!("  build {b} (this runner's)"),
+        b => println!(
+            "  WARNING: recorded by build {b}, replayed by {} — a divergence may be the build, not a bug",
+            replay::BUILD_ID
+        ),
+    }
 
     let stop_at = opts
         .until

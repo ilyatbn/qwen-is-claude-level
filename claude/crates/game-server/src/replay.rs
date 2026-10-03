@@ -58,6 +58,15 @@ pub const HEADER_BYTES: usize = 48;
 /// private 1, bot_seq 4, next 2, free count 1, seat count 1.
 pub const V40_TAIL_BYTES: usize = 14;
 
+/// T23.37 item 2: what v41 appends for an **empty** build id — its length byte. A real file's build id follows it.
+pub const V41_TAIL_BYTES: usize = 1;
+
+/// Where a round-one file's body starts when it was recorded by build `build` — the fixed header, v40's empty roster,
+/// and the build id (length byte and bytes).
+pub fn round_one_body_at(build: &str) -> usize {
+    HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES + build.len().min(255)
+}
+
 /// **2**: the header gained `generator`. A v1 round replayed against v2 (or the
 /// reverse) rebuilds a different map and diverges on the first shot that touches
 /// terrain, so the generator is simulation state and belongs here. Version 1 files
@@ -402,7 +411,18 @@ pub const V40_TAIL_BYTES: usize = 14;
 /// Bumped to 40 by T23.29 item 2: the header gains the **round roster** ([`RoundRoster`]), appended after the look —
 /// so a file a restart opened replays from its own header. **v37–v39 files still read**, with an empty roster: their
 /// round-one files replay as before, and their later rounds stay as unreplayable as they always were.
-pub const REPLAY_VERSION: u16 = 40;
+///
+/// Bumped to 41 by T23.37 item 2: the header gains the **build id** ([`BUILD_ID`], the commit the recording server was
+/// built from), appended after the roster — so a replay that diverges can say which build made it, and `replay
+/// --verify` warns when it differs from the running one. **v37–v40 files still read**, with an empty build id.
+pub const REPLAY_VERSION: u16 = 41;
+
+/// The last version without the build id (T23.37 item 2) — read with an empty one.
+pub const REPLAY_VERSION_NO_BUILD: u16 = 40;
+
+/// T23.37 item 2: the commit this binary was built from (`build.rs`: `git rev-parse --short=12 HEAD`, `+dirty` with
+/// uncommitted simulation sources, `unknown` without git) — what a header records and the runner compares.
+pub const BUILD_ID: &str = env!("SHRED_BUILD_ID");
 
 /// The last version without the round roster (T23.29) — read with an empty one.
 pub const REPLAY_VERSION_NO_ROSTER: u16 = 39;
@@ -636,6 +656,9 @@ pub struct ReplayHeader {
     /// T23.29 item 2: who the round began with, when a restart opened the file. Empty (the default) for a file opened
     /// at room construction and for every file older than v40.
     pub roster: RoundRoster,
+    /// T23.37 item 2: the build that recorded it ([`BUILD_ID`]); empty for files older than v41. **A record, not an
+    /// input** — nothing replayed reads it; the runner prints it and warns when it is not its own.
+    pub build: String,
 }
 
 /// T23.29 item 2: the state a restart hands the next round, as `Room::restart` holds it **after** freeing the bot
@@ -694,6 +717,7 @@ impl ReplayHeader {
             ),
             warmup_seconds: config.warmup_seconds,
             roster: RoundRoster::default(),
+            build: BUILD_ID.to_string(),
         }
     }
 
@@ -952,6 +976,11 @@ fn write_header(w: &mut impl Write, h: &ReplayHeader) -> Result<(), ReplayError>
         w.write_all(&[n as u8])?;
         w.write_all(&bytes[..n])?;
     }
+    // T23.37 item 2, appended for the same reason: the build id, length-prefixed.
+    let bytes = h.build.as_bytes();
+    let n = bytes.len().min(255);
+    w.write_all(&[n as u8])?;
+    w.write_all(&bytes[..n])?;
     Ok(())
 }
 
@@ -1249,15 +1278,24 @@ pub fn decode(bytes: &[u8]) -> Result<Replay, ReplayError> {
             WorldLook::from_u8(b).ok_or(ReplayError::BadWorldLook(b))?
         },
         // T23.29: both absent before v40 — the default warmup, and no roster.
-        warmup_seconds: if version < REPLAY_VERSION {
+        warmup_seconds: if version < REPLAY_VERSION_NO_BUILD {
             game_core::constants::WARMUP_SECONDS
         } else {
             c.f32()?
         },
-        roster: if version < REPLAY_VERSION {
+        roster: if version < REPLAY_VERSION_NO_BUILD {
             RoundRoster::default()
         } else {
             read_roster(&mut c)?
+        },
+        // T23.37 item 2: absent before v41.
+        build: if version < REPLAY_VERSION {
+            String::new()
+        } else {
+            let len = c.u8()? as usize;
+            std::str::from_utf8(c.take(len)?)
+                .map_err(|_| ReplayError::BadUtf8)?
+                .to_string()
         },
     };
 
@@ -1481,6 +1519,8 @@ mod tests {
             warmup_seconds: game_core::constants::WARMUP_SECONDS,
             // T23.29: a round-one file's — the v37/v38/v39 fixtures below cut `V40_TAIL_BYTES` off it.
             roster: RoundRoster::default(),
+            // T23.37 item 2: empty, so the older fixtures cut `V41_TAIL_BYTES` too; the build test sets one.
+            build: String::new(),
         }
     }
 
@@ -1697,7 +1737,7 @@ mod tests {
         assert!(r.body.is_empty());
         assert_eq!(
             bytes.len(),
-            HEADER_BYTES + V40_TAIL_BYTES,
+            HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES,
             "header size is pinned"
         );
     }
@@ -1756,7 +1796,7 @@ mod tests {
 
         let empty = encode_round(&header(), &body);
         let mut v39 = empty.clone();
-        v39.drain(HEADER_BYTES..HEADER_BYTES + V40_TAIL_BYTES);
+        v39.drain(HEADER_BYTES..HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES);
         v39[4..6].copy_from_slice(&REPLAY_VERSION_NO_ROSTER.to_le_bytes());
         let old = decode(&v39).expect("a v39 file must still read");
         assert_eq!(old.header.roster, RoundRoster::default());
@@ -1775,6 +1815,39 @@ mod tests {
         ));
     }
 
+    /// T23.37 item 2: **a v41 header names the build that recorded it**, a live
+    /// header carries this binary's (`BUILD_ID`, never empty), and a v40 file — the
+    /// same bytes without the build tail — still reads, with an empty build.
+    #[test]
+    fn a_v41_header_carries_the_build_and_a_v40_file_reads_without_one() {
+        assert!(!BUILD_ID.is_empty(), "build.rs set no build id");
+        let live = ReplayHeader::from_config(&Config::default(), 1, 2);
+        assert_eq!(live.build, BUILD_ID, "a recording does not carry its build");
+        let h = ReplayHeader {
+            build: "0123456789ab+dirty".into(),
+            ..header()
+        };
+        let body = [(3u32, ReplayCommand::Ready(1))];
+        let bytes = encode_round(&h, &body);
+        let got = decode(&bytes).expect("v41");
+        assert_eq!(got.header, h, "the build did not round-trip");
+        assert_eq!(got.body, body, "v41 body misaligned");
+        assert_eq!(
+            bytes.len() - round_one_body_at(&h.build),
+            encode_round(&header(), &body).len() - round_one_body_at(""),
+            "round_one_body_at does not find the body"
+        );
+
+        let mut v40 = encode_round(&header(), &body);
+        let at = HEADER_BYTES + V40_TAIL_BYTES;
+        v40.drain(at..at + V41_TAIL_BYTES);
+        v40[4..6].copy_from_slice(&REPLAY_VERSION_NO_BUILD.to_le_bytes());
+        let old = decode(&v40).expect("a v40 file must still read");
+        assert_eq!(old.header.build, "");
+        assert_eq!(old.header.roster, header().roster, "v40 header misaligned");
+        assert_eq!(old.body, body, "v40 body misaligned");
+    }
+
     #[test]
     fn a_v37_file_reads_as_random_and_a_v38_header_carries_the_shape() {
         let h = header();
@@ -1786,7 +1859,7 @@ mod tests {
 
         // The same round as v37 wrote it: no shape byte (nor T23.31's look), version 37.
         let mut v37 = v38.clone();
-        v37.drain(HEADER_BYTES - 2..HEADER_BYTES + V40_TAIL_BYTES);
+        v37.drain(HEADER_BYTES - 2..HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES);
         v37[4..6].copy_from_slice(&REPLAY_VERSION_NO_SHAPE.to_le_bytes());
         let old = decode(&v37).expect("a v37 file must still read");
         assert_eq!(old.header.map_shape, MapShape::Random);
@@ -1813,7 +1886,7 @@ mod tests {
         assert_eq!(now.header.version, REPLAY_VERSION);
 
         let mut v38 = v39.clone();
-        v38.drain(HEADER_BYTES - 1..HEADER_BYTES + V40_TAIL_BYTES);
+        v38.drain(HEADER_BYTES - 1..HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES);
         v38[4..6].copy_from_slice(&REPLAY_VERSION_NO_LOOK.to_le_bytes());
         let old = decode(&v38).expect("a v38 file must still read");
         assert_eq!(old.header.world_look, WorldLook::Classic);
@@ -2011,6 +2084,8 @@ mod tests {
         let h = ReplayHeader {
             min_players_to_start: 0,
             world_look: again.world_look,
+            // T23.37 item 2: a record of the build, not a setting — the new header's is this binary's.
+            build: BUILD_ID.to_string(),
             ..h
         };
         assert_eq!(again, h, "a header must survive a trip through Config");
@@ -2101,9 +2176,13 @@ mod format_tests {
             v.push(1);
         }
         // T23.29: an empty round roster from v40 on.
-        if version == REPLAY_VERSION {
+        if version >= REPLAY_VERSION_NO_BUILD {
             v.extend_from_slice(&2.5f32.to_le_bytes()); // warmup — off the default
             v.extend_from_slice(&[0; V40_TAIL_BYTES - 4]);
+        }
+        // T23.37 item 2: an empty build id from v41 on.
+        if version == REPLAY_VERSION {
+            v.extend_from_slice(&[0; V41_TAIL_BYTES]);
         }
         v
     }
@@ -2113,8 +2192,8 @@ mod format_tests {
         let bytes = header_bytes(REPLAY_VERSION);
         assert_eq!(
             bytes.len(),
-            HEADER_BYTES + V40_TAIL_BYTES,
-            "the hand-written header is not HEADER_BYTES + V40_TAIL_BYTES long, so this fixture \
+            HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES,
+            "the hand-written header is not HEADER_BYTES + V40_TAIL_BYTES + V41_TAIL_BYTES long, so this fixture \
              cannot detect a shift in the real one"
         );
 
