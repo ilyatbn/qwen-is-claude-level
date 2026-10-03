@@ -80,6 +80,10 @@ export class OrdnanceFxLayer {
     this.state.removeMine(id)
   }
 
+  moveMine(id: number, x: number, y: number): void {
+    this.state.moveMine(id, x, y)
+  }
+
   addHazard(id: number, kind: HazardKind, x: number, y: number, r: number, duration: number): void {
     this.state.addHazard(id, kind, x, y, r, duration)
   }

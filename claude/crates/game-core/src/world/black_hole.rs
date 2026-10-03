@@ -214,6 +214,8 @@ impl World {
                 p.health = 0.0;
             }
         }
+        // T23.38: and everything else that is inside it (`world::swallow`).
+        self.swallow_at_horizon(hole);
     }
 
     /// Which rock `pick` eats and where the hole opens: the rock's index in the list
@@ -348,7 +350,7 @@ impl World {
     /// leaves the list — so its well goes with it (`asteroid_attractors` reads the
     /// list) and `map_init` stops shipping it — and its pixels are carved through
     /// the ordinary carve stream.
-    fn arrive_black_hole(&mut self, pick: usize, now: f32) {
+    fn arrive_black_hole(&mut self, pick: usize, _now: f32) {
         let n = self.map.meta.asteroids.len();
         let edible = n >= 2 && !self.map.meta.asteroids[pick % n].iron;
         let pos = if edible {
@@ -370,7 +372,9 @@ impl World {
             let r = a.r + 2;
             let carve = self.map.carve_circle(a.x, a.y, r);
             self.publish_carve(&carve, a.x, a.y, r, CarveKind::Meteor);
-            self.reveal(&carve.revealed, now);
+            // T23.38: **no reveal** — the rock's buried items go with it. Revealed,
+            // they spawned inside the horizon on the arrival tick (T23.38: nothing
+            // spawns inside the reach).
             Vec2::new(a.x as f32, a.y as f32)
         } else {
             let geo = self.map.space_geometry().expect("gated by the caller");

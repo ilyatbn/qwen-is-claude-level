@@ -128,6 +128,8 @@ import { FlareClock, FogClock, LavaClock, ServerClock } from '../render/weather-
 import { FlareFx, type FlareBody } from '../render/flareFx'
 import { VortexFx } from '../render/vortexFx'
 import { BlackHoleFx } from '../render/blackHoleFx'
+import { BLACK_HOLE_GROW_MS } from '../render/blackHoleFx-math'
+import { SWALLOW_MS, swallowCentre } from '../look/fx/blackHole'
 import { DEFAULT_GRAVITY, SPACE_GRAVITY } from './sceneParams'
 import { PushEstimate } from '../look/actors/push'
 
@@ -1226,6 +1228,8 @@ export class GameScene extends Phaser.Scene {
       // §B8. The mirror handles these; this list is what actually subscribes,
       // and a handler with no subscription is the §A39 shape one layer down.
       'tombstone_spawn', 'tombstone_despawn',
+      // T23.38: a grave moves (the black hole pulls it), and the hole draws what it swallows.
+      'tombstone_move', 'swallowed',
       // T22.10B: the vortex list — the mirror keeps it in opening order and tells
       // the core, which sums the pull from it. Unsubscribed, a client predicts no
       // pull near a vortex while the server pulls: a rubber-band.
@@ -1397,6 +1401,11 @@ export class GameScene extends Phaser.Scene {
       // An id we never saw placed is a no-op: a mid-round joiner has exactly
       // that history, and throwing here would kill the scene.
       this.fx.removeMine(Number(asRecord(raw)['id'] ?? -1))
+    })
+    // T23.38: a mine moves — the black hole pulls it in (or its ground went). An unknown id is a no-op.
+    this.conn.on('mine_move', (raw) => {
+      const p = asRecord(raw)
+      this.fx.moveMine(Number(p['id'] ?? -1), Number(p['x'] ?? 0), Number(p['y'] ?? 0))
     })
     this.conn.on('phase_change', (raw) => {
       const p = asRecord(raw)
@@ -3736,6 +3745,21 @@ export class GameScene extends Phaser.Scene {
        * for a frozen photograph of the arrival frame — the disc and the ring are the
        * rule and must be full size from it. The next unfrozen frame repaints as usual.
        */
+      /**
+       * e2e only (T23.38): repaint the hole with **one** swallow `k` of the way in (0 → 1), that crossed the horizon at
+       * `angle` (rad, mask px: 0 = +x, π/2 = down) — or none with `k` null — at one fixed instant past the swell-in, so
+       * a frozen scene can photograph the streak against the same instant without it. Replaces the hole's swallows.
+       */
+      drawSwallow(k: number | null, angle = 0, what = 'item') {
+        const h = self.mirror.blackHole
+        if (!h) return null
+        const t = h.arrivedAt + BLACK_HOLE_GROW_MS + SWALLOW_MS
+        const r = C().BLACK_HOLE_HORIZON_R
+        const crossed = { x: h.x + Math.cos(angle) * r, y: h.y + Math.sin(angle) * r }
+        h.swallows = k === null ? [] : [{ ...crossed, what, at: t - k * SWALLOW_MS }]
+        self.blackHoleFx.update(h, null, t, self.time.now / 1000)
+        return { state: self.blackHoleFx.state, centre: k === null ? null : swallowCentre(h, crossed, k, r) }
+      },
       drawBlackHoleAt(ms: number) {
         const h = self.mirror.blackHole
         if (h) self.blackHoleFx.update(h, null, h.arrivedAt + ms, self.time.now / 1000)
@@ -3788,11 +3812,13 @@ export class GameScene extends Phaser.Scene {
         }
         return n
       },
-      debugBlackHole(dist?: number, warn?: boolean, id?: number) {
+      debugBlackHole(dist?: number, warn?: boolean, id?: number, litter?: number) {
         self.observed.lastBlackHole = null
         self.conn.sendRaw('debug_black_hole', {
           ...(dist === undefined ? {} : { dist }),
           ...(warn ? { warn: true } : {}),
+          // T23.38: an item, a crate, a grave and a mine at rest this far from the hole, to watch go in.
+          ...(litter === undefined ? {} : { litter }),
           // T99.04: near player `id` (a bot) instead of the asker.
           ...(id === undefined ? {} : { id }),
         })
@@ -4449,6 +4475,13 @@ export class GameScene extends Phaser.Scene {
             inputSeq: self.seq,
             // T22.12E F2: the tick the server's `ended` `round_state` carried.
             endedAtTick: self.endedAtTick,
+            // T23.38: `swallowed` heard, and every loose thing the page draws (items, crates, graves, mines) and where.
+            swallowedSeen: self.mirror.swallowedSeen,
+            loose: [
+              ...[...self.mirror.items.values()].map((i) => ({ kind: i.source === 'Crate' ? 'crate' : 'item', id: i.id, x: i.x, y: i.y })),
+              ...[...self.mirror.tombstones.values()].map((t) => ({ kind: 'grave', id: t.id, x: t.x, y: t.y })),
+              ...[...(self.fx?.state.mines.values() ?? [])].map((m) => ({ kind: 'mine', id: m.id, x: m.x, y: m.y })),
+            ],
           },
           vortex: {
             list: self.mirror.vortices.map((v) => ({ ...v })),

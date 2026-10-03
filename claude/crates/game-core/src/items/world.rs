@@ -214,9 +214,40 @@ impl WorldItems {
     /// observer holding a position the crate has already left. That is exactly
     /// how a crate ends up drawn in mid-air (§C7).
     pub fn step(&mut self, map: &Map, gravity: GravityMode, dt: f32) -> ItemStep {
+        self.step_pulled(map, gravity, None, dt)
+    }
+
+    /// [`WorldItems::step`] with the black hole's pull (T23.38): `hole` is where it is
+    /// while it pulls (`None` otherwise), and inside its reach an item drifts in as a
+    /// body does (`world::swallow::loose_forces`). **A pulled item is never idle** — it
+    /// skips the resting shortcut, and it counts as `grounded` only while it does not
+    /// move (pinned against rock), so a sliding one keeps being broadcast as airborne.
+    pub fn step_pulled(
+        &mut self,
+        map: &Map,
+        gravity: GravityMode,
+        hole: Option<Vec2>,
+        dt: f32,
+    ) -> ItemStep {
         let mut out = ItemStep::default();
         let landed = &mut out.landed;
         for it in self.items.iter_mut() {
+            let (forces, pulled) = crate::world::swallow::loose_forces(gravity, hole, it.pos);
+            if pulled {
+                let was = it.grounded;
+                let before = it.pos;
+                let (w, h) = it.size();
+                let mut body = Body::sized(it.pos, w, h);
+                body.vel = it.vel;
+                integrate(map, &mut body, forces, dt);
+                it.pos = body.pos;
+                it.vel = body.vel;
+                it.grounded = it.pos == before;
+                if it.grounded && !was {
+                    landed.push(it.id);
+                }
+                continue;
+            }
             // Idle items cost nothing — but only while the ground is still there.
             //
             // Without the re-probe an item whose support is blown away hangs over
@@ -468,6 +499,21 @@ impl WorldItems {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Remove and return every item `gone` picks, in list order — the black hole's
+    /// swallow (T23.38, `World::swallow_at_horizon`), which announces each one.
+    pub fn take_where(&mut self, mut gone: impl FnMut(&WorldItem) -> bool) -> Vec<WorldItem> {
+        let mut out = Vec::new();
+        self.items.retain(|it| {
+            if gone(it) {
+                out.push(it.clone());
+                false
+            } else {
+                true
+            }
+        });
+        out
     }
 
     pub fn get(&self, id: WorldItemId) -> Option<&WorldItem> {

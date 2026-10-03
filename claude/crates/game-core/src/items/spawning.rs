@@ -234,7 +234,16 @@ pub fn reveal_buried(
 /// many of those points are mid-air over a crater. Spawning there drops items into
 /// the void where they fall to bedrock in a heap — a bug that presents as "items
 /// stopped appearing" and is tedious to trace.
-pub fn resample_surface(map: &Map, rng: &mut ChaCha8Rng, players: &[Vec2]) -> Option<Point> {
+///
+/// `keep_out` (T23.38) is the black hole's site while it is telegraphed or open: a
+/// point inside its reach is refused outright — a hard rule, not the soft player
+/// preference — so nothing is spawned for the hole to swallow.
+pub fn resample_surface(
+    map: &Map,
+    rng: &mut ChaCha8Rng,
+    players: &[Vec2],
+    keep_out: Option<Vec2>,
+) -> Option<Point> {
     // The same landscape precondition as `place_initial`'s, and the same
     // reading (T22.05C/F8): the space path below never touches `surface`.
     let surface = &map.meta.surface_points;
@@ -260,6 +269,9 @@ pub fn resample_surface(map: &Map, rng: &mut ChaCha8Rng, players: &[Vec2]) -> Op
         // re-check is for — a point that was open twenty seconds ago may have
         // rock blown into it now.
         if !map.body_fits_at(p) {
+            continue;
+        }
+        if outside_reach(keep_out, p).is_none() {
             continue;
         }
         // A soft preference: dropped after the first few attempts so it never
@@ -335,6 +347,19 @@ impl SpawnSchedule {
         players: &[Vec2],
         now: f32,
     ) -> Vec<WorldItemId> {
+        self.tick_items_clear_of(world, map, players, None, now)
+    }
+
+    /// [`SpawnSchedule::tick_items`], never inside the black hole's reach about
+    /// `keep_out` (T23.38) — the world's production path.
+    pub fn tick_items_clear_of(
+        &mut self,
+        world: &mut WorldItems,
+        map: &Map,
+        players: &[Vec2],
+        keep_out: Option<Vec2>,
+        now: f32,
+    ) -> Vec<WorldItemId> {
         let mut out = Vec::new();
         if now < self.next_item_at {
             return out;
@@ -352,7 +377,7 @@ impl SpawnSchedule {
         for _ in 0..batch {
             // Make room before spawning, not after, so the cap is never exceeded.
             world.make_room();
-            let Some(p) = resample_surface(map, &mut self.rng, players) else {
+            let Some(p) = resample_surface(map, &mut self.rng, players, keep_out) else {
                 continue;
             };
             let item = roll_item_in(
@@ -377,6 +402,21 @@ impl SpawnSchedule {
         &mut self,
         world: &mut WorldItems,
         map: &Map,
+        now: f32,
+    ) -> Option<WorldItemId> {
+        self.tick_crates_clear_of(world, map, None, now)
+    }
+
+    /// [`SpawnSchedule::tick_crates`], never inside the black hole's reach about
+    /// `keep_out` (T23.38) — the world's production path. The hole only exists in
+    /// space, so only the space arm can meet it: a site inside the reach is re-drawn
+    /// (at most `PERIODIC_ATTEMPTS` draws, then the beat is skipped). With no hole it
+    /// draws exactly what `tick_crates` always drew.
+    pub fn tick_crates_clear_of(
+        &mut self,
+        world: &mut WorldItems,
+        map: &Map,
+        keep_out: Option<Vec2>,
         now: f32,
     ) -> Option<WorldItemId> {
         if now < self.next_crate_at {
@@ -421,7 +461,15 @@ impl SpawnSchedule {
         // **Reverse it by:** this match.
         let pos = match map.space_geometry() {
             Some(_) => {
-                let p = map.random_body_site(&mut self.rng)?;
+                let mut p = map.random_body_site(&mut self.rng)?;
+                let mut draws = 1;
+                while outside_reach(keep_out, p).is_none() {
+                    if draws >= PERIODIC_ATTEMPTS {
+                        return None;
+                    }
+                    p = map.random_body_site(&mut self.rng)?;
+                    draws += 1;
+                }
                 Vec2::new(p.x as f32, p.y as f32)
             }
             None => {
@@ -450,6 +498,14 @@ impl SpawnSchedule {
             now,
         ))
     }
+}
+
+/// `p`, unless it is inside the black hole's reach about `keep_out` (T23.38) — the
+/// clearance the respawn is held to (`black_hole::clearance`), so the two cannot
+/// disagree on where the reach ends.
+fn outside_reach(keep_out: Option<Vec2>, p: Point) -> Option<Point> {
+    let at = Vec2::new(p.x as f32, p.y as f32);
+    (crate::world::black_hole::clearance(keep_out, at) >= 0.0).then_some(p)
 }
 
 /// A crate's AABB, exposed so the renderer and tests agree with the physics.

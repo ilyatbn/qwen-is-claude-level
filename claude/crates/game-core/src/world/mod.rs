@@ -15,6 +15,7 @@ pub mod black_hole;
 pub mod cores;
 pub mod cycle;
 pub mod mount;
+pub mod swallow;
 pub mod teleport;
 pub mod tombstones;
 pub mod vortex;
@@ -463,6 +464,32 @@ pub enum GameEvent {
         tick: u32,
         id: crate::world::tombstones::TombstoneId,
     },
+    /// T23.38: where a moving grave is now — `ItemMove`'s rule (`swallow::Motion`): at
+    /// `SNAPSHOT_HZ` while it moves, and always on the tick it stops. Before this a
+    /// grave was drawn where it was placed for the rest of the round, so one the black
+    /// hole pulls in (or one whose ground was blown away) never moved on screen.
+    TombstoneMove {
+        tick: u32,
+        id: crate::world::tombstones::TombstoneId,
+        x: f32,
+        y: f32,
+    },
+    /// T23.38: where a moving mine is now — the same rule as `TombstoneMove`.
+    MineMove {
+        tick: u32,
+        id: crate::weapons::placed::MineId,
+        x: f32,
+        y: f32,
+    },
+    /// T23.38: the black hole swallowed `what` at `(x, y)` — beside the thing's own
+    /// despawn (`ItemDespawn`, `TombstoneDespawn`, `MineEnded`, `ProjectileDespawn`),
+    /// which is what removes it; this one only says to draw it going in.
+    Swallowed {
+        tick: u32,
+        x: f32,
+        y: f32,
+        what: swallow::SwallowKind,
+    },
     Score {
         tick: u32,
     },
@@ -556,6 +583,9 @@ impl GameEvent {
             | GameEvent::Relocate { tick, .. }
             | GameEvent::TombstoneSpawn { tick, .. }
             | GameEvent::TombstoneDespawn { tick, .. }
+            | GameEvent::TombstoneMove { tick, .. }
+            | GameEvent::MineMove { tick, .. }
+            | GameEvent::Swallowed { tick, .. }
             | GameEvent::Score { tick }
             | GameEvent::EffectStart { tick, .. }
             | GameEvent::EffectPhaseChanged { tick, .. }
@@ -1063,6 +1093,9 @@ pub struct World {
     /// field (`M22-RULINGS` R21: the round controller's, not the scheduler's).
     /// Hashed. See `world::black_hole`.
     black_hole: black_hole::BlackHole,
+    /// T23.38: where each grave and mine was last said to be (`swallow::Motion`) — so its
+    /// resting place always goes out. Not hashed: wire bookkeeping, not simulation.
+    loose_sent: std::collections::BTreeMap<(swallow::LooseKind, u32), Vec2>,
 }
 
 /// The map cache behind `World::for_test`: one generation per
@@ -1290,6 +1323,7 @@ impl World {
             vortex_seq: 0,
             vortex_rng: substream(seed, "vortex"),
             black_hole: black_hole::BlackHole::Unrolled,
+            loose_sent: Default::default(),
         }
     }
 
@@ -1723,7 +1757,9 @@ impl World {
         self.step_placed(now, dt);
 
         // 6. world items and crates — and the graves, which fall the same way.
-        let moved = self.items.step(&self.map, self.gravity, dt);
+        // T23.38: inside the black hole's reach they drift in as bodies do.
+        let hole = self.pulling_hole();
+        let moved = self.items.step_pulled(&self.map, self.gravity, hole, dt);
         self.emit_item_motion(&moved.landed);
         // Anything that fell out of the world is gone; say so, or every client
         // keeps drawing a crate falling forever (§C15).
@@ -1734,7 +1770,10 @@ impl World {
                 world_item_id: *id,
             });
         }
-        self.tombstones.step(&self.map, self.gravity, dt);
+        let graves_before = swallow::grave_motion(&self.tombstones);
+        self.tombstones
+            .step_pulled(&self.map, self.gravity, hole, dt);
+        self.emit_grave_motion(&graves_before);
         if playing {
             self.step_item_spawns(now);
         }
@@ -3344,6 +3383,9 @@ impl World {
                 reason: DespawnReason::Culled,
             });
         }
+        // T23.38: the hole pulls mines in, and their moves go out (`emit_loose_motion`).
+        let hole = self.pulling_hole();
+        let mines_before = swallow::mine_motion(&self.mines);
         let (ended, scorches) = {
             let (mut closures, meta, mut scratch_vels) = hit_targets(
                 &self.players,
@@ -3357,7 +3399,7 @@ impl World {
             let mut t = targets(&mut self.players, &mut closures, &meta, &mut scratch_vels);
             let ended = self
                 .mines
-                .step(&mut self.map, &mut t, self.gravity, now, dt);
+                .step_pulled(&mut self.map, &mut t, self.gravity, hole, now, dt);
             self.burn.tick(&mut t, now, dt);
             // Flames burn here rather than in `step_projectiles` because this is
             // where the target slice already exists and where the warmup gate
@@ -3367,6 +3409,7 @@ impl World {
                 crate::weapons::flame::tick(&self.projectiles, &mut self.map, &mut t, now, dt);
             (ended, scorches)
         };
+        self.emit_mine_motion(&mines_before);
         // A scorch changes the mask, so it has to reach the clients as a carve
         // like any other — a hole that exists on the server and not on the screen
         // is §C0's shape, and this module has no access to the sequence counter.
@@ -3954,9 +3997,16 @@ impl World {
             .filter(|p| p.alive)
             .map(|p| p.body.pos)
             .collect();
-        let ids = self
-            .spawn_schedule
-            .tick_items(&mut self.items, &self.map, &positions, now);
+        // T23.38: nothing spawns inside the black hole's reach while it is telegraphed
+        // or open — `black_hole_site`, the one site every placement keeps clear of.
+        let keep_out = self.black_hole_site();
+        let ids = self.spawn_schedule.tick_items_clear_of(
+            &mut self.items,
+            &self.map,
+            &positions,
+            keep_out,
+            now,
+        );
         for id in ids {
             if let Some(it) = self.items.get(id) {
                 let (item_id, count, x, y) = (it.item, it.count, it.pos.x, it.pos.y);
@@ -3972,9 +4022,9 @@ impl World {
                 });
             }
         }
-        if let Some(id) = self
-            .spawn_schedule
-            .tick_crates(&mut self.items, &self.map, now)
+        if let Some(id) =
+            self.spawn_schedule
+                .tick_crates_clear_of(&mut self.items, &self.map, keep_out, now)
         {
             if let Some(it) = self.items.get(id) {
                 let (x, y) = (it.pos.x, it.pos.y);
@@ -4303,22 +4353,28 @@ impl World {
                 });
                 // A grave where they fell (§B8). Cosmetic, and it falls if the
                 // ground under it goes.
-                let skin = self.players[i].tombstone_skin_id;
-                // T23.36: their earlier grave goes — one each, the latest — and is
-                // announced, so every client drops it (`Tombstones::place`).
-                let (stone, removed) = self.tombstones.place(victim, pos, skin, now);
-                for gone in removed {
-                    self.events
-                        .push(GameEvent::TombstoneDespawn { tick, id: gone });
+                //
+                // T23.38: **not for a death in the black hole** — the hole swallows
+                // everything, and a grave placed inside the horizon was drawn on top of
+                // it (the owner's report). Keyed on the direct cause, as R92's drop is.
+                if direct != DeathCause::BlackHole {
+                    let skin = self.players[i].tombstone_skin_id;
+                    // T23.36: their earlier grave goes — one each, the latest — and is
+                    // announced, so every client drops it (`Tombstones::place`).
+                    let (stone, removed) = self.tombstones.place(victim, pos, skin, now);
+                    for gone in removed {
+                        self.events
+                            .push(GameEvent::TombstoneDespawn { tick, id: gone });
+                    }
+                    self.events.push(GameEvent::TombstoneSpawn {
+                        tick,
+                        id: stone.id,
+                        owner: victim,
+                        x: stone.pos.x,
+                        y: stone.pos.y,
+                        skin_id: stone.skin_id,
+                    });
                 }
-                self.events.push(GameEvent::TombstoneSpawn {
-                    tick,
-                    id: stone.id,
-                    owner: victim,
-                    x: stone.pos.x,
-                    y: stone.pos.y,
-                    skin_id: stone.skin_id,
-                });
                 scored = true;
             }
         }
@@ -5959,6 +6015,9 @@ mod state_hash_coverage {
             black_hole: _,
 
             // Deliberately NOT hashed, each for a stated reason:
+            // T23.38: `loose_sent` is what the motion events last told the clients —
+            // bookkeeping for the wire, read by nothing that simulates.
+            loose_sent: _,
             // `seed` is an input, fixed for the round and carried in the replay
             // header — hashing it would only prove the header was read.
             seed: _,

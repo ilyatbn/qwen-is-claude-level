@@ -802,9 +802,9 @@ export class WorldRenderer implements SceneRenderer {
   }
 
   /** Dev (T23.20 part C): the hole as last drawn — whether, where, at what swell. */
-  blackHoleDrawn(): { drawn: boolean; at: { x: number; y: number } | null; growth: number; tilt: number } {
+  blackHoleDrawn(): { drawn: boolean; at: { x: number; y: number } | null; growth: number; tilt: number; swallowing: number } {
     const l = this.holeLayer
-    return { drawn: l.drawn, at: l.at ? { ...l.at } : null, growth: l.growth, tilt: DISC_TILT }
+    return { drawn: l.drawn, at: l.at ? { ...l.at } : null, growth: l.growth, tilt: DISC_TILT, swallowing: l.swallowing }
   }
 
   /** T23.24: the scene's own clock, s (`scene.time.now`): it stops while the scene is paused, and so do the fireflies. */

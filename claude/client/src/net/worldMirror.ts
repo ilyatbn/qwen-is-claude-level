@@ -132,7 +132,23 @@ export interface BlackHoleView {
   arrivedAt: number
   /** T22.14C LOW-4: the server tick it arrived on (`black_hole`'s `tick`), or `null`. */
   tick: number | null
+  /**
+   * T23.38: what it swallowed lately (`swallowed`), newest last — at most `SWALLOWS_KEPT`. The drawing ages them
+   * (`look/fx/blackHole.ts::swallowStreaks`); the thing itself was removed by its own despawn event.
+   */
+  swallows?: SwallowView[]
 }
+
+/** T23.38: one thing the hole swallowed — where it went in (mask px), what it was, and when (`performance.now()`). */
+export interface SwallowView {
+  x: number
+  y: number
+  what: string
+  at: number
+}
+
+/** T23.38: the swallows a hole keeps for its drawing — more than the shader draws at once (`SWALLOW_SLOTS`). */
+export const SWALLOWS_KEPT = 16
 
 /**
  * T22.12C (R93): the telegraph — where the hole will open and when, off
@@ -191,6 +207,8 @@ export class WorldMirror {
   blackHole: BlackHoleView | null = null
   /** T22.12C R93: the telegraph, until the hole arrives. */
   blackHoleWarn: BlackHoleWarnView | null = null
+  /** T23.38: `swallowed` events heard — what the checks count against the server's. */
+  swallowedSeen = 0
   /**
    * T22.16 (R102): every asteroid core destroyed this round, as `core_destroyed`
    * announced it (the rock's centre and the server tick), in arrival order. Held here
@@ -691,6 +709,24 @@ export class WorldMirror {
       case 'tombstone_despawn':
         this.tombstones.delete(n(p['id']))
         break
+      case 'tombstone_move': {
+        // T23.38: a grave the black hole pulls (or whose ground went) moves; before this it was drawn where it fell.
+        const t = this.tombstones.get(n(p['id']))
+        if (!t) break
+        t.x = n(p['x'], t.x)
+        t.y = n(p['y'], t.y)
+        break
+      }
+      case 'swallowed': {
+        // T23.38: draw it going in. The thing is already gone (its own despawn, the same tick).
+        this.swallowedSeen++
+        const h = this.blackHole
+        if (!h) break
+        const list = (h.swallows ??= [])
+        list.push({ x: n(p['x']), y: n(p['y']), what: String(p['what'] ?? ''), at: now })
+        if (list.length > SWALLOWS_KEPT) list.splice(0, list.length - SWALLOWS_KEPT)
+        break
+      }
       case 'item_pickup':
       case 'item_despawn':
         this.items.delete(n(p['world_item_id']))

@@ -1158,6 +1158,7 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                             };
                             let dist = p.get("dist").and_then(|v| v.as_f64()).map(|d| d as f32);
                             let warn = p.get("warn").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let litter = p.get("litter").and_then(|v| v.as_f64()).map(|d| d as f32);
                             let reply = room
                                 .inspect(move |w| {
                                     let near = w.player(id)?.body.pos;
@@ -1173,11 +1174,19 @@ pub fn register(io: &SocketIo, registry: Arc<std::sync::Mutex<RoomRegistry>>, co
                                     } else {
                                         dist.and_then(|d| w.dev_place_near_black_hole(id, d))
                                     };
+                                    // T23.38: `litter` (px from the hole) — an item, a crate, a
+                                    // grave and a mine at rest inside the reach, to watch go in.
+                                    let littered = if warned {
+                                        None
+                                    } else {
+                                        litter.and_then(|d| w.dev_litter_near_black_hole(d))
+                                    };
                                     use game_core::constants as c;
                                     Some(serde_json::json!({
                                         "x": hole.x, "y": hole.y,
                                         "warned": warned,
                                         "placed": placed.map(|p| serde_json::json!({"x": p.x, "y": p.y})),
+                                        "littered": littered.map(|p| serde_json::json!({"x": p.x, "y": p.y})),
                                         "horizon": c::BLACK_HOLE_HORIZON_R,
                                         "reach": c::BLACK_HOLE_REACH,
                                         "asteroids": w.map.meta.asteroids.len(),

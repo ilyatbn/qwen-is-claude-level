@@ -34,6 +34,7 @@ import { C } from '../core'
 import { DEPTH } from './backdrop'
 import { isHighQuality } from '../ui/settings'
 import { fxFeed, type FxFeed } from '../look/fx/feed'
+import { swallowStreaks, type SwallowSeen } from '../look/fx/blackHole'
 import {
   BLACK_HOLE_DISC_COLOR,
   BLACK_HOLE_REACH_RING_ALPHA,
@@ -60,6 +61,8 @@ export interface BlackHoleDraw {
   x: number
   y: number
   arrivedAt: number
+  /** T23.38: what it swallowed lately (`WorldMirror`'s), drawn going in by the world renderer's hole. */
+  swallows?: readonly SwallowSeen[]
 }
 
 /** The telegraph to draw — `WorldMirror`'s `BlackHoleWarnView`, structurally. */
@@ -213,7 +216,7 @@ export class BlackHoleFx {
       growth = blackHoleGrowth(hole.arrivedAt, nowMs)
       drawn = true
       const r = blackHoleRadii(C())
-      if (world) this.handOver(hole, growth, r)
+      if (world) this.handOver(hole, growth, r, nowMs)
       else if (viaShader) this.paintShader(hole, growth, r)
       else this.paintFlat(hole, growth, r, t)
       this.paintReach(hole, r)
@@ -309,8 +312,9 @@ export class BlackHoleFx {
   }
 
   /** T23.20 part C: the world renderer draws the hole — hand it the place, the swell and the rule's radii. */
-  private handOver(h: BlackHoleDraw, grow: number, r: BlackHoleRadii): void {
+  private handOver(h: BlackHoleDraw, grow: number, r: BlackHoleRadii, nowMs: number): void {
     this.feed.blackHole = {
+      swallows: swallowStreaks(h.swallows ?? [], h, nowMs),
       x: h.x,
       y: h.y,
       growth: grow,

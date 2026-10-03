@@ -86,6 +86,21 @@ impl Mines {
         self.mines.iter()
     }
 
+    /// Remove and return every mine `gone` picks, in list order, **without**
+    /// detonating it — the black hole's swallow (T23.38).
+    pub fn take_where(&mut self, mut gone: impl FnMut(&Mine) -> bool) -> Vec<Mine> {
+        let mut out = Vec::new();
+        self.mines.retain(|m| {
+            if gone(m) {
+                out.push(m.clone());
+                false
+            } else {
+                true
+            }
+        });
+        out
+    }
+
     /// Place one. `def` supplies damage and blast radius; the `Placed` timings
     /// come from the delivery.
     #[allow(clippy::too_many_arguments)]
@@ -131,7 +146,27 @@ impl Mines {
         now: f32,
         dt: f32,
     ) -> Vec<MineOutcome> {
+        self.step_pulled(map, players, gravity, None, now, dt)
+    }
+
+    /// [`Mines::step`] with the black hole's pull (T23.38): inside its reach a mine
+    /// drifts in as a body does (`world::swallow::loose_forces`); `hole` is `None`
+    /// unless it pulls.
+    pub fn step_pulled(
+        &mut self,
+        map: &mut Map,
+        players: &mut [HitTarget],
+        gravity: GravityMode,
+        hole: Option<Vec2>,
+        now: f32,
+        dt: f32,
+    ) -> Vec<MineOutcome> {
         for m in &mut self.mines {
+            let (forces, pulled) = crate::world::swallow::loose_forces(gravity, hole, m.pos());
+            if pulled {
+                integrate(map, &mut m.body, forces, dt);
+                continue;
+            }
             // **The match's gravity setting, not a literal `1.0`**
             // (`M22-RULINGS` R30, R14, R48). Until T22.11A this passed `1.0`
             // and `false` unconditionally, so in a low-gravity match this body

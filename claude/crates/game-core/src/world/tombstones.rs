@@ -120,12 +120,45 @@ impl Tombstones {
         self.stones.clear();
     }
 
+    /// Remove and return every grave `gone` picks, in list order — the black hole's
+    /// swallow (T23.38).
+    pub fn take_where(&mut self, mut gone: impl FnMut(&Tombstone) -> bool) -> Vec<Tombstone> {
+        let mut out = Vec::new();
+        self.stones.retain(|t| {
+            if gone(t) {
+                out.push(*t);
+                false
+            } else {
+                true
+            }
+        });
+        out
+    }
+
     /// Gravity and terrain collision, through the **same** resolver players use.
     ///
     /// Idle stones cost nothing, but only while the ground is still there — the
     /// re-probe is what stops a grave hanging over a crater.
     pub fn step(&mut self, map: &Map, gravity: GravityMode, dt: f32) {
+        self.step_pulled(map, gravity, None, dt);
+    }
+
+    /// [`Tombstones::step`] with the black hole's pull (T23.38) — the items' rule
+    /// (`WorldItems::step_pulled`): inside the reach a grave drifts in, never idle, and
+    /// is `grounded` only while it does not move.
+    pub fn step_pulled(&mut self, map: &Map, gravity: GravityMode, hole: Option<Vec2>, dt: f32) {
         for t in self.stones.iter_mut() {
+            let (forces, pulled) = crate::world::swallow::loose_forces(gravity, hole, t.pos);
+            if pulled {
+                let before = t.pos;
+                let mut body = Body::sized(t.pos, TOMBSTONE_W, TOMBSTONE_H);
+                body.vel = t.vel;
+                integrate(map, &mut body, forces, dt);
+                t.pos = body.pos;
+                t.vel = body.vel;
+                t.grounded = t.pos == before;
+                continue;
+            }
             if t.grounded {
                 if supported(map, t) {
                     continue;

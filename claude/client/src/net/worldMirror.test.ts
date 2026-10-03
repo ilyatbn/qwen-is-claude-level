@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { C, Core, MapGenerator, MapScale } from '../core'
-import { WorldMirror, hex } from './worldMirror'
+import { SWALLOWS_KEPT, WorldMirror, hex } from './worldMirror'
 import type { MapAsteroid } from './codec'
 
 /** `MapGenerator::to_u8`, keyed by serde's spelling in `Core.meta` (T22.14A B3). */
@@ -962,5 +962,26 @@ describe('a new round (T23.28)', () => {
     expect(counts(mirror)).toEqual([1, 1, 1, true])
     mirror.resetRound()
     expect(counts(mirror)).toEqual([0, 0, 0, false])
+  })
+})
+
+describe('the black hole swallows (T23.38)', () => {
+  it('moves a grave on tombstone_move, and keeps what the hole swallowed for its drawing', () => {
+    const { mirror } = freshMirror()
+    mirror.applyEvent('tombstone_spawn', { id: 3, owner: 1, x: 100, y: 200 }, 0)
+    mirror.applyEvent('tombstone_move', { id: 3, x: 140, y: 180 }, 0)
+    expect(mirror.tombstones.get(3)).toMatchObject({ x: 140, y: 180 })
+    // An unknown grave is a no-op, not a resurrection.
+    mirror.applyEvent('tombstone_move', { id: 9, x: 1, y: 1 }, 0)
+    expect(mirror.tombstones.has(9)).toBe(false)
+    // Heard before any hole: counted, with nothing to draw it into.
+    mirror.applyEvent('swallowed', { x: 1, y: 2, what: 'item' }, 5)
+    expect(mirror.swallowedSeen).toBe(1)
+    mirror.applyEvent('black_hole', { x: 500, y: 400, tick: 10 }, 0)
+    for (let i = 0; i < SWALLOWS_KEPT + 3; i++) mirror.applyEvent('swallowed', { x: 500 + i, y: 400, what: 'grave' }, 100 + i)
+    const kept = mirror.blackHole?.swallows ?? []
+    expect(kept.length).toBe(SWALLOWS_KEPT)
+    expect(kept.at(-1)).toMatchObject({ x: 500 + SWALLOWS_KEPT + 2, what: 'grave', at: 100 + SWALLOWS_KEPT + 2 })
+    expect(mirror.swallowedSeen).toBe(SWALLOWS_KEPT + 4)
   })
 })

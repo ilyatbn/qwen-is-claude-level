@@ -117,6 +117,10 @@ pub fn scope_of(e: &GameEvent) -> Scope {
         | GameEvent::Relocate { .. }
         | GameEvent::TombstoneSpawn { .. }
         | GameEvent::TombstoneDespawn { .. }
+        // T23.38: graves and mines move (the hole pulls them), and what it swallows.
+        | GameEvent::TombstoneMove { .. }
+        | GameEvent::MineMove { .. }
+        | GameEvent::Swallowed { .. }
         | GameEvent::Score { .. }
         | GameEvent::EffectStart { .. }
         | GameEvent::EffectPhaseChanged { .. }
@@ -168,6 +172,9 @@ pub fn name_of(e: &GameEvent) -> &'static str {
         GameEvent::Relocate { .. } => "relocate",
         GameEvent::TombstoneSpawn { .. } => "tombstone_spawn",
         GameEvent::TombstoneDespawn { .. } => "tombstone_despawn",
+        GameEvent::TombstoneMove { .. } => "tombstone_move",
+        GameEvent::MineMove { .. } => "mine_move",
+        GameEvent::Swallowed { .. } => "swallowed",
         GameEvent::Score { .. } => "score",
         GameEvent::EffectStart { .. } => "effect_start",
         GameEvent::EffectPhaseChanged { .. } => "effect_phase",
@@ -470,6 +477,13 @@ pub fn payload_with_votes(
             ..
         } => json!({"tick": tick, "id": id, "owner": owner, "x": x, "y": y, "skin_id": skin_id}),
         GameEvent::TombstoneDespawn { id, .. } => json!({"tick": tick, "id": id}),
+        GameEvent::TombstoneMove { id, x, y, .. } => {
+            json!({"tick": tick, "id": id, "x": x, "y": y})
+        }
+        GameEvent::MineMove { id, x, y, .. } => json!({"tick": tick, "id": id, "x": x, "y": y}),
+        GameEvent::Swallowed { x, y, what, .. } => {
+            json!({"tick": tick, "x": x, "y": y, "what": what.as_str()})
+        }
         GameEvent::Score { .. } => json!({
             "tick": tick,
             "scores": world.players.iter().map(|p| json!({

@@ -19,7 +19,7 @@
  * the server's place. The telegraph before it opens and the reach ring stay Phaser's (`render/blackHoleFx.ts`): a
  * warning and a range line are read as UI, over everything.
  */
-import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor, OrthographicCamera, ShaderMaterial } from 'three'
+import { AddEquation, BufferAttribute, BufferGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor, OrthographicCamera, ShaderMaterial, Vector3, Vector4 } from 'three'
 import type { WebGLRenderer, WebGLRenderTarget } from 'three'
 import { NOISE_GLSL } from '../skyMaterial'
 import { toWorld } from '../worldRenderer-math'
@@ -53,6 +53,73 @@ export const GLOW_STRENGTH = 0.06
 /** The hole as a light for the rock and the figures near it (mask px; `effectLights.ts`'s shape): a warm, wide glow. */
 export const BLACK_HOLE_LIGHT = { z: 60, r: 420, rgb: '255,150,70', i: 2.2 } as const
 
+/**
+ * T23.38 — **the swallow**: a thing the server took at the horizon (`swallowed`) is drawn going in — a hot streak
+ * stretched along its orbit, spiralling from where it crossed the horizon into the centre, thinning and fading as it
+ * goes. Drawn over the shadow (the shadow is black, so the streak is what shows), under the near disc.
+ *
+ * How long one takes to go in (ms), how far round it turns on the way (rad, the disc's way), its streak's length and
+ * width at the horizon (px), and how bright (HDR, against the bloom's 0.7). By eye on the GPU shot.
+ */
+export const SWALLOW_MS = 900
+export const SWALLOW_TURN = 2.4
+export const SWALLOW_LEN = 22
+export const SWALLOW_WIDTH = 5
+export const SWALLOW_HEAT = 1.8
+/** The most drawn at once — the shader's array; the newest win. */
+export const SWALLOW_SLOTS = 8
+/** Its colour by what it was (0–1 rgb): loot gold, a crate amber, a grave bone, a mine red, a round white-hot. */
+export const SWALLOW_RGB: Readonly<Record<string, readonly [number, number, number]>> = {
+  item: [1.0, 0.85, 0.45],
+  crate: [1.0, 0.55, 0.2],
+  grave: [0.85, 0.85, 0.95],
+  mine: [1.0, 0.25, 0.15],
+  projectile: [1.0, 0.95, 0.8],
+}
+
+/** One swallow as heard (`WorldMirror`'s `SwallowView`): where it went in (mask px), what, and when (ms). */
+export interface SwallowSeen {
+  x: number
+  y: number
+  what: string
+  at: number
+}
+
+/** One swallow to draw: where it crossed, from the hole (px, **y up**), how far in (0 → 1) and its colour. */
+export interface SwallowStreak {
+  dx: number
+  dy: number
+  k: number
+  rgb: readonly [number, number, number]
+}
+
+/**
+ * Where the shader draws a swallow's streak `k` of the way in (mask px) — its `swallow()`'s centre, restated for the
+ * check that photographs it: from where it crossed (at least the horizon `R` out), the radius falls as `1 − k` and it
+ * turns `SWALLOW_TURN · k` the disc's way (anticlockwise with y up, so clockwise in mask px).
+ */
+export function swallowCentre(hole: { x: number; y: number }, crossed: { x: number; y: number }, k: number, R: number): { x: number; y: number } {
+  const dx = crossed.x - hole.x
+  const dy = -(crossed.y - hole.y)
+  const r = Math.max(Math.hypot(dx, dy), R) * (1 - k)
+  const a = Math.atan2(dy, dx) + SWALLOW_TURN * k
+  return { x: hole.x + Math.cos(a) * r, y: hole.y - Math.sin(a) * r }
+}
+
+/** The swallows still going in at `nowMs` — the newest `SWALLOW_SLOTS`, aged over `SWALLOW_MS`. */
+export function swallowStreaks(list: readonly SwallowSeen[], hole: { x: number; y: number }, nowMs: number): SwallowStreak[] {
+  const live = list
+    .map((s) => ({ s, k: (nowMs - s.at) / SWALLOW_MS }))
+    .filter(({ k }) => k >= 0 && k < 1)
+    .slice(-SWALLOW_SLOTS)
+  return live.map(({ s, k }) => ({
+    dx: s.x - hole.x,
+    dy: -(s.y - hole.y),
+    k,
+    rgb: SWALLOW_RGB[s.what] ?? SWALLOW_RGB['item']!,
+  }))
+}
+
 const VS = /* glsl */ `
 attribute vec2 aP;
 varying vec2 vP;
@@ -64,8 +131,26 @@ uniform float time; uniform float R; uniform float ringR; uniform float ringW; u
 uniform float tilt; uniform float incl; uniform float rin; uniform float rout; uniform float spin;
 uniform float heat; uniform float ringHeat; uniform float ringHalf; uniform float glowReach; uniform float glowK;
 uniform vec3 ringCol;
+uniform vec4 sw[${SWALLOW_SLOTS}]; uniform vec3 swCol[${SWALLOW_SLOTS}]; uniform float swN;
+uniform float swTurn; uniform float swLen; uniform float swWidth; uniform float swHeat;
 varying vec2 vP;
 ${NOISE_GLSL}
+// T23.38: one swallow (s: where it crossed, px y up; s.z: 0 -> 1 in) — its light at vP.
+float swallow(vec4 s){
+  float k = s.z;
+  float r0 = max(length(s.xy), R);
+  float r = r0 * (1.0 - k);
+  float a = atan(s.y, s.x) + swTurn * k;
+  vec2 c = vec2(cos(a), sin(a)) * r;
+  vec2 tg = vec2(-sin(a), cos(a));           // along the orbit: the way it is stretched
+  vec2 d = vP - c;
+  float along = dot(d, tg);
+  float across = dot(d, vec2(cos(a), sin(a)));
+  float len = swLen * (0.5 + k);
+  float wid = max(swWidth * (1.0 - k), 0.75);
+  float e = exp(-along * along / (len * len) - across * across / (wid * wid)) * sqrt(1.0 - k);
+  return e;
+}
 // Blackbody-ish ramp, t 0 (cool, outer) .. 1 (hot, inner): deep red, orange, yellow, white.
 vec3 ramp(float t){
   vec3 c = mix(vec3(0.45, 0.04, 0.0), vec3(1.0, 0.3, 0.03), smoothstep(0.0, 0.35, t));
@@ -156,6 +241,14 @@ void main(){
   col += vec3(1.0, 0.93, 0.8) * ringHeat * photon;
   a = max(a, max(band0, photon));
 
+  // T23.38: what it swallowed, going in — over the shadow, under the near disc.
+  for (int i = 0; i < ${SWALLOW_SLOTS}; i++) {
+    if (float(i) >= swN) break;
+    float e = swallow(sw[i]);
+    col += swCol[i] * swHeat * e;
+    a = max(a, clamp(e, 0.0, 1.0));
+  }
+
   // In front of the shadow: the near half of the disc, never inside NEAR_CLEAR (the probes' black core).
   vec4 near = q.y <= 0.0 ? gas(rho, phi) : vec4(0.0);
   // While it swells in, the scaled-down disc would sit inside the shadow (measured: an orange slab across the black
@@ -178,6 +271,8 @@ export interface BlackHoleView {
   ringW: number
   /** `BLACK_HOLE_RING_COLOR` as 0–255. */
   ringRgb: readonly [number, number, number]
+  /** T23.38: what it is swallowing this frame (`swallowStreaks`). */
+  swallows?: readonly SwallowStreak[]
 }
 
 export class BlackHoleLayer {
@@ -188,6 +283,8 @@ export class BlackHoleLayer {
   drawn = false
   at: { x: number; y: number } | null = null
   growth = 0
+  /** Dev (T23.38): swallows drawn going in on the last placed frame. */
+  swallowing = 0
 
   constructor() {
     this.material = new ShaderMaterial({
@@ -209,6 +306,13 @@ export class BlackHoleLayer {
         glowReach: { value: GLOW_REACH },
         glowK: { value: GLOW_STRENGTH },
         ringCol: { value: [1, 0.78, 0.44] },
+        sw: { value: Array.from({ length: SWALLOW_SLOTS }, () => new Vector4()) },
+        swCol: { value: Array.from({ length: SWALLOW_SLOTS }, () => new Vector3()) },
+        swN: { value: 0 },
+        swTurn: { value: SWALLOW_TURN },
+        swLen: { value: SWALLOW_LEN },
+        swWidth: { value: SWALLOW_WIDTH },
+        swHeat: { value: SWALLOW_HEAT },
       },
       vertexShader: VS,
       fragmentShader: FS,
@@ -235,6 +339,7 @@ export class BlackHoleLayer {
     if (!h || h.hidden) {
       this.mesh.visible = false
       this.drawn = false
+      this.swallowing = 0
       this.at = null
       return
     }
@@ -261,6 +366,15 @@ export class BlackHoleLayer {
     u['ringW']!.value = h.ringW
     u['grow']!.value = h.growth
     u['ringCol']!.value = [h.ringRgb[0] / 255, h.ringRgb[1] / 255, h.ringRgb[2] / 255]
+    const streaks = (h.swallows ?? []).slice(-SWALLOW_SLOTS)
+    const sw = u['sw']!.value as Vector4[]
+    const swCol = u['swCol']!.value as Vector3[]
+    streaks.forEach((s, i) => {
+      sw[i]!.set(s.dx, s.dy, s.k, 0)
+      swCol[i]!.set(s.rgb[0], s.rgb[1], s.rgb[2])
+    })
+    u['swN']!.value = streaks.length
+    this.swallowing = streaks.length
     this.mesh.visible = true
     this.drawn = true
     this.at = { x: h.x, y: h.y }

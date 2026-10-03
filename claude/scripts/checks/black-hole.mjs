@@ -130,9 +130,114 @@ const OVERLAY = { x: 440, y: 250, w: 400, h: 220 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** Ask for the hole (and a placement, or the telegraph); resolves with the server's answer. */
-async function probe(page, dist, warn = false) {
-  await page.evaluate(([d, w]) => window.__game.debugBlackHole(d ?? undefined, w), [dist ?? null, warn])
+/**
+ * 4. **The hole swallows everything** (T23.38, the owner: *"there shouldn't be anything on top of it"*). `litter` has the
+ * server put an item, a crate, a grave and a mine at rest `LITTER_AT` × reach from the hole on a clear bearing. Then, on
+ * every drawn frame until they are gone: the loose things the page draws inside the horizon — **none, on any frame** —
+ * and the four themselves, which must be seen (the presence: drawn inside the reach, then nearer the hole) and then gone,
+ * with a `swallowed` heard for each — counted at both ends: `LITTER_N` placed by the server, as many drawn, gone and
+ * heard swallowed. Then the streak on pixels: one swallow pinned `SWALLOW_K` of the way in on a frozen frame, against
+ * the same instant without it — its centre changed and lit; a point across the shadow did not change (the control).
+ */
+const LITTER_AT = 0.5
+const LITTER_N = 4
+const SWALLOW_K = 0.3
+/** A pinned streak's centre reads lit if its mean channel is over this (the shadow under it is ≤ `DISC_MAX`). */
+const STREAK_LIT_MIN = 3 * DISC_MAX
+
+async function swallowArm(page, hole, k) {
+  await page.evaluate(([x, y]) => window.__game.watch(x, y), [hole.x, hole.y])
+  await frames(page, SETTLE_FRAMES)
+  const seen0 = (await page.evaluate(() => window.__game.debug())).blackHole.swallowedSeen
+  const run = page.evaluate(
+    ([h, R, reach, n, budget]) =>
+      new Promise((resolve) => {
+        const t0 = performance.now()
+        const things = new Map()
+        let worstInside = 0
+        let insideAt = null
+        let frames = 0
+        let streaks = 0
+        const tick = () => {
+          const d = window.__game.debug().blackHole
+          frames++
+          const inside = d.loose.filter((o) => Math.hypot(o.x - h.x, o.y - h.y) < R)
+          if (inside.length > worstInside) {
+            worstInside = inside.length
+            insideAt = inside
+          }
+          const present = new Set()
+          for (const o of d.loose) {
+            const key = `${o.kind}:${o.id}`
+            present.add(key)
+            const dist = Math.hypot(o.x - h.x, o.y - h.y)
+            const v = things.get(key)
+            if (v) v.last = dist
+            else if (d.lastProbe?.littered && dist < reach) things.set(key, { kind: o.kind, first: dist, last: dist, gone: false })
+          }
+          for (const [key, v] of things) v.gone = !present.has(key)
+          streaks = Math.max(streaks, window.__world?.blackHole()?.swallowing ?? 0)
+          const done = things.size >= n && [...things.values()].every((v) => v.gone)
+          if (done || performance.now() - t0 > budget) resolve({ things: [...things.values()], worstInside, insideAt, frames, streaks, world: !!window.__world?.blackHole() })
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+    [hole, k.BLACK_HOLE_HORIZON_R, k.BLACK_HOLE_REACH, LITTER_N, deadlineMs(10, 'the litter to go in')],
+  )
+  const lp = await probe(page, undefined, false, LITTER_AT * k.BLACK_HOLE_REACH)
+  const r = await run
+  const seen = (await page.evaluate(() => window.__game.debug())).blackHole.swallowedSeen - seen0
+  const kinds = r.things.map((v) => v.kind).sort().join(', ')
+  const runIn = LITTER_AT * k.BLACK_HOLE_REACH - k.BLACK_HOLE_HORIZON_R
+  if (!lp.littered) fail(`swallow: the server found no clear bearing for the litter: ${JSON.stringify(lp)}`)
+  else if (r.things.length < LITTER_N) fail(`swallow: the page drew ${r.things.length} of the ${LITTER_N} littered things inside the reach (${kinds})`)
+  else if (!r.things.every((v) => v.gone)) fail(`swallow: not all went in: ${JSON.stringify(r.things)}`)
+  else if (!r.things.every((v) => v.first - v.last >= runIn / 2)) fail(`swallow: control — something vanished without being drawn moving in: ${JSON.stringify(r.things)}`)
+  else ok(`swallow: all ${LITTER_N} littered things (${kinds}) drawn inside the reach, drawn moving in, then gone`)
+  if (seen < LITTER_N) fail(`swallow: ${seen} \`swallowed\` heard for ${LITTER_N} things the server placed and the page saw go`)
+  else ok(`swallow: ${seen} \`swallowed\` heard for the ${LITTER_N} placed (both ends)`)
+  if (r.worstInside > 0) fail(`swallow: ${r.worstInside} loose thing(s) drawn inside the horizon: ${JSON.stringify(r.insideAt)}`)
+  else ok(`swallow: nothing drawn inside the horizon on any of ${r.frames} frames`)
+  if (r.world && r.streaks < 1) fail('swallow: the world renderer never drew a swallow going in')
+  else if (r.world) ok(`swallow: the world renderer drew up to ${r.streaks} swallow(s) going in`)
+
+  // The streak on pixels, on a frozen frame (§C2).
+  await page.evaluate(() => window.__game.freeze(true))
+  try {
+    const none = await page.evaluate(() => window.__game.drawSwallow(null))
+    await frames(page, 2)
+    const off = await photo(page)
+    const one = await page.evaluate((kk) => window.__game.drawSwallow(kk, -Math.PI / 2), SWALLOW_K)
+    await frames(page, 2)
+    const on = await photo(page)
+    await page.screenshot({ path: join(shotsDir, 'black-hole-swallow.png') })
+    await page.evaluate(() => window.__game.drawSwallow(null))
+    if (!none || !one?.centre) {
+      fail(`swallow: the pinned streak could not be drawn: ${JSON.stringify(one)}`)
+      return
+    }
+    const c = one.centre
+    // The control: 0.4 horizons across the centre from the streak — where `coverage` probes the shadow black.
+    const away = Math.hypot(c.x - hole.x, c.y - hole.y)
+    const across = { x: hole.x - ((c.x - hole.x) / away) * 0.4 * k.BLACK_HOLE_HORIZON_R, y: hole.y - ((c.y - hole.y) / away) * 0.4 * k.BLACK_HOLE_HORIZON_R }
+    const cs = await toScreen(page, c.x, c.y)
+    const xs = await toScreen(page, across.x, across.y)
+    const cmp = await comparePhotos(page, on, off, { points: [cs, xs] })
+    const [at, ctrl] = cmp.detail
+    const lit = (at.a[0] + at.a[1] + at.a[2]) / 3
+    if (!cs.onScreen || !xs.onScreen) fail(`swallow: the streak's centre or its control is off screen: ${JSON.stringify([cs, xs])}`)
+    else if (!cmp.points[0] || lit < STREAK_LIT_MIN) fail(`swallow: the pinned streak did not paint at its centre: ${JSON.stringify(at)}`)
+    else if (cmp.points[1]) fail(`swallow: control — a point across the shadow changed too: ${JSON.stringify(ctrl)}`)
+    else ok(`swallow: the streak paints the shadow at its centre (mean ${lit.toFixed(0)} > ${STREAK_LIT_MIN}, changed ${at.peak}); across the shadow unchanged`)
+  } finally {
+    await page.evaluate(() => window.__game.freeze(false))
+  }
+}
+
+/** Ask for the hole (and a placement, or the telegraph, or litter); resolves with the server's answer. */
+async function probe(page, dist, warn = false, litter = undefined) {
+  await page.evaluate(([d, w, l]) => window.__game.debugBlackHole(d ?? undefined, w, undefined, l ?? undefined), [dist ?? null, warn, litter ?? null])
   await page.waitForFunction(() => window.__game.debug().blackHole.lastProbe !== null, null, { timeout: deadlineMs(10, 'debug_black_hole'), polling: 'raf' })
   const p = (await page.evaluate(() => window.__game.debug())).blackHole.lastProbe
   if (!p) throw new Error('debug_black_hole answered null — no space map, no rock, or no clear side')
@@ -641,6 +746,9 @@ try {
   const clear = Math.hypot(back.x - hole.x, back.y - hole.y)
   if (clear < k.BLACK_HOLE_REACH - 4) fail(`respawned ${clear.toFixed(0)} px from the hole, inside its reach ${k.BLACK_HOLE_REACH}`)
   else ok(`respawned ${clear.toFixed(0)} px from the hole, outside its reach (${k.BLACK_HOLE_REACH})`)
+
+  // --- 4. the hole swallows everything (T23.38) ----------------------------------------
+  await swallowArm(page, hole, k)
 
   // --- 5. coverage, flat and shader ---------------------------------------------------
   for (const hq of [false, true]) {

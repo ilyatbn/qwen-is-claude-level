@@ -147,6 +147,14 @@ export class OrdnanceFxState {
     return this.mines.delete(id) ? 'expired' : null
   }
 
+  /** T23.38 (`mine_move`): where a moving mine is now. An id we never saw placed is a no-op, as in `removeMine`. */
+  moveMine(id: number, x: number, y: number): void {
+    const m = this.mines.get(id)
+    if (!m) return
+    m.x = x
+    m.y = y
+  }
+
   addHazard(id: number, kind: HazardKind, x: number, y: number, r: number, duration: number): void {
     this.hazards.set(id, { id, kind, x, y, r, ttl: duration, life: Math.max(duration, 0.0001) })
   }
