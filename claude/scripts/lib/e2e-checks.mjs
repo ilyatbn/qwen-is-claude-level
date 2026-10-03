@@ -134,6 +134,17 @@ export const CHECKS = [
     url: '?look=F3&only=world',
     ready: '!!window.__look && (window.__look.ready || !!window.__look.error)',
   },
+  // T23.22: the picture gates, one per reference — `look-gate-f1`/`-f3` above and below, and these (scripts/lib/
+  // look-gate.mjs): F2's and F5's worlds against the mockup's (R19's knobs, the other palette must fail); F4/F6/F7's
+  // casts on their actor boxes in the reference harness's browser (rim-off and the knobs must fail).
+  { name: 'look-gate-f2', file: 'scripts/checks/look-gate-f2.mjs', url: '?look=F2&only=world', ready: '!!window.__look && (window.__look.ready || !!window.__look.error)' },
+  { name: 'look-gate-f4', file: 'scripts/checks/look-gate-f4.mjs', url: '?look=F4', ready: '!!window.__look && (window.__look.ready || !!window.__look.error)' },
+  { name: 'look-gate-f5', file: 'scripts/checks/look-gate-f5.mjs', url: '?look=F5&only=world', ready: '!!window.__look && (window.__look.ready || !!window.__look.error)' },
+  { name: 'look-gate-f6', file: 'scripts/checks/look-gate-f6.mjs', url: '?look=F6', ready: '!!window.__look && (window.__look.ready || !!window.__look.error)' },
+  { name: 'look-gate-f7', file: 'scripts/checks/look-gate-f7.mjs', url: '?look=F7', ready: '!!window.__look && (window.__look.ready || !!window.__look.error)' },
+  // T23.22 step 2: Level B — the staged sandbox (4 seeds, night and moonlit day, laser + flame + bazooka, zoom 1, full
+  // tier) against F1/F5 by distribution, bounds between the F1/F2/F3 spread and F0; the post stack hidden must fail.
+  { name: 'look-live', file: 'scripts/checks/look-live.mjs', url: '?sandbox=1&seed=4242&hour=1&worldlook=classic' },
   // T23.31: the volcanic world look — F2's world at Level A against the mockup's (`controls/F2-world.png`; lava-off and
   // the classic palette must fail), F2 whole against its picture (reported), the volcano backdrop and the embers drawn
   // (each against its hidden control), and the two volcanic creatures drawn and told apart from F4's by silhouette.

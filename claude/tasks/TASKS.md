@@ -860,7 +860,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.20](M23/T23.20-space-in-the-new-look.md) — Space in the new look (F3) — T22.06's behaviour, F3's picture — 2026-10-02: A + B landed (F3 look, Level A, live sky); 2026-10-03: C — black hole, flare, vortex in the world renderer, F3 effect boxes at Level A (9/9); Phaser flat paths kept as the no-WebGL2 fallback (ruling) — ✔ gated (builderA2, `check.sh --changed 6c8a595`: rust + vitest green, e2e 87/104, the 17 reds all green alone at --jobs 1; `gate-builderA2-t2320{,-alone}.txt`)
 - [x] [T23.21](M23/T23.21-the-hud.md) — The HUD restyled — no number the HUD shows today is lost — part A 2cd5842, part B as T23.21B
 - [x] [T23.21B](M23/T23.21B-the-hud-overlays-and-the-lab.md) — The HUD part B: killfeed, death, results, escape/options, minimap frame in F's look; the look-lab draws the HUD, Level A against hudE (`look-hud`)
-- [ ] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
+- [x] [T23.22](M23/T23.22-the-picture-gates.md) — The picture gates — F1–F7 reproduced at Level A, the live game compared at Level B
 - [ ] [T23.23](M23/T23.23-count-both-ends.md) — Count both ends — all 51 old pixel checks accounted for, the old art gone, perf on both tiers, the golden tables untouched
 - [x] [T23.24](M23/T23.24-fireflies.md) — Fireflies at night — small drifting lights that glow and light the rock nearby (owner ask, after T23.11)
 - [x] [T23.19G](M23/T23.19G-what-the-daylight-review-found.md) — What the review of T23.19F + T23.11 found — space always moonlit day, a mid-fight sky shader compile at first dusk/night, tests that cannot see a mid-dusk pop (handoff item 3)
