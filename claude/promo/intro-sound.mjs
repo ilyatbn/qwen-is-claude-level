@@ -106,14 +106,17 @@ function chirp(t, f0, f1, dur, vel = 1, pan = 0) {
   put(o, t, vel * 0.3, pan, 0.25)
 }
 /** The alarm: a hard square, band-limited enough not to fizz. */
-function beep(t, f, dur = 0.11, vel = 1) {
-  let ph = 0
-  const o = shaped(at(dur), () => {
-    ph += f / SR
-    return ph % 1 < 0.5 ? 1 : -1
-  }, (u, s) => Math.min(1, s / 0.002) * Math.min(1, (1 - u) * 20))
-  biquad(o, 'lp', 5500, 0.7)
-  put(o, t, vel * 0.2, 0, 0.12)
+/**
+ * The alarm (owner, 2026-10-03: "too loud and too annoying … a single beep type, softer like promo/alert.mp3 but
+ * faster"). Measured off alert.mp3: partials 710 / 1650 / 2370 / 4020 Hz at 1 / .36 / .22 / .16, a ~20 ms rise and a
+ * flat hold — shorter here (`dur`), so it can repeat faster.
+ */
+const ALERT_PARTIALS = [[710, 1], [1650, 0.36], [2370, 0.22], [4020, 0.16]]
+function beep(t, dur = 0.18, vel = 1) {
+  const norm = ALERT_PARTIALS.reduce((m, [, a]) => m + a, 0)
+  const o = shaped(at(dur), (i, s) => ALERT_PARTIALS.reduce((m, [f, a]) => m + Math.sin(2 * Math.PI * f * s) * a, 0) / norm,
+    (u, s) => Math.min(1, s / 0.02) * Math.min(1, (1 - u) * dur / 0.03))
+  put(o, t, vel * 0.07, 0, 0.1)
 }
 /** A helmet seal letting go: a click, then a hiss of pressure. */
 function seal(t, vel = 1, pan = 0) {
@@ -159,7 +162,7 @@ seal(T.helmets + 0.9, 0.9, -0.4)
 seal(T.helmets + 1.2, 0.8, -0.1)
 
 // The alarm: on the beeps the tablet flashes on.
-BEEPS.forEach((b, k) => beep(b, k % 2 ? 1568 : 2093, 0.11, b < T.turn ? 1 : 0.6))
+BEEPS.forEach((b) => beep(b, 0.18, b < T.turn ? 1 : 0.6))
 
 // The heart speeding up under the twitching (the riser and glitch crackles went).
 {
@@ -218,7 +221,8 @@ const bedR = buf()
     let want = 1
     for (const [a, b, db] of DUCKS) if (s >= a && s < b) want = Math.min(want, Math.pow(10, db / 20))
     duck = want + (duck - want) * k
-    const fade = Math.min(1, s / 2.5) * Math.max(0, Math.min(1, (T.end - s) / CUT_FADE))
+    // No fade-in (owner, 2026-10-03): the track starts at its level on frame one.
+    const fade = Math.max(0, Math.min(1, (T.end - s) / CUT_FADE))
     // Reaches 0 dB `BED_HOLD` before the cut and holds there: linear in dB from where the bed sits.
     const swell = Math.max(0, Math.min(1, (s - (T.end - BED_SWELL)) / (BED_SWELL - BED_HOLD)))
     const g = swell > 0 ? Math.pow(10, ((BED_DB + 20 * Math.log10(duck)) * (1 - swell)) / 20) * fade : g0 * duck * fade

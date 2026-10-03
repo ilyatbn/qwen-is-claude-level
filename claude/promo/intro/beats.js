@@ -57,9 +57,10 @@ export const B = [
   [T.turn, 'turn'],
 ]
 
-/** When the alarm beeps (and the tablet's red frame flashes): a pair every 0.5 s. */
+/** When the alarm beeps (and the tablet's red frame flashes): one soft beep every 0.5 s (owner, 2026-10-03 — was a
+ *  harsh two-tone pair). */
 export const BEEPS = (() => {
   const out = []
-  for (let t = T.alarm + 0.15; t < T.turn - 0.1; t += 0.5) out.push(t, t + 0.16)
+  for (let t = T.alarm + 0.15; t < T.turn - 0.1; t += 0.5) out.push(t)
   return out
 })()
