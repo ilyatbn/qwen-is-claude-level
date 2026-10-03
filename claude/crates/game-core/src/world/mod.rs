@@ -4095,6 +4095,10 @@ impl World {
             if !(landed.contains(&it.id) || (due && !it.grounded)) {
                 continue;
             }
+            // T23.42: not into the black hole's horizon — it is swallowed this tick (`swallowed_this_tick`).
+            if self.swallowed_this_tick(it.pos) {
+                continue;
+            }
             out.push(GameEvent::ItemMove {
                 tick,
                 world_item_id: it.id,

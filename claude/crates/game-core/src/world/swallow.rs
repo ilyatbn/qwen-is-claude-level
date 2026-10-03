@@ -127,6 +127,18 @@ impl World {
         self.black_hole().filter(|_| black_hole::pulls(self.phase))
     }
 
+    /// Will `pos` be swallowed at the end of this tick (`step_black_hole` → [`World::swallow_at_horizon`])? A thing
+    /// there gets **no move event**: the move would be drawn inside the horizon until its despawn lands (T23.42 found
+    /// a mine drawn there; the unit test asserts no move of any kind does). The one guard both motion paths share.
+    pub(super) fn swallowed_this_tick(&self, pos: Vec2) -> bool {
+        self.phase == crate::world::RoundPhase::Playing
+            && self.map.space_geometry().is_some()
+            && self
+                .black_hole
+                .pos()
+                .is_some_and(|hole| in_horizon(hole, pos))
+    }
+
     /// [`Motion`]'s rule over one kind: `now` is every thing's id and position after
     /// the step. A thing first seen is taken to have been sent where it was before the
     /// step (its spawn event said so); a thing gone is forgotten.
@@ -142,7 +154,7 @@ impl World {
                 continue;
             };
             let sent = *self.loose_sent.entry((kind, id)).or_insert(b);
-            if Motion::goes_out(due, b, pos, sent) {
+            if Motion::goes_out(due, b, pos, sent) && !self.swallowed_this_tick(pos) {
                 self.loose_sent.insert((kind, id), pos);
                 out.push((id, pos));
             }
@@ -544,6 +556,24 @@ mod tests {
                     "seed {seed}: the {name}'s drift never went out"
                 );
             }
+            // T23.42 found it (`black-hole.mjs`, a mine drawn inside the horizon on a Small map): no move tells a
+            // client a thing is **inside** the horizon — on the tick it crosses, it is swallowed, and a move sent
+            // first is drawn there until the despawn lands. The control is the drift above: moves did go out.
+            let inside: Vec<_> = events
+                .iter()
+                .filter_map(|e| match e {
+                    GameEvent::ItemMove { x, y, .. }
+                    | GameEvent::TombstoneMove { x, y, .. }
+                    | GameEvent::MineMove { x, y, .. } => Some(Vec2::new(*x, *y)),
+                    _ => None,
+                })
+                .filter(|p| in_horizon(hole, *p))
+                .collect();
+            assert!(
+                inside.is_empty(),
+                "seed {seed}: {} move(s) put a loose thing inside the horizon: {inside:?}",
+                inside.len()
+            );
         }
     }
 
