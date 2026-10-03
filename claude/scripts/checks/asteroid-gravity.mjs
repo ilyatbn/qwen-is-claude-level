@@ -295,6 +295,17 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => {
     window.__game.setTime(0)
   })
+  // **And switch the bloom off (T23.20).** Installing the rocks paints their cores, and a
+  // core glows past the bloom threshold (`terrainMaterial.ts::CORE_GLOW`): the bloom of the
+  // level-4 rock's core beside the run spread over the up-field control patch, which then
+  // "changed by 12.2" between the arms with the body nowhere near it. The body is the
+  // subject; the shared post pass goes off by the renderer's dev switch, asserted below.
+  const bloomOff = await page.evaluate(() => {
+    if (!window.__world) return 'no world renderer'
+    window.__world.hideLayers(['bloom'])
+    return null
+  })
+  if (bloomOff) throw new Error(`cannot switch the bloom off: ${bloomOff}`)
 
   // Rendered frames, which is the control arm's clock. Installed here rather
   // than read off the scene because nothing the scene exposes advances once the
@@ -566,6 +577,9 @@ export default async function ({ page, shot, log }) {
   // Stop the clock before photographing, so the body is where the wait says it
   // is rather than wherever it drifted during the round trip. Rendering goes on.
   await page.evaluate(() => window.__game.freeze(true))
+  if (await page.evaluate(() => window.__world.atmosphere()?.bloom !== false)) {
+    throw new Error('the bloom is still drawing after hideLayers([bloom])')
+  }
   const pulled = await dbg()
   const afterPull = {
     subject: await samplePatch(page, at.subject),
@@ -625,5 +639,6 @@ export default async function ({ page, shot, log }) {
     window.__game.freeze(false)
     window.__game.watch(null)
     window.__game.setTime(null)
+    window.__world?.hideLayers([])
   })
 }

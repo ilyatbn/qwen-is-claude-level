@@ -175,6 +175,24 @@ export default async function ({ page, shot, log }) {
   await page.evaluate((t) => window.__game.setTime(t), NIGHT_T)
   await page.waitForTimeout(600)
   await page.evaluate(() => window.__game.freeze(true))
+  // **The frozen frame has to be still before "hiding changes nothing" means anything.**
+  // Since T23.20 space is drawn by the world renderer, and 1.6 s after the reload its frame
+  // was still arriving: the first read after the freeze differed from the next by 123 in
+  // 222k pixels with the fireflies' layer untouched, and was identical from then on
+  // (measured, twelve reads 500 ms apart). So wait for the opening leg's readiness, then
+  // for two reads of the whole frame to agree (the leg's own no-change control).
+  await page.waitForFunction(() => window.__world.litTerrain()?.drawn && !window.__game.debug().terrainSwapPending, null, { timeout: 60_000 })
+  const whole = { x: 0, y: 0, w: 1280, h: 720 }
+  let still = null
+  let [prev] = await read(page, [whole])
+  for (let i = 0; i < 20 && still === null; i++) {
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+    const [cur] = await read(page, [whole])
+    if (diff(prev, cur).max <= CONTROL_MAX) still = i
+    prev = cur
+  }
+  if (still === null) problems.push('in space the frozen frame never stopped changing — no absence can be read off it')
+  else log(`space: the frozen frame is still (two reads agree after ${still + 1} pair(s))`)
   const space = await page.evaluate(() => window.__world.fireflies())
   const spaceMax = await wholeFrame(page)
   log(`space at night: seeded ${space?.seeded}, laid out ${space?.drawn}; hiding the layer moves the frame by at most ${spaceMax}`)

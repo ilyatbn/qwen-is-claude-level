@@ -145,8 +145,49 @@ export default async function ({ page, shot, log }) {
   const fmt = (s) => `rgb(${s.r.toFixed(0)}, ${s.g.toFixed(0)}, ${s.b.toFixed(0)})`
   const lum = (s) => (s.r + s.g + s.b) / 3
 
+  /**
+   * T23.20: the paint under a world patch — `__world.readAlbedo`, the lit terrain's albedo
+   * (mean r, g, b of the `side`² rect). The lit picture of a rock depends on where it is
+   * (relief, the star, the bloom of its own core), so "reads like ordinary rock" is asked
+   * of the paint, which is the thing the iron flag decides.
+   */
+  const albedo = (x, y) =>
+    page.evaluate(
+      ([x, y, side]) => {
+        const b64 = window.__world?.readAlbedo(Math.round(x - side / 2), Math.round(y - side / 2), side, side)
+        if (!b64) return null
+        const raw = atob(b64)
+        const sum = [0, 0, 0]
+        for (let i = 0; i < raw.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += raw.charCodeAt(i + c)
+        const n = raw.length / 4
+        return { r: sum[0] / n, g: sum[1] / n, b: sum[2] / n }
+      },
+      [x, y, pick.side],
+    )
   const B = await frameOn(pick.rock, 'rock')
   const A = await frameOn(pick.iron, 'iron')
+  /**
+   * T23.20: the open-space control read **with the bloom off** (the renderer's dev switch,
+   * asserted to hold). Un-ironed, the rock gains a core whose glow blooms into the space
+   * beside it — (11, 7, 23) → (24, 15, 24) measured, the control "moved" — and that glow is
+   * the flag's doing too. Without the shared post pass the control asks what it always
+   * asked: nothing but the rock changed.
+   */
+  const openNoBloom = async () => {
+    await page.evaluate(() => window.__world?.hideLayers(['bloom']))
+    await frames(SETTLE_FRAMES)
+    if (await page.evaluate(() => window.__world?.atmosphere()?.bloom !== false)) {
+      throw new Error('the bloom is still drawing after hideLayers([bloom])')
+    }
+    const sky = await toScreen(page, pick.iron.ox, pick.iron.oy)
+    const at = await toScreen(page, pick.iron.px, pick.iron.py)
+    const w = Math.max(2, Math.round(pick.side * at.scale))
+    const open = await samplePatch(page, { x: Math.round(sky.x - w / 2), y: Math.round(sky.y - w / 2), w, h: w })
+    await page.evaluate(() => window.__world?.hideLayers([]))
+    await frames(SETTLE_FRAMES)
+    return open
+  }
+  const openA = await openNoBloom()
   log(`iron ${fmt(A.patch)} vs rock ${fmt(B.patch)}; open space beside the iron ${fmt(A.open)}`)
   const apart = colourDelta(A.patch, B.patch)
   if (apart < DISTINCT_MIN) {
@@ -190,6 +231,9 @@ export default async function ({ page, shot, log }) {
     throw new Error(`the minimap's iron ${fmt(ironCell)} is not darker than its rock ${fmt(rockCell)}`)
   }
 
+  const ironPaint = await albedo(pick.iron.px, pick.iron.py)
+  const rockPaint = await albedo(pick.rock.px, pick.rock.py)
+  if (!ironPaint || !rockPaint) throw new Error('no albedo to read — the lit terrain is not up')
   // The control frame: frame A's camera (still held), the rock no longer iron on this
   // client, and the patch's chunk rebaked by a 2 px carve beside it in the same chunk.
   const poked = await page.evaluate(
@@ -226,10 +270,35 @@ export default async function ({ page, shot, log }) {
       `told it is not iron, the rock still reads ${fmt(C.patch)} (was ${fmt(A.patch)}) — the colour is not the iron flag's`,
     )
   }
-  if (colourDelta(C.patch, B.patch) > DISTINCT_MIN / 2) {
-    throw new Error(`told it is not iron, the rock reads ${fmt(C.patch)}, not ordinary rock ${fmt(B.patch)}`)
+  // T23.20: un-ironed, the rock gets a core (its disc is painted once the flag is off) and
+  // the core's glow blooms over the patch — (94, 73, 49) lit against ordinary rock's
+  // (78, 69, 71) on another rock elsewhere in the light, measured. So the lit leg above is
+  // "the picture changed with the flag" and this one asks the paint: the un-ironed patch's
+  // albedo is ordinary rock's, and not iron's.
+  const freedPaint = await albedo(pick.iron.px, pick.iron.py)
+  log(`paint: iron ${fmt(ironPaint)}, ordinary rock ${fmt(rockPaint)}, told not iron ${fmt(freedPaint)}`)
+  if (colourDelta(ironPaint, rockPaint) < DISTINCT_MIN) {
+    throw new Error(`premise: the iron's paint ${fmt(ironPaint)} is not apart from rock's ${fmt(rockPaint)}`)
   }
-  if (colourDelta(C.open, A.open) > SKY_AGREE_MAX) {
-    throw new Error(`the control region moved between frames A and C (${fmt(A.open)} → ${fmt(C.open)})`)
+  if (colourDelta(freedPaint, ironPaint) < DISTINCT_MIN) {
+    throw new Error(`told it is not iron, the paint still reads ${fmt(freedPaint)} (iron ${fmt(ironPaint)})`)
+  }
+  // Nearer ordinary rock's paint than iron's, not within a fixed distance of it: the paint
+  // itself varies from rock to rock (its hash pattern, boulders and relief) — this rock's
+  // freed patch read (88, 83, 90) against the other rock's (106, 100, 100), 27 apart, while
+  // iron's sat 63 away. A flag that left the iron paint, or painted anything dark, is
+  // nearer iron and fails here.
+  const toRock = colourDelta(freedPaint, rockPaint)
+  const toIron = colourDelta(freedPaint, ironPaint)
+  if (!(toRock < toIron)) {
+    throw new Error(
+      `told it is not iron, the paint ${fmt(freedPaint)} is nearer iron's ${fmt(ironPaint)} (${toIron.toFixed(0)}) ` +
+        `than ordinary rock's ${fmt(rockPaint)} (${toRock.toFixed(0)})`,
+    )
+  }
+  const openC = await openNoBloom()
+  log(`open space, bloom off: A ${fmt(openA)}, C ${fmt(openC)} (bloom on: ${fmt(A.open)} → ${fmt(C.open)})`)
+  if (colourDelta(openC, openA) > SKY_AGREE_MAX) {
+    throw new Error(`the control region moved between frames A and C (${fmt(openA)} → ${fmt(openC)}, bloom off)`)
   }
 }

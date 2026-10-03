@@ -141,6 +141,19 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => {
     window.__game.setTime(0)
   })
+  // T23.20: the core is a light now — its heart is drawn past the bloom threshold
+  // (`terrainMaterial.ts::CORE_GLOW`), so the bloom pass spreads it over the whole rock
+  // and the body patch dims with every hit (68 → 57 measured, the control "moved"). The
+  // core's own pixels are the subject, so the shared post pass is switched off by the
+  // renderer's dev switch and the switch is asserted to hold; the control region then
+  // means what it meant before: nothing but the core changed.
+  const bloomOff = await page.evaluate(() => {
+    const w = window.__world
+    if (!w) return 'no world renderer'
+    w.hideLayers(['bloom'])
+    return null
+  })
+  if (bloomOff) throw new Error(`cannot switch the bloom off: ${bloomOff}`)
   // Aim straight up, so the crosshair rides above the body, away from the rock.
   {
     const body = await toScreen(page, rock.x, rock.above)
@@ -158,6 +171,9 @@ export default async function ({ page, shot, log }) {
   }
   const p = await patches()
   log(`patches ${JSON.stringify(p)}`)
+  if (await page.evaluate(() => window.__world.atmosphere()?.bloom !== false)) {
+    throw new Error('the bloom is still drawing after hideLayers([bloom])')
+  }
 
   const warmth = (s) => s.r - s.b
   const subjectA = await samplePatch(page, p.subject)
@@ -238,4 +254,5 @@ export default async function ({ page, shot, log }) {
         `${fmt(controlB)}) — the difference at the core is not the core's alone`,
     )
   }
+  await page.evaluate(() => window.__world?.hideLayers([]))
 }
