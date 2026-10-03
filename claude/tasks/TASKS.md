@@ -833,7 +833,7 @@ look up and see the earth, moved since the round began.
 - [x] [T23.11](M23/T23.11-night-and-moonlit-day.md) — Night and moonlit day — two palettes blended by darkness, moons on arcs; the cycle's timing does not move
 - [x] [T23.12](M23/T23.12-the-actor-atlas.md) — The actor atlas — everything alive drawn by code per frame into three-channel cells
 - [x] [T23.13](M23/T23.13-rim-lit-silhouettes.md) — Rim-lit silhouettes — `lit()` as one sprite shader; the rim never tints the scarf; the halo in tunnels
-- [ ] [T23.13B](M23/T23.13B-the-sky-port-on-d3d12.md) — The sky/terrain port on D3D12 — find the layer that differs from the mockup on the owner's GPU and fix it
+- [x] [T23.13B](M23/T23.13B-the-sky-port-on-d3d12.md) — The sky/terrain port on D3D12 — find the layer that differs from the mockup on the owner's GPU and fix it (gpu leg passes under T23.41's mockup-spread floor)
 - [x] [T23.14](M23/T23.14-the-stick-figure.md) — The stick figure — poses, run cycle, continuous aim, scarf, space helmet; boots and wings redrawn, not removed
 - [x] [T23.14B](M23/T23.14B-the-jetpack-look.md) — The jetpack's look — flame + space plume on the stick figure, lit (owner priority, out of T23.18)
 - [x] [T23.14C](M23/T23.14C-what-the-character-batch-gate-found.md) — What the character batch gate found — context-budget's 8/9 geometry flip, thrusters-standard's missing body
@@ -881,9 +881,9 @@ look up and see the earth, moved since the round began.
 - [ ] [T23.32](M23/T23.32-space-flies-up.md) — Holding Space flies up without W (owner)
 - [x] [T23.35](M23/T23.35-flash-and-camera-follow-ups.md) — A moving player's muzzle flash 87 px off his body; the camera eases per frame, not per second
 - [x] [T23.36](M23/T23.36-crates-rain-and-one-grave.md) — Crates every 2 s up to 20, bots go for them; one tombstone per player with a glow in their colour (owner)
-- [ ] [T23.37](M23/T23.37-leftovers-from-replay-and-bots.md) — Partial pickups (client half), a build id in replays, winged bots pinned against rock, carving weapons dig
+- [x] [T23.37](M23/T23.37-leftovers-from-replay-and-bots.md) — Partial pickups (client half), a build id in replays, winged bots pinned against rock, carving weapons dig — **owed: item 2's re-record of an owner round, end to end, waits for the owner to play**
 - [x] [T23.38](M23/T23.38-the-black-hole-swallows-everything.md) — The black hole swallows items, crates, tombstones, projectiles — nothing drawn on top of it (owner)
-- [ ] [T23.41](M23/T23.41-art-reds-and-population-guards.md) — Five art checks red alone (leaves?), two population guards red (crate rain?), the GPU look thresholds from the mockup's own gap, T23.37's remainder
+- [x] [T23.41](M23/T23.41-art-reds-and-population-guards.md) — Five art checks red alone (leaves?), two population guards red (crate rain?), the GPU look thresholds from the mockup's own gap, T23.37's remainder
 - [x] [T23.28](M23/T23.28-a-clean-round-restart.md) — A clean round restart: last round's graves and items gone; load fully behind a cover, then the round starts
 - [ ] [T23.29](M23/T23.29-what-the-restart-work-found.md) — A partial pickup vanishes on clients; replays past round one; spectators and quick match
 - [x] [T23.27](M23/T23.27-spectate-a-bots-only-match.md) — Spectate a bots-only match; Tab switches who you watch; `make watch` (owner ask)
