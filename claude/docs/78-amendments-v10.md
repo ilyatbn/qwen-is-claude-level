@@ -134,3 +134,13 @@ storms (ice-shard meteors) and **extreme frost** (a drifting patch of cold that 
 dust) as its disasters; **frost at night** like space radiation (unshielded players lose health, the bar turns blue,
 the view's edges frost over); fire rendered as ice. Builds on §A7–§A8. Task:
 `tasks/parking-lot/T23.34-the-ice-world.md`.
+
+## A10 — New wire events since §A4 (extends `docs/40`'s event list)
+
+- **`swallowed`** — an entity (item, crate, grave, mine, round) crossed the black hole's horizon and is gone; carries the
+  id and kind, for the client's swallow streak (T23.38). Sent with the entity's normal despawn event.
+- **`tombstone_move`** / **`mine_move`** — a grave or mine pulled toward the black hole moved; clients interpolate it
+  (T23.38). Graves and mines were static before.
+- **`item_pickup`** carries the count left on the ground after a partial pickup (T23.29 item 1 / T23.37 item 1).
+- The replay header records the room's privacy (command tag 26), the warmup, the seat roster per round, and the build
+  that recorded it (`REPLAY_VERSION` 41; older versions still read).
