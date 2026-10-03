@@ -104,7 +104,7 @@ import { feedCause } from '../ui/killfeed-state'
 import { RadiationFx } from '../render/radiationFx'
 import { Minimap } from '../ui/minimap'
 import { beaconCrates, seenDots } from '../ui/minimap-math'
-import { Hud, type EffectPhase } from '../ui/hud'
+import { Hud, SPECTATE_TOP, spectateLineTop, type EffectPhase } from '../ui/hud'
 import { Bars } from '../ui/bars'
 import { InventoryPanel } from '../ui/inventory'
 import { EscapeMenu, handleEscape } from '../ui/escapeMenu'
@@ -3474,7 +3474,14 @@ export class GameScene extends Phaser.Scene {
     const lines = [[status, banner ?? '', strip].filter((p) => p !== '').join('   │   ')]
     if (this.scoreboardOpen) lines.push(board)
     this.hud.textContent = lines.join('\n')
-    if (this.spectateLine) this.spectateLine.textContent = this.spectateText()
+    if (this.spectateLine) {
+      this.spectateLine.textContent = this.spectateText()
+      // T23.29 (5): under the event banner while it is up, not under it on the screen (`spectateLineTop`).
+      const b = document.getElementById('hud-banner')
+      const top = spectateLineTop(b && b.style.display !== 'none' ? b.getBoundingClientRect().bottom : null)
+      const px = `${top}px`
+      if (this.spectateLine.style.top !== px) this.spectateLine.style.top = px
+    }
 
     // §C26. One decimal, from the snapshot's fuel — see `jetpackReadout-math`
     // for the measured curve this exists to make legible.

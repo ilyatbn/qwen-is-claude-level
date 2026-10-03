@@ -190,6 +190,18 @@ export const TIMER_WARN = '#ff3b30'
 export const BANNER_TOP = TIMER_TOP + TIMER_H + 6
 
 /**
+ * T23.29 (5): the spectate line ("SPECTATING Bot 3 · …", `GameScene`) sits under the timer where the banner does, and a
+ * meteor shower's "CLEARING / METEOR SHOWER 0:03" drew over it (T23.26E's GPU shots). Its top is derived from the
+ * banner's **drawn** bottom when the banner is up — `SPECTATE_GAP` below it — and is `SPECTATE_TOP` otherwise.
+ */
+export const SPECTATE_TOP = BANNER_TOP + 8
+export const SPECTATE_GAP = 6
+/** Where the spectate line's top goes: below the banner's drawn bottom (px), or at `SPECTATE_TOP` with no banner. */
+export function spectateLineTop(bannerBottom: number | null): number {
+  return bannerBottom === null ? SPECTATE_TOP : Math.max(SPECTATE_TOP, Math.ceil(bannerBottom) + SPECTATE_GAP)
+}
+
+/**
  * Round timer, **top-centre**; event banner directly below it.
  *
  * **Both moved 2026-09-16**, owner, from play: *"theres a list of recent

@@ -322,6 +322,8 @@ export const CHECKS = [
   { name: 'zoom-match', file: 'scripts/checks/zoom-match.mjs', standalone: true },
   // T23.27 (`docs/78` §A1): a spectator — no body, the camera on the watched player, Tab / Shift+Tab to switch.
   { name: 'spectate', file: 'scripts/checks/spectate.mjs', standalone: true },
+  // T23.29 (5): with a meteor shower forced, the spectate line sits below the event banner — boxes and pixels.
+  { name: 'spectate-banner', file: 'scripts/checks/spectate-banner.mjs', standalone: true },
   { name: 'm4-checkpoint', file: 'scripts/checks/m4-checkpoint.mjs', url: '?sandbox=1&seed=12345&worldlook=classic' },
   // T23.09C F1: rewritten on the effect lights (it counted a light total SMG fire can never reach) — un-parked.
   { name: 'night-combat', file: 'scripts/checks/night-combat.mjs', url: '?sandbox=1&seed=12345&hour=1&worldlook=classic' },

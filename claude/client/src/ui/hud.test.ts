@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   BANNER_TOP,
+  SPECTATE_GAP,
+  SPECTATE_TOP,
+  spectateLineTop,
   activated,
   TIMER_H,
   TIMER_TOP,
@@ -189,5 +192,15 @@ describe('bannerText', () => {
 describe('the top-centre HUD stack', () => {
   it('puts the hazard banner clear of the bottom of the timer', () => {
     expect(BANNER_TOP).toBeGreaterThanOrEqual(TIMER_TOP + TIMER_H)
+  })
+
+  // T23.29 (5): the spectate line under the banner while it is up — a relation between two boxes, as above.
+  it('puts the spectate line below a banner that is up, and at its own place with none', () => {
+    expect(spectateLineTop(null)).toBe(SPECTATE_TOP)
+    expect(SPECTATE_TOP).toBeGreaterThan(BANNER_TOP) // the control: with no banner it already sits below where one starts
+    const tall = SPECTATE_TOP + 70 // a two-line banner's drawn bottom, well past the line's own place
+    expect(spectateLineTop(tall)).toBeGreaterThanOrEqual(tall + SPECTATE_GAP)
+    // A banner whose bottom is above the line's place does not pull the line up.
+    expect(spectateLineTop(BANNER_TOP)).toBe(SPECTATE_TOP)
   })
 })
