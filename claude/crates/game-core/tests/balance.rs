@@ -3076,17 +3076,34 @@ fn terrain_seeds() -> Vec<u64> {
         .map_or(SEEDS.to_vec(), |n| (1..=n).map(|i| i * 7919).collect())
 }
 
+/// T23.26B: `BOTS_KIT=all` arms every bot as the room's `all` start kit does (`room.rs::kit_items` — every live
+/// weapon at its `max_stack`, a full battery) at spawn and **on every respawn**, the room's rule. With 16 weapons
+/// and 8 bar slots half the kit lands in the backpack — the shape that kept a real bot off the flamethrower.
+fn all_kit(w: &mut World, id: u8) {
+    for d in game_core::items::registry::live_weapons() {
+        give(w, id, d.id, d.max_stack);
+    }
+    if let Some(p) = w.player_mut(id) {
+        p.battery = BATTERY_MAX;
+    }
+}
+
 fn terrain_round(seed: u64) -> TerrainRound {
+    let kit = std::env::var("BOTS_KIT").is_ok_and(|v| v == "all");
     let mut w = World::new(seed, DEFAULT_MAP_SCALE);
     w.set_round_seconds(ROUND_SECONDS);
     w.set_phase(RoundPhase::Playing);
     let mut bots: Vec<_> = (0..BOT_COUNT_DEFAULT)
         .map(|i| {
             w.add_player(i as u8, 0, format!("Bot {i}"));
+            if kit {
+                all_kit(&mut w, i as u8);
+            }
             Bot::new(i as u8, seed, i as u32, BOT_SKILL_DEFAULT)
         })
         .collect();
     let _ = w.drain_events();
+    let mut was_alive: Vec<bool> = vec![true; BOT_COUNT_DEFAULT];
     let mut r = TerrainRound::default();
     let mut watch = game_core::bots::movement::Watcher::default();
     let mut last_hit: BTreeMap<u8, Option<game_core::weapons::explode::EffectKind>> =
@@ -3096,6 +3113,15 @@ fn terrain_round(seed: u64) -> TerrainRound {
         let now = w.round_time;
         drive(&mut w, &mut bots, now, SIM_DT);
         w.step(SIM_DT);
+        if kit {
+            for (i, was) in was_alive.iter_mut().enumerate() {
+                let alive = w.player(i as u8).is_some_and(|p| p.alive);
+                if alive && !*was {
+                    all_kit(&mut w, i as u8);
+                }
+                *was = alive;
+            }
+        }
         let on_map = w.items.iter().filter(|it| it.is_crate()).count() as u32;
         r.crates_on_map_ticks += u64::from(on_map);
         r.crates_on_map_max = r.crates_on_map_max.max(on_map);

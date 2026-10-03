@@ -219,11 +219,14 @@ pub fn drive(world: &mut World, bots: &mut [Bot], now: f32, dt: f32) -> Vec<Driv
     }
     for b in bots.iter() {
         if let Some(slot) = b.wants_select() {
-            // T99.04 (promo): the rotation reaches the whole bag, and only the quick bar can
-            // be held — a weapon in the backpack is swapped into the bar's last slot first,
-            // as a player would drag it. A real bot only ever picks from what it can hold.
+            // Only the quick bar can be held — a weapon in the backpack is swapped into the
+            // bar's last slot first, as a player drags it (§C10's `move_item`, the human's
+            // only way to reach the backpack). T99.04 did this for the promo rotation only;
+            // T23.26B: **every bot**. `choose_weapon` scores the whole bag, so with the `all`
+            // kit (16 weapons, 8 bar slots) the flamethrower landed in the backpack, was
+            // chosen, and `select_slot` refused it every tick — a real bot never fired it.
             let quick = crate::constants::QUICK_SLOTS as u8;
-            if b.arsenal.is_some() && slot >= quick && world.move_item(b.player, slot, quick - 1) {
+            if slot >= quick && world.move_item(b.player, slot, quick - 1) {
                 world.select_slot(b.player, quick - 1);
             } else {
                 world.select_slot(b.player, slot);
@@ -2213,6 +2216,42 @@ mod tests {
         let inp = b.think(&w, 0.0, SIM_DT);
         assert_eq!(inp.buttons, 0);
         assert_eq!(b.wants_use(), None);
+    }
+
+    /// T23.26B: **a bot reaches a weapon in its backpack** the way a player does — dragged into the quick bar
+    /// (`move_item`), then selected. Its only gun sits in the first backpack slot, the bar holds the shovel; one
+    /// `drive` later the gun is in hand. The control: the same gun left in the bar is selected too (so the assertion
+    /// is about the backpack, not about choosing a pistol). Planted (the swap gated on `arsenal` again, as T99.04 had
+    /// it) → red: the shovel stays in hand.
+    #[test]
+    fn a_bot_reaches_a_weapon_in_its_backpack() {
+        for in_backpack in [true, false] {
+            let mut w = World::for_test(SEED, MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.add_player(0, 0, "bot".into());
+            give(&mut w, 0, PISTOL, 10);
+            let at = (0..crate::constants::INVENTORY_SLOTS as u8)
+                .find(|s| {
+                    w.player(0)
+                        .and_then(|p| p.inventory.slot(*s))
+                        .is_some_and(|st| st.item == PISTOL)
+                })
+                .expect("the pistol");
+            if in_backpack {
+                assert!(w.move_item(0, at, crate::constants::QUICK_SLOTS as u8));
+            }
+            let mut bots = vec![Bot::new(0, SEED, 0, 0.85)];
+            let _ = drive(&mut w, &mut bots, 1.0, SIM_DT);
+            let held = w
+                .player(0)
+                .and_then(|p| p.inventory.slot(p.inventory.selected()))
+                .map(|s| s.item);
+            assert_eq!(
+                held,
+                Some(PISTOL),
+                "in the backpack {in_backpack}: not in hand"
+            );
+        }
     }
 }
 
