@@ -141,7 +141,7 @@ function heartbeat(t, vel = 1) {
 /** Owner, 2026-10-03: the landing and the breath 10 % quieter. */
 const QUIETER = 0.9
 /** And the breath 10 % lower again (owner, 2026-10-03). */
-const BREATH = QUIETER * 0.9
+const BREATH = QUIETER * 0.9 * 0.9
 sweep(0.2, T.land - 0.2, 80, 420, 0.42 * QUIETER, (u) => u * u)
 impact(T.land, 0.9 * QUIETER, 38)
 sweep(T.land, 1.6, 3000, 600, 0.12 * QUIETER, (u) => Math.exp(-u * 4)) // debris
