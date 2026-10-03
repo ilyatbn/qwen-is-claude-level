@@ -6176,8 +6176,9 @@ mod tests {
     #[test]
     fn the_mirror_escapes_the_traced_pocket_with_the_server() {
         const POCKET: Vec2 = Vec2::new(2194.0, 1235.0);
-        let (mut w, mut core) =
-            space_world_and_mirror_at(451_383, game_core::constants::DEFAULT_MAP_SCALE, true);
+        // T23.42: the pocket was traced on seed 451383's **Medium** map, so the map is named — it reached Medium
+        // through `DEFAULT_MAP_SCALE` until that became Small, and on Small `POCKET` is a different place.
+        let (mut w, mut core) = space_world_and_mirror_at(451_383, MapScale::Medium, true);
         w.add_player(1, 0, String::new());
         {
             let p = w.player_mut(1).expect("seated");
