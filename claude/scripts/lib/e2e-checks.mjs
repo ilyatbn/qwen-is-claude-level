@@ -483,8 +483,9 @@ export const CHECKS = [
   // T21.32: what `rematch` cannot see — a round whose vote window is waited out, a
   // lobby start on a new map, and the first frames of a match reached through the
   // menu. Standalone: it needs a short round and three bots on its own server.
-  // T23.41: parked (tasks/flaky-test.md) — the lone human's early restart on a vote missed 2 of 3 runs, then held.
-  { name: 'round-over', file: 'scripts/checks/round-over.mjs', standalone: true, flaky: true },
+  // Un-parked 2026-10-03 (builder H): it timed vote → warmup, which since T23.28 includes the new map's swiftshader
+  // paint (11–15 s idle); the early restart is now timed at `new_round` (tasks/flaky-test.md).
+  { name: 'round-over', file: 'scripts/checks/round-over.mjs', standalone: true },
   // T23.28: a restart drops round one's graves and pickups, and its new map is loaded behind a cover before the
   // server starts the round; and a respawn with the full kit shows the kit without a key press.
   { name: 'round-restart', file: 'scripts/checks/round-restart.mjs', standalone: true },

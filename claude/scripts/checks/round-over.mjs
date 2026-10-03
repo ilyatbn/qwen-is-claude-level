@@ -35,11 +35,14 @@ import { constants as rustConstants } from '../lib/rust-constants.mjs'
 import { key as clientKey } from '../lib/client-keys.mjs'
 
 const PORT = await freePort()
-const { fail, ok, finish } = tally('round-over')
+const { fail, ok, finish, failures } = tally('round-over')
+const errorsSoFar = () => failures.length
 
 // From the shipped constants, never literals: the window is what everything below
 // waits on, and a wait spelled here expires the day it moves.
 const ENDED_SECONDS = rustConstants().get('ENDED_SECONDS')
+// T23.28's load hold: how long the server waits on a seat's `ready` before it drops the seat.
+const READY_TIMEOUT_S = rustConstants().get('READY_TIMEOUT_SECS')
 // Long enough that item 4's samples land well inside the warmup countdown: at 3 s the
 // first run sampled a warmup that had already counted down to `0:00` honestly, which
 // is the reading the bug produces. Short of the shipped 10 s only to save time.
@@ -57,6 +60,8 @@ const stack = await startStack({
     BOT_COUNT: '3',
     LOBBY_BOT_TIMEOUT: String(LOBBY_S),
     WEATHER: 'off',
+    // The restart's own line (`round restarted`, timestamped), to place it on the vote leg's timeline.
+    GAME_LOG: process.env.GAME_LOG ?? 'warn,game::round=info',
   },
 })
 const health = async () => (await fetch(`http://127.0.0.1:${PORT}/healthz`)).json()
@@ -189,11 +194,73 @@ await toResults('round two')
 // for the close would take all of them.
 const secsAtClick = Number((await text('.results-count'))?.match(/(\d+) s$/)?.[1] ?? NaN)
 const clickedAt = Date.now()
+// The leg's timeline, printed on a red: which step of vote → restart → map → paint → `ready` → warmup took the time.
+const timeline = []
+let sampling = true
+const sampler = (async () => {
+  let last = ''
+  while (sampling) {
+    const s = await page
+      .evaluate(() => {
+        try {
+          const d = window.__game?.debug()
+          const c = d?.cover
+          return JSON.stringify({
+            phase: d?.phase,
+            ready: d?.ready,
+            resets: c?.resets,
+            painted: c?.painted,
+            readySent: c?.readySent,
+            awaiting: c?.awaitingRound,
+            tally: document.querySelector('.results-tally')?.textContent ?? null,
+            again: document.querySelector('.results-again')?.textContent ?? null,
+          })
+        } catch (e) {
+          return `err ${e}`
+        }
+      })
+      .catch((e) => `eval ${e}`)
+    if (s !== last) timeline.push(`+${((Date.now() - clickedAt) / 1000).toFixed(1)}s ${s}`)
+    last = s
+    await sleep(100)
+  }
+})()
+const resetsBefore = (await dbg())?.cover?.resets ?? NaN
 await page.click('.results-again')
 const EARLY_MARGIN_S = 3
 if (!(secsAtClick > EARLY_MARGIN_S * 2)) {
   fail(`too little of the window left to tell early from on-time: ${secsAtClick} s`)
 }
+// T23.28 split "a new round" in two, and this leg timed both as one. The server restarts on the vote and sends
+// `new_round` (the client's `cover.resets` counts them); the round then **waits in the load hold** until this client
+// has painted the new map and said `ready`. On the checks' swiftshader that paint is 11–15 s on an idle box
+// (`gates/builderH-roundover-1.txt`: restart at +3.3 s, painted at +14.3 s) and longer under a batch — so "click →
+// warmup < 17 s" was a coin flip on paint speed, not a test of the vote (parked 2026-10-03, `tasks/flaky-test.md`).
+// The vote's claim — **restarted early** — is timed at `new_round`; the load hold is bounded by its own deadline,
+// the server's `READY_TIMEOUT_SECS`, past which it drops the seat.
+if (!Number.isFinite(resetsBefore)) fail(`no \`cover.resets\` in debug() before the click — nothing to time`)
+await page
+  .waitForFunction(
+    (before) => {
+      try {
+        return (window.__game?.debug().cover?.resets ?? 0) > before
+      } catch {
+        return false
+      }
+    },
+    resetsBefore,
+    { timeout: (ENDED_SECONDS + 15) * 1000 },
+  )
+  .then(() => {
+    const took = (Date.now() - clickedAt) / 1000
+    if (took < secsAtClick - EARLY_MARGIN_S) {
+      ok(`a lone human's yes restarted the round in ${took.toFixed(1)} s, with ${secsAtClick} s of window left`)
+    } else {
+      fail(`the restart waited for the window: ${took.toFixed(1)} s after a vote with ${secsAtClick} s left`)
+    }
+  })
+  .catch(async () => fail(`no restart (\`new_round\`) after a counted vote: ${JSON.stringify((await dbg())?.cover)}`))
+const restartedAt = Date.now()
 await page
   .waitForFunction(
     () => {
@@ -204,17 +271,17 @@ await page
       }
     },
     null,
-    { timeout: (ENDED_SECONDS + 15) * 1000 },
+    { timeout: (READY_TIMEOUT_S + 15) * 1000 },
   )
-  .then(() => {
-    const took = (Date.now() - clickedAt) / 1000
-    if (took < secsAtClick - EARLY_MARGIN_S) {
-      ok(`a lone human's yes started a new round in ${took.toFixed(1)} s, with ${secsAtClick} s of window left`)
-    } else {
-      fail(`the new round waited for the window: ${took.toFixed(1)} s after a vote with ${secsAtClick} s left`)
-    }
-  })
-  .catch(async () => fail(`no new round after a counted vote: ${(await dbg())?.phase}`))
+  .then(() =>
+    ok(`the new round started once the map was painted, ${((Date.now() - restartedAt) / 1000).toFixed(1)} s later`),
+  )
+  .catch(async () => fail(`restarted, but the new round never started: ${JSON.stringify((await dbg())?.cover)}`))
+sampling = false
+await sampler
+if (process.env.ROUND_OVER_TIMELINE || errorsSoFar() > 0) {
+  console.log(`  the vote leg's timeline (client debug, on change):\n    ${timeline.join('\n    ')}`)
+}
 if (await page.evaluate(() => !!document.querySelector('#start-game'))) {
   fail('a player whose vote carried was sent to the title')
 }
