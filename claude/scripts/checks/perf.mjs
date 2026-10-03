@@ -4,6 +4,15 @@
  * The fps question this exists to answer: a `fps 36` reading appeared in the same
  * frame as the new DOM feel layer. A number with no control is not evidence, so
  * this measures with the layer **on and off** rather than assuming either way.
+ *
+ * **M23's frame rate, both tiers (T23.23, 2026-10-03, `scripts/busy-fight.mjs`: 1 human + 5 bots, seed 320, a
+ * bazooka every 250 ms for 8 s, zoom 1; mean fps of the 8 s).** Real GPU (headed google-chrome, D3D12 Intel Arc B390):
+ * low 59.2 / 59.9, full 59.8 / 59.9 — vsync-bound, p99 16.8 ms. SwiftShader (this check's browser): low 39.3 / 39.5 /
+ * 39.5, full 5.7 ×3 (a software rasteriser at the full tier is not a configuration anyone plays; reported). The low
+ * tier's basis: the same script at T23.10's commit (9548528) gives 48.7 / 49.1 / 49.9 — T23.18B's 50.1–51.8 was a
+ * different, uncommitted script. **The ~10 fps since then are T23.08B's foreground leaves**: hiding `fg` alone gives
+ * 47.7 / 48.2 (fireflies, fx, backdrop/embers/cloudSea each change nothing). D-76: reported, not gated, and no task tunes the low
+ * tier — the likely fix (the leaves' quad over their spots only, not the whole screen) is recorded in tasks/M23/CLOSING-M23.md.
  */
 export default async function ({ page, shot, log }) {
   const sample = async (label, seconds = 3) => {
