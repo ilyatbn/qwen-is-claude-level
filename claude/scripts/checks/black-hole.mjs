@@ -627,7 +627,10 @@ const MINIMAP_REACH_MIN = 20
 const stack = await startStack({
   port: await freePort(),
   label: 'black-hole',
-  env: { BOT_COUNT: '0', FIXED_SEED: '4242', WEATHER: 'off', DEV_PROBE: '1', DEV_WARMUP_SECONDS: String(WARMUP_S), ROUND_SECONDS: String(ROUND_S) },
+  // T23.42 made every match Small; this check's pixel controls (the match-flat clear points) were laid out on the
+  // Medium framing, and on Small the only usable points lie along the disc's glow. The dev MAP_SCALE override keeps
+  // the framing the check was built for (coordinator, 2026-10-04) rather than loosening a control.
+  env: { BOT_COUNT: '0', FIXED_SEED: '4242', WEATHER: 'off', DEV_PROBE: '1', DEV_WARMUP_SECONDS: String(WARMUP_S), ROUND_SECONDS: String(ROUND_S), MAP_SCALE: 'medium' },
 })
 try {
   const { page, errors } = await soloSpace(stack, 'ana')
