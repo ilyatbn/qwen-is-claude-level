@@ -191,10 +191,25 @@ try {
   console.log(`  5. ${cows.length} cow(s) ${JSON.stringify(cows)}`)
   if (cows.length !== trees.length) fail(`${cows.length} cows drawn by ${trees.length} trees — want one a tree`)
   else ok(`a cow by each tree (${cows.length})`)
-  const byTree = cows.filter((c) => trees.some((t) => Math.abs(c.x - t.x) <= DURIAN_TREE_W))
-  if (byTree.length !== cows.length) fail(`a cow is not by any tree: ${JSON.stringify(cows)}`)
-  if (cows.length) {
-    const c0 = cows[0]
+  // Beside its tree, fully in view (the owner): the cow's drawing — tail 24 px behind its middle, spiked head 36 ahead —
+  // clear of every tree's box (`DURIAN_TREE_W` wide), yet within the leash of one.
+  const COW_CLEAR = num('COW_CLEAR')
+  const COW_LEASH = num('COW_LEASH')
+  for (const c of cows) {
+    const [x0, x1] = c.right ? [c.x - 24, c.x + 36] : [c.x - 36, c.x + 24]
+    const under = trees.filter((t) => x1 > t.x - DURIAN_TREE_W / 2 && x0 < t.x + DURIAN_TREE_W / 2)
+    const near = trees.some((t) => Math.abs(c.x - t.x) <= COW_LEASH + 1)
+    console.log(`  5. cow ${c.id} drawn x ${x0.toFixed(0)}–${x1.toFixed(0)}; trees it overlaps ${under.length}; within the leash of one: ${near}`)
+    if (under.length) fail(`cow ${c.id} stands under a tree (drawn ${x0.toFixed(0)}–${x1.toFixed(0)}) — not fully visible`)
+    if (!near) fail(`cow ${c.id} is not by any tree (${COW_CLEAR}–${COW_LEASH} px)`)
+  }
+  // The cow framed is one that faces a canopy within its tongue's reach (`cows().reaches`): one beside a pillar,
+  // facing away mid-amble, is a cow and not a failure; none able to reach on the whole map would be.
+  await page.waitForFunction(() => window.__game.cows().some((c) => c.reaches), null, { timeout: 15_000 }).catch(() => null)
+  const reacher = (await page.evaluate(() => window.__game.cows())).find((c) => c.reaches)
+  if (!reacher) fail(`no cow faces a canopy within its tongue's reach: ${JSON.stringify(await page.evaluate(() => window.__game.cows()))}`)
+  if (reacher) {
+    const c0 = reacher
     await page.evaluate(([x, y]) => window.__game.watch(x, y), [c0.x, c0.y - 40])
     await page.evaluate(() => { window.__world.hideLayers(['leaves']); window.__game.setItemsVisible(false) })
     await sleep(800)
@@ -220,7 +235,7 @@ try {
       const c = (await page.evaluate(() => window.__game.cows())).find((x) => x.id === c0.id) ?? c0
       const cx = (c.x - d.worldView.x) * d.zoom
       const cy = (c.y - d.worldView.y) * d.zoom
-      cowBox = { x: Math.max(0, Math.round(cx - 130)), y: Math.max(0, Math.round(cy - 150)), w: 260, h: 170 }
+      cowBox = { x: Math.max(0, Math.round(cx - 240)), y: Math.max(0, Math.round(cy - 250)), w: 480, h: 270 }
       counts.push(await pinkIn(await photo(page), cowBox))
       await sleep(250)
     }

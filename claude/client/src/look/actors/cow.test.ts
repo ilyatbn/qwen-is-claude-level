@@ -14,6 +14,14 @@ describe('alien cow (T24.01)', () => {
     expect(tongueTarget(cowMouth(450, 400, true), [])).toBeNull()
   })
 
+  it('reaches the canopy from beside the tree, where it grazes in full view (the owner: "just extend the tongue")', () => {
+    // At the inner edge of its band (140 px from the trunk, facing it) and at the outer (230), on the tree's level.
+    for (const off of [140, 185, 230]) {
+      expect(tongueTarget(cowMouth(TREE.x - off, TREE.y, true), [TREE]), `${off} px left`).not.toBeNull()
+      expect(tongueTarget(cowMouth(TREE.x + off, TREE.y, false), [TREE]), `${off} px right`).not.toBeNull()
+    }
+  })
+
   it('reaches out and back each period, curling a different way each reach — the random pattern', () => {
     const outs = new Set<number>()
     for (let k = 0; k < TONGUE_STEPS; k++) outs.add(tonguePose((k + 0.5) * (TONGUE_PERIOD_S / TONGUE_STEPS), 3).out)

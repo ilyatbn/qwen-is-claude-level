@@ -116,6 +116,10 @@ if (narrated > 0) {
   else ok(`the old flat cloud is gone: Phaser's layer does not move with the effects (${moved.toFixed(1)})`)
 
   // --- covers the cloud, both tiers -----------------------------------------------------------
+  // T24.01: the pickups' name labels are Phaser's signage over the world (T23.19D F3), so a ring point under one reads
+  // as "unpainted" whatever the smoke does — a supply crate landing beside the thrower put its label on point 12 (9
+  // where the rest read 26–129). The labels are off for these photographs; the smoke under them is what is asked.
+  await page.evaluate(() => window.__game.setItemLabelsVisible(false))
   for (const hq of [false, true]) {
     const tier = hq ? 'full' : 'low'
     await setHQ(hq)
@@ -136,6 +140,7 @@ if (narrated > 0) {
     else ok(`${tier}: the drawn cloud covers the ground that blinds (${n} points at ${COVER} R)`)
   }
   await setHQ(false)
+  await page.evaluate(() => window.__game.setItemLabelsVisible(true))
 
   // --- it animates, frozen ---------------------------------------------------------------------
   const STEP_FRAMES = 18

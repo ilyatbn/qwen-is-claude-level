@@ -25,9 +25,9 @@
 use crate::constants::{
     GravityMode, ANIMAL_DESPAWN_BELOW, ANIMAL_EDGE_MARGIN, ANIMAL_INTERVAL, ANIMAL_MAX,
     ANIMAL_SPIDER_CHANCE, BEETLE_H, BEETLE_HEALTH, BEETLE_SPEED, BEETLE_TURN_EVERY, BEETLE_W,
-    COW_FLEE_SECS, COW_FLEE_SPEED, COW_GRAZE_CHANCE, COW_H, COW_HEALTH, COW_LEASH, COW_SPEED,
-    COW_THINK_EVERY, COW_W, SPIDER_H, SPIDER_HEALTH, SPIDER_HOP_EVERY, SPIDER_HOP_SIDE,
-    SPIDER_HOP_UP, SPIDER_W,
+    COW_BELOW, COW_CLEAR, COW_FLEE_SECS, COW_FLEE_SPEED, COW_GRAZE_CHANCE, COW_H, COW_HEALTH,
+    COW_LEASH, COW_SPEED, COW_THINK_EVERY, COW_W, SPIDER_H, SPIDER_HEALTH, SPIDER_HOP_EVERY,
+    SPIDER_HOP_SIDE, SPIDER_HOP_UP, SPIDER_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -44,7 +44,8 @@ pub enum AnimalKind {
     /// Walks, tougher, and drops a battery pack.
     Beetle,
     /// T24.01 task 4: the alien cow — one grazes by each durian tree, from the round's start (`with_cow_homes`), and
-    /// drops a durian grenade. Ambles and grazes within `COW_LEASH` of its tree, sleeps there at night, flees when hurt.
+    /// drops a durian grenade. Ambles and grazes beside its tree (`COW_CLEAR`–`COW_LEASH` from the trunk, one side),
+    /// sleeps there at night, flees when hurt.
     Cow,
 }
 
@@ -177,23 +178,41 @@ impl Animals {
         }
     }
 
-    /// T24.01: hatch a cow at each home — on the map's surface point (a validated standing spot, `MapMeta`) nearest
-    /// `COW_HOME_OFFSET` to the home's side **on the tree's own level** (within a body's height of its foot; a point
-    /// below a narrow ledge would put the cow in the pit beside it — measured: seed 7's two cows landed 64 px under
-    /// their trees and one never moved again), else on the tree's foot itself.
+    /// T24.01: hatch a cow beside each tree — on a standable surface point (`MapMeta`) in the band `COW_CLEAR`–
+    /// `COW_LEASH` from the trunk, within `COW_BELOW` above or below the tree's foot, on the **side with room** (more such
+    /// points; a tie takes the side the home names). The nearest point to the band's inner edge on the tree's own
+    /// level first, so it grazes close beside the canopy, fully in view. A tree with no room on either side gets its
+    /// cow at the trunk's foot.
     fn hatch_cows(&mut self, map: &Map, now: f32) -> Vec<AnimalId> {
         let mut out = Vec::new();
         let (w, h) = AnimalKind::Cow.size();
-        let level = crate::constants::PLAYER_H;
-        for (foot, side) in self.cow_homes.clone() {
-            let want = foot.x + side * crate::constants::COW_HOME_OFFSET;
-            let at = map
-                .meta
-                .surface_points
+        for (foot, prefer) in self.cow_homes.clone() {
+            let band = |side: f32| -> Vec<Vec2> {
+                map.meta
+                    .surface_points
+                    .iter()
+                    .map(|p| Vec2::new(p.x as f32, p.y as f32))
+                    .filter(|p| {
+                        let off = (p.x - foot.x) * side;
+                        let dy = p.y - foot.y;
+                        (COW_CLEAR..=COW_LEASH).contains(&off) && dy.abs() <= COW_BELOW
+                    })
+                    .collect()
+            };
+            let (r, l) = (band(1.0), band(-1.0));
+            let side = if r.len() > l.len() || (r.len() == l.len() && prefer > 0.0) {
+                1.0
+            } else {
+                -1.0
+            };
+            let pts = if side > 0.0 { r } else { l };
+            let at = pts
                 .iter()
-                .map(|p| Vec2::new(p.x as f32, p.y as f32))
-                .filter(|p| (p.y - foot.y).abs() <= level && (p.x - foot.x).abs() <= COW_LEASH)
-                .min_by(|a, b| (a.x - want).abs().total_cmp(&(b.x - want).abs()))
+                .copied()
+                .min_by(|a, b| {
+                    let key = |p: &Vec2| (p.y - foot.y).abs() * 2.0 + (p.x - foot.x).abs();
+                    key(a).total_cmp(&key(b))
+                })
                 .unwrap_or(foot);
             let id = self.next_id;
             self.next_id += 1;
@@ -364,10 +383,14 @@ impl Animals {
                         a.grazing = graze;
                         a.dir = if right { 1.0 } else { -1.0 };
                         if let Some(home) = a.home {
+                            // Its band beside the tree: out past the canopy (`COW_CLEAR`), in within the leash.
                             let off = a.body.pos.x - home.x;
                             if off.abs() > COW_LEASH {
                                 a.grazing = false;
                                 a.dir = -off.signum();
+                            } else if off.abs() < COW_CLEAR {
+                                a.grazing = false;
+                                a.dir = if off == 0.0 { 1.0 } else { off.signum() };
                             } else if graze {
                                 // Grazing faces the trunk, as the tongue reaches for it.
                                 a.dir = if off > 0.0 { -1.0 } else { 1.0 };
@@ -388,8 +411,21 @@ impl Animals {
                 // T24.01: fleeing beats sleeping beats grazing; else it ambles — and an ambling cow turns back at a
                 // drop deeper than a body (it grazes by its tree; one that walked off the ledge could not climb back).
                 AnimalKind::Cow => {
-                    if now >= a.flee_until && a.body.grounded && !Self::ground_ahead(map, a) {
+                    // (Only while it walks: a grazing cow faces its trunk, whatever drop is in front of it.)
+                    if now >= a.flee_until
+                        && !a.grazing
+                        && a.body.grounded
+                        && !Self::ground_ahead(map, a)
+                    {
                         a.dir = -a.dir;
+                    }
+                    // Not under its tree: an amble that reaches the band's inner edge stops there and grazes, facing
+                    // the trunk (the tongue does the rest). Checked every tick, or a 3-s amble overshoots by 48 px.
+                    if let (Some(home), false) = (a.home, now < a.flee_until) {
+                        let off = a.body.pos.x - home.x;
+                        if off.abs() <= COW_CLEAR && a.dir * off < 0.0 && !a.grazing {
+                            a.grazing = true;
+                        }
                     }
                     a.body.vel.x = if now < a.flee_until {
                         a.dir * COW_FLEE_SPEED

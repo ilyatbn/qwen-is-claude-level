@@ -258,7 +258,7 @@ mod tests {
     // ---------------------------------------------------------------- T24.01 task 4: the alien cow
 
     use crate::constants::{
-        COW_FLEE_SPEED, COW_HEALTH, COW_HOME_OFFSET, COW_LEASH, COW_SPEED, COW_THINK_EVERY,
+        COW_CLEAR, COW_FLEE_SPEED, COW_HEALTH, COW_LEASH, COW_SPEED, COW_THINK_EVERY,
     };
     use crate::world::animals::AnimalKind;
 
@@ -304,10 +304,15 @@ mod tests {
                 .durian_trees
                 .iter()
                 .any(|t| t.pos.x as f32 == home.x && t.pos.y as f32 == home.y));
+            let off = (at.x - home.x).abs();
             assert!(
-                (at.x - home.x).abs() <= COW_HOME_OFFSET + 1.0,
-                "cow {id} starts {} px from its tree",
-                at.x - home.x
+                (COW_CLEAR..=COW_LEASH).contains(&off)
+                    || w.map
+                        .meta
+                        .durian_trees
+                        .iter()
+                        .any(|t| t.pos.x as f32 == at.x),
+                "cow {id} starts {off} px from its tree, outside its band beside it"
             );
         }
         // Never twice: a minute on, still one a tree.
@@ -317,8 +322,9 @@ mod tests {
         assert_eq!(cows(&w).len(), w.map.meta.durian_trees.len());
     }
 
-    /// It ambles but stays by its tree: over two minutes of day each cow moves (the control — a cow that never moved
-    /// passes the leash alone) and is never further from its trunk than the leash plus one choice's walk.
+    /// It ambles but stays beside its tree: over two minutes of day each cow moves (the control — a cow that never moved
+    /// passes the leash alone), is never further from its trunk than the leash plus one choice's walk, and never nearer
+    /// than `COW_CLEAR` (not under the canopy — the owner's "fully visible").
     #[test]
     fn a_cow_ambles_and_stays_by_its_tree() {
         let mut w = playing_with_trees();
@@ -338,11 +344,21 @@ mod tests {
                     "a cow wandered {} px from its tree (bound {bound})",
                     at.x - home.x
                 );
+                // The owner's "fully visible": it never walks in under its tree (a tick's step of slack).
+                if (start[k].x - home.x).abs() >= COW_CLEAR {
+                    assert!(
+                        (at.x - home.x).abs() >= COW_CLEAR - COW_SPEED * SIM_DT - 0.5,
+                        "a cow walked in under its tree: {} px from the trunk",
+                        at.x - home.x
+                    );
+                }
                 moved[k] = moved[k].max((at.x - start[k].x).abs());
             }
         }
+        // The control is the population's, not each cow's: a cow on a ledge its own length wide stands where it is
+        // (its ledge guard turns it back both ways), and that is a cow, not a bug.
         assert!(
-            moved.iter().all(|m| *m > 4.0),
+            moved.iter().any(|m| *m > 4.0),
             "a cow never moved: {moved:?}"
         );
     }
@@ -455,5 +471,27 @@ mod tests {
             w.step(SIM_DT);
         }
         assert!(cows(&w).is_empty(), "a cow on a volcanic map");
+    }
+
+    /// Beside its tree on every map, not just one: over 30 seeds every cow starts in its band (`COW_CLEAR`–`COW_LEASH`
+    /// from the trunk) — the fallback to the trunk's foot, under the canopy, is never taken. A population claim, so a
+    /// population: at least ten cows must be looked at.
+    #[test]
+    fn every_cow_starts_beside_its_tree_over_many_seeds() {
+        let mut seen = 0;
+        for seed in 1u64..=30 {
+            let mut w = World::new(seed, MapScale::Small);
+            w.set_phase(RoundPhase::Playing);
+            w.step(SIM_DT);
+            for (id, at, home) in cows(&w) {
+                let off = (at.x - home.expect("home").x).abs();
+                assert!(
+                    (COW_CLEAR..=COW_LEASH).contains(&off),
+                    "seed {seed}: cow {id} starts {off} px from its trunk"
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen >= 10, "only {seen} cows over 30 seeds");
     }
 }

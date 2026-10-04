@@ -60,6 +60,16 @@ pub fn canopy_clear(mask: &Mask, p: Point) -> bool {
     all > 0 && air as f32 >= DURIAN_TREE_AIR * all as f32
 }
 
+/// Is there a standable surface point beside the tree at `p` for its cow — `COW_CLEAR`–`COW_LEASH` from the trunk on
+/// either side, within `COW_BELOW` of its foot's height? The same band `hatch_cows` places the cow in.
+pub fn cow_room(surface: &[Point], p: Point) -> bool {
+    use crate::constants::{COW_BELOW, COW_CLEAR, COW_LEASH};
+    surface.iter().any(|q| {
+        let off = (q.x - p.x).abs() as f32;
+        (COW_CLEAR..=COW_LEASH).contains(&off) && ((q.y - p.y) as f32).abs() <= COW_BELOW
+    })
+}
+
 /// Far enough from `q` on either axis (the furniture rule `meta::standing_furniture` uses for pads and platforms).
 fn apart(p: Point, q: Point, d: i32) -> bool {
     (p.x - q.x).abs() >= d || (p.y - q.y).abs() >= d
@@ -104,6 +114,11 @@ pub fn choose_trees(
             continue;
         }
         if !canopy_clear(mask, p) {
+            continue;
+        }
+        // T24.01 task 4: and room beside it for its cow, which grazes in full view, never under the canopy
+        // (`world::animals::hatch_cows`'s band) — a tree with nowhere beside it to stand would put its cow under it.
+        if !cow_room(surface, p) {
             continue;
         }
         // The draw is made only for a tree that is kept, so a rejected candidate moves nothing after it.
@@ -200,6 +215,10 @@ mod tests {
                     assert!(
                         canopy_clear(&m.mask, t.pos),
                         "{shape:?} {seed}: tree {k}'s canopy is in rock"
+                    );
+                    assert!(
+                        cow_room(&meta.surface_points, t.pos),
+                        "{shape:?} {seed}: tree {k} has no room beside it for its cow"
                     );
                     for f in &furniture {
                         assert!(

@@ -20,7 +20,7 @@
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
 import { BEETLE, COW, bodyColor, bodySize, legPhase, mixedFauna } from './animals-math'
-import { cowActor } from '../look/actors/cow'
+import { cowActor, cowMouth, tongueTarget } from '../look/actors/cow'
 import type { AnimalView } from '../net/worldMirror'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws, fxFeed } from '../look/fx/feed'
@@ -72,8 +72,14 @@ export class AnimalLayer {
   }
 
   /** T24.01 (dev, promo): the cows drawn — where, and whether still (grazing) — to frame one. */
-  get cows(): { id: number; x: number; y: number; right: boolean; still: number }[] {
-    return [...this.entries.values()].filter((e) => e.kind === COW).map((e) => ({ id: e.id, x: e.root.x, y: e.root.y, right: e.right, still: (this.nowMs - e.movedMs) / 1000 }))
+  get cows(): { id: number; x: number; y: number; right: boolean; still: number; reaches: boolean }[] {
+    return [...this.entries.values()]
+      .filter((e) => e.kind === COW)
+      .map((e) => {
+        const feet = e.root.y + bodySize(COW).h / 2
+        const reaches = tongueTarget(cowMouth(e.root.x, feet, e.right), this.trees) !== null
+        return { id: e.id, x: e.root.x, y: e.root.y, right: e.right, still: (this.nowMs - e.movedMs) / 1000, reaches }
+      })
   }
 
   /** T23.19: draw the animals in the world renderer (`on`), or as Phaser's shapes — whatever the drawer says (T23.19D). */

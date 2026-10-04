@@ -3696,11 +3696,17 @@ pub const COW_SPEED: f32 = 16.0;
 pub const COW_THINK_EVERY: f32 = 3.0;
 /// Chance a choice is to graze rather than to amble.
 pub const COW_GRAZE_CHANCE: f32 = 0.55;
-/// How far from its tree's trunk the cow wanders before it turns home, px (the canopy's half-width,
-/// `DURIAN_TREE_W` / 2, plus a body): it stays under or beside its tree.
-pub const COW_LEASH: f32 = 128.0;
-/// Where it starts, px from the trunk (the side drawn by the tree's mirror bit): under the canopy's edge.
-pub const COW_HOME_OFFSET: f32 = 56.0;
+/// **Beside its tree, never under it** — the owner, 2026-10-04: *"can you make the cow be near the tree so it's fully
+/// visible? just extend the tongue."* The cow grazes in a band on one side of its trunk: no nearer than `COW_CLEAR` —
+/// the canopy's half-width (`DURIAN_TREE_W` / 2 = 97) plus the drawn cow's reach toward the tree (its spiked head, 36
+/// px ahead of its middle) plus a few px, so its whole drawing stands clear of the tree's box — and no further than
+/// `COW_LEASH`, where it turns home. It starts on the side with more standable ground in that band (`hatch_cows`).
+pub const COW_CLEAR: f32 = 140.0;
+pub const COW_LEASH: f32 = 230.0;
+/// How far below its tree's foot the cow may stand, px — a tree on a narrow pillar has no level ground beside it, and
+/// a cow on the ground below, beside the pillar, is still the tree's: a tree's height (`DURIAN_TREE_H`). Measured:
+/// at two bodies (56) seed 7's pillar tree found no ground in its band and its cow stood under the canopy.
+pub const COW_BELOW: f32 = 170.0;
 /// Hurt, it flees — away from the nearest player — at `COW_FLEE_SPEED` (a beetle's pace and half again) for
 /// `COW_FLEE_SECS`, past its leash, then ambles home. *"flees gunfire like other animals"*.
 pub const COW_FLEE_SPEED: f32 = 40.0;

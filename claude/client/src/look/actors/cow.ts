@@ -16,8 +16,15 @@ import { nightHalo, ANIMAL_LIT_PER_S } from './furniture'
 
 type P = [number, number]
 
-/** How far the tongue reaches from the mouth, px: up into the low canopy from beside the trunk (fruit hang 48–88 px up). */
-export const COW_TONGUE_REACH = 96
+/**
+ * How far the tongue reaches from the mouth, px. The cow grazes **beside** its tree, not under it (the owner: *"make
+ * the cow be near the tree so it's fully visible? just extend the tongue"*): it stands `COW_CLEAR` (140) to
+ * `COW_LEASH` (230) from the trunk, its mouth 29 px ahead of its middle, and the nearest canopy point (a low bough's
+ * cluster, 66 px out and 70 up) is then 45–135 px across and up to ~40 px up from the mouth on level ground. Beside a
+ * tree on a pillar the cow stands on the ground below (`COW_BELOW`, up to 170 px under the foot), and measured on seed
+ * 7 its canopy was 140–170 px up and 110 across — 220 reaches it there too, the tongue's curl on top.
+ */
+export const COW_TONGUE_REACH = 220
 /** One reach out and back, s, drawn in `TONGUE_STEPS` steps (one atlas cell each). */
 export const TONGUE_PERIOD_S = 2.4
 export const TONGUE_STEPS = 12
