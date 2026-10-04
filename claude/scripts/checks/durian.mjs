@@ -17,6 +17,10 @@
  * 4. **The grenade bursts mid-air into four, and four purple clouds:** thrown up-right, `DURIAN_PIECES` piece
  *    projectiles are drawn (distinct ids) and as many `DurianGas` clouds held; with the effects hidden as control,
  *    each cloud paints a ring at half its radius, and what it paints is purple (blue and red over green).
+ * 5. **The alien cow (task 4):** one is drawn by each tree (`__game.cows()`, both ends against the trees); framed, the
+ *    cow is in the picture against the animals hidden (`setAnimalsVisible`, control: hidden twice identical); and
+ *    grazing by its tree it **reaches its pink tongue** — over a few seconds of frames the cow's box holds pink
+ *    pixels in some frames and a different count in others (it animates), and none with the animals hidden.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -180,6 +184,68 @@ try {
     else if (!(purple >= n / 2)) fail(`the clouds are not purple: ${purple}/${n} painted points`)
     else ok(`the clouds are drawn and purple (${n}/${pts.length} painted, ${purple} purple)`)
     await freeze(false)
+  }
+
+  // ------------------------------------------------------------------ 5. the alien cow
+  const cows = await page.evaluate(() => window.__game.cows())
+  console.log(`  5. ${cows.length} cow(s) ${JSON.stringify(cows)}`)
+  if (cows.length !== trees.length) fail(`${cows.length} cows drawn by ${trees.length} trees — want one a tree`)
+  else ok(`a cow by each tree (${cows.length})`)
+  const byTree = cows.filter((c) => trees.some((t) => Math.abs(c.x - t.x) <= DURIAN_TREE_W))
+  if (byTree.length !== cows.length) fail(`a cow is not by any tree: ${JSON.stringify(cows)}`)
+  if (cows.length) {
+    const c0 = cows[0]
+    await page.evaluate(([x, y]) => window.__game.watch(x, y), [c0.x, c0.y - 40])
+    await page.evaluate(() => { window.__world.hideLayers(['leaves']); window.__game.setItemsVisible(false) })
+    await sleep(800)
+    // Pink: the tongue's #ff6fa8 through the grade — red high, green well under it, blue between.
+    const pinkIn = (shot64, box) => page.evaluate(async ([src, b]) => {
+      const img = new Image()
+      img.src = `data:image/png;base64,${src}`
+      await img.decode()
+      const cv = document.createElement('canvas')
+      cv.width = img.width
+      cv.height = img.height
+      const g = cv.getContext('2d')
+      g.drawImage(img, 0, 0)
+      const d = g.getImageData(b.x, b.y, b.w, b.h).data
+      let n = 0
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i] - d[i + 1] > 70 && d[i + 2] - d[i + 1] > 20) n++
+      return n
+    }, [shot64, box])
+    const counts = []
+    let cowBox = null
+    for (let k = 0; k < 24; k++) {
+      const d = await dbg()
+      const c = (await page.evaluate(() => window.__game.cows())).find((x) => x.id === c0.id) ?? c0
+      const cx = (c.x - d.worldView.x) * d.zoom
+      const cy = (c.y - d.worldView.y) * d.zoom
+      cowBox = { x: Math.max(0, Math.round(cx - 130)), y: Math.max(0, Math.round(cy - 150)), w: 260, h: 170 }
+      counts.push(await pinkIn(await photo(page), cowBox))
+      await sleep(250)
+    }
+    await shot('durian-cow')
+    await freeze(true)
+    await frame()
+    const withCow = await photo(page)
+    await page.evaluate(() => window.__game.setAnimalsVisible(false))
+    await frame()
+    const noCow = await photo(page)
+    const noCow2 = await photo(page)
+    await page.evaluate(() => window.__game.setAnimalsVisible(true))
+    await freeze(false)
+    const drawnCow = await comparePhotos(page, withCow, noCow, { rect: cowBox })
+    const idleCow = await comparePhotos(page, noCow, noCow2)
+    const pinkHidden = await pinkIn(noCow, cowBox)
+    console.log(`  5. cow box ${JSON.stringify(cowBox)}: ${(drawnCow.fraction * 100).toFixed(1)} % drawn; pink px over ${counts.length} frames ${JSON.stringify(counts)}; with the animals hidden ${pinkHidden}`)
+    if (idleCow.fraction !== 0) fail('control: the frame with the animals hidden drawn twice differs')
+    if (!(drawnCow.fraction > 0.01)) fail(`the cow is not in the picture (${(drawnCow.fraction * 100).toFixed(2)} % of its box)`)
+    else ok(`the cow is drawn (${(drawnCow.fraction * 100).toFixed(1)} % of its box)`)
+    if (pinkHidden !== 0) fail(`control: ${pinkHidden} pink px with the animals hidden — the pink test reads something else`)
+    if (!(Math.max(...counts) >= 8)) fail(`no tongue: the grazing cow's box never held pink (${JSON.stringify(counts)})`)
+    else if (new Set(counts).size < 2) fail(`the tongue does not move: ${JSON.stringify(counts)}`)
+    else ok(`the cow reaches its tongue, and it moves (pink ${Math.min(...counts)}–${Math.max(...counts)} px)`)
+    await page.evaluate(() => { window.__world.hideLayers([]); window.__game.setItemsVisible(true); window.__game.watch(null) })
   }
 } catch (e) {
   fail(`the check stopped: ${e.message}`)

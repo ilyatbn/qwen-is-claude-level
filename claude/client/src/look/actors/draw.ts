@@ -440,6 +440,107 @@ export function crystals(g: G, x: number, y: number, { s = 1, glowRGB = '120,190
 }
 
 /**
+ * T24.01 task 4: **the alien cow** (`tasks/parking-lot/refs/alien-cow-ref.jpg`, the owner's words): a stick-figure
+ * alien grazer in F's ink — a fat cow body on short thick legs, a long giraffe neck, a small head with **spikes all
+ * round it**, two little horns, red eyes (the one fixed colour, like the spider's). Feet on y 0, facing +x, world px
+ * at `s` 1 (the body is `COW_W` wide). Animated in quantised steps (one atlas cell each): `gait` the walk, `chew`
+ * the jaw (0 shut … 1 open), `sleep` the head laid down by the forelegs with its eyes shut, and `tongue` — a long pink
+ * tongue from the mouth to `tongue.to` (px from the mouth), out by `tongue.out` (0–1) and curled by `tongue.curl`
+ * (−1…1, its random pattern) — when it eats from a tree.
+ */
+export function cow(
+  g: G,
+  x: number,
+  y: number,
+  { s = 1, face = 1, gait = 0, chew = 0, sleep = false, tongue = null as { to: P; out: number; curl: number } | null, eye = '#ff3a2a' } = {},
+): void {
+  withT(g, x, y, s, face, 0, () => {
+    g.lineCap = 'round'
+    g.lineJoin = 'round'
+    // Legs: short and thick, a walk's alternate pairs swinging.
+    const sw = (ph: number): number => 3 * Math.sin(ph * Math.PI * 2)
+    for (const [hx, ph] of [[-10, 0], [-6, 0.5], [7, 0.5], [11, 0]] as const) {
+      const k = sleep ? 0 : sw(gait + ph)
+      line(g, [[hx, -9], [hx + k * 0.4, -4], [hx + k, 0]], 3.2)
+    }
+    // The body: a fat barrel, a little high at the shoulders.
+    g.fillStyle = INK
+    g.beginPath()
+    g.ellipse(0, -13, 16, 8.5, -0.05, 0, Math.PI * 2)
+    g.fill()
+    // A short whip of a tail.
+    line(g, [[-15, -15], [-20, -12], [-21, -6]], 1.4)
+    // Neck and head: raised high (grazing from a tree), or laid down asleep.
+    const shoulder: P = [11, -17]
+    const head: P = sleep ? [24, -6] : [22, -42]
+    const mid: P = sleep ? [20, -16] : [19, -28]
+    line(g, [shoulder, mid, head], 4.6)
+    g.save()
+    g.translate(...head)
+    g.rotate(sleep ? 0.35 : -0.15)
+    // Spikes all round the head (the owner's "spikes all around it"), longer on top.
+    for (let k = 0; k < 11; k++) {
+      const a = (k / 11) * Math.PI * 2
+      const len = 3 + (Math.sin(a) < 0 ? 2.2 * -Math.sin(a) : 0.8)
+      const [c, n] = [Math.cos(a), Math.sin(a)]
+      g.fillStyle = INK
+      g.beginPath()
+      g.moveTo(c * 3.6 - n * 1.1, n * 3 + c * 1.1)
+      g.lineTo(c * (4.4 + len), n * (3.6 + len))
+      g.lineTo(c * 3.6 + n * 1.1, n * 3 - c * 1.1)
+      g.closePath()
+      g.fill()
+    }
+    // Two little horns over the brow.
+    line(g, [[-1, -3.5], [-2.5, -9]], 1.3)
+    line(g, [[2, -3.5], [3, -9.5]], 1.3)
+    // The head and its jaw: the snout forward, the jaw dropping with `chew`.
+    g.fillStyle = INK
+    g.beginPath()
+    g.ellipse(0.5, 0, 4.6, 3.6, 0, 0, Math.PI * 2)
+    g.fill()
+    g.beginPath()
+    g.ellipse(5, -0.6, 3.2, 2, 0, 0, Math.PI * 2)
+    g.fill()
+    const jaw = sleep ? 0 : chew
+    g.save()
+    g.translate(2.5, 1.6)
+    g.rotate(0.55 * jaw)
+    g.beginPath()
+    g.ellipse(3, 0.6, 3.4, 1.3, 0, 0, Math.PI * 2)
+    g.fill()
+    g.restore()
+    if (extras) {
+      if (sleep) line(g, [[1.2, -1.4], [3.2, -1.2]], 0.7, eye)
+      else disc(g, 2.2, -1.4, 0.85, eye)
+    }
+    g.restore()
+    // The tongue: from the mouth toward the tree, out by `out`, curling side to side by `curl` (pink, fixed colour).
+    if (tongue && !sleep && extras && tongue.out > 0) {
+      const mouth: P = [head[0] + 7, head[1] + 1.5]
+      const [tx, ty] = tongue.to
+      const end: P = [mouth[0] + tx * tongue.out, mouth[1] + ty * tongue.out]
+      const len = Math.hypot(end[0] - mouth[0], end[1] - mouth[1]) || 1
+      const nx = -(end[1] - mouth[1]) / len
+      const ny = (end[0] - mouth[0]) / len
+      const bend = tongue.curl * Math.min(18, len * 0.45)
+      const c1: P = [mouth[0] + (end[0] - mouth[0]) * 0.5 + nx * bend, mouth[1] + (end[1] - mouth[1]) * 0.5 + ny * bend]
+      g.strokeStyle = '#ff6fa8'
+      g.lineWidth = 2
+      g.beginPath()
+      g.moveTo(...mouth)
+      g.quadraticCurveTo(...c1, ...end)
+      g.stroke()
+      // The curled tip, wrapping the fruit or leaf it reaches.
+      g.lineWidth = 1.4
+      g.beginPath()
+      g.arc(end[0] + nx * 1.6 * Math.sign(tongue.curl || 1), end[1] + ny * 1.6 * Math.sign(tongue.curl || 1), 2.2, 0, Math.PI * 1.5)
+      g.stroke()
+    }
+  })
+}
+
+/**
  * T24.01: **the durian tree** (`tasks/parking-lot/refs/durianbombtree.jpg`) in F's ink — a gnarled trunk on a flare of
  * roots, boughs forking out to spiky leaf clusters, and three low branches that hang the fruit (`durianTree.ts`'s
  * `FRUIT_AT`, world px from the trunk's foot, which the server's `map::durian::FRUIT_AT` places the items at).

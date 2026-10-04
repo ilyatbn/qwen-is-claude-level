@@ -12,10 +12,13 @@ import { C } from '../core'
 /** Wire values, matching `AnimalKind::to_u8`. */
 export const SPIDER = 0
 export const BEETLE = 1
+/** T24.01: the alien cow (`AnimalKind::Cow`). */
+export const COW = 2
 
 /** The drawn size, which **is** the hit box. */
 export function bodySize(kind: number): { w: number; h: number } {
   const c = C()
+  if (kind === COW) return { w: c.COW_W, h: c.COW_H }
   return kind === BEETLE
     ? { w: c.BEETLE_W, h: c.BEETLE_H }
     : { w: c.SPIDER_W, h: c.SPIDER_H }

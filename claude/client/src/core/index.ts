@@ -292,6 +292,9 @@ export interface Constants {
   SPIDER_H: number
   BEETLE_W: number
   BEETLE_H: number
+  /** T24.01: the alien cow's hit box (`constants.rs::COW_W`/`COW_H`). */
+  COW_W: number
+  COW_H: number
   ANIMAL_MAX: number
   ANIMAL_INTERVAL: number
   /** Live toxic drops during a full-rate shower — the emitter's divisor (T20.05). */

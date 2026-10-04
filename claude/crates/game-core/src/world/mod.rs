@@ -1277,7 +1277,17 @@ impl World {
         let initial_draws = place_initial(&mut items, &map, seed, 0.0);
 
         let birds = Birds::new(seed, &map);
-        let animals = Animals::new(seed);
+        // T24.01 task 4: a cow by each durian tree, on the side away from its mirror.
+        let cow_homes = map
+            .meta
+            .durian_trees
+            .iter()
+            .map(|t| {
+                let foot = Vec2::new(t.pos.x as f32, t.pos.y as f32);
+                (foot, if t.flip { -1.0 } else { 1.0 })
+            })
+            .collect();
+        let animals = Animals::new(seed).with_cow_homes(cow_homes);
         let platforms = map.meta.gun_platforms.len();
         World {
             platform_ammo: vec![crate::constants::GUN_PLATFORM_AMMO; platforms],
@@ -2038,10 +2048,13 @@ impl World {
         // R14/R58 via the one shared guard; see `wildlife_allowed`. Computed
         // before the borrow below, which holds `&self.map`.
         let active = playing && self.wildlife_allowed();
+        // T24.01: night, for the cows, who sleep by their trees.
+        let night = cycle_at(now).phase == DayPhase::Night;
         let step = {
             let map = &self.map;
             let gravity = self.gravity;
-            self.animals.tick(map, active, gravity, now, dt)
+            self.animals
+                .tick_at_night(map, active, gravity, night, now, dt)
         };
         let tick = self.tick;
 
@@ -3225,6 +3238,21 @@ impl World {
         if log.is_empty() {
             return;
         }
+        // T24.01: a hurt cow flees — away from the nearest living player (whoever is shooting is near enough).
+        for (id, _) in log {
+            let Some(at) = self.animals.get(*id).map(|a| a.pos()) else {
+                continue;
+            };
+            let from = self
+                .players
+                .iter()
+                .filter(|p| p.alive)
+                .map(|p| p.body.pos)
+                .min_by(|a, b| (*a - at).len().total_cmp(&(*b - at).len()));
+            if let Some(from) = from {
+                self.animals.scare(*id, from, now);
+            }
+        }
         for kill in self.animals.apply_damage(log) {
             let tick = self.tick;
             self.events.push(GameEvent::AnimalDespawn {
@@ -3235,6 +3263,8 @@ impl World {
             let item_id = match kill.kind {
                 AnimalKind::Spider => crate::items::registry::MEDKIT,
                 AnimalKind::Beetle => crate::items::registry::BATTERY_PACK,
+                // T24.01: the cow has been eating durians.
+                AnimalKind::Cow => crate::items::registry::DURIAN_GRENADE,
             };
             self.drop_wildlife_loot(item_id, kill.at, Self::wildlife_drop_vel(), now);
         }
@@ -3663,7 +3693,7 @@ impl World {
             let id = self.animals.place_for_test(*kind, at, now);
             match kind {
                 AnimalKind::Spider => placed_s += 1,
-                AnimalKind::Beetle => placed_b += 1,
+                AnimalKind::Beetle | AnimalKind::Cow => placed_b += 1,
             }
             self.events.push(GameEvent::AnimalSpawn {
                 tick,

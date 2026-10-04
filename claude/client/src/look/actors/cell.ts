@@ -65,7 +65,7 @@ export interface Lighting {
 /** Does `a` draw anything in a fixed colour in its rim and fill passes (`draw.ts`'s `extras` sites)? */
 export function hasExtras(a: Actor): boolean {
   if (!a.lit) return false
-  return (a.kind === 'stick' && !!a.opts.jet) || (a.kind === 'figure' && !!a.opts.J?.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider' || a.kind === 'tripod' || a.kind === 'crawler'
+  return (a.kind === 'stick' && !!a.opts.jet) || (a.kind === 'figure' && !!a.opts.J?.jet) || a.kind === 'crystals' || a.kind === 'rocket' || a.kind === 'spider' || a.kind === 'tripod' || a.kind === 'crawler' || a.kind === 'cow'
 }
 
 /** The scene lambdas' rim-pass options (`f_scene.js` / `variant_F4.js`: `rc ? … : …`). */
@@ -140,6 +140,9 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
     case 'item':
       D.item(g, x, y, o)
       return
+    case 'cow':
+      D.cow(g, x, y, { s: o.s ?? 1, face: o.face ?? 1, gait: o.gait ?? 0, chew: o.chew ?? 0, sleep: o.sleep ?? false, tongue: o.tongue ?? null })
+      return
     case 'durianTree':
       D.durianTree(g, x, y, { s: o.s ?? 1, face: o.face ?? 1, seed: o.seed ?? 7, fruit: o.fruit ?? [] })
       return
@@ -209,6 +212,22 @@ export function estimateBox(a: Actor): Box {
     // T23.19: `draw.ts::grave` (±8 × 18 above its feet) and `item` (±8 about its middle), plus the rim passes' reach.
     const m = 2 * 1.15 * size + 2
     b = a.kind === 'grave' ? [a.x - 9 * s - m, a.y - 17 * s - m, a.x + 9 * s + m, a.y + 3 * s + m] : [a.x - 9 * s - m, a.y - 9 * s - m, a.x + 9 * s + m, a.y + 9 * s + m]
+  }
+  if (a.kind === 'cow') {
+    // T24.01: `draw.ts::cow` — the tail −22, the spiked head to +34 and 54 up (asleep, +34 and −2), the feet on 0; and the
+    // tongue's reach from the mouth (`cow.ts::COW_MOUTH`) to its target and the curl's bow, plus the rim passes' reach.
+    const m = 2 * 1.15 * size + 2
+    b = [a.x - 24 * s - m, a.y - 56 * s - m, a.x + 36 * s + m, a.y + 3 * s + m]
+    const t = a.opts.tongue
+    if (t) {
+      const f = a.opts.face ?? 1
+      const mx = a.x + f * 29 * s
+      const my = a.y - 40.5 * s
+      const ex = mx + f * t.to[0] * s
+      const ey = my + t.to[1] * s
+      const r = 20 * s + m
+      b = [Math.min(b[0], mx - r, ex - r), Math.min(b[1], my - r, ey - r), Math.max(b[2], mx + r, ex + r), Math.max(b[3], my + r, ey + r)]
+    }
   }
   if (a.kind === 'durianTree') {
     // T24.01: `draw.ts::durianTree` — the leaf clusters reach ±97 and 170 up (`DURIAN_TREE_W`/`_H`), the roots 7 below.

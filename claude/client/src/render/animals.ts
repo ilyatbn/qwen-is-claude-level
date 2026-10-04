@@ -19,7 +19,8 @@
  */
 import Phaser from 'phaser'
 import { DEPTH } from './backdrop'
-import { BEETLE, bodyColor, bodySize, legPhase, mixedFauna } from './animals-math'
+import { BEETLE, COW, bodyColor, bodySize, legPhase, mixedFauna } from './animals-math'
+import { cowActor } from '../look/actors/cow'
 import type { AnimalView } from '../net/worldMirror'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws, fxFeed } from '../look/fx/feed'
@@ -39,6 +40,8 @@ interface Entry {
   gait: number
   lastX: number
   lastMs: number
+  /** T24.01: when it last moved (ms) — a cow standing still grazes (`cow.ts`). */
+  movedMs: number
   /** T23.19: its place in the world renderer's cast, while `useWorld` holds. */
   leave: (() => void) | null
 }
@@ -53,10 +56,24 @@ export class AnimalLayer {
   private faunaMix = false
   /** T23.19D F1: world or Phaser follows the drawer's own flag (`fx/feed.ts::followWorldDraws`). */
   private readonly unfollow: () => void
+  /** T24.01: the map's durian trees, which a grazing cow reaches its tongue to (`cow.ts::tongueTarget`). */
+  private trees: readonly { x: number; y: number; flip: boolean }[] = []
+  /** The layer's clock (ms), for the cows' chew and tongue. */
+  private nowMs = 0
 
   constructor(private readonly scene: Phaser.Scene) {
     this.container = scene.add.container(0, 0).setDepth(DEPTH.actors)
     this.unfollow = followWorldDraws(scene, (on) => this.useWorld(on))
+  }
+
+  /** T24.01: the trees `map_init` carried. */
+  setTrees(trees: readonly { x: number; y: number; flip: boolean }[]): void {
+    this.trees = trees
+  }
+
+  /** T24.01 (dev, promo): the cows drawn — where, and whether still (grazing) — to frame one. */
+  get cows(): { id: number; x: number; y: number; right: boolean; still: number }[] {
+    return [...this.entries.values()].filter((e) => e.kind === COW).map((e) => ({ id: e.id, x: e.root.x, y: e.root.y, right: e.right, still: (this.nowMs - e.movedMs) / 1000 }))
   }
 
   /** T23.19: draw the animals in the world renderer (`on`), or as Phaser's shapes — whatever the drawer says (T23.19D). */
@@ -80,6 +97,10 @@ export class AnimalLayer {
           const { x, y } = e.root
           if (!this.container.visible || !nearView(view, x, y, VIEW_MARGIN)) return null
           const feed = fxFeed(this.scene)
+          if (e.kind === COW) {
+            const still = (this.nowMs - e.movedMs) / 1000
+            return cowActor({ id: e.id, x: Math.round(x), y: Math.round(y), w, h, right: e.right, still, gait: e.gait }, feed.night, this.nowMs / 1000, this.trees)
+          }
           const fauna = this.faunaMix ? mixedFauna(e.id) : feed.fauna
           return animalActor(e.kind, Math.round(x), Math.round(y), e.right, w, h, feed.night, fauna, e.gait)
         },
@@ -128,6 +149,7 @@ export class AnimalLayer {
 
   /** Reconcile against the mirror and animate. Diffed, not rebuilt. */
   update(animals: Iterable<AnimalView>, nowMs: number): void {
+    this.nowMs = nowMs
     this.seen.clear()
     const seen = this.seen
     for (const a of animals) {
@@ -143,7 +165,10 @@ export class AnimalLayer {
       e.right = a.right
       // T23.31: a creature walks only while it moves (a stride of `GAIT_PERIOD_MS`), and stands still otherwise.
       const dt = Math.max(0, Math.min(100, nowMs - e.lastMs))
-      if (Math.abs(a.x - e.lastX) > 0.05) e.gait = (e.gait + dt / GAIT_PERIOD_MS[a.kind === BEETLE ? 1 : 0]!) % 1
+      if (Math.abs(a.x - e.lastX) > 0.05) {
+        e.gait = (e.gait + dt / GAIT_PERIOD_MS[a.kind === BEETLE || a.kind === COW ? 1 : 0]!) % 1
+        e.movedMs = nowMs
+      }
       e.lastX = a.x
       e.lastMs = nowMs
       e.root.setPosition(a.x, a.y)
@@ -185,7 +210,7 @@ export class AnimalLayer {
     }
     root.add([...legs, body])
     this.container.add(root)
-    return { id: a.id, root, body, legs, kind: a.kind, right: a.right, gait: (a.id * 0.37) % 1, lastX: a.x, lastMs: 0, leave: null }
+    return { id: a.id, root, body, legs, kind: a.kind, right: a.right, gait: (a.id * 0.37) % 1, lastX: a.x, lastMs: 0, movedMs: 0, leave: null }
   }
 
   destroy(): void {

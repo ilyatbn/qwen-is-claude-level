@@ -3680,6 +3680,32 @@ pub const BEETLE_SPEED: f32 = 26.0;
 /// Seconds before a beetle reconsiders which way it is walking.
 pub const BEETLE_TURN_EVERY: f32 = 4.0;
 
+/// T24.01 task 4: **the alien cow** — one grazes by each durian tree (`DURIAN_TREES`), from the round's start, outside
+/// `ANIMAL_MAX` (it is the tree's, not the spawner's). The owner: *"a stick figure alien … smaller legs though and fatter
+/// like a cow but with a giraffe like head with spikes all around it … chewing animations and its tongue will be
+/// animated when its near trees."* Its hit box is the fat body (the neck and head are drawn above it and are not hit,
+/// as a spider's legs are not): twice a beetle's height and near three times its width, under a player's
+/// (`PLAYER_W` 16 × `PLAYER_H` 28) height so it reads as an animal, not a figure.
+pub const COW_W: f32 = 30.0;
+pub const COW_H: f32 = 18.0;
+/// Five SMG rounds or one rocket: the biggest animal is the toughest (a beetle is 12).
+pub const COW_HEALTH: f32 = 60.0;
+/// Walking speed, px/s — slower than a beetle (26): a grazer ambles.
+pub const COW_SPEED: f32 = 16.0;
+/// Seconds between the cow's choices: graze (stand, facing its tree) or amble a few steps.
+pub const COW_THINK_EVERY: f32 = 3.0;
+/// Chance a choice is to graze rather than to amble.
+pub const COW_GRAZE_CHANCE: f32 = 0.55;
+/// How far from its tree's trunk the cow wanders before it turns home, px (the canopy's half-width,
+/// `DURIAN_TREE_W` / 2, plus a body): it stays under or beside its tree.
+pub const COW_LEASH: f32 = 128.0;
+/// Where it starts, px from the trunk (the side drawn by the tree's mirror bit): under the canopy's edge.
+pub const COW_HOME_OFFSET: f32 = 56.0;
+/// Hurt, it flees — away from the nearest player — at `COW_FLEE_SPEED` (a beetle's pace and half again) for
+/// `COW_FLEE_SECS`, past its leash, then ambles home. *"flees gunfire like other animals"*.
+pub const COW_FLEE_SPEED: f32 = 40.0;
+pub const COW_FLEE_SECS: f32 = 3.0;
+
 /// Kept clear of the map edges, like `BIRD_EDGE_MARGIN`.
 pub const ANIMAL_EDGE_MARGIN: f32 = 40.0;
 /// An animal that ends up below this many px of the world bottom is removed:

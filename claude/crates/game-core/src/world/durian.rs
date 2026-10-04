@@ -254,4 +254,206 @@ mod tests {
         assert_ne!(back, id, "a new fruit, a new id");
         assert!(w.items.get(back).is_some_and(|it| it.is_hanging()));
     }
+
+    // ---------------------------------------------------------------- T24.01 task 4: the alien cow
+
+    use crate::constants::{
+        COW_FLEE_SPEED, COW_HEALTH, COW_HOME_OFFSET, COW_LEASH, COW_SPEED, COW_THINK_EVERY,
+    };
+    use crate::world::animals::AnimalKind;
+
+    fn cows(w: &World) -> Vec<(u32, Vec2, Option<Vec2>)> {
+        w.animals
+            .iter()
+            .filter(|a| a.kind == AnimalKind::Cow)
+            .map(|a| (a.id, a.pos(), a.home))
+            .collect()
+    }
+
+    fn playing_with_trees() -> World {
+        let mut w = world_with_trees();
+        w.set_phase(RoundPhase::Playing);
+        let _ = w.drain_events();
+        w
+    }
+
+    /// Both ends: one cow per tree on the first playing tick — the world holds them and announced each
+    /// (`AnimalSpawn` kind 2) — each by its own tree. The control for "by its tree" is that the trees are far apart
+    /// (`DURIAN_TREE_SPACING`), so a cow placed by the wrong tree fails it.
+    #[test]
+    fn a_cow_grazes_by_each_tree_from_the_first_playing_tick() {
+        let mut w = playing_with_trees();
+        assert!(
+            cows(&w).is_empty(),
+            "control: no cow before the round steps"
+        );
+        w.step(SIM_DT);
+        let heard = w
+            .drain_events()
+            .iter()
+            .filter(|e| matches!(e, GameEvent::AnimalSpawn { kind: 2, .. }))
+            .count();
+        let c = cows(&w);
+        assert_eq!(c.len(), w.map.meta.durian_trees.len(), "a cow a tree");
+        assert_eq!(heard, c.len(), "each cow announced");
+        for (id, at, home) in &c {
+            let home = home.expect("a cow has a home");
+            assert!(w
+                .map
+                .meta
+                .durian_trees
+                .iter()
+                .any(|t| t.pos.x as f32 == home.x && t.pos.y as f32 == home.y));
+            assert!(
+                (at.x - home.x).abs() <= COW_HOME_OFFSET + 1.0,
+                "cow {id} starts {} px from its tree",
+                at.x - home.x
+            );
+        }
+        // Never twice: a minute on, still one a tree.
+        for _ in 0..(60.0 / SIM_DT) as u32 {
+            w.step(SIM_DT);
+        }
+        assert_eq!(cows(&w).len(), w.map.meta.durian_trees.len());
+    }
+
+    /// It ambles but stays by its tree: over two minutes of day each cow moves (the control — a cow that never moved
+    /// passes the leash alone) and is never further from its trunk than the leash plus one choice's walk.
+    #[test]
+    fn a_cow_ambles_and_stays_by_its_tree() {
+        let mut w = playing_with_trees();
+        w.step(SIM_DT);
+        let start: Vec<Vec2> = cows(&w).iter().map(|c| c.1).collect();
+        let mut moved = vec![0.0f32; start.len()];
+        let bound = COW_LEASH + COW_SPEED * COW_THINK_EVERY + 1.0;
+        for _ in 0..(120.0 / SIM_DT) as u32 {
+            w.step(SIM_DT);
+            if w.last_day_phase == crate::world::DayPhase::Night {
+                break;
+            }
+            for (k, (_, at, home)) in cows(&w).iter().enumerate() {
+                let home = home.expect("home");
+                assert!(
+                    (at.x - home.x).abs() <= bound,
+                    "a cow wandered {} px from its tree (bound {bound})",
+                    at.x - home.x
+                );
+                moved[k] = moved[k].max((at.x - start[k].x).abs());
+            }
+        }
+        assert!(
+            moved.iter().all(|m| *m > 4.0),
+            "a cow never moved: {moved:?}"
+        );
+    }
+
+    /// At night it sleeps — not a px in thirty seconds — and by day the same cows move (the control).
+    #[test]
+    fn a_cow_sleeps_at_night_and_moves_by_day() {
+        let m = world_with_trees().map;
+        let homes: Vec<(Vec2, f32)> = m
+            .meta
+            .durian_trees
+            .iter()
+            .map(|t| (Vec2::new(t.pos.x as f32, t.pos.y as f32), 1.0))
+            .collect();
+        let run = |night: bool| -> f32 {
+            let mut a = crate::world::animals::Animals::new(3).with_cow_homes(homes.clone());
+            a.tick_at_night(
+                &m,
+                true,
+                crate::constants::GravityMode::Standard,
+                night,
+                0.0,
+                SIM_DT,
+            );
+            for i in 0..60 {
+                a.tick_at_night(
+                    &m,
+                    true,
+                    crate::constants::GravityMode::Standard,
+                    night,
+                    i as f32 * SIM_DT,
+                    SIM_DT,
+                );
+            }
+            let x0: Vec<f32> = a
+                .iter()
+                .filter(|c| c.kind == AnimalKind::Cow)
+                .map(|c| c.pos().x)
+                .collect();
+            for i in 60..(30.0 / SIM_DT) as u32 {
+                a.tick_at_night(
+                    &m,
+                    true,
+                    crate::constants::GravityMode::Standard,
+                    night,
+                    i as f32 * SIM_DT,
+                    SIM_DT,
+                );
+            }
+            a.iter()
+                .filter(|c| c.kind == AnimalKind::Cow)
+                .zip(&x0)
+                .map(|(c, x)| (c.pos().x - x).abs())
+                .sum()
+        };
+        assert_eq!(run(true), 0.0, "a cow moved at night");
+        assert!(run(false) > 1.0, "control: by day the cows never moved");
+    }
+
+    /// Hurt, it flees away from the shooter at `COW_FLEE_SPEED`; killed, it drops a durian grenade.
+    #[test]
+    fn a_hurt_cow_flees_from_the_shooter_and_a_dead_one_drops_a_durian() {
+        let mut w = playing_with_trees();
+        w.add_player(0, 0, "ana".into());
+        w.step(SIM_DT);
+        let (id, at, _) = cows(&w)[0];
+        if let Some(p) = w.player_mut(0) {
+            p.body.pos = Vec2::new(at.x - 60.0, at.y);
+        }
+        let now = w.round_time;
+        w.resolve_animal_kills(&[(id, 1.0)], now);
+        let x0 = w.animals.get(id).map(|a| a.pos().x).expect("alive");
+        for _ in 0..30 {
+            if let Some(p) = w.player_mut(0) {
+                p.body.pos = Vec2::new(at.x - 60.0, at.y);
+            }
+            w.step(SIM_DT);
+        }
+        let x1 = w.animals.get(id).map(|a| a.pos().x).expect("alive");
+        let v = (x1 - x0) / (30.0 * SIM_DT);
+        assert!(
+            v > COW_SPEED,
+            "it did not flee away from the shooter on its right: {v} px/s"
+        );
+        assert!(v <= COW_FLEE_SPEED + 1.0);
+        let _ = w.drain_events();
+        let now = w.round_time;
+        w.resolve_animal_kills(&[(id, COW_HEALTH)], now);
+        let drops: Vec<_> = w
+            .drain_events()
+            .into_iter()
+            .filter(
+                |e| matches!(e, GameEvent::ItemSpawn { item_id, .. } if *item_id == DURIAN_GRENADE),
+            )
+            .collect();
+        assert!(w.animals.get(id).is_none(), "the cow survived its health");
+        assert_eq!(drops.len(), 1, "a dead cow dropped {} durians", drops.len());
+    }
+
+    /// No tree, no cow: a volcanic map and a space map grow neither.
+    #[test]
+    fn no_cow_without_a_tree() {
+        let volcanic = (1u64..=40)
+            .map(|s| World::new(s, MapScale::Small))
+            .find(|w| w.map.meta.look != crate::constants::WorldLook::Classic)
+            .expect("a volcanic seed");
+        let mut w = volcanic;
+        w.set_phase(RoundPhase::Playing);
+        for _ in 0..10 {
+            w.step(SIM_DT);
+        }
+        assert!(cows(&w).is_empty(), "a cow on a volcanic map");
+    }
 }

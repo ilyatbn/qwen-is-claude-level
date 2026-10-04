@@ -2499,6 +2499,8 @@ pub fn constants_json() -> String {
         SPIDER_H => c::SPIDER_H,
         BEETLE_W => c::BEETLE_W,
         BEETLE_H => c::BEETLE_H,
+        COW_W => c::COW_W,
+        COW_H => c::COW_H,
         ANIMAL_MAX => c::ANIMAL_MAX,
         ANIMAL_INTERVAL => c::ANIMAL_INTERVAL,
         // §C6 x §C21: what the weather layer divides the **live** drop count by

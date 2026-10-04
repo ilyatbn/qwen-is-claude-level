@@ -25,7 +25,9 @@
 use crate::constants::{
     GravityMode, ANIMAL_DESPAWN_BELOW, ANIMAL_EDGE_MARGIN, ANIMAL_INTERVAL, ANIMAL_MAX,
     ANIMAL_SPIDER_CHANCE, BEETLE_H, BEETLE_HEALTH, BEETLE_SPEED, BEETLE_TURN_EVERY, BEETLE_W,
-    SPIDER_H, SPIDER_HEALTH, SPIDER_HOP_EVERY, SPIDER_HOP_SIDE, SPIDER_HOP_UP, SPIDER_W,
+    COW_FLEE_SECS, COW_FLEE_SPEED, COW_GRAZE_CHANCE, COW_H, COW_HEALTH, COW_LEASH, COW_SPEED,
+    COW_THINK_EVERY, COW_W, SPIDER_H, SPIDER_HEALTH, SPIDER_HOP_EVERY, SPIDER_HOP_SIDE,
+    SPIDER_HOP_UP, SPIDER_W,
 };
 use crate::map::Map;
 use crate::math::Vec2;
@@ -41,6 +43,9 @@ pub enum AnimalKind {
     Spider,
     /// Walks, tougher, and drops a battery pack.
     Beetle,
+    /// T24.01 task 4: the alien cow — one grazes by each durian tree, from the round's start (`with_cow_homes`), and
+    /// drops a durian grenade. Ambles and grazes within `COW_LEASH` of its tree, sleeps there at night, flees when hurt.
+    Cow,
 }
 
 impl AnimalKind {
@@ -50,6 +55,7 @@ impl AnimalKind {
         match self {
             AnimalKind::Spider => 0,
             AnimalKind::Beetle => 1,
+            AnimalKind::Cow => 2,
         }
     }
 
@@ -57,6 +63,7 @@ impl AnimalKind {
         match self {
             AnimalKind::Spider => (SPIDER_W, SPIDER_H),
             AnimalKind::Beetle => (BEETLE_W, BEETLE_H),
+            AnimalKind::Cow => (COW_W, COW_H),
         }
     }
 
@@ -64,6 +71,7 @@ impl AnimalKind {
         match self {
             AnimalKind::Spider => SPIDER_HEALTH,
             AnimalKind::Beetle => BEETLE_HEALTH,
+            AnimalKind::Cow => COW_HEALTH,
         }
     }
 }
@@ -79,6 +87,12 @@ pub struct Animal {
     /// Signed heading, -1 or 1. Kept rather than derived from `vel.x`, which is
     /// zero for most of a spider's life and would flip its art mid-hop.
     dir: f32,
+    /// T24.01: a cow's tree (its trunk's foot), which it grazes by; `None` for every other animal.
+    pub home: Option<Vec2>,
+    /// T24.01: a cow is grazing (standing) rather than ambling until its next choice.
+    grazing: bool,
+    /// T24.01: a hurt cow flees until this round time.
+    flee_until: f32,
 }
 
 impl Animal {
@@ -123,6 +137,10 @@ pub struct Animals {
     next_id: AnimalId,
     /// `None` until the first tick that is allowed to spawn, like `Birds`.
     next_spawn_at: Option<f32>,
+    /// T24.01: where the cows live (each durian tree's foot and the side its cow starts on), hatched on the first
+    /// active tick and never again — a dead cow stays dead for the round.
+    cow_homes: Vec<(Vec2, f32)>,
+    cows_hatched: bool,
 }
 
 impl Animals {
@@ -135,7 +153,64 @@ impl Animals {
             animals: Vec::new(),
             next_id: 0,
             next_spawn_at: None,
+            cow_homes: Vec::new(),
+            cows_hatched: false,
         }
+    }
+
+    /// T24.01: one cow per `(tree foot, side)` — `World::new` hands the map's durian trees over.
+    pub fn with_cow_homes(mut self, homes: Vec<(Vec2, f32)>) -> Self {
+        self.cow_homes = homes;
+        self
+    }
+
+    /// T24.01: a cow is hurt — it flees away from `from` (the nearest player) for `COW_FLEE_SECS`. Any other
+    /// animal ignores it.
+    pub fn scare(&mut self, id: AnimalId, from: Vec2, now: f32) {
+        if let Some(a) = self
+            .animals
+            .iter_mut()
+            .find(|a| a.id == id && a.kind == AnimalKind::Cow)
+        {
+            a.dir = if a.body.pos.x >= from.x { 1.0 } else { -1.0 };
+            a.flee_until = now + COW_FLEE_SECS;
+        }
+    }
+
+    /// T24.01: hatch a cow at each home — on the map's surface point (a validated standing spot, `MapMeta`) nearest
+    /// `COW_HOME_OFFSET` to the home's side **on the tree's own level** (within a body's height of its foot; a point
+    /// below a narrow ledge would put the cow in the pit beside it — measured: seed 7's two cows landed 64 px under
+    /// their trees and one never moved again), else on the tree's foot itself.
+    fn hatch_cows(&mut self, map: &Map, now: f32) -> Vec<AnimalId> {
+        let mut out = Vec::new();
+        let (w, h) = AnimalKind::Cow.size();
+        let level = crate::constants::PLAYER_H;
+        for (foot, side) in self.cow_homes.clone() {
+            let want = foot.x + side * crate::constants::COW_HOME_OFFSET;
+            let at = map
+                .meta
+                .surface_points
+                .iter()
+                .map(|p| Vec2::new(p.x as f32, p.y as f32))
+                .filter(|p| (p.y - foot.y).abs() <= level && (p.x - foot.x).abs() <= COW_LEASH)
+                .min_by(|a, b| (a.x - want).abs().total_cmp(&(b.x - want).abs()))
+                .unwrap_or(foot);
+            let id = self.next_id;
+            self.next_id += 1;
+            self.animals.push(Animal {
+                id,
+                kind: AnimalKind::Cow,
+                body: Body::sized(Vec2::new(at.x, at.y - h / 2.0), w, h),
+                health: COW_HEALTH,
+                next_move_at: now + COW_THINK_EVERY,
+                dir: -side,
+                home: Some(foot),
+                grazing: true,
+                flee_until: f32::NEG_INFINITY,
+            });
+            out.push(id);
+        }
+        out
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Animal> {
@@ -171,6 +246,9 @@ impl Animals {
             health: kind.health(),
             next_move_at: now + Self::move_interval(kind),
             dir: 1.0,
+            home: None,
+            grazing: false,
+            flee_until: f32::NEG_INFINITY,
         });
         id
     }
@@ -179,6 +257,7 @@ impl Animals {
         match kind {
             AnimalKind::Spider => SPIDER_HOP_EVERY,
             AnimalKind::Beetle => BEETLE_TURN_EVERY,
+            AnimalKind::Cow => COW_THINK_EVERY,
         }
     }
 
@@ -205,9 +284,27 @@ impl Animals {
         now: f32,
         dt: f32,
     ) -> AnimalStep {
+        self.tick_at_night(map, active, gravity, false, now, dt)
+    }
+
+    /// [`Animals::tick`], told whether it is night (T24.01: a cow sleeps by its tree at night).
+    pub fn tick_at_night(
+        &mut self,
+        map: &Map,
+        active: bool,
+        gravity: GravityMode,
+        night: bool,
+        now: f32,
+        dt: f32,
+    ) -> AnimalStep {
         let mut out = AnimalStep::default();
         if !active {
             return out;
+        }
+        // T24.01: the cows, once, on the first tick wildlife may live.
+        if !self.cows_hatched {
+            self.cows_hatched = true;
+            out.spawned.extend(self.hatch_cows(map, now));
         }
 
         // --- spawn -----------------------------------------------------------
@@ -218,7 +315,14 @@ impl Animals {
         let mut next = self.next_spawn_at.unwrap_or(now);
         while now >= next {
             next += ANIMAL_INTERVAL;
-            if self.animals.len() >= ANIMAL_MAX {
+            // T24.01: the cows are their trees', not the spawner's — the cap counts the rest.
+            if self
+                .animals
+                .iter()
+                .filter(|a| a.kind != AnimalKind::Cow)
+                .count()
+                >= ANIMAL_MAX
+            {
                 continue;
             }
             if let Some(id) = self.hatch(map, now) {
@@ -252,6 +356,24 @@ impl Animals {
                             -1.0
                         };
                     }
+                    // T24.01: graze (stand) or amble; past the leash, head home. Both draws made every choice, so
+                    // the stream does not depend on where the cow happens to be.
+                    AnimalKind::Cow => {
+                        let graze = chance(&mut self.rng, COW_GRAZE_CHANCE);
+                        let right = chance(&mut self.rng, 0.5);
+                        a.grazing = graze;
+                        a.dir = if right { 1.0 } else { -1.0 };
+                        if let Some(home) = a.home {
+                            let off = a.body.pos.x - home.x;
+                            if off.abs() > COW_LEASH {
+                                a.grazing = false;
+                                a.dir = -off.signum();
+                            } else if graze {
+                                // Grazing faces the trunk, as the tongue reaches for it.
+                                a.dir = if off > 0.0 { -1.0 } else { 1.0 };
+                            }
+                        }
+                    }
                 }
             }
             // A beetle walks continuously; a spider coasts between hops and is
@@ -262,6 +384,20 @@ impl Animals {
                     if a.body.grounded {
                         a.body.vel.x = 0.0;
                     }
+                }
+                // T24.01: fleeing beats sleeping beats grazing; else it ambles — and an ambling cow turns back at a
+                // drop deeper than a body (it grazes by its tree; one that walked off the ledge could not climb back).
+                AnimalKind::Cow => {
+                    if now >= a.flee_until && a.body.grounded && !Self::ground_ahead(map, a) {
+                        a.dir = -a.dir;
+                    }
+                    a.body.vel.x = if now < a.flee_until {
+                        a.dir * COW_FLEE_SPEED
+                    } else if night || a.grazing {
+                        0.0
+                    } else {
+                        a.dir * COW_SPEED
+                    };
                 }
             }
             // **The match's gravity setting, not a literal `1.0`**
@@ -289,6 +425,15 @@ impl Animals {
             }
         });
         out
+    }
+
+    /// T24.01: is there ground a step ahead of `a` (just past its leading edge), no deeper than `PLAYER_H` below its
+    /// feet? False at a ledge's lip.
+    fn ground_ahead(map: &Map, a: &Animal) -> bool {
+        let (w, h) = a.size();
+        let x = (a.body.pos.x + a.dir * (w / 2.0 + 2.0)) as i32;
+        let feet = (a.body.pos.y + h / 2.0) as i32;
+        (feet - 2..=feet + crate::constants::PLAYER_H as i32).any(|y| map.mask.get(x, y))
     }
 
     /// Where a new animal goes: a clear column, standing on the ground.
@@ -337,6 +482,9 @@ impl Animals {
                 } else {
                     -1.0
                 },
+                home: None,
+                grazing: false,
+                flee_until: f32::NEG_INFINITY,
             });
             return Some(id);
         }
@@ -468,6 +616,8 @@ mod tests {
                 match x.kind {
                     AnimalKind::Spider => seen_spider = true,
                     AnimalKind::Beetle => seen_beetle = true,
+                    // T24.01: the spawner never hatches a cow (`Animals::new` has no homes).
+                    AnimalKind::Cow => panic!("the natural spawner hatched a cow"),
                 }
             }
         }

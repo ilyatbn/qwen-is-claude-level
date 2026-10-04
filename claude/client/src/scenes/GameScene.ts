@@ -1882,6 +1882,8 @@ export class GameScene extends Phaser.Scene {
     this.durianTrees = init.durianTrees
     this.leaveDurianTrees()
     this.leaveDurianTrees = joinDurianTrees(this, init.durianTrees, () => this.durianTreesOn)
+    // T24.01 task 4: the cows reach their tongues into these trees.
+    this.animals?.setTrees(init.durianTrees)
 
     // §D6's objects are stamped into the mask (collision, R5) and drawn as rock since T23.07 — the atlas
     // art retired (R15). Kept for the debug handle: what `map_init` carried.
@@ -3661,6 +3663,10 @@ export class GameScene extends Phaser.Scene {
       /** e2e only (T99.04): the pickups, off for the trailer's wildlife shot. */
       setItemsVisible(on: boolean) {
         return self.world?.items.setVisible(on) ?? null
+      },
+      /** T24.01 (dev, promo): the cows as drawn — where, which way, and how long still — to frame one (`watch(x, y)`). */
+      cows() {
+        return self.animals?.cows ?? []
       },
       /** e2e only (T24.01): the durian trees, off for a check's control frame (their fruit are pickups: `setItemsVisible`). */
       setDurianTreesVisible(on: boolean) {
