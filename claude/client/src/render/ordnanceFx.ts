@@ -30,6 +30,7 @@ const JET_LIFE = 0.08
 const HAZARD_COLOUR: Record<HazardKind, number> = {
   toxic: 0x7fe04a,
   smoke: 0xb9c0c8,
+  durian: 0x9a4cff,
   other: 0xcccccc,
 }
 

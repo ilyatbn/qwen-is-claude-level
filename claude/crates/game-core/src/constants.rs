@@ -2964,6 +2964,66 @@ pub const TOXIC_GRENADE_DURATION: f32 = 8.0;
 pub const TOXIC_GRENADE_FUSE: f32 = 2.0;
 pub const TOXIC_GRENADE_MUZZLE_SPEED: f32 = 480.0;
 pub const TOXIC_GRENADE_AMMO: u8 = 2;
+
+// --- T24.01: the durian tree and its grenade (owner, 2026-10-03/04) ---------------------------------------------
+//
+// *"we'll add [the durian tree] as a special spawn on maps (not lava) … a new item called "durian grenade" which is
+// a cluster grenade of poison gas (explodes mid air, breaks into 4 small particles flying in random direction and
+// then exploding into a purple gas cloud)."* Every number below is stated against the toxic grenade it is a cousin
+// of, or against the body and the jump that have to reach the fruit.
+
+/// Durian trees per map, at most — *"a few per map at most"*. Classic look only, never space (`map::durian`).
+/// Two: one tree is a spot to camp, two make a choice, and on Small (the size every ground match is, T23.42) a third
+/// would put a tree within a screen of almost every spawn.
+pub const DURIAN_TREES: usize = 2;
+/// The drawn tree's size, world px: `DURIAN_TREE_W` across the canopy, `DURIAN_TREE_H` from the feet line to the
+/// crown — the box `draw.ts::durianTree` stays inside (its leaf clusters reach ±97 and 170 up). About three bodies
+/// tall (the figure is drawn ~56 px): the reference sheet's tree towers over its mushrooms; this one towers over a
+/// player and still fits under most overhangs. Placement wants this box clear of rock (`DURIAN_TREE_AIR`).
+pub const DURIAN_TREE_W: i32 = 194;
+pub const DURIAN_TREE_H: i32 = 170;
+/// Share of the canopy box's samples that must be air for a site to take a tree — a canopy grown into the cliff
+/// behind it reads as a hole in the rock. Not 1.0: the trunk's own foot sits on the surface point.
+pub const DURIAN_TREE_AIR: f32 = 0.97;
+/// Two trees, and a tree and any spawn, gate or gun platform, at least this far apart (world px, centre to centre on
+/// either axis): a tree is a place worth walking to, not furniture beside a spawn. One FOV_DAY radius (640, T23.10).
+pub const DURIAN_TREE_SPACING: i32 = 640;
+pub const DURIAN_TREE_CLEARANCE: i32 = 120;
+/// Fruits a tree hangs (its slots; `map::durian::FRUIT_AT` places them under the canopy).
+pub const DURIAN_FRUIT: usize = 3;
+/// Seconds a picked fruit takes to grow back. About a quarter of a fight's length: long enough that a tree is not a
+/// vending machine, short enough that a tree you fought over is worth coming back to in the same round.
+pub const DURIAN_REGROW: f32 = 30.0;
+/// How near a hanging fruit a body's centre must pass to take it, world px — *"a player passing through the tree's
+/// canopy picks up"*. Wider than `PICKUP_RADIUS` (20): the lowest fruit hangs `FRUIT_AT`'s 50 px up and a walking
+/// body's centre is `PLAYER_H / 2` = 14 px up, so 36 takes it at a walk; the higher two want a hop (jump apex ~66 px,
+/// `JUMP_VELOCITY`² / 2·`GRAVITY`).
+pub const DURIAN_PICKUP_REACH: f32 = 36.0;
+/// Grenades per pickup and the stack: a fruit is one grenade, and two stack — the toxic grenade's `TOXIC_GRENADE_AMMO`.
+pub const DURIAN_GRENADE_AMMO: u8 = 2;
+/// The throw and the fuse: it bursts **mid-air**, past its own gas. Height above the hand after t at angle θ is
+/// v·sinθ·t − g·t²/2 and distance out v·cosθ·t, with v = `DURIAN_MUZZLE_SPEED` 600 and g = `GRAVITY` 1400: at
+/// `DURIAN_FUSE` 0.5 s a 45° lob bursts 37 px above the hand and 212 px out, a 60° one 85 px up and 150 out, straight up
+/// 125 px (the apex, v/g = 0.43 s, just passed); a 30° throw is 25 px below the hand 260 px out, and only a flat one
+/// reaches level ground first and bursts on its bounce. Every lob from 30° to 60° bursts at least 150 px out — past
+/// the gas's reach of the burst (`DURIAN_PIECE_SPEED × DURIAN_PIECE_FUSE + DURIAN_GAS_RADIUS` = 114 px), so a thrower
+/// standing still is not in their own clouds. (A toxic grenade's 480 px/s was the first value: its bursts at 0.45 s
+/// were 117 px out, inside a 140-px reach, and the first browser run gassed its own thrower — measured, `durian.mjs`.)
+pub const DURIAN_FUSE: f32 = 0.5;
+pub const DURIAN_MUZZLE_SPEED: f32 = 600.0;
+/// The pieces it splits into — *"breaks into 4 small particles"* — each flung at a seeded random angle at
+/// `DURIAN_PIECE_SPEED`, bursting into gas on contact or after `DURIAN_PIECE_FUSE`: 160 px/s for 0.4 s carries one
+/// 64 px out (about a cloud's radius plus a body), so the four clouds stand apart and overlap at their edges —
+/// four clouds, not one blot — while gravity drops the downward ones onto the ground under the burst.
+pub const DURIAN_PIECES: u32 = 4;
+pub const DURIAN_PIECE_SPEED: f32 = 160.0;
+pub const DURIAN_PIECE_FUSE: f32 = 0.4;
+/// Each purple cloud: radius, damage per second, life. Against one toxic grenade cloud (r 90, 6 dps, 8 s): four clouds
+/// of r 50 cover 4·50² / 90² = 1.23× its area for 6 s, so its dose-area-time is 0.93× the toxic grenade's — the same
+/// weapon class spread wider and thinner, and rarer (a tree's, never a floor spawn).
+pub const DURIAN_GAS_RADIUS: f32 = 50.0;
+pub const DURIAN_GAS_DPS: f32 = TOXIC_GRENADE_DPS;
+pub const DURIAN_GAS_DURATION: f32 = 6.0;
 pub const MINE_DAMAGE: f32 = 60.0;
 pub const MINE_BLAST_RADIUS: f32 = 48.0;
 /// Two per pickup: a mine is a commitment, not a spray.

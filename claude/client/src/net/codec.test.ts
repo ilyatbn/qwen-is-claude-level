@@ -12,6 +12,7 @@ import {
   CodecError,
   MAP_MAGIC,
   OBJECT_WIRE_BYTES,
+  DURIAN_TREE_WIRE_BYTES,
   FLAG,
   MOVE_MOD,
   flag,
@@ -48,6 +49,10 @@ function mapInitFixture(opts: Partial<{
   shape: number
   /** T23.31's trailing world-look byte; 1 (volcanic) by default, off classic, for the same reason. */
   look: number
+  /** T24.01's durian trees after the look; two by default, so a decoder that skips the section fails. */
+  treeCount: number
+  /** Write a tree count the buffer cannot hold, without growing it. */
+  treeCountLie: number
 }> = {}): ArrayBuffer {
   const width = opts.width ?? 2048
   const height = opts.height ?? 1024
@@ -58,6 +63,7 @@ function mapInitFixture(opts: Partial<{
   const objects = opts.objectCount ?? 2
   const asteroids = opts.asteroidCount ?? 3
   const rle = opts.rle ?? new Uint8Array([1, 2, 3, 4])
+  const trees = opts.treeCount ?? 2
   // magic, w, h, seed, scale, theme, generator, wind, carve_seq, then the counted sections.
   // `carve_seq` (u32) arrived with T6.16 and this fixture did not follow it —
   // 4 bytes short, so the decoder read `spawn_count` out of the middle of it.
@@ -70,8 +76,8 @@ function mapInitFixture(opts: Partial<{
     2 + objects * OBJECT_WIRE_BYTES +
     // T22.05A's asteroids ride between the objects and the RLE length.
     2 + asteroids * ASTEROID_WIRE_BYTES + 4 + rle.length +
-    // T23.30: the map shape, after the mask; T23.31: the world look, after the shape.
-    1 + 1
+    // T23.30: the map shape, after the mask; T23.31: the world look, after the shape; T24.01: the trees.
+    1 + 1 + 1 + trees * DURIAN_TREE_WIRE_BYTES
   const b = new ArrayBuffer(size)
   const v = new DataView(b)
   let at = 0
@@ -135,7 +141,13 @@ function mapInitFixture(opts: Partial<{
   new Uint8Array(b).set(rle, at)
   at += rle.length
   v.setUint8(at++, opts.shape ?? 2)
-  v.setUint8(at, opts.look ?? 1)
+  v.setUint8(at++, opts.look ?? 1)
+  v.setUint8(at++, opts.treeCountLie ?? trees)
+  for (let i = 0; i < trees; i++) {
+    v.setInt16(at, 1500 + i, true); at += 2  // x
+    v.setInt16(at, 1600 + i, true); at += 2  // y
+    v.setUint8(at++, i % 2)                  // flip: varies
+  }
   return b
 }
 
@@ -267,6 +279,16 @@ describe('map_init', () => {
     const n = C().WORLD_LOOKS.length
     expect(n).toBeGreaterThan(1)
     expect(() => decodeMapInit(mapInitFixture({ look: n }))).toThrow(/names no world look/)
+  })
+
+  it('reads the durian trees after the look, and refuses a count the payload cannot hold (T24.01)', () => {
+    expect(decodeMapInit(mapInitFixture()).durianTrees).toEqual([
+      { x: 1500, y: 1600, flip: false },
+      { x: 1501, y: 1601, flip: true },
+    ])
+    // The control: a map with none decodes to none, and the bytes still line up.
+    expect(decodeMapInit(mapInitFixture({ treeCount: 0 })).durianTrees).toEqual([])
+    expect(() => decodeMapInit(mapInitFixture({ treeCountLie: 3 }))).toThrow(/durian_tree_count/)
   })
 
   it('refuses a generator byte that names no generator (T22.14A)', () => {

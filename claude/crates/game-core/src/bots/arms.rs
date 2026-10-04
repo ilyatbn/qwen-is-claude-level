@@ -196,7 +196,11 @@ pub(super) fn lob_angle(
     let up = pos.y - target.y;
     let run = dx.abs().max(1.0);
     let disc = v.powi(4) - g * (g * run * run + 2.0 * up * v * v);
-    if disc < 0.0 {
+    // T24.01: a cluster need not reach the target — its gas does, `cluster_slack` past where it bursts — so the
+    // discriminant asks of the run short of that; the sweep below then finds the burst nearest the target.
+    let slack = cluster_slack(w, world.gravity);
+    let run_short = (run - slack).max(1.0);
+    if v.powi(4) - g * (g * run_short * run_short + 2.0 * up * v * v) < 0.0 {
         return None;
     }
     // Elevation above the horizontal, toward the target; screen angles have y down.
@@ -299,9 +303,18 @@ pub(super) fn lob_reaches(
     if g <= 0.0 || v <= 0.0 {
         return true;
     }
-    let run = (target.x - pos.x).abs().max(1.0);
+    let run = ((target.x - pos.x).abs() - cluster_slack(w, world.gravity)).max(1.0);
     let up = pos.y - target.y;
     v.powi(4) - g * (g * run * run + 2.0 * up * v * v) >= 0.0
+}
+
+/// T24.01: how far past its burst a cluster's gas reaches (`zone_reach`'s cluster arm) — 0 for every other weapon,
+/// which must itself arrive where it is aimed.
+fn cluster_slack(w: &crate::weapons::defs::WeaponDef, gravity: GravityMode) -> f32 {
+    match w.burst {
+        crate::weapons::defs::Burst::Cluster { .. } => zone_reach(w, gravity).unwrap_or(0.0),
+        _ => 0.0,
+    }
 }
 
 /// T23.26D item 2: **how far a flamethrower's stream reaches**, px: where a level stream
@@ -580,7 +593,12 @@ impl Bot {
         // refusal (blast guard, too close, landing on itself); reach and sight still hold —
         // a flamethrower sprayed at any range walled a whole shot in fire (measured on film).
         let reckless = self.arsenal.is_some();
+        let cluster = matches!(w.burst, crate::weapons::defs::Burst::Cluster { .. });
         let refusal = match self.lob.filter(|_| arcs) {
+            // T24.01: a cluster's solved arc ends where it **bursts**, up to its gas's reach short of the target —
+            // so where it bursts is asked too (the full guard along that arc), or a far target could be gassed
+            // from a burst over the thrower's own head.
+            Some(a) if cluster => zone_refusal_at(world, w, wid, pos, target, a),
             Some(_) => {
                 zone_refusal(world, w, wid, pos, target).filter(|r| *r == ZoneRefusal::TooClose)
             }
@@ -985,6 +1003,18 @@ pub(super) fn zone_reach(w: &crate::weapons::defs::WeaponDef, gravity: GravityMo
         // standard mode**, measured — `BOT_SPACE_ZONE_REACH`, whose basis is there.
         // A branch on the mode rather than a third `min`: the measured number is a
         // behavioural one for zero-g, and as a `min` it would bind Low gravity too.
+        // T24.01: a cluster's gas reaches as far as a piece can fly before it bursts, plus the cloud it bursts into
+        // — `speed × fuse + radius`, read off the piece's own def. A time bound, so it holds under every gravity:
+        // gravity only bends the flight inside it. The guard below then asks where the grenade *bursts* (its fuse,
+        // `predict_impact`), which for a mid-air burst is the point that matters, not where it would land.
+        crate::weapons::defs::Burst::Cluster { speed, piece, .. } => {
+            let p = crate::weapons::defs::def(piece)?;
+            let fuse = match p.delivery {
+                crate::weapons::defs::Delivery::Projectile { fuse, .. } => fuse.unwrap_or(0.0),
+                _ => 0.0,
+            };
+            Some(speed * fuse + zone_reach(p, gravity).unwrap_or(0.0))
+        }
         crate::weapons::defs::Burst::Flames { speed, .. } => {
             let ballistic = speed * speed / (GRAVITY * FLAME_GRAVITY_SCALE * gravity.scale());
             let reach = (BOT_FLAME_REACH_SCALE * ballistic).min(speed * FLAME_LIFE) + FLAME_RADIUS;
@@ -1092,6 +1122,13 @@ pub(super) fn zone_rate(w: &crate::weapons::defs::WeaponDef) -> Option<f32> {
     let per_throw = match w.burst {
         crate::weapons::defs::Burst::Flames { .. } => FLAME_DPS * FLAME_LIFE,
         crate::weapons::defs::Burst::Zone { dps, duration, .. } => dps * duration,
+        // T24.01: one target stands in one of the cluster's clouds — a piece's `dps × duration`, not four of them.
+        crate::weapons::defs::Burst::Cluster { piece, .. } => {
+            match crate::weapons::defs::def(piece).map(|p| p.burst) {
+                Some(crate::weapons::defs::Burst::Zone { dps, duration, .. }) => dps * duration,
+                _ => return None,
+            }
+        }
         _ => return None,
     };
     Some(per_throw / w.cooldown.max(0.01))
@@ -2011,6 +2048,79 @@ mod tests {
             b.stats().rej_impact_guard + b.stats().rej_arc > 0,
             "it refused, but not because of the arc — no arc refusal fired: {:?}",
             b.stats()
+        );
+    }
+
+    /// T24.01: a bot with a durian grenade and an enemy `dx` px along a clear level line — whether it pulls the
+    /// trigger within two seconds, and the bot's stats.
+    fn durian_throw(dx: f32) -> (bool, World, Vec2, f32, BotStats) {
+        use crate::items::registry::DURIAN_GRENADE;
+        let mut w = world_with(&[1, 2]);
+        give(&mut w, 1, DURIAN_GRENADE, 2);
+        wield(&mut w, 1, DURIAN_GRENADE);
+        let at = clear_line(&w);
+        // Open air above the line too, so the arc is a free choice and the only question is the gas.
+        for y in (at.y as i32 - 160)..(at.y as i32 + 8) {
+            w.map
+                .mask
+                .clear_run(y, at.x as i32 - 40, at.x as i32 + dx as i32 + 40);
+        }
+        w.map.coarse = crate::map::coarse::CoarseGrid::build(&w.map.mask);
+        if let Some(p) = w.player_mut(1) {
+            p.body.pos = at;
+        }
+        if let Some(p) = w.player_mut(2) {
+            p.body.pos = Vec2::new(at.x + dx, at.y);
+        }
+        let mut b = Bot::new(1, SEED, 0, 1.0);
+        let (mut fired, mut aim) = (false, 0.0);
+        for t in 0..120 {
+            let input = b.think(&w, t as f32 * SIM_DT, SIM_DT);
+            if input.buttons & button::FIRE != 0 {
+                fired = true;
+                aim = input.aim_angle();
+                break;
+            }
+        }
+        let stats = b.stats();
+        (fired, w, at, aim, stats)
+    }
+
+    /// T24.01: **the zone guard covers the cluster** — a bot never throws a durian grenade at an enemy inside the gas's
+    /// reach (a piece's flight plus its cloud, `zone_reach`), and does throw at one past it (the control: without it,
+    /// "never threw" passes for a bot that cannot throw the thing at all).
+    #[test]
+    fn a_bot_throws_its_durian_grenade_only_from_outside_its_own_gas() {
+        let wd = crate::weapons::defs::def(crate::items::registry::WEAPON_DURIAN).expect("durian");
+        let reach = zone_reach(wd, GravityMode::Standard).expect("a cluster has a reach");
+        let (close, _, _, _, st) = durian_throw(reach * 0.5);
+        assert!(
+            !close,
+            "threw a durian grenade at an enemy {} px away, inside its gas ({reach} px): {st:?}",
+            reach * 0.5
+        );
+        let far = reach + crate::constants::BOT_HAZARD_CLEARANCE + 80.0;
+        let (thrown, w, at, aim, st) = durian_throw(far);
+        assert!(
+            thrown,
+            "never threw a durian grenade at an enemy {far} px away, past its gas: {st:?}"
+        );
+        // And where it bursts is past the gas's reach of the thrower (the guard's own question, asked again here).
+        let burst = crate::weapons::projectile::predict_impact(
+            &w.map,
+            crate::items::registry::WEAPON_DURIAN,
+            at,
+            aim,
+            w.wind,
+            w.gravity,
+            BOT_PREDICT_TICKS,
+            SIM_DT,
+        )
+        .expect("it bursts");
+        assert!(
+            (burst - at).len() >= reach,
+            "it bursts {} px from the thrower, inside its gas ({reach})",
+            (burst - at).len()
         );
     }
 

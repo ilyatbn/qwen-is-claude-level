@@ -41,6 +41,11 @@ pub enum SpawnSource {
     /// `source` is a `=== 'Crate'` comparison and the parse is untyped with a
     /// fallback, so a new variant flows through and draws as an ordinary item.
     Dropped,
+    /// T24.01: a fruit hanging on a durian tree (`world::durian`). **It hangs**: no physics, no TTL, never evicted
+    /// and not counted against `MAX_WORLD_ITEMS` (the tree has its own count, `DURIAN_FRUIT` a tree); it is taken
+    /// within `DURIAN_PICKUP_REACH`, not `PICKUP_RADIUS` — a body passing through the canopy. Otherwise an item like
+    /// any other: `would_take`, stacks, `item_pickup`. The client reads `source === 'Tree'` to draw it hanging.
+    Tree,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +64,21 @@ pub struct WorldItem {
 impl WorldItem {
     pub fn is_crate(&self) -> bool {
         self.source == SpawnSource::Crate
+    }
+
+    /// T24.01: a durian tree's fruit — it hangs where the tree grew it ([`SpawnSource::Tree`]).
+    pub fn is_hanging(&self) -> bool {
+        self.source == SpawnSource::Tree
+    }
+
+    /// How near a body's centre must come to take it: a hanging fruit's reach is the canopy's
+    /// (`DURIAN_PICKUP_REACH`), everything else `PICKUP_RADIUS`.
+    pub fn reach(&self) -> f32 {
+        if self.is_hanging() {
+            crate::constants::DURIAN_PICKUP_REACH
+        } else {
+            PICKUP_RADIUS
+        }
     }
 
     fn size(&self) -> (f32, f32) {
@@ -188,7 +208,8 @@ impl WorldItems {
             count,
             pos,
             vel,
-            grounded: false,
+            // T24.01: a hanging fruit is at rest from the start — nothing will ever move it.
+            grounded: source == SpawnSource::Tree,
             spawned_at: now,
             pickup_locked_until: match source {
                 SpawnSource::Death => now + DEATH_DROP_LOCK,
@@ -232,6 +253,10 @@ impl WorldItems {
         let mut out = ItemStep::default();
         let landed = &mut out.landed;
         for it in self.items.iter_mut() {
+            // T24.01: a fruit hangs on its tree — no gravity, no pull (trees grow on no space map), never voided.
+            if it.is_hanging() {
+                continue;
+            }
             let (forces, pulled) = crate::world::swallow::loose_forces(gravity, hole, it.pos);
             if pulled {
                 let was = it.grounded;
@@ -350,7 +375,7 @@ impl WorldItems {
         // Crates are exempt from TTL: they are the reward for contesting a drop,
         // and having one time out mid-fight would be maddening.
         self.items.retain(|it| {
-            if !it.is_crate() && now - it.spawned_at >= WORLD_ITEM_TTL {
+            if !it.is_crate() && !it.is_hanging() && now - it.spawned_at >= WORLD_ITEM_TTL {
                 gone.push(it.id);
                 false
             } else {
@@ -391,7 +416,7 @@ impl WorldItems {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, it)| !it.is_crate())
+            .filter(|(_, it)| !it.is_crate() && !it.is_hanging())
             .min_by(|a, b| {
                 a.1.spawned_at
                     .partial_cmp(&b.1.spawned_at)
@@ -419,7 +444,6 @@ impl WorldItems {
         );
 
         let mut taken = Vec::new();
-        let r2 = PICKUP_RADIUS * PICKUP_RADIUS;
 
         for t in players.iter_mut() {
             let PickupTarget {
@@ -434,7 +458,7 @@ impl WorldItems {
                     continue;
                 }
                 let d = it.pos - *ppos;
-                if d.x * d.x + d.y * d.y > r2 {
+                if d.x * d.x + d.y * d.y > it.reach() * it.reach() {
                     continue;
                 }
                 // T22.03I F5: the refusal a bot's goal asks about, asked here too.
@@ -500,9 +524,13 @@ impl WorldItems {
         self.items.len()
     }
 
-    /// T23.41: the items `MAX_WORLD_ITEMS` caps — every one but the crates (`CRATE_MAX_ON_MAP` caps those).
+    /// T23.41: the items `MAX_WORLD_ITEMS` caps — every one but the crates (`CRATE_MAX_ON_MAP` caps those) and
+    /// (T24.01) the fruit hanging on durian trees (`DURIAN_FRUIT` a tree caps those).
     pub fn ground_len(&self) -> usize {
-        self.items.iter().filter(|it| !it.is_crate()).count()
+        self.items
+            .iter()
+            .filter(|it| !it.is_crate() && !it.is_hanging())
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -595,6 +623,7 @@ mod tests {
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
             look: crate::constants::WorldLook::Classic,
+            durian_trees: Vec::new(),
         }
     }
 

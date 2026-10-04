@@ -267,7 +267,7 @@ fn median(mut v: Vec<f32>) -> f32 {
 /// predicate — "unless it is melee", "unless its weights are zero" — would excuse
 /// the next weapon that acquires the same shape by accident, which is precisely
 /// the bug this test exists to catch. So the unobtainable set is asserted as an
-/// *equality*: these six and no others.
+/// *equality*: these seven and no others (T24.01: the durian grenade, grown on trees).
 ///
 /// - **Retired**: knife, bat, whip, axe and hammer are kept as placeholders
 ///   because `ITEMS` is indexed by id and deleting five entries renumbers every
@@ -282,6 +282,8 @@ fn median(mut v: Vec<f32>) -> f32 {
 fn every_weapon_is_obtainable_unless_it_is_issued_or_retired() {
     const RETIRED: [&str; 5] = ["knife", "bat", "whip", "axe", "hammer"];
     const ISSUED: [&str; 1] = ["shovel"];
+    // T24.01: grown on the durian trees, never on the floor — the third way into a player's hands.
+    const GROWN: [&str; 1] = ["durian_grenade"];
 
     let mut orphans: Vec<_> = weapons()
         .iter()
@@ -310,7 +312,12 @@ fn every_weapon_is_obtainable_unless_it_is_issued_or_retired() {
         "the issued shovel has three zero columns too and must not read as retired"
     );
     orphans.sort_unstable();
-    let mut expected: Vec<&str> = RETIRED.iter().chain(ISSUED.iter()).copied().collect();
+    let mut expected: Vec<&str> = RETIRED
+        .iter()
+        .chain(ISSUED.iter())
+        .chain(GROWN.iter())
+        .copied()
+        .collect();
     expected.sort_unstable();
     assert_eq!(
         orphans, expected,
@@ -343,6 +350,23 @@ fn every_weapon_is_obtainable_unless_it_is_issued_or_retired() {
         assert!(
             !holds(key),
             "{key} is retired but a fresh player is holding one"
+        );
+    }
+    // The grown half, at the live binding site too: a classic map's trees hang it after one step.
+    for key in GROWN {
+        let id = ITEMS.iter().find(|d| d.key == key).map(|d| d.id);
+        let grown = (1u64..=40).any(|seed| {
+            let mut w = World::new(seed, MapScale::Small);
+            w.step(game_core::constants::SIM_DT);
+            let hangs = w
+                .items
+                .iter()
+                .any(|it| Some(it.item) == id && it.is_hanging());
+            hangs
+        });
+        assert!(
+            grown,
+            "{key} is exempt from the weights but no tree grows it on 40 seeds"
         );
     }
 

@@ -7,9 +7,9 @@
 //! See `docs/30-items-inventory.md` §1.
 
 use crate::constants::{
-    AIRBURST_AMMO, BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, FLAMETHROWER_AMMO, GRENADE_AMMO,
-    MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, MOLOTOV_AMMO, PISTOL_AMMO, REVOLVER_AMMO, SMG_AMMO,
-    SMOKE_AMMO, TOXIC_GRENADE_AMMO,
+    AIRBURST_AMMO, BATTERY_PACK_AMOUNT, BAZOOKA_AMMO, DEAGLE_AMMO, DURIAN_GRENADE_AMMO,
+    FLAMETHROWER_AMMO, GRENADE_AMMO, MACHINEGUN_AMMO, MEDKIT_HEAL, MINE_AMMO, MOLOTOV_AMMO,
+    PISTOL_AMMO, REVOLVER_AMMO, SMG_AMMO, SMOKE_AMMO, TOXIC_GRENADE_AMMO,
 };
 
 pub type ItemId = u16;
@@ -99,6 +99,11 @@ pub const WEAPON_FLAME: WeaponId = WeaponId(25);
 /// also why it never appears in `live_weapons` — it has no item, so
 /// `is_retired`'s weight columns never see it.
 pub const WEAPON_PLATFORM_GUN: WeaponId = WeaponId(26);
+/// T24.01: the durian grenade — thrown, it bursts mid-air into `DURIAN_PIECES` pieces. **Appended** (§B16).
+pub const WEAPON_DURIAN: WeaponId = WeaponId(27);
+/// T24.01: one of a durian grenade's pieces, which bursts into a purple gas cloud. Never an item — like the airburst
+/// pellet and the flame, it is a weapon only so it can fly on the shared projectile step and reach the wire.
+pub const WEAPON_DURIAN_PIECE: WeaponId = WeaponId(28);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UtilityId {
@@ -177,6 +182,8 @@ pub const SHOVEL: ItemId = 24;
 pub const VAMPIRE_FANGS: ItemId = 25;
 pub const IRONMAN_BOOTS: ItemId = 26;
 pub const UNICORN_WINGS: ItemId = 27;
+/// T24.01. Appended (§B16). Grown on durian trees (`world::durian`), never spawned on the floor, in a crate or buried.
+pub const DURIAN_GRENADE: ItemId = 28;
 pub const BAZOOKA: ItemId = 3;
 pub const GRENADE: ItemId = 4;
 pub const SMG: ItemId = 5;
@@ -582,6 +589,19 @@ pub static ITEMS: &[ItemDef] = &[
         crate_weight: 5,
         buried_weight: 6,
     },
+    // T24.01. Appended at index 28. **All three weights zero, and it is not retired** (`is_retired` names it): it
+    // grows on the durian trees and nowhere else — the tree is the reason to go somewhere.
+    ItemDef {
+        id: DURIAN_GRENADE,
+        key: "durian_grenade",
+        name: "Durian Grenade",
+        kind: ItemKind::Weapon(WEAPON_DURIAN),
+        max_stack: DURIAN_GRENADE_AMMO,
+        sprite: "weapon_durian_grenade",
+        spawn_weight: 0,
+        crate_weight: 0,
+        buried_weight: 0,
+    },
 ];
 
 /// Direct index — ids are exactly `0..ITEMS.len()`, which a test asserts.
@@ -649,8 +669,11 @@ pub fn is_passive(id: ItemId) -> bool {
 /// only five of them are retired. Anything handing out "every weapon" (§F7's
 /// `all` kit) has to skip the placeholders and keep the shovel, and a second
 /// copy of that rule is a second place to get it wrong.
+///
+/// **T24.01: nor is the durian grenade** — three zero columns because it grows on trees, not because nobody finds it.
 pub fn is_retired(d: &ItemDef) -> bool {
     matches!(d.kind, ItemKind::Weapon(_))
+        && d.id != DURIAN_GRENADE
         && d.spawn_weight == 0
         && d.crate_weight == 0
         && d.buried_weight == 0

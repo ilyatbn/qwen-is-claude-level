@@ -92,6 +92,7 @@ import { OrdnanceFxLayer } from '../render/ordnanceFx'
 import { RoundWatch } from '../render/ordnanceWatch'
 import { PendingUses, RttFilter, swings as swingsKey } from '../look/actors/pendingUses'
 import { crystalLights, joinCrystals } from '../look/actors/furniture'
+import { fruitLights, joinDurianTrees } from '../look/actors/durianTree'
 import { hazardKind } from '../render/ordnanceFx-math'
 import { cycleU, sceneDarkness } from '../render/sky-math'
 import { nightShare } from '../look/daylight'
@@ -587,6 +588,10 @@ export class GameScene extends Phaser.Scene {
   private mapObjects: MapObject[] = []
   /** T23.19: takes this map's crystals out of the cast (`furniture.ts::joinCrystals`). */
   private leaveCrystals: () => void = () => {}
+  /** T24.01: takes this map's durian trees out of the cast (`durianTree.ts::joinDurianTrees`), and what they are. */
+  private leaveDurianTrees: () => void = () => {}
+  private durianTrees: { x: number; y: number; flip: boolean }[] = []
+  private durianTreesOn = true
   /** The local player's pad charge, `0..1`, straight from the snapshot. */
   private teleportCharge = 0
   private results!: ResultsScreen
@@ -794,6 +799,10 @@ export class GameScene extends Phaser.Scene {
     this.mapObjects = []
     this.leaveCrystals()
     this.leaveCrystals = () => {}
+    this.leaveDurianTrees()
+    this.leaveDurianTrees = () => {}
+    this.durianTrees = []
+    this.durianTreesOn = true
 
     // T22.10B/T22.12/T22.16: last round's holes, black hole and dead cores — the core outlives the scene, so the pull
     // goes too, not only the drawing. (A restart resets the whole mirror: its `RoundReset` entry.)
@@ -1869,6 +1878,10 @@ export class GameScene extends Phaser.Scene {
     // T23.19 (R5): the stamped crystals keep F's glow and light — drawn over their rock, lit beside the gates.
     this.leaveCrystals()
     this.leaveCrystals = spaceMap ? () => {} : joinCrystals(this, init.objects, () => true)
+    // T24.01: the durian trees `map_init` carried (none in space or on a volcanic map), behind the figures.
+    this.durianTrees = init.durianTrees
+    this.leaveDurianTrees()
+    this.leaveDurianTrees = joinDurianTrees(this, init.durianTrees, () => this.durianTreesOn)
 
     // §D6's objects are stamped into the mask (collision, R5) and drawn as rock since T23.07 — the atlas
     // art retired (R15). Kept for the debug handle: what `map_init` carried.
@@ -2930,6 +2943,8 @@ export class GameScene extends Phaser.Scene {
       ...(this.world ? { stale: this.world.staleRounds } : {}),
       hole: fxFeed(this).blackHole,
       flare: fxFeed(this).flare,
+      // T24.01: the durian fruit's glow, while the world renderer draws the pickups.
+      fruit: this.world?.items.drawsInWorld ? fruitLights(this.world.items.hangingFruit(), this.world.items.clock) : [],
     }
   }
 
@@ -3647,6 +3662,11 @@ export class GameScene extends Phaser.Scene {
       setItemsVisible(on: boolean) {
         return self.world?.items.setVisible(on) ?? null
       },
+      /** e2e only (T24.01): the durian trees, off for a check's control frame (their fruit are pickups: `setItemsVisible`). */
+      setDurianTreesVisible(on: boolean) {
+        self.durianTreesOn = on
+        return self.durianTreesOn
+      },
       /** e2e only (T99.04): the pickups' name labels, off for a trailer shot. */
       setItemLabelsVisible(on: boolean) {
         return self.world?.items.setLabelsVisible(on) ?? null
@@ -4083,6 +4103,8 @@ export class GameScene extends Phaser.Scene {
           // T23.10B F1: where the gates stand (their light is a gate's, `gateLights`) — night-view-match's light leg.
           padsAt: self.padViews.map((p) => ({ x: p.x, y: p.y })),
           // T23.10B F1: every standing light on the map (gates, crystals) — a check's stand outside all of them.
+          // T24.01: the durian trees `map_init` carried (feet, mirror) — the check frames them.
+          durianTrees: self.durianTrees.map((t) => ({ ...t })),
           staticLights: self.effectLights.statics.query({ x: 0, y: 0, w: self.core.width, h: self.core.height }).map((l) => ({ x: l.x, y: l.y, r: l.r })),
           padsDrawn: self.world?.pads.count ?? 0,
           // T21.12, both ends once more: a pad can be drawn as the fallback

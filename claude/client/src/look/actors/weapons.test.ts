@@ -39,7 +39,8 @@ describe('the arsenal (T23.16)', () => {
   it('reads 21 weapon items off the registry, and the reading has a control', () => {
     // 21: `M23-INVENTORY.md` § 4's 27 weapon ids less meteor, the four sub-munitions and the platform gun, none of
     // which is an item. The control: the registry has non-weapon items this reading must not count.
-    expect(reg.length).toBe(21)
+    // T24.01: + the durian grenade, 22.
+    expect(reg.length).toBe(22)
     expect(registry.match(/kind: ItemKind::Utility/g)?.length).toBeGreaterThan(0)
   })
 
@@ -53,7 +54,7 @@ describe('the arsenal (T23.16)', () => {
     expect(new Set(all).size).toBe(all.length)
     expect([...all].sort()).toEqual(Object.keys(WEAPONS).sort())
     expect(FIREARMS.length).toBe(9)
-    expect(MELEE_THROWN.length).toBe(12)
+    expect(MELEE_THROWN.length).toBe(13)
   })
 
   it("agrees with the simulation's deliveries: a firearm neither swings nor is thrown; a melee weapon swings", () => {
@@ -90,9 +91,9 @@ describe('the arsenal (T23.16)', () => {
   it('leaves the four sub-munitions, the meteor and the platform gun without a model — and names them (T23.17)', () => {
     // `weapons/defs.rs` holds every WeaponId; each is a held model or one of these, never both, never neither.
     const d = [...deliveries().keys()]
-    expect(d.length).toBe(27)
+    expect(d.length).toBe(29)
     const unheld = d.filter((k) => !WEAPONS[k]).sort()
-    expect(unheld).toEqual(['airburst_pellet', 'flame', 'meteor', 'meteor_fragment', 'platform_gun', 'toxic_drop'])
+    expect(unheld).toEqual(['airburst_pellet', 'durian_piece', 'flame', 'meteor', 'meteor_fragment', 'platform_gun', 'toxic_drop'])
     expect(d.filter((k) => WEAPONS[k]).sort()).toEqual(Object.keys(WEAPONS).sort())
   })
 

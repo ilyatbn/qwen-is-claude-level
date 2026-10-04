@@ -140,6 +140,9 @@ function drawKind(g: D.G, a: Actor, o: ActorOpts, x: number, y: number): void {
     case 'item':
       D.item(g, x, y, o)
       return
+    case 'durianTree':
+      D.durianTree(g, x, y, { s: o.s ?? 1, face: o.face ?? 1, seed: o.seed ?? 7, fruit: o.fruit ?? [] })
+      return
     case 'figure':
       if (o.J) F.figure(g, x, y, o.J, { s: o.s ?? 1.15, face: o.face ?? 1, rot: o.rot ?? 0, accent: o.accent ?? '#e8482c', rim: o.accent?.startsWith('rgba(') ?? false, visor: o.visor ?? null })
       return
@@ -206,6 +209,11 @@ export function estimateBox(a: Actor): Box {
     // T23.19: `draw.ts::grave` (±8 × 18 above its feet) and `item` (±8 about its middle), plus the rim passes' reach.
     const m = 2 * 1.15 * size + 2
     b = a.kind === 'grave' ? [a.x - 9 * s - m, a.y - 17 * s - m, a.x + 9 * s + m, a.y + 3 * s + m] : [a.x - 9 * s - m, a.y - 9 * s - m, a.x + 9 * s + m, a.y + 9 * s + m]
+  }
+  if (a.kind === 'durianTree') {
+    // T24.01: `draw.ts::durianTree` — the leaf clusters reach ±97 and 170 up (`DURIAN_TREE_W`/`_H`), the roots 7 below.
+    const m = 2 * 1.15 * size + 2
+    b = [a.x - 99 * s - m, a.y - 172 * s - m, a.x + 99 * s + m, a.y + 7 * s + m]
   }
   if (a.kind === 'bird') {
     // T23.19B: `draw.ts::bird` spans ±10 and flaps ±6 about its body (the metal one's fin 4 up), plus the rim passes.

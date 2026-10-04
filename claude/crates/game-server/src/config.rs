@@ -144,6 +144,9 @@ pub struct Config {
     /// adding it to `DEV_LOADOUT` would change the bag every other check selects
     /// from. Not in the replay header, for `dev_flashlight`'s reason.
     pub dev_smoke: bool,
+    /// Development only (`DEV_DURIAN=1`, T24.01): spawn carrying durian grenades, which only grow on trees — the
+    /// `durian` check throws a real one without walking to a tree. `dev_smoke`'s sibling, for its reasons.
+    pub dev_durian: bool,
     /// Promo only (`DEV_BOT_FRENZY=1`, T99.01): every bot hunts the nearest living
     /// enemy wherever it is on the map and never breaks contact, so a trailer's
     /// footage is all fighting. Off by default — a bot that knows where you are
@@ -335,6 +338,7 @@ impl Default for Config {
             dev_poisoned: false,
             dev_flashlight: false,
             dev_smoke: false,
+            dev_durian: false,
             dev_bot_frenzy: false,
             dev_bot_arsenal: false,
             dev_probe: false,
@@ -547,6 +551,7 @@ impl Config {
             dev_poisoned: matches!(get("DEV_POISONED").as_deref(), Some("1") | Some("true")),
             dev_flashlight: matches!(get("DEV_FLASHLIGHT").as_deref(), Some("1") | Some("true")),
             dev_smoke: matches!(get("DEV_SMOKE").as_deref(), Some("1") | Some("true")),
+            dev_durian: matches!(get("DEV_DURIAN").as_deref(), Some("1") | Some("true")),
             dev_bot_frenzy: matches!(get("DEV_BOT_FRENZY").as_deref(), Some("1") | Some("true")),
             dev_bot_arsenal: matches!(get("DEV_BOT_ARSENAL").as_deref(), Some("1") | Some("true")),
             dev_probe: matches!(get("DEV_PROBE").as_deref(), Some("1") | Some("true")),

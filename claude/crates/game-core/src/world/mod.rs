@@ -14,6 +14,7 @@ pub mod birds;
 pub mod black_hole;
 pub mod cores;
 pub mod cycle;
+pub mod durian;
 pub mod mount;
 pub mod swallow;
 pub mod teleport;
@@ -641,6 +642,8 @@ pub enum HazardKind {
     Fire,
     Toxic,
     Smoke,
+    /// T24.01: a durian grenade piece's purple gas cloud — `Toxic`'s burn, drawn purple.
+    DurianGas,
 }
 
 // ---------------------------------------------------------------------------
@@ -996,6 +999,9 @@ pub struct World {
     /// belongs to whatever they are holding, and a platform sharing it would
     /// fire at the cadence of a weapon in a bag its rider cannot reach.
     pub platform_ready_at: Vec<f32>,
+    /// T24.01: the durian trees' fruit slots (`world::durian`), one per slot of every `map.meta.durian_trees`.
+    /// Hashed: a slot's regrow time decides when an item appears.
+    pub durian: Vec<durian::FruitSlot>,
     /// Which barrel each platform fires next, `0..GUN_PLATFORM_BARRELS` (T21.43).
     ///
     /// Per platform rather than per rider, like the magazine: a held stream is
@@ -1277,6 +1283,7 @@ impl World {
             platform_ammo: vec![crate::constants::GUN_PLATFORM_AMMO; platforms],
             platform_ready_at: vec![0.0; platforms],
             platform_barrel: vec![0; platforms],
+            durian: durian::slots_for(&map.meta.durian_trees),
             burn: Default::default(),
             respawn_fallbacks: 0,
             mines: Default::default(),
@@ -1777,6 +1784,8 @@ impl World {
         if playing {
             self.step_item_spawns(now);
         }
+        // T24.01: the durian trees grow their fruit in every phase — they hang from the first step.
+        self.step_durian_trees(now);
 
         // 6b. birds (§C16). With the items, because that is what they are: a
         // moving supply drop. **After** the item step so a drop made this tick
@@ -2818,7 +2827,41 @@ impl World {
                 );
                 self.announce_flames(&ids, now);
             }
+            // T24.01: the durian grenade's mid-air split — `count` pieces at seeded random angles, each its own
+            // projectile (announced like any other) that bursts into gas where it stops.
+            Burst::Cluster {
+                count,
+                speed,
+                piece,
+            } => self.burst_cluster(at, count, speed, piece, owner, now),
         }
+    }
+
+    /// T24.01: a cluster bursts — `count` `piece` projectiles from `at`, each at an angle drawn uniformly from the
+    /// world RNG (seeded, so a replay splits the same way) at `speed`. **No `Explosion` event**: a client draws one as
+    /// a fire blast lit by `EXPLOSION_LIGHT` (460 px, the picture's one explosion) — on GPU the first durian lit a
+    /// whole cliff orange for a puff of gas. The grenade's despawn and the pieces' spawns are what a client sees.
+    fn burst_cluster(
+        &mut self,
+        at: Vec2,
+        count: u32,
+        speed: f32,
+        piece: WeaponId,
+        owner: PlayerId,
+        now: f32,
+    ) {
+        let mut ids = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let a = crate::rng::range_f32(&mut self.rng, 0.0, std::f32::consts::TAU);
+            ids.push(self.projectiles.spawn_raw(
+                piece,
+                owner,
+                at,
+                Vec2::new(a.cos(), a.sin()) * speed,
+                now,
+            ));
+        }
+        self.announce_projectiles(&ids);
     }
 
     /// Tell the clients about flames that have just been lit.
@@ -2956,10 +2999,12 @@ impl World {
         // `BurnKind` are two enums that mirror each other and a mapping written
         // as an assignment is a mapping nobody checks.
         let bk = match kind {
-            BurnZone::Toxic => BurnKind::Toxic,
+            BurnZone::Toxic | BurnZone::DurianGas => BurnKind::Toxic,
         };
         let hazard = match kind {
             BurnZone::Toxic => HazardKind::Toxic,
+            // T24.01: the same burn, its own name on the wire — the client draws it purple.
+            BurnZone::DurianGas => HazardKind::DurianGas,
         };
         let tick = self.tick;
         for i in 0..patches.max(1) {
@@ -5507,6 +5552,13 @@ impl World {
         // round leaves the muzzle, so it is state. `REPLAY_VERSION` 9.
         h.update(&(self.platform_barrel.len() as u32).to_le_bytes());
         h.update(&self.platform_barrel);
+        // T24.01: the durian slots — which item hangs in each and when an empty one grows back.
+        h.update(&(self.durian.len() as u32).to_le_bytes());
+        for s in &self.durian {
+            h.update(&[s.tree, s.slot]);
+            h.update(&s.item.map_or(u32::MAX, |i| i).to_le_bytes());
+            h.update(&s.regrow_at.to_le_bytes());
+        }
 
         h.update(&(self.items.len() as u32).to_le_bytes());
         for it in self.items.iter() {
@@ -6022,6 +6074,8 @@ mod state_hash_coverage {
             platform_ready_at: _,
             // T21.43. Hashed: it decides which barrel the next round leaves.
             platform_barrel: _,
+            // T24.01. Hashed: a slot's regrow time decides when its fruit appears.
+            durian: _,
             round_time: _,
             tick: _,
             phase: _,
@@ -6770,6 +6824,7 @@ mod toxic_rain_falls {
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
             look: crate::constants::WorldLook::Classic,
+            durian_trees: Vec::new(),
         };
         // The surface points the pre-§C21 code placed the hazard on directly.
         // Under the cave the "surface" is the CAVE FLOOR — under a roof — which
@@ -7280,6 +7335,7 @@ mod toxic_rain_falls {
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
             look: crate::constants::WorldLook::Classic,
+            durian_trees: Vec::new(),
         };
         meta.surface_points.push(crate::math::Point {
             x: x as i32,
@@ -7640,6 +7696,7 @@ mod toxic_rain_falls {
                 generator: crate::constants::MapGenerator::V1,
                 shape: crate::constants::MapShape::Random,
                 look: crate::constants::WorldLook::Classic,
+                durian_trees: Vec::new(),
             };
             Map::from_parts(mask, coarse, meta)
         };

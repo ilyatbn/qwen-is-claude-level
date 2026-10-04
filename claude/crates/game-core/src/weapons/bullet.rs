@@ -158,6 +158,7 @@ mod tests {
                 generator: crate::constants::MapGenerator::V1,
                 shape: crate::constants::MapShape::Random,
                 look: crate::constants::WorldLook::Classic,
+                durian_trees: Vec::new(),
             },
         )
     }

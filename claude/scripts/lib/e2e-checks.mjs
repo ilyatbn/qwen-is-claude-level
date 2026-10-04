@@ -517,6 +517,9 @@ export const CHECKS = [
   { name: 'swing-mine-fx', file: 'scripts/checks/swing-mine-fx.mjs', standalone: true },
   // T23.18: F's smoke, both tiers, covering the ground that blinds; vision unmoved (retired `smoke-shader`).
   { name: 'smoke-fx', file: 'scripts/checks/smoke-fx.mjs', standalone: true },
+  // T24.01: the durian tree and its glowing fruit (both ends, pixels with layer-hidden controls), and the grenade's
+  // mid-air burst into four pieces and four purple clouds.
+  { name: 'durian', file: 'scripts/checks/durian.mjs', standalone: true },
   // T23.18: F's fire, both tiers, every damage circle covered (retired `fire-shader`: T21.18's flame quads, T21.36's discs).
   { name: 'fire-fx', file: 'scripts/checks/fire-fx.mjs', standalone: true },
   // T23.18: F's explosion in the world renderer, both tiers, lit (retired `explosion-shader`: T21.18's blast quad and flat flash).

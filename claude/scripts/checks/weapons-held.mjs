@@ -17,12 +17,12 @@
  *
  * ## 2. Readability: no two weapons' silhouettes too alike at game scale
  *
- * Each of the 21 weapons' ink mask (alpha > ½) drawn by its model at the figure's scale (1.15, aim 0, one origin), zoom 1;
+ * Each of the 22 weapons' ink mask (T24.01 added the durian grenade) (alpha > ½) drawn by its model at the figure's scale (1.15, aim 0, one origin), zoom 1;
  * IoU of every pair. The most similar pair is stated; the gate is `IOU_MAX`, picked from the data (below).
  *
  * ## 3. Live: selecting each weapon changes the hand, and nothing else (the sandbox, the game's renderer)
  *
- * Each of the 21 given (`__game.giveItem`) and selected through the inventory, the scene frozen still, the world
+ * Each of the 22 given (`__game.giveItem`) and selected through the inventory, the scene frozen still, the world
  * canvas read: the **hand patch** (shoulder to muzzle) changes from the previous weapon's by `HAND_MIN`; the **legs**
  * (the control region) do not change at all; and the figure handed to the renderer holds that weapon (both ends).
  *
@@ -85,8 +85,8 @@ const LEGS_MAX = 0.5
 const PICKUP_MIN = 3
 
 const FIREARMS = ['bazooka', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver', 'deagle', 'machinegun', 'flamethrower']
-/** T23.17: the melee and thrown weapons — with the firearms, all 21 holdables (`weapons.test.ts` counts them). */
-const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel']
+/** T23.17: the melee and thrown weapons — with the firearms, all 22 holdables (`weapons.test.ts` counts them; T24.01 the durian). */
+const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel', 'durian_grenade']
 const ALL = [...FIREARMS, ...MELEE_THROWN]
 
 async function lab(page, origin, extra) {
@@ -193,7 +193,7 @@ export default async function ({ page, shot, log }) {
     ['deagle', 'machinegun', 'flamethrower', 'knife'],
     ['bat', 'whip', 'axe', 'hammer'],
     ['mine', 'airburst', 'smoke', 'molotov'],
-    ['toxic_grenade', 'bazooka'],
+    ['toxic_grenade', 'durian_grenade', 'bazooka'],
   ]
   let prev = null
   const lineup = []

@@ -102,6 +102,17 @@ export const WEAPONS: Record<string, WeaponDef> = {
     g.fillStyle = ink(); g.beginPath(); g.roundRect(8, -5.5, 3.6, 5.2, 1.2); g.fill(); rr(g, 9.1, -8.4, 1.4, 3.2, 0.4)
     if (a !== undefined && !String(a).startsWith('rgba(')) { glow(g, 10.4, -9.6, 4.5, '255,150,40', 0.95); dot(g, 10.3, -9.4, 0.9, '#fff0b0') } } },
   airburst: { grips: [[8, -2]], muzzle: [9.8, -4], cx: 9.8, thrown: true, draw: (g) => { rr(g, 8.9, -6.2, 1.8, 5.4, 0.5); poly(g, [[8.9, -6.2], [9.8, -9.4], [10.7, -6.2]]); poly(g, [[8.9, -2.6], [6.2, 0.6], [8.9, -0.8]]); poly(g, [[10.7, -2.6], [13.4, 0.6], [10.7, -0.8]]) } },
+  // T24.01: the durian grenade — the reference sheet's fruit: a black spiky ball on a short stalk, its green glow the
+  // one accent (dropped from the rim passes like every accent).
+  durian_grenade: { grips: [[8, -2]], muzzle: [9.5, -4], cx: 9.5, thrown: true, draw: (g, a) => {
+    if (accentOK(a)) glow(g, 9.5, -3.4, 6.5, '110,255,140', 0.85)
+    g.fillStyle = ink(); g.beginPath(); g.ellipse(9.5, -3.4, 2.7, 3.1, 0, 0, 7); g.fill()
+    for (let k = 0; k < 14; k++) {
+      const t = (k / 14) * Math.PI * 2
+      const [c, n] = [Math.cos(t), Math.sin(t)]
+      poly(g, [[9.5 + c * 2.4 - n * 0.6, -3.4 + n * 2.8 + c * 0.6], [9.5 + c * 3.6, -3.4 + n * 4.1], [9.5 + c * 2.4 + n * 0.6, -3.4 + n * 2.8 - c * 0.6]])
+    }
+    rr(g, 9.05, -8.4, 0.9, 2.2, 0.3) } },
   mine: { grips: [[8, -1]], muzzle: [9.5, -2.5], cx: 9.8, thrown: true, draw: (g, a) => {
     rr(g, 6.5, -3, 6.6, 2.4, 1.1); for (const x of [7.6, 9.8, 12]) ln(g, [x, -3], [x, -4.4], 0.6); if (a !== undefined && !String(a).startsWith('rgba(')) { glow(g, 9.8, -3.4, 3, '255,40,30', 0.9); dot(g, 9.8, -3.3, 0.6, '#ff5040') } } },
 }
@@ -111,10 +122,11 @@ export const WEAPONS: Record<string, WeaponDef> = {
  * the **melee and thrown** T23.17 does. Every key has a model above; `weapons-held` and `weapons.test.ts` count both
  * ends. `platform_gun` (26) is the turret (`draw.ts::turret`, a prop since T23.19A) and is never held; `meteor` (3) is a
  * world event F6 skips ("never held"); the sub-munitions (4 meteor_fragment, 22 airburst_pellet, 23 toxic_drop,
- * 25 flame) are never held and have no model.
+ * 25 flame, 28 durian_piece) are never held and have no model. T24.01 appended `durian_grenade` (27), which F6 predates:
+ * it is held and iconned here, and F6's sheet (the look-lab's Level A) does not draw it.
  */
 export const FIREARMS = ['bazooka', 'smg', 'laser_pistol', 'laser_smg', 'pistol', 'revolver', 'deagle', 'machinegun', 'flamethrower'] as const
-export const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel'] as const
+export const MELEE_THROWN = ['grenade', 'knife', 'bat', 'whip', 'axe', 'hammer', 'mine', 'airburst', 'smoke', 'molotov', 'toxic_grenade', 'shovel', 'durian_grenade'] as const
 
 /**
  * `weapons.js::held(key, accent)` — the weapon and the two arms to its grips, drawn in the stick's shoulder frame

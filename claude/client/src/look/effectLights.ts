@@ -176,10 +176,12 @@ export interface EffectSources {
   hole?: { x: number; y: number; growth: number; hidden: boolean } | null
   /** T23.20 part C: the solar flare the world renderer draws (`fx/feed.ts`) — lights along its loop while shown. */
   flare?: Pick<FlareView, 'points' | 'strength' | 'hidden'> | null
+  /** T24.01: the hanging durian fruit's pulsing lights (`actors/durianTree.ts::fruitLights`, already capped). */
+  fruit?: readonly Light[]
 }
 
 /** Which source each light in the last list came from — for the dev handle (count both ends). */
-export type EffectKind = 'static' | 'explosion' | 'laser' | 'muzzle' | 'rocket' | 'flame' | 'jet' | 'vent' | 'hole' | 'flare'
+export type EffectKind = 'static' | 'explosion' | 'laser' | 'muzzle' | 'rocket' | 'flame' | 'jet' | 'vent' | 'hole' | 'flare' | 'fruit'
 
 /**
  * The per-frame builder. Stateful only for the muzzle flash, which is a light for the first
@@ -271,6 +273,8 @@ export class EffectLights {
     if (src.hole && !src.hole.hidden) put(BLACK_HOLE_LIGHT, src.hole.x, src.hole.y, src.hole.growth, 'hole')
     // T23.20 part C: F3's effects are key lights — the flare's loop (the vortex is not one: `fx/vortex.ts` says why).
     for (const l of flareLights(src.flare ?? null)) put(l, l.x, l.y, 1, 'flare')
+    // T24.01: the durian fruit glow, each at its pulse (its `i` already scaled).
+    for (const l of src.fruit ?? []) put(l, l.x, l.y, 1, 'fruit')
     if (this.unchanged()) return this.last
     this.last = this.scratch.slice(0, this.n).map((l) => ({ ...l }))
     this.lastKinds = this.scratchKinds.slice(0, this.n)

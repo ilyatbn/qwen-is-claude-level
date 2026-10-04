@@ -16,6 +16,7 @@ import { ICON_RES, drawnIcon } from '../look/actors/icons'
 import { joinCast } from '../look/actors/cast'
 import { followWorldDraws } from '../look/fx/feed'
 import { VIEW_MARGIN, nearView, pickupActor } from '../look/actors/furniture'
+import { durianPulse, fruitActor, fruitPhase } from '../look/actors/durianTree'
 import { ensureItemTextures } from './itemTextures'
 import {
   beaconPulse,
@@ -139,7 +140,22 @@ export class ItemLayer {
   private actorOf(e: Entry, view: Phaser.Geom.Rectangle): ReturnType<typeof pickupActor> | null {
     if (!this.container.visible || !nearView(view, e.sprite.x, e.sprite.y, VIEW_MARGIN)) return null
     // Whole px: a bob at a sub-pixel phase would be a new atlas cell every frame.
+    // T24.01: a durian tree's fruit hangs in a pulsing green glow.
+    if (e.item.source === 'Tree') return fruitActor(e.art, e.sprite.x, Math.round(e.sprite.y), durianPulse(this.t, fruitPhase(e.item.id)))
     return pickupActor(e.art, e.sprite.x, Math.round(e.sprite.y))
+  }
+
+  /** T24.01: the fruit hanging on durian trees, where each is drawn (world px) — what their lights are placed at. */
+  hangingFruit(): { id: number; x: number; y: number }[] {
+    const out: { id: number; x: number; y: number }[] = []
+    if (!this.container.visible) return out
+    for (const [id, e] of this.entries) if (e.item.source === 'Tree') out.push({ id, x: e.sprite.x, y: e.sprite.y })
+    return out
+  }
+
+  /** The layer's clock, seconds (the bob's and the fruit's pulse). */
+  get clock(): number {
+    return this.t
   }
 
   /** T99.04 (e2e only): show or hide the pickups themselves and their beams (both drawers read this container's flag). */

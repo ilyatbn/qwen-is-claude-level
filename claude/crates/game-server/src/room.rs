@@ -1658,6 +1658,16 @@ impl Room {
         if self.config.dev_smoke {
             self.give_all(id, &[(game_core::items::registry::SMOKE, 2)]);
         }
+        // T24.01: durian grenades for the `durian` check, beside the loadout for `dev_smoke`'s reason.
+        if self.config.dev_durian {
+            self.give_all(
+                id,
+                &[(
+                    game_core::items::registry::DURIAN_GRENADE,
+                    game_core::constants::DURIAN_GRENADE_AMMO,
+                )],
+            );
+        }
         if !self.config.dev_loadout {
             return;
         }

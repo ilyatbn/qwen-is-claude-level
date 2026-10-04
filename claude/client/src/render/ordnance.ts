@@ -52,6 +52,7 @@ const THROWN_KEY: Partial<Record<ProjectileKind, string>> = {
   smoke: 'smoke',
   molotov: 'molotov',
   toxic: 'toxic_grenade',
+  durian: 'durian_grenade',
 }
 /**
  * How far a thrown weapon turns per px it travels (rad/px): about a turn every 60 px, so a lob reads as thrown, not

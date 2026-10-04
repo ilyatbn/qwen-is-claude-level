@@ -263,6 +263,7 @@ mod tests {
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
             look: crate::constants::WorldLook::Classic,
+            durian_trees: Vec::new(),
         };
         for x in (60..(W as i32 - 60)).step_by(16) {
             m.surface_points.push(Point::new(x, 300));
@@ -547,6 +548,7 @@ mod tests {
             generator: crate::constants::MapGenerator::V1,
             shape: crate::constants::MapShape::Random,
             look: crate::constants::WorldLook::Classic,
+            durian_trees: Vec::new(),
         };
         let mut map = Map::from_parts(mask, coarse, m);
         let mut lava = LavaBurst::new(1, &map, 0.0);

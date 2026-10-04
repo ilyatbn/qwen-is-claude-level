@@ -416,6 +416,10 @@ pub struct MapMeta {
     /// simulation reads depends on it. Carried by `map_init` (its last byte) and
     /// the replay header, so every client and a replay draw one look.
     pub look: crate::constants::WorldLook,
+    /// T24.01: the durian trees ([`crate::map::durian::choose_trees`]) — scenery, never in the mask; empty on space
+    /// and volcanic maps. Carried by `map_init` (after the look byte) so every client draws them; their fruit are
+    /// `World`'s.
+    pub durian_trees: Vec<crate::map::durian::DurianTree>,
     /// Indices into `surface_points` forming the validated strongly connected set.
     ///
     /// Shipped because nothing downstream can otherwise tell "every cave is
@@ -1108,6 +1112,24 @@ pub(crate) fn generate_full_with(
         choose_decorations(&mask, &surface_points, outcome.seed, theme)
     };
 
+    // T24.01: the durian trees, last, from their own substream — after every choice above, so they move none of them.
+    let look = world_look_for(requested_seed, generator);
+    let furniture: Vec<Point> = spawn_points
+        .iter()
+        .copied()
+        .chain(teleport_pads.iter().map(|p| p.pos))
+        .chain(gun_platforms.iter().map(|g| g.pos))
+        .collect();
+    let durian_trees = crate::map::durian::choose_trees(
+        &mask,
+        &surface_points,
+        &largest_component,
+        &furniture,
+        requested_seed,
+        look,
+        space,
+    );
+
     let coarse = CoarseGrid::build(&mask);
     let chunk_count = (mask.chunks_x() * mask.chunks_y()) as usize;
 
@@ -1132,7 +1154,8 @@ pub(crate) fn generate_full_with(
             largest_component,
             generator,
             shape: outcome.shape,
-            look: world_look_for(requested_seed, generator),
+            look,
+            durian_trees,
         },
         mask,
         coarse,

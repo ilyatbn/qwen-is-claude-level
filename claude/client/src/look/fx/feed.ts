@@ -145,7 +145,9 @@ export function gameFrame(feed: FxFeed, out: FxFrame, seconds: number, lights: r
       else if (p.kind === 'meteor') {
         rocketFx(out, p, smoke)
         emberFx(out, p, LOOK.meteor.colour, LOOK.meteor.r)
-      } else if (p.kind === 'pellet' || p.kind === 'fragment' || p.kind === 'drop') emberFx(out, p, LOOK[p.kind].colour, LOOK[p.kind].r)
+      } else if (p.kind === 'pellet' || p.kind === 'fragment' || p.kind === 'drop' || p.kind === 'durianPiece') emberFx(out, p, LOOK[p.kind].colour, LOOK[p.kind].r)
+      // T24.01: the durian grenade flies as its model (Phaser, below) inside its green glow.
+      else if (p.kind === 'durian') emberFx(out, p, LOOK.durian.colour, LOOK.durian.r)
       // The thrown weapons (grenade, airburst, smoke, molotov, toxic) fly as themselves, drawn by Phaser (T23.17).
     }
     for (const l of lights) if (l.muzzle) muzzleFx(out, l.x, l.y, l.i / MUZZLE_LIGHT.i)

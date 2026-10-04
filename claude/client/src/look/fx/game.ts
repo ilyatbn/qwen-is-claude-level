@@ -165,6 +165,9 @@ export const SMOKE_RGB: Rgb = NIGHT_SMOKE.smoke
 /** The toxic cloud: danger, so saturated (R10) — the old zone's green, deepened; and its glow. */
 export const TOXIC_RGB: Rgb = hexToLinear(0x2f6a1a)
 export const TOXIC_GLOW: Rgb = [0.25, 0.9, 0.12]
+/** T24.01: the durian grenade's gas — danger, so saturated (R10), and purple as the owner asked; and its glow. */
+export const DURIAN_GAS_RGB: Rgb = hexToLinear(0x4a1a78)
+export const DURIAN_GAS_GLOW: Rgb = [0.55, 0.12, 0.9]
 /** How fast a cloud's sprites turn (rad/s): smoke is never still. */
 export const CLOUD_SPIN = 0.08
 
@@ -173,7 +176,8 @@ export function cloudFx(out: FxFrame, h: Pick<Hazard, 'id' | 'kind' | 'x' | 'y' 
   const fade = Math.min(ramp(elapsed, 0, CLOUD_FADE), ramp(h.ttl, 0, CLOUD_FADE))
   if (!(fade > 0)) return
   const toxic = h.kind === 'toxic'
-  const colour = toxic ? TOXIC_RGB : look.smoke
+  const durian = h.kind === 'durian'
+  const colour = toxic ? TOXIC_RGB : durian ? DURIAN_GAS_RGB : look.smoke
   const rnd = new Lcg((Math.abs(h.id) % 2147483646) + 1)
   for (let i = 0; i < CLOUD_SPRITES; i++) {
     const a = rnd.next() * Math.PI * 2
@@ -194,6 +198,7 @@ export function cloudFx(out: FxFrame, h: Pick<Hazard, 'id' | 'kind' | 'x' | 'y' 
     })
   }
   if (toxic) out.soft.push({ x: h.x, y: h.y, size: h.r * 2.4, color: TOXIC_GLOW, alpha: 0.2 * fade, tex: 0, rot: 0 })
+  if (durian) out.soft.push({ x: h.x, y: h.y, size: h.r * 2.4, color: DURIAN_GAS_GLOW, alpha: 0.22 * fade, tex: 0, rot: 0 })
 }
 
 // ---------------------------------------------------------------------------------------------------------------

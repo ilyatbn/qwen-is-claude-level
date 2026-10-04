@@ -142,6 +142,7 @@ fn replay_meta() -> game_core::map::MapMeta {
         generator: game_core::constants::MapGenerator::V1,
         shape: game_core::constants::MapShape::Random,
         look: game_core::constants::WorldLook::Classic,
+        durian_trees: Vec::new(),
     }
 }
 

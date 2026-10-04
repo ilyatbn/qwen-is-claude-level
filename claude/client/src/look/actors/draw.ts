@@ -439,6 +439,97 @@ export function crystals(g: G, x: number, y: number, { s = 1, glowRGB = '120,190
   })
 }
 
+/**
+ * T24.01: **the durian tree** (`tasks/parking-lot/refs/durianbombtree.jpg`) in F's ink — a gnarled trunk on a flare of
+ * roots, boughs forking out to spiky leaf clusters, and three low branches that hang the fruit (`durianTree.ts`'s
+ * `FRUIT_AT`, world px from the trunk's foot, which the server's `map::durian::FRUIT_AT` places the items at).
+ * Drawn about its foot at (x, y), `DURIAN_TREE_H` tall at `s` 1 (units are world px), mirrored by `face`.
+ * `seed` jitters the leaves so two trees are not stamps of one. No fixed-colour parts: the rim passes light it.
+ */
+export function durianTree(g: G, x: number, y: number, { s = 1, face = 1, seed = 7, fruit = [] as readonly P[] } = {}): void {
+  const rnd = lcg(seed * 7919 + 13)
+  withT(g, x, y, s, face, 0, () => {
+    g.lineCap = 'round'
+    g.lineJoin = 'round'
+    const stroke = (pts: P[], w: number): void => {
+      g.strokeStyle = INK
+      g.lineWidth = w
+      g.beginPath()
+      g.moveTo(...pts[0]!)
+      for (let k = 1; k + 1 < pts.length; k += 2) g.quadraticCurveTo(...pts[k]!, ...pts[k + 1]!)
+      g.stroke()
+    }
+    // Roots: a wide flare of gnarled strokes over the ground line, the sheet's knotted foot.
+    for (const [ex, ey, w] of [[-34, 4, 4.5], [-22, 5, 3.6], [-10, 6, 3], [12, 6, 3.2], [24, 5, 3.8], [36, 3, 4.2]] as const) {
+      stroke([[ex * 0.1, -12], [ex * 0.45, -6 + rnd() * 3], [ex, ey]], w)
+    }
+    // The trunk: thick and twisted, 24 wide at the foot to 10 at the fork, leaning as it rises.
+    g.fillStyle = INK
+    g.beginPath()
+    g.moveTo(-12, 3)
+    g.quadraticCurveTo(-15, -14, -7, -28)
+    g.quadraticCurveTo(-1, -42, -9, -58)
+    g.lineTo(-6, -72)
+    g.lineTo(5, -72)
+    g.quadraticCurveTo(7, -56, 4, -44)
+    g.quadraticCurveTo(14, -22, 12, 3)
+    g.closePath()
+    g.fill()
+    // A knot and a split in the bark read in the rim light as a gnarled trunk, not a pole.
+    disc(g, -9, -30, 4.2)
+    disc(g, 8, -14, 3.6)
+    // Boughs from the fork, each forking again to the crown's clusters (two levels, as the sheet's tree).
+    const crown: [number, number, number][] = []
+    const boughs: [number, number][] = [[-56, -104], [-30, -128], [2, -140], [32, -126], [58, -100]]
+    for (const [bx, by] of boughs) {
+      const from: P = [bx < 0 ? -3 : 2, -70]
+      const mid: P = [bx * 0.55, by * 0.72 - 4]
+      stroke([from, [bx * 0.2, by * 0.55 - 6], mid], 5.2 - Math.abs(bx) / 30)
+      for (const side of [-1, 1]) {
+        const tip: P = [bx + side * (10 + rnd() * 8), by + (rnd() - 0.6) * 14]
+        stroke([mid, [(mid[0] + tip[0]) / 2 + side * 3, (mid[1] + tip[1]) / 2 - 4], tip], 2.6)
+        crown.push([tip[0], tip[1], 12 + rnd() * 5])
+      }
+    }
+    // Two low limbs reaching out sideways, clustered at their ends.
+    for (const side of [-1, 1]) {
+      const tip: P = [side * 66, -66 - rnd() * 8]
+      stroke([[side * 4, -58], [side * 36, -70], tip], 3.6)
+      crown.push([tip[0], tip[1], 11 + rnd() * 3])
+    }
+    // The fruit's branches: drooping from the low trunk, ending over each fruit, with a stalk down to it.
+    for (const [fx, fy] of fruit) {
+      const tip: P = [fx * 1.04, fy - 11]
+      stroke([[fx < 0 ? -4 : 4, -50], [fx * 0.6, fy - 22], tip], 2.6)
+      line(g, [tip, [fx, fy - 6]], 1.2)
+    }
+    // Leaf clusters: dense spiky bunches — two rings of long pointed leaves, the sheet's loose cluster sprites.
+    for (const [cx, cy, r] of crown) {
+      for (const ring of [1, 0.62]) {
+        const n = ring === 1 ? 13 : 9
+        const turn = rnd() * 6.283
+        for (let k = 0; k < n; k++) {
+          const a = turn + (k / n) * Math.PI * 2 + (rnd() - 0.5) * 0.35
+          const len = r * ring * (0.8 + rnd() * 0.45)
+          const w = r * 0.2
+          g.save()
+          g.translate(cx, cy)
+          g.rotate(a)
+          g.fillStyle = INK
+          g.beginPath()
+          g.moveTo(0, -w)
+          g.quadraticCurveTo(len * 0.55, -w * 1.2, len, 0)
+          g.quadraticCurveTo(len * 0.55, w * 1.2, 0, w)
+          g.closePath()
+          g.fill()
+          g.restore()
+        }
+      }
+      disc(g, cx, cy, r * 0.45)
+    }
+  })
+}
+
 export function rocket(g: G, x: number, y: number, ang: number, { s = 1 } = {}): void {
   withT(g, x, y, s, 1, -ang, () => {
     if (extras) {

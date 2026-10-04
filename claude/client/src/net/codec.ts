@@ -42,6 +42,8 @@ export interface MapInit {
    * `C().WORLD_LOOKS`) — the trailing byte, after the shape. Render-only; handed to `Core.setWorldLook`.
    */
   look: number
+  /** T24.01: the durian trees (`MapMeta::durian_trees`) — each tree's foot and mirror bit, after the look byte. */
+  durianTrees: { x: number; y: number; flip: boolean }[]
   wind: number
   /** The last carve `seq` this mask already contains. */
   carveSeq: number
@@ -225,6 +227,8 @@ class Reader {
  * have stayed in step by luck.
  */
 export const OBJECT_WIRE_BYTES = 11
+/** T24.01: one durian tree on the wire — `i16 x, i16 y, u8 flip` (`codec.rs::DURIAN_TREE_WIRE_BYTES`). */
+export const DURIAN_TREE_WIRE_BYTES = 5
 
 /**
  * T22.18B: the lump slots each asteroid carries (`game_core::map::meta::ASTEROID_LUMP_SLOTS`,
@@ -351,9 +355,10 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   }
 
   const rleLen = r.u32()
-  // T23.30: two bytes follow the mask — the map shape, then (T23.31) the world look.
-  if (rleLen + 2 !== r.remaining) {
-    throw new CodecError(`rle_byte_len ${rleLen} + shape + look disagrees with ${r.remaining} remaining`)
+  // T23.30: two bytes follow the mask — the map shape, then (T23.31) the world look; then (T24.01) the durian trees,
+  // a count and 5 bytes each.
+  if (rleLen + 3 > r.remaining) {
+    throw new CodecError(`rle_byte_len ${rleLen} + shape + look + trees disagrees with ${r.remaining} remaining`)
   }
   const rle = r.bytes(rleLen)
   const shape = r.u8()
@@ -364,6 +369,12 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
   if (look >= C().WORLD_LOOKS.length) {
     throw new CodecError(`look ${look} names no world look`)
   }
+  const treeCount = r.u8()
+  if (treeCount * DURIAN_TREE_WIRE_BYTES !== r.remaining) {
+    throw new CodecError(`durian_tree_count ${treeCount} disagrees with ${r.remaining} remaining`)
+  }
+  const durianTrees: { x: number; y: number; flip: boolean }[] = []
+  for (let i = 0; i < treeCount; i++) durianTrees.push({ x: r.i16(), y: r.i16(), flip: r.u8() !== 0 })
 
   return {
     width,
@@ -374,6 +385,7 @@ export function decodeMapInit(buf: ArrayBuffer): MapInit {
     generator,
     shape,
     look,
+    durianTrees,
     wind,
     carveSeq,
     spawnPoints,

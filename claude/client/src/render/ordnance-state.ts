@@ -31,6 +31,9 @@ export type ProjectileKind =
   | 'toxic'
   | 'drop'
   | 'flame'
+  /** T24.01: the durian grenade in flight, and one of the four pieces it bursts into. */
+  | 'durian'
+  | 'durianPiece'
 
 /**
  * How each projectile looks (§C4). Deliberately placeholder art — coloured dots
@@ -77,6 +80,10 @@ export const LOOK: Record<ProjectileKind, ProjectileLook> = {
   // The trail is short: a flame flies for a fraction of its life and rests for
   // the rest of it, and a long tail behind a resting flame is a smear.
   flame: { r: 0, colour: 0xff8a2b, trail: 4 },
+  // T24.01: the grenade flies as its model (`ordnance.ts::THROWN_KEY`) with a green glow; a piece is a small purple
+  // ember with a short tail — it becomes a purple cloud (`fx/game.ts::DURIAN_GAS_RGB`).
+  durian: { r: 5, colour: 0x6eff8c, trail: 6 },
+  durianPiece: { r: 3, colour: 0xb05cff, trail: 6 },
 }
 
 /**
@@ -143,6 +150,9 @@ export const WEAPON_KEYS: string[] = [
   // it is spawned only by `World::fire_platform`. It is here because it has a
   // `WeaponId` and its rounds fly.
   'platform_gun',
+  // T24.01: the durian grenade and its piece. Appended (§B16), as the registry appends them.
+  'durian_grenade',
+  'durian_piece',
 ]
 
 export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
@@ -172,6 +182,9 @@ export const KIND_BY_WEAPON_KEY: Record<string, ProjectileKind> = {
   // any other way would be two pictures of one thing — the §A24 mistake this
   // file's `LOOK` comment already records having paid for once.
   platform_gun: 'bullet',
+  // T24.01.
+  durian_grenade: 'durian',
+  durian_piece: 'durianPiece',
 }
 
 export interface TrailPoint {

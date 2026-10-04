@@ -41,6 +41,10 @@ use crate::constants::{
     REVOLVER_MUZZLE_SPEED, REVOLVER_RANGE, REVOLVER_SPREAD,
 };
 use crate::constants::{
+    DURIAN_FUSE, DURIAN_GAS_DPS, DURIAN_GAS_DURATION, DURIAN_GAS_RADIUS, DURIAN_GRENADE_AMMO,
+    DURIAN_MUZZLE_SPEED, DURIAN_PIECES, DURIAN_PIECE_FUSE, DURIAN_PIECE_SPEED,
+};
+use crate::constants::{
     FLAMETHROWER_AMMO, FLAMETHROWER_COOLDOWN, FLAMETHROWER_FLAMES_PER_SHOT, FLAME_MUZZLE_SPEED,
     FLAME_SPREAD,
 };
@@ -62,6 +66,7 @@ use crate::items::registry::{
     WEAPON_MINE, WEAPON_MOLOTOV, WEAPON_PISTOL, WEAPON_PLATFORM_GUN, WEAPON_REVOLVER,
     WEAPON_SHOVEL, WEAPON_SMG, WEAPON_SMOKE, WEAPON_TOXIC_DROP, WEAPON_TOXIC_GRENADE, WEAPON_WHIP,
 };
+use crate::items::registry::{WEAPON_DURIAN, WEAPON_DURIAN_PIECE};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Delivery {
@@ -179,6 +184,14 @@ pub enum Burst {
     /// static discs. A disc that damages you while you stand in it is a rule,
     /// not a fire: you cannot see where it will go and you cannot push it.
     Flames { count: u32, speed: f32 },
+    /// T24.01: bursts into `count` `piece` projectiles flung at `speed` in seeded random directions — the durian
+    /// grenade's *"breaks into 4 small particles flying in random direction"*. What each piece then does is its own
+    /// def's burst (a purple gas cloud), so the cluster is one rule and the cloud another.
+    Cluster {
+        count: u32,
+        speed: f32,
+        piece: WeaponId,
+    },
 }
 
 /// Mirrors `burn::BurnKind` without `weapons::defs` depending on the burn field's
@@ -192,6 +205,9 @@ pub enum Burst {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BurnZone {
     Toxic,
+    /// T24.01: the durian grenade's purple gas — the toxic burn (`BurnKind::Toxic`), told apart on the wire
+    /// (`HazardKind::DurianGas`) so the client draws it purple.
+    DurianGas,
 }
 
 #[derive(Debug)]
@@ -911,6 +927,61 @@ pub static WEAPONS: &[WeaponDef] = &[
         energy_cost: 0.0,
         burst: Burst::Blast,
     },
+    // --- T24.01: the durian grenade and its pieces --- appended (§B16), in id order.
+    //
+    // A grenade that goes off **in the air**: the fuse is short (`DURIAN_FUSE`, its basis there) and it bounces if it
+    // lands first. Going off is `Burst::Cluster`: four pieces, each its own projectile.
+    WeaponDef {
+        id: WEAPON_DURIAN,
+        key: "durian_grenade",
+        delivery: Delivery::Projectile {
+            fuse: Some(DURIAN_FUSE),
+            restitution: 0.4,
+            friction: 0.75,
+            explode_on_contact: false,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: GRENADE_COOLDOWN,
+        muzzle_speed: DURIAN_MUZZLE_SPEED,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Cluster {
+            count: DURIAN_PIECES,
+            speed: DURIAN_PIECE_SPEED,
+            piece: WEAPON_DURIAN_PIECE,
+        },
+    },
+    // A piece: bursts into a purple cloud on contact or at the end of its short fuse, and digs nothing (the zone
+    // never reaches `explode`). Never fired by a hand — `Burst::Cluster` spawns it with its velocity.
+    WeaponDef {
+        id: WEAPON_DURIAN_PIECE,
+        key: "durian_piece",
+        delivery: Delivery::Projectile {
+            fuse: Some(DURIAN_PIECE_FUSE),
+            restitution: 0.0,
+            friction: 0.0,
+            explode_on_contact: true,
+        },
+        damage: 0.0,
+        blast_radius: 0.0,
+        range: 0.0,
+        cooldown: 0.0,
+        muzzle_speed: 0.0,
+        gravity_scale: 1.0,
+        wind_scale: 0.5,
+        energy_cost: 0.0,
+        burst: Burst::Zone {
+            kind: BurnZone::DurianGas,
+            radius: DURIAN_GAS_RADIUS,
+            dps: DURIAN_GAS_DPS,
+            duration: DURIAN_GAS_DURATION,
+            patches: 1,
+            scatter: 0.0,
+        },
+    },
 ];
 
 /// Look a weapon up by id.
@@ -945,6 +1016,7 @@ pub fn ammo_per_pickup(id: WeaponId) -> u8 {
         WEAPON_SMOKE => SMOKE_AMMO,
         WEAPON_MOLOTOV => MOLOTOV_AMMO,
         WEAPON_TOXIC_GRENADE => TOXIC_GRENADE_AMMO,
+        WEAPON_DURIAN => DURIAN_GRENADE_AMMO,
         // Energy weapons and weather ordnance: the stack is the weapon, and
         // charge is the ammo (§B5).
         _ => 1,
@@ -1209,6 +1281,17 @@ mod tests {
                 // says so out loud. The guard is `weapons::flame`'s
                 // `const _: () = assert!(...)`, which fails the build instead.
                 Burst::BurnsOut => {}
+                // T24.01: a cluster's effect is its pieces — some, flung, and each a weapon whose own burst is
+                // checked by this same loop.
+                Burst::Cluster {
+                    count,
+                    speed,
+                    piece,
+                } => assert!(
+                    count > 0 && speed > 0.0 && def(piece).is_some(),
+                    "{} bursts into nothing",
+                    w.key
+                ),
             }
         }
         // The exemption list must not outlive its members: a name here that is
@@ -1552,6 +1635,7 @@ mod ballistics {
                 generator: crate::constants::MapGenerator::V1,
                 shape: crate::constants::MapShape::Random,
                 look: crate::constants::WorldLook::Classic,
+                durian_trees: Vec::new(),
             }
         }
 
@@ -1722,6 +1806,7 @@ mod ballistics {
                     generator: crate::constants::MapGenerator::V1,
                     shape: crate::constants::MapShape::Random,
                     look: crate::constants::WorldLook::Classic,
+                    durian_trees: Vec::new(),
                 },
             );
             let mut dealt = 0.0f32;

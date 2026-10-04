@@ -116,11 +116,17 @@ fn record_a_round_reporting(dir: &Path, ticks: u32) -> Recorded {
 
     let mut last_alive = 0u32;
     for t in 1..=ticks {
-        let buttons = if t % 90 < 45 {
+        let mut buttons = if t % 90 < 45 {
             button::RIGHT
         } else {
             button::LEFT
         };
+        // T24.01: a hop each sway, so a respawn into a pocket does not leave the recorded player pressing against
+        // its walls for the rest of the round — where every flipped direction washes out and the perturbation
+        // fixture below measures the pocket, not the runner (measured: respawned stuck at x ≈ 818 from tick ~1000).
+        if t % 45 == 20 {
+            buttons |= button::JUMP;
+        }
         room.apply_for_test(Command::Input(
             id,
             vec![Input::new(t, buttons, (t.wrapping_mul(613) % 65536) as u16)],
@@ -582,6 +588,11 @@ fn a_perturbed_command_is_localised_to_a_nearby_tick() {
     // now lives to the end, `last_alive = 1400`): margin 0 → 7/20, SIM_HZ/2 → 6/20,
     // **SIM_HZ → 3/20** (ticks 1324..1340 wash out, a contiguous pocket — red), 1.5 × SIM_HZ
     // → 10/20, **2 × SIM_HZ → 20/20**, 3 × SIM_HZ → 20/20. Moved to the plateau's start.
+    //
+    // **Re-measured at T24.01** (the durian fruit took item ids 0–5, the bots played another round, and the recorded
+    // player died at ~650 and respawned into a pocket at x ≈ 818 where it pressed against the walls to the end: every
+    // margin read 0–3/20). The fixture's player now hops each sway (`record_a_round_reporting`), and: SIM_HZ → 20/20,
+    // 1.5 × → 20/20, **2 × → 19/20**, 2.5 × → 15/20, 3 × → 20/20 — a plateau; the margin stays.
     const MARGIN: u32 = 2 * SIM_HZ;
     let cut = rec.last_alive.saturating_sub(MARGIN);
 

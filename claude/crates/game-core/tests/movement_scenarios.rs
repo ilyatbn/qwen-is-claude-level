@@ -63,6 +63,7 @@ fn make_map(w: u32, h: u32, build: impl FnOnce(&mut Mask)) -> Map {
         generator: game_core::constants::MapGenerator::V1,
         shape: game_core::constants::MapShape::Random,
         look: game_core::constants::WorldLook::Classic,
+        durian_trees: Vec::new(),
     };
     Map::from_parts(mask, coarse, meta)
 }

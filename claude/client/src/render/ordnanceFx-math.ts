@@ -56,7 +56,7 @@ export interface Mine {
  * to draw, which is why it falls through to `other` rather than keeping a
  * private renderer alive for nobody.
  */
-export type HazardKind = 'toxic' | 'smoke' | 'other'
+export type HazardKind = 'toxic' | 'smoke' | 'durian' | 'other'
 
 /** A ground hazard: a toxic zone, or a smoke cloud. */
 export interface Hazard {
@@ -87,6 +87,8 @@ export function hazardKind(raw: string): HazardKind {
   const s = raw.toLowerCase()
   if (s.includes('smoke')) return 'smoke'
   if (s.includes('toxic')) return 'toxic'
+  // T24.01: `DurianGas`, the durian grenade's purple cloud.
+  if (s.includes('durian')) return 'durian'
   return 'other'
 }
 

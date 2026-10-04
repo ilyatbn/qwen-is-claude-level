@@ -263,7 +263,7 @@ export interface Glow {
   a: number
 }
 
-export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item' | 'tripod' | 'crawler'
+export type ActorKind = 'stick' | 'turret' | 'gate' | 'crystals' | 'beetle' | 'spider' | 'bird' | 'rocket' | 'smoke' | 'figure' | 'weapon' | 'grave' | 'item' | 'tripod' | 'crawler' | 'durianTree'
 
 /** The union of `e_style.js`'s option bags, as the ink pass received them. */
 export interface ActorOpts {
@@ -305,6 +305,8 @@ export interface ActorOpts {
   ang?: number
   /** smoke: the trail, mask px. */
   pts?: [number, number][]
+  /** T24.01 `durianTree`: where its fruit hang, px from its foot (unmirrored; `face` mirrors the drawing). */
+  fruit?: [number, number][]
   rgb?: RgbString
   a?: number
   size?: number
