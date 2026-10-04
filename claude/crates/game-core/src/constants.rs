@@ -2234,6 +2234,15 @@ pub const DEFAULT_MAP_SCALE: MapScale = MapScale::Small;
 /// operator's `MAP_SCALE` says otherwise. When true everything works as it did before T23.42. The server reads it
 /// through `Config::map_scale_selectable`, so its tests can run both sides of the switch.
 pub const MAP_SCALE_SELECTABLE: bool = false;
+/// The size of every **space** match while the size picker is off ([`MAP_SCALE_SELECTABLE`]) — ground maps keep
+/// [`DEFAULT_MAP_SCALE`].
+///
+/// **Medium — the owner, 2026-10-04:** *"feel free to set the space map to medium if all the tests use it."* The basis
+/// is that sentence and the fact behind its condition: every space browser check (asteroids, space sky, solar flare,
+/// thrusters, black hole, breach vortex, radiation) was laid out on Medium, the only size space had before T23.42
+/// made every match Small, and `black-hole`'s pixel controls do not fit Small's framing (T23.42's open finding).
+/// Applied in one place, `game-server`'s `Config::round_scale`.
+pub const SPACE_MAP_SCALE: MapScale = MapScale::Medium;
 /// Phaser camera zoom. Visible world = VIEWPORT / this.
 ///
 /// **T23.10 (R6): 2.0 → 1.0** — what the M23 pictures are drawn at, and the owner's words: *"a bit more zoomed out

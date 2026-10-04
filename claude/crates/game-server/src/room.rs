@@ -1275,7 +1275,7 @@ impl Room {
     pub fn generate_world_task(&self) -> impl FnOnce() -> World + Send + 'static {
         let seed = self.seed;
         let secret = self.buried_secret;
-        let scale = self.config.map_scale;
+        let scale = self.config.round_scale();
         let generator = self.config.map_generator;
         let round_seconds = self.config.round_seconds;
         let weather_mode = self.config.weather_mode;
@@ -1481,7 +1481,7 @@ impl Room {
             code: self.code.clone(),
             private: self.private,
             capacity: game_core::constants::LOBBY_CAPACITY,
-            scale: self.config.map_scale,
+            scale: self.config.round_scale(),
             bots: self.config.bots_enabled,
             start_kit: self.config.start_kit,
             // Read off the config, exactly as `scale` is: `SetRoundSeconds`
@@ -2338,7 +2338,7 @@ impl Room {
                         .as_ref()
                         .map_or(f32::INFINITY, |w| w.phase_time_left()),
                     seed: self.seed,
-                    scale: self.config.map_scale,
+                    scale: self.config.round_scale(),
                     map: self
                         .world
                         .as_ref()
@@ -3238,7 +3238,7 @@ impl Room {
         // player survived only as long as a world did.
         let mut world = World::with_shape(
             seed,
-            self.config.map_scale,
+            self.config.round_scale(),
             buried_secret,
             self.config.map_generator,
             self.config.gravity,
@@ -3981,6 +3981,68 @@ mod tests {
         let a = Room::new_in_room(c.clone(), 0).generate_world();
         let b = Room::new_in_room(c, 7).generate_world();
         assert_eq!(a.map.mask.hash(), b.map.mask.hash());
+    }
+
+    /// **The owner, 2026-10-04: space matches are Medium** (`SPACE_MAP_SCALE`, ruled at `Config::round_scale`). With
+    /// the size switch off a space room builds Medium at the first round and at a restart; the control is a ground
+    /// room on the same config, which stays at the configured Small, and a space room with the switch on, which keeps
+    /// the chosen size (so the rule is the switch's, not space's alone).
+    #[test]
+    fn a_space_round_is_medium_with_the_size_switch_off_and_a_ground_round_is_not() {
+        use game_core::constants::{GravityMode, MapScale, SPACE_MAP_SCALE};
+        let room = |gravity, selectable| {
+            Room::new(Arc::new(Config {
+                map_scale: MapScale::Small,
+                map_scale_selectable: selectable,
+                gravity,
+                fixed_seed: Some(4242),
+                ..Config::default()
+            }))
+        };
+        assert_ne!(
+            SPACE_MAP_SCALE,
+            MapScale::Small,
+            "the test needs the space scale to differ from the ground's"
+        );
+        let mut space = room(GravityMode::Space, false);
+        assert_eq!(
+            space.generate_world().map.meta.scale,
+            SPACE_MAP_SCALE,
+            "a space round's first map"
+        );
+        assert_eq!(
+            space.lobby_state().scale,
+            SPACE_MAP_SCALE,
+            "the lobby reports the scale the round is built at"
+        );
+        space.restart(7);
+        assert_eq!(
+            space.world_for_test().map.meta.scale,
+            SPACE_MAP_SCALE,
+            "a space restart's map"
+        );
+
+        let mut ground = room(GravityMode::Standard, false);
+        assert_eq!(
+            ground.generate_world().map.meta.scale,
+            MapScale::Small,
+            "control: a ground round"
+        );
+        ground.restart(7);
+        assert_eq!(
+            ground.world_for_test().map.meta.scale,
+            MapScale::Small,
+            "control: a ground restart"
+        );
+        assert_eq!(
+            room(GravityMode::Space, true)
+                .generate_world()
+                .map
+                .meta
+                .scale,
+            MapScale::Small,
+            "control: with the switch on, the chosen size stands for space"
+        );
     }
 
     #[test]
@@ -5019,7 +5081,7 @@ mod tests {
             .collect();
         let fresh = World::with_gravity(
             seed,
-            room.config.map_scale,
+            room.config.round_scale(),
             room.buried_secret,
             room.config.map_generator,
             room.config.gravity,

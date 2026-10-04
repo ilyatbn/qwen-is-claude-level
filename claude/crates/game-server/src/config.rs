@@ -14,7 +14,7 @@ use game_core::constants::{MapGenerator, MapScale};
 use game_core::constants::{
     BOT_COUNT_DEFAULT, BOT_SKILL_DEFAULT, DEFAULT_MAP_GENERATOR, DEFAULT_MAP_SCALE,
     LOBBY_BOT_TIMEOUT, MAP_SCALE_SELECTABLE, MAX_PLAYERS, READY_TIMEOUT_SECS, ROOM_EMPTY_TTL,
-    ROUND_SECONDS, WARMUP_SECONDS,
+    ROUND_SECONDS, SPACE_MAP_SCALE, WARMUP_SECONDS,
 };
 use game_core::weapons::explode::EffectKind;
 use game_core::world::WeatherMode;
@@ -610,6 +610,18 @@ impl Config {
                 None => d.warmup_seconds,
             },
         })
+    }
+
+    /// The scale a round of this room is built at — **the one place it is decided**. The configured `map_scale`,
+    /// except a space round while the size picker is off, which is [`SPACE_MAP_SCALE`] (the owner, 2026-10-04,
+    /// quoted there). With the picker on, the chosen size stands for space too. Every world this server builds, and
+    /// the scale the lobby and `map_init` report, read this rather than the field.
+    pub fn round_scale(&self) -> MapScale {
+        if self.gravity == game_core::constants::GravityMode::Space && !self.map_scale_selectable {
+            SPACE_MAP_SCALE
+        } else {
+            self.map_scale
+        }
     }
 
     /// One line, `key=value`, for the startup log (`docs/61-logging-debug.md` §2).
