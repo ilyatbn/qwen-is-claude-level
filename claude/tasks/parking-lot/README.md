@@ -12,7 +12,6 @@ not abandoned: each file is intact, so picking one up later costs nothing.
 | `T23.33` volcanic disasters | owner 2026-10-02: ash clouds and lava bursts for the volcanic look — after T23.31 |
 | `T23.34` the ice world | owner 2026-10-02: a third look with hail, extreme frost, frost at night, ice flames — after T23.33 |
 | `T23.39` the round ends in a nuke | owner 2026-10-03: zoom out, a nuke obliterates the map, the camera breaks, then stats; space: the black hole's ring explodes (ref `refs/bang.html`) |
-| `T23.40` the durian tree and the alien cow | owner 2026-10-03: a durian tree spawn with glowing durian grenades to pick up, the durian cluster gas grenade, and a spiky-headed alien cow that eats from it (refs `tasks/parking-lot/refs/alien-cow-ref.jpg`, `tasks/parking-lot/refs/durianbombtree.jpg`) |
 
 **These are not listed in `tasks/TASKS.md`'s build order.** The tracker's link
 guard only walks `M<n>/T…` paths, so nothing here is checked by it; that is the
