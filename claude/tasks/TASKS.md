@@ -901,6 +901,6 @@ Not the game: material to show it. Nothing here changes a real round.
 
 ## M24 — Creatures and toys (owner asks after M23)
 
-- [ ] [T24.00](M24/T24.00-more-leaf-flecks.md) — More leaf flecks, with size/speed/depth variety (owner)
+- [x] [T24.00](M24/T24.00-more-leaf-flecks.md) — More leaf flecks, with size/speed/depth variety (owner)
 - [ ] [T24.01](M24/T24.01-the-durian-tree-and-the-alien-cow.md) — The durian tree with glowing durian grenades to pick up, the durian cluster gas grenade; then the alien cow (owner; un-parked T23.40)
 
