@@ -72,7 +72,8 @@ async function read(page, rects) {
 }
 
 async function hidden(page, on) {
-  await page.evaluate((v) => window.__world.hideLayers(v ? ['fireflies'] : []), on)
+  // T23.43: the leaf flecks drift on the same clock, so they are held out of both frames — only the fireflies differ.
+  await page.evaluate((v) => window.__world.hideLayers(v ? ['fireflies', 'leaves'] : ['leaves']), on)
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
 }
 
@@ -88,6 +89,7 @@ function controls(spots) {
 /** The whole frame with and without the layer: the largest channel change anywhere (one patch, the frame). */
 async function wholeFrame(page) {
   const all = { x: 0, y: 0, w: 1280, h: 720 }
+  await hidden(page, false)
   const [on] = await read(page, [all])
   await hidden(page, true)
   const [off] = await read(page, [all])
@@ -111,6 +113,7 @@ export default async function ({ page, shot, log }) {
   if (!night || !(night.seeded > 0) || !(night.drawn > 0) || night.fade !== 1) problems.push(`at night: ${JSON.stringify(night && { ...night, positions: night.positions.length })}`)
   const spots = await onScreen(page, night?.positions ?? [])
   const ctl = controls(spots)
+  await hidden(page, false)
   const onA = await read(page, [...spots.map(rect), ...ctl.map(rect)])
   const onB = await read(page, [...spots.map(rect), ...ctl.map(rect)])
   await shot('fireflies-night')

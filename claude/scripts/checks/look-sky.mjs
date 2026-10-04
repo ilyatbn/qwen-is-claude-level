@@ -211,7 +211,9 @@ export default async function ({ page, shot, log }) {
   await page.evaluate((t) => window.__game.setTime(t), await nightMoonT(page))
   // T23.24 (T23.31 after the rebase): the fireflies too — they fly on the scene's clock and reseed with the map, so
   // a sky-only comparison ("the first seed again", 39352 px with them, 0 without — measured) saw them, not the sky.
-  await page.evaluate(() => window.__world.hideLayers(['night', 'fireflies']))
+  // T23.43: and the leaf flecks, for the same reason — they drift on the scene's clock (284–317 px "the first seed
+  // again" with them in).
+  await page.evaluate(() => window.__world.hideLayers(['night', 'fireflies', 'leaves']))
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
   const sky = await page.evaluate(() => window.__world.sky())
   const tier = await page.evaluate(() => window.__world.info())
