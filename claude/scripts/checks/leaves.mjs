@@ -2,12 +2,15 @@
  * `leaves` — T23.43: the foreground leaves are **tiny dark flecks drifting across the screen** (`look/leafFlecks.ts`),
  * not T23.08B's big clusters, in a live scene (the sandbox; the match runs the same code, `GameScene`).
  *
- * 1. **A few dozen in view, and the big clusters gone** — counted at the renderer (`__world.flecks().drawn`) between
- *    `FEW` and `MANY`; the old cluster layer (`atmosphere().fg`) is not drawn.
+ * 1. **About a hundred in view (T24.00), and the big clusters gone** — counted at the renderer (`__world.flecks().drawn`)
+ *    against the field's own basis, `(view area / FLECK_CELL²) · FLECK_PER_CELL` read from `leafFlecks.ts`, within a
+ *    factor of two either way; the old cluster layer (`atmosphere().fg`) is not drawn. T24.00's depth: some drawn
+ *    flecks are close (larger and blurred) and most are far.
  * 2. **They are in the picture, and every one is small** — the frame with the flecks against the same frozen frame with
- *    them hidden (`hideLayers(['leaves'])`): the px that change form separate specks, at least a third as many as the
- *    renderer drew (a dark fleck over dark rock may not move a px past `MOVED`), and **no speck is wider or taller than
- *    `FLECK_MAX_PX`** (read from `leafFlecks.ts`) plus `EDGE_PX` of antialiased edge. Controls: the frame drawn twice
+ *    them hidden (`hideLayers(['leaves'])`): the px that change form separate specks, at least a fifth as many as the
+ *    renderer drew (a dark fleck over dark rock may not move a px past `MOVED`, and a hundred flecks touch more often
+ *    than three dozen did), and **no speck is wider or taller than a fleck's reach** — `FLECK_LEN[1] + 2·FLECK_BLUR[1]`
+ *    (read from `leafFlecks.ts`) plus `EDGE_PX` of antialiased edge. Controls: the frame drawn twice
  *    with the flecks shown is identical (the clock is held, so a difference is the layer, not drift), and the frame
  *    drawn twice with them hidden is identical.
  * 3. **The scene hands over its player** — the flecks fade over the boxes `flecks().occluders`: exactly one, holding the body.
@@ -16,20 +19,29 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** "A few dozen" on screen, the owner's ask — the bounds the count must fall in. */
-const FEW = 12
-const MANY = 80
 /** A px moved past this per channel when the layer is hidden (0–255). */
 const MOVED = 3
-/** The antialiased edge a speck may carry past the fleck's own length, buffer px. */
+/** The antialiased edge a speck may carry past the fleck's own reach, buffer px. */
 const EDGE_PX = 2
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const src = readFileSync(join(root, 'client/src/look/leafFlecks.ts'), 'utf8')
-const lenDecl = /export const FLECK_LEN: readonly \[number, number\] = \[([0-9.]+), ([0-9.]+)\]/.exec(src)
-if (!lenDecl) throw new Error('leafFlecks.ts has no `FLECK_LEN` — the size bound below would read nothing')
-/** `leafFlecks.ts::FLECK_MAX_PX` (= `FLECK_LEN[1]`). */
-const FLECK_MAX_PX = Number(lenDecl[2])
+const pair = (name) => {
+  const m = new RegExp(`export const ${name}: readonly \\[number, number\\] = \\[([0-9.]+), ([0-9.]+)\\]`).exec(src)
+  if (!m) throw new Error(`leafFlecks.ts has no \`${name}\` — the bound below would read nothing`)
+  return [Number(m[1]), Number(m[2])]
+}
+const one = (name) => {
+  const m = new RegExp(`export const ${name} = ([0-9.]+)`).exec(src)
+  if (!m) throw new Error(`leafFlecks.ts has no \`${name}\``)
+  return Number(m[1])
+}
+const FLECK_LEN = pair('FLECK_LEN')
+const FLECK_BLUR = pair('FLECK_BLUR')
+/** `leafFlecks.ts::FLECK_MAX_PX`: the longest fleck and its blur at both ends. */
+const FLECK_MAX_PX = FLECK_LEN[1] + 2 * FLECK_BLUR[1]
+const FLECK_CELL = one('FLECK_CELL')
+const FLECK_PER_CELL = one('FLECK_PER_CELL')
 
 const frames = (page, n = 3) => page.evaluate((n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f) }), n)
 
@@ -76,15 +88,20 @@ export default async function ({ page, shot, log }) {
   await page.evaluate(() => window.__game.freeze(true))
   await frames(page)
 
-  // ------------------------------------------------------------------ 1. a few dozen, and no clusters
-  const st = await page.evaluate(() => ({ flecks: window.__world.flecks(), atmos: window.__world.atmosphere() }))
+  // ------------------------------------------------------------------ 1. about a hundred, at depths, and no clusters
+  const st = await page.evaluate(async () => ({ flecks: window.__world.flecks(), atmos: window.__world.atmosphere(), view: (await window.__world.readFrame()).view }))
   const drawn = st.flecks?.drawn ?? []
-  log(`1. ${drawn.length} flecks drawn (want ${FEW}–${MANY}); the cluster layer drawn: ${st.atmos?.fg}`)
+  // The field's basis on this view (mask px): the count the constants promise, within a factor of two.
+  const basis = ((st.view.w * st.view.h) / FLECK_CELL ** 2) * FLECK_PER_CELL
+  const [few, many] = [Math.floor(basis / 2), Math.ceil(basis * 2)]
+  const close = drawn.filter((d) => d.depth > 0.5)
+  log(`1. ${drawn.length} flecks drawn (basis ${basis.toFixed(1)} on a ${st.view.w}×${st.view.h} view; want ${few}–${many}), ${close.length} close (depth > 0.5); the cluster layer drawn: ${st.atmos?.fg}`)
   if (!st.flecks?.on) problems.push('the scene has no leaf flecks (`desc.leafFlecks` unset on a classic map)')
-  if (!(drawn.length >= FEW && drawn.length <= MANY)) problems.push(`${drawn.length} flecks on screen — not a few dozen (${FEW}–${MANY})`)
+  if (!(drawn.length >= few && drawn.length <= many)) problems.push(`${drawn.length} flecks on screen — not the field's ${basis.toFixed(0)} (${few}–${many})`)
+  if (!(close.length >= 1 && close.length < drawn.length / 2)) problems.push(`${close.length} of ${drawn.length} flecks are close — want a few, not none and not most`)
   if (st.atmos?.fg !== false) problems.push(`the big leaf clusters are still drawn (atmosphere().fg = ${st.atmos?.fg})`)
   const longest = Math.max(0, ...drawn.map((d) => d.len))
-  if (!(longest <= FLECK_MAX_PX)) problems.push(`the renderer laid out a fleck ${longest} px long (max ${FLECK_MAX_PX})`)
+  if (!(longest <= FLECK_LEN[1])) problems.push(`the renderer laid out a fleck ${longest} px long (max ${FLECK_LEN[1]})`)
 
   // ------------------------------------------------------------------ 2. in the picture, and small
   const read = async () => {
@@ -111,10 +128,10 @@ export default async function ({ page, shot, log }) {
   const holds = (s) => centres.filter(([x, y]) => x >= s.x - EDGE_PX && x <= s.x + s.w + EDGE_PX && y >= s.y - EDGE_PX && y <= s.y + s.h + EDGE_PX).length
   const big = sp.list.filter((s) => (s.w > bound || s.h > bound) && !(holds(s) >= 2 && s.w <= 2 * bound && s.h <= 2 * bound))
   const widest = sp.list.reduce((m, s) => Math.max(m, s.w, s.h), 0)
-  log(`2. hiding the flecks moves ${sp.changed} px in ${sp.list.length} specks (want ≥ ${Math.ceil(drawn.length / 3)}); the widest ${widest} px (max ${bound.toFixed(1)} at ${scale.toFixed(2)} buffer px per mask px); controls — shown twice: ${stillOn} px differ, hidden twice: ${stillOff}`)
+  log(`2. hiding the flecks moves ${sp.changed} px in ${sp.list.length} specks (want ≥ ${Math.ceil(drawn.length / 5)}); the widest ${widest} px (max ${bound.toFixed(1)} at ${scale.toFixed(2)} buffer px per mask px); controls — shown twice: ${stillOn} px differ, hidden twice: ${stillOff}`)
   if (stillOn !== 0) problems.push(`control: the frame with the flecks drawn twice differs in ${stillOn} px — the clock is not held, so nothing below is about the layer`)
   if (stillOff !== 0) problems.push(`control: the frame with the flecks hidden drawn twice differs in ${stillOff} px`)
-  if (!(sp.list.length >= drawn.length / 3)) problems.push(`hiding ${drawn.length} flecks changes only ${sp.list.length} specks — they are not in the picture`)
+  if (!(sp.list.length >= drawn.length / 5)) problems.push(`hiding ${drawn.length} flecks changes only ${sp.list.length} specks — they are not in the picture`)
   if (big.length) problems.push(`${big.length} specks are bigger than a fleck (${bound.toFixed(1)} px): ${JSON.stringify(big.slice(0, 5))}`)
   await shot('leaves-flecks')
 

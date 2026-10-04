@@ -866,8 +866,8 @@ export class WorldRenderer implements SceneRenderer {
     return true
   }
 
-  /** Dev (T23.43): the flecks the last drawn frame laid out (centre and length, mask px), the boxes they faded over, the clock. */
-  flecksDrawn(): { on: boolean; drawn: { x: number; y: number; len: number }[]; occluders: Box[]; clock: number } {
+  /** Dev (T23.43; T24.00 adds blur and depth): the flecks the last drawn frame laid out (centre, length and blur, mask px; depth), the boxes they faded over, the clock. */
+  flecksDrawn(): { on: boolean; drawn: { x: number; y: number; len: number; blur: number; depth: number }[]; occluders: Box[]; clock: number } {
     const l = this.fleckLayer
     return { on: !!this.desc?.leafFlecks, drawn: l.drawn.map((d) => ({ ...d })), occluders: l.occluders.map((b) => [...b] as Box), clock: this.clock }
   }

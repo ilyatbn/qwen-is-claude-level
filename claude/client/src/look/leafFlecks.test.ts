@@ -1,11 +1,11 @@
-/** T23.43: the foreground leaves as tiny drifting flecks (`leafFlecks.ts`) — a pure field of (seed, view, time). */
+/** T23.43 / T24.00: the foreground leaves as tiny drifting flecks (`leafFlecks.ts`) — a pure field of (seed, view, time), at depths. */
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Core } from '../core'
 import { FG_ALPHA_OVER_PLAYER } from './atmosphere'
-import { FLECK_ALPHA, FLECK_CELL, FLECK_DRIFT, FLECK_LEN, FLECK_MAX_PX, FLECK_PER_CELL, fleckAlpha, fleckAt, leafFlecks } from './leafFlecks'
+import { FLECK_ALPHA, FLECK_BLUR, FLECK_CELL, FLECK_DRIFT, FLECK_LEN, FLECK_NEAR_SPEED, FLECK_PER_CELL, fleckAlpha, fleckAt, leafFlecks } from './leafFlecks'
 import type { Box } from './scene'
 
 const VIEW = { x: 0, y: 0, w: 1280, h: 720 }
@@ -33,54 +33,83 @@ describe('leafFlecks (T23.43)', () => {
     expect(leafFlecks(8, VIEW, 3).map((f) => f.x)).not.toEqual(leafFlecks(7, VIEW, 3).map((f) => f.x))
   })
 
-  it('a few dozen on a screen, over many seeds and times — not one, not a swarm', () => {
+  it('about a hundred on a screen (T24.00: three times T23.43), over many seeds and times — not a few, not a swarm', () => {
     const counts: number[] = []
     for (let seed = 1; seed <= 12; seed++) for (const t of [0, 7.3, 41]) counts.push(leafFlecks(seed, { ...VIEW, x: seed * 997, y: seed * 331 }, t).length)
     const mean = counts.reduce((s, n) => s + n, 0) / counts.length
-    // The basis: (1280·720 / CELL²) · PER_CELL flecks — within a factor of two either way, every draw.
+    // The basis: (1280·720 / CELL²) · PER_CELL flecks — the mean within 15 % of it, every draw within a factor of two.
     const basis = ((VIEW.w * VIEW.h) / FLECK_CELL ** 2) * FLECK_PER_CELL
-    expect(mean).toBeGreaterThan(basis / 2)
-    expect(mean).toBeLessThan(basis * 2)
-    expect(Math.min(...counts)).toBeGreaterThanOrEqual(12)
-    expect(Math.max(...counts)).toBeLessThanOrEqual(80)
+    expect(mean).toBeGreaterThan(basis * 0.85)
+    expect(mean).toBeLessThan(basis * 1.15)
+    expect(Math.min(...counts)).toBeGreaterThanOrEqual(basis / 2)
+    expect(Math.max(...counts)).toBeLessThanOrEqual(basis * 2)
+    // T23.43's density, the control: four per cell was 36 a screen — a third of this.
+    expect(basis).toBeGreaterThanOrEqual(((VIEW.w * VIEW.h) / FLECK_CELL ** 2) * 4 * 2.5)
   })
 
-  it('every fleck is tiny — no longer than FLECK_MAX_PX — and fades in and out', () => {
+  it('every fleck is tiny — within FLECK_LEN, its blur within FLECK_BLUR — and fades in and out', () => {
     let n = 0
     for (let seed = 1; seed <= 6; seed++) {
       for (const f of leafFlecks(seed, VIEW, seed * 3.1)) {
         expect(f.len).toBeGreaterThanOrEqual(FLECK_LEN[0])
-        expect(f.len).toBeLessThanOrEqual(FLECK_MAX_PX)
+        expect(f.len).toBeLessThanOrEqual(FLECK_LEN[1])
+        expect(f.blur).toBeGreaterThanOrEqual(FLECK_BLUR[0])
+        expect(f.blur).toBeLessThanOrEqual(FLECK_BLUR[1])
         expect(f.a).toBeGreaterThanOrEqual(0)
-        expect(f.a).toBeLessThanOrEqual(1)
+        expect(f.a).toBeLessThanOrEqual(FLECK_ALPHA[1])
         n++
       }
     }
-    expect(n).toBeGreaterThan(50)
+    expect(n).toBeGreaterThan(300)
   })
 
-  it('drifts slowly across: sideways between DRIFT and twice DRIFT px/s, sinking a little', () => {
+  it('has depth: most flecks small and far, a few large, close, fast and blurred — and size goes with depth', () => {
+    const all = []
+    for (let seed = 1; seed <= 8; seed++) all.push(...leafFlecks(seed, { ...VIEW, x: seed * 1500 }, seed * 2.3))
+    const mid = (FLECK_LEN[0] + FLECK_LEN[1]) / 2
+    const small = all.filter((f) => f.len < mid).length / all.length
+    const close = all.filter((f) => f.depth > 0.5)
+    // Most small (over two thirds) — and a few close ones, not none (one in ten or more).
+    expect(small).toBeGreaterThan(2 / 3)
+    expect(close.length / all.length).toBeGreaterThan(0.1)
+    expect(close.length / all.length).toBeLessThan(1 / 3)
+    // The close ones are the big, blurred ones; the far ones the small, crisp ones (means of each half).
+    const far = all.filter((f) => f.depth < 0.1)
+    const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length
+    expect(mean(close.map((f) => f.len))).toBeGreaterThan(mean(far.map((f) => f.len)) * 1.8)
+    expect(mean(close.map((f) => f.blur))).toBeGreaterThan(mean(far.map((f) => f.blur)) * 2)
+  })
+
+  it('drifts slowly across: a far fleck between DRIFT and twice DRIFT px/s, a close one up to NEAR_SPEED times that', () => {
     let n = 0
-    for (let cx = 0; cx < 20; cx++) {
+    let fastestFar = 0
+    let fastestClose = 0
+    for (let cx = 0; cx < 40; cx++) {
       for (let k = 0; k < FLECK_PER_CELL; k++) {
         const a = fleckAt(5, cx, 3, k, 20)
         const b = fleckAt(5, cx, 3, k, 20.05)
         const vx = (b.x - a.x) / 0.05
-        if (Math.abs(vx) > FLECK_DRIFT * 10) continue // it wrapped to a new trip between the two reads
+        if (Math.abs(vx) > FLECK_DRIFT * 20) continue // it wrapped to a new trip between the two reads
+        const top = 2 * FLECK_DRIFT * (1 + (FLECK_NEAR_SPEED - 1) * a.depth)
         expect(vx).toBeGreaterThanOrEqual(FLECK_DRIFT * 0.99)
-        expect(vx).toBeLessThanOrEqual(FLECK_DRIFT * 2.01)
+        expect(vx).toBeLessThanOrEqual(top * 1.01)
+        if (a.depth < 0.1) fastestFar = Math.max(fastestFar, vx)
+        if (a.depth > 0.6) fastestClose = Math.max(fastestClose, vx)
         n++
       }
     }
-    expect(n).toBeGreaterThan(70)
+    expect(n).toBeGreaterThan(300)
+    expect(fastestFar).toBeLessThanOrEqual(2 * FLECK_DRIFT * (1 + (FLECK_NEAR_SPEED - 1) * 0.1) * 1.01)
+    // Control: close ones do outrun every far one.
+    expect(fastestClose).toBeGreaterThan(fastestFar)
   })
 
   it('fades over a player box and not beside it (control)', () => {
-    const f = { x: 100, y: 100, len: 4, angle: 0, a: 1 }
+    const f = { x: 100, y: 100, len: 4, angle: 0, a: FLECK_ALPHA[1], depth: 1, blur: FLECK_BLUR[1] }
     const box: Box = [90, 90, 110, 110]
-    expect(fleckAlpha(f, [box])).toBeCloseTo(FLECK_ALPHA * FG_ALPHA_OVER_PLAYER, 6)
-    expect(fleckAlpha(f, [[400, 90, 420, 110]])).toBeCloseTo(FLECK_ALPHA, 6)
-    expect(fleckAlpha(f, [])).toBeCloseTo(FLECK_ALPHA, 6)
+    expect(fleckAlpha(f, [box])).toBeCloseTo(FLECK_ALPHA[1] * FG_ALPHA_OVER_PLAYER, 6)
+    expect(fleckAlpha(f, [[400, 90, 420, 110]])).toBeCloseTo(FLECK_ALPHA[1], 6)
+    expect(fleckAlpha(f, [])).toBeCloseTo(FLECK_ALPHA[1], 6)
   })
 
   it('a classic map gets flecks and no big clusters; volcanic keeps its embers instead; space has neither', async () => {
